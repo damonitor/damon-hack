@@ -8,7 +8,7 @@ fi
 
 build_dir=$1
 bindir=$(dirname "$0")
-srcdir="$bindir/../"
+srcdir="./"
 
 cat "$bindir/damon_config" >> "$build_dir/.config"
 make -C "$srcdir" O="$build_dir" olddefconfig
