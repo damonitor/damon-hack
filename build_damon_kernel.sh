@@ -11,7 +11,7 @@ fi
 outdir=$1
 
 bindir=$(dirname "$0")
-srcdir="$bindir/../"
+srcdir="./"
 
 "$bindir/config_damon_kernel.sh" "$outdir"
 make -C "$srcdir" O="$outdir" -j$(nproc)
