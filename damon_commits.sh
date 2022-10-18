@@ -25,6 +25,8 @@ then
 	pr_usage_exit 1
 fi
 
+bindir=$(dirname "$0")
+
 reverse="false"
 stable="false"
 cherry_pick="false"
@@ -72,14 +74,7 @@ do
 	esac
 done
 
-damon_files="Documentation/admin-guide/mm/damon/ \
-	Documentaiton/vm/damon/ \
-	Documentaiton/mm/damon/ \
-	Documentation/ABI/testing/sysfs-kernel-mm-damon \
-	include/linux/damon.h \
-	include/trace/events/damon.h \
-	mm/damon \
-	tools/testing/selftests/damon"
+damon_files=$(cat "$bindir/damon_source_files")
 
 if [ "$cherry_pick" = "true" ]
 then
