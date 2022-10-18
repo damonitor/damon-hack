@@ -1,5 +1,7 @@
 #!/bin/bash
 
+bindir=$(dirname "$0")
+
 pr_stat()
 {
 	if [ $# -ne 1 ]
@@ -10,23 +12,11 @@ pr_stat()
 
 	range=$1
 	from_sj=$(git log "$range" --oneline --author=SeongJae -- \
-		mm/damon/ \
-		include/linux/damon.h \
-		Documentation/admin-guide/mm/damon/ \
-		Documentation/mm/damon/ \
-		Documentation/vm/damon/ \
-		Documentation/ABI/testing/sysfs-kernel-mm-damon \
-		tools/testing/selftests/damon \
+		$(cat "$bindir/damon_source_files") \
 		| wc -l)
 	from_comm=$(git log "$range" --oneline \
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
-		mm/damon/ \
-		include/linux/damon.h \
-		Documentation/admin-guide/mm/damon/ \
-		Documentation/mm/damon/ \
-		Documentation/vm/damon/ \
-		Documentation/ABI/testing/sysfs-kernel-mm-damon \
-		tools/testing/selftests/damon \
+		$(cat "$bindir/damon_source_files") \
 		| wc -l)
 
 	echo "$range	$from_sj	$from_comm	$((from_comm * 100 / (from_sj + from_comm))) %"
