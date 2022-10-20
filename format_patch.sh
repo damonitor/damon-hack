@@ -30,7 +30,8 @@ echo "# Patch files are ready at $outdir"
 echo
 echo "# Add recipients"
 echo
-get_maintainer=$(dirname "$0")/../scripts/get_maintainer.pl
+# Assume this is called from linux directory
+get_maintainer=./scripts/get_maintainer.pl
 to_total="to_total"
 cc_total="cc_total"
 rm -f "$to_total"
