@@ -12,5 +12,5 @@ outdir=$1
 
 bindir=$(dirname "$0")
 
-"$bindir/build_install_damon_kernek.sh" "$outdir"
+"$bindir/build_install_damon_kernel.sh" "$outdir"
 sudo shutdown -r now
