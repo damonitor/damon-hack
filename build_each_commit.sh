@@ -16,6 +16,7 @@ current_branch=$(git branch | grep -e '^* ' | cut -c 3-)
 current_hashid=$(git log --oneline HEAD^.. | awk '{print $1}')
 git stash
 
+bindir=$(dirname "$0")
 range=$1
 commits=()
 while IFS= read -r line
@@ -41,17 +42,7 @@ do
 	result="FAIL"
 	for ((j = 0; j < $max_reply; j++))
 	do
-		make O=$ODIR olddefconfig
-		echo 'CONFIG_DAMON=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_KUNIT_TEST=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_VADDR=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_PADDR=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_PGIDLE=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_VADDR_KUNIT_TEST=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_DBGFS=y' >> $ODIR/.config
-		echo 'CONFIG_DAMON_DBGFS_KUNIT_TEST=y' >> $ODIR/.config
-		if make O=$ODIR -j$(nproc)
-		then
+		if "$bindir/build_damon_kernel.sh" $ODIR
 			result="PASS"
 			break
 		fi
