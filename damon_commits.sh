@@ -74,7 +74,7 @@ do
 	esac
 done
 
-damon_files=$(cat "$bindir/damon_source_files")
+damon_files=$("$bindir/damon_source_files.py")
 
 if [ "$cherry_pick" = "true" ]
 then
