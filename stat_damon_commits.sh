@@ -12,11 +12,11 @@ pr_stat()
 
 	range=$1
 	from_sj=$(git log "$range" --oneline --author=SeongJae -- \
-		$(cat "$bindir/damon_source_files") \
+		$("$bindir/damon_source_files.py") \
 		| wc -l)
 	from_comm=$(git log "$range" --oneline \
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
-		$(cat "$bindir/damon_source_files") \
+		$("$bindir/damon_source_files.py") \
 		| wc -l)
 
 	echo "$range	$from_sj	$from_comm	$((from_comm * 100 / (from_sj + from_comm))) %"
