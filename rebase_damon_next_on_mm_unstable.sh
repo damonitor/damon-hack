@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 if [ $# -ne 1 ] && [ $# -ne 2 ]
 then
 	echo "Usage: $0 <mainline base> [old mm-unstable]"
