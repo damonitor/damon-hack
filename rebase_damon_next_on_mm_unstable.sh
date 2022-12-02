@@ -43,7 +43,7 @@ then
 fi
 
 cp "$bindir/unmerged_commits.sh" ./
-merged_commits=$(./unmerged_commits.sh --merged --human_readalbe \
+merged_commits=$(./unmerged_commits.sh --merged --human_readable \
 	"$old_mm_unstable..damon/next" "$mainline_base..$new_mm_unstable")
 
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
