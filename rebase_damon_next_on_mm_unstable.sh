@@ -43,6 +43,9 @@ then
 fi
 
 cp "$bindir/unmerged_commits.sh" ./
+merged_commits=$(./unmerged_commits.sh --merged --human_readalbe \
+	"$old_mm_unstable..damon/next" "$mainline_base..$new_mm_unstable")
+
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
 commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next" \
 	"$mainline_base..$new_mm_unstable")
@@ -55,3 +58,6 @@ fi
 
 git branch -M damon/next damon/next.old
 git branch -M damon/next.new damon/next
+
+echo "Below commits have merged"
+echo "$merged_commits"
