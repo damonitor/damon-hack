@@ -18,13 +18,12 @@ pr_stat()
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
 		$("$bindir/damon_source_files.py") \
 		| wc -l)
-
 	echo "$range	$from_sj	$from_comm	$((from_comm * 100 / (from_sj + from_comm))) %"
 }
 
 echo "range	from_sj		from_comm	from_comm rate (%)"
 prev_version=v5.14
-for version in v5.15 v5.16 v5.17 v5.18 v5.19 v6.0 linus/master
+for version in v5.15 v5.16 v5.17 v5.18 v5.19 v6.0 v6.1 linus/master
 do
 	pr_stat "$prev_version..$version"
 	prev_version=$version
