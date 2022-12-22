@@ -10,9 +10,6 @@ do
 	echo "in mm"
 	"$bindir/_stat_damon_lines_portion.sh" "$range" mm
 	echo
-	echo "in linux"
-	"$bindir/_stat_damon_lines_portion.sh" "$range" ./
-	echo
 
 	prev_version=$version
 done
