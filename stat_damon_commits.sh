@@ -1,7 +1,5 @@
 #!/bin/bash
 
-bindir=$(dirname "$0")
-
 pr_stat()
 {
 	if [ $# -ne 1 ]
@@ -22,12 +20,12 @@ pr_stat()
 }
 
 echo "range	from_sj		from_comm	from_comm rate (%)"
-prev_version=v5.14
-versions="$(cat "$bindir/releases_having_damon") linus/master"
-for version in $versions
+versions=( $(cat "$bindir/stat_branches") )
+prev_version="${versions[0]}"
+for version in "${versions[@]:1}"
 do
 	pr_stat "$prev_version..$version"
 	prev_version=$version
 done
 
-pr_stat "v5.14..linus/master"
+pr_stat "${versions[0]}..${versions[-1]}"

@@ -2,9 +2,9 @@
 
 bindir=$(dirname "$0")
 
-prev_version=v5.14
-versions="$(cat "$bindir/releases_having_damon") linus/master"
-for version in $versions
+versions=( $(cat "$bindir/stat_branches") )
+prev_version="${versions[0]}"
+for version in "${versions[@]:1}"
 do
 	range="$prev_version..$version"
 	echo "# $range"
@@ -14,7 +14,7 @@ do
 
 	prev_version=$version
 done
-range="v5.14..linus/master"
+range="${versions[0]}..${versions[-1]}"
 echo "# $range"
 echo "$("$bindir/_stat_damon_nr_commits_portion.sh" "$range" mm) # mm"
 echo "$("$bindir/_stat_damon_nr_commits_portion.sh" "$range" ./) # linux"
