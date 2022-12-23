@@ -3,7 +3,8 @@
 bindir=$(dirname "$0")
 
 prev_version=v5.14
-for version in v5.15 v5.16 v5.17 v5.18 v5.19 v6.0 v6.1 linus/master
+versions="$(cat "$bindir/releases_having_damon") linus/master"
+for version in $versions
 do
 	range="$prev_version..$version"
 	echo "# $range"
