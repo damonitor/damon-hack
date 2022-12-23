@@ -26,7 +26,9 @@ pr_stat()
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
 		$("$bindir/damon_source_files.py") \
 		| wc -l)
-	echo "$range	$from_sj	$from_comm	$((from_comm * 100 / (from_sj + from_comm))) %"
+	portion=$(awk "BEGIN {printf \"%.2f %%\", \
+		${from_comm} * 100 / (${from_sj} + ${from_comm})}")
+	echo "$range	$from_sj	$from_comm	$portion"
 }
 
 echo "range	from_sj		from_comm	from_comm rate (%)"
