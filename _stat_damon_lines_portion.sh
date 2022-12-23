@@ -16,6 +16,9 @@ lines_total=$("$bindir/_stat_lines.sh" "$range" "$parent_dir" --no-merges | \
 	awk '{print $3}')
 lines_damon=$("$bindir/_stat_lines.sh" "$range" mm/damon/ --no-merges | \
 	awk '{print $3}')
-portion_permil=$((lines_damon * 1000 / lines_total))
-echo "$lines_damon/$lines_total ($portion_permil permil) without merges"
+portion=$(awk "BEGIN {printf \"%.2f %%\", \
+	${lines_damon} * 100 / ${lines_total}}")
+
+portion_bp=$((lines_damon * 10000 / lines_total))
+echo "$lines_damon/$lines_total ($portion) without merges"
 echo
