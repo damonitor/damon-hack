@@ -1,6 +1,14 @@
 #!/bin/bash
 
-bindir=$(dirname "$0")
+if [ $# -ne 1 ]
+then
+	echo "Usage: $0 <linux dir>"
+	exit 1
+fi
+
+bindir=$(realpath $(dirname "$0"))
+linux_dir=$1
+cd "$linux_dir"
 
 versions=( $(cat "$bindir/stat_branches") )
 prev_version="${versions[0]}"

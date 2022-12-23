@@ -1,5 +1,15 @@
 #!/bin/bash
 
+if [ $# -ne 1 ]
+then
+	echo "Usage: $0 <linux dir>"
+	exit 1
+fi
+
+bindir=$(realpath $(dirname "$0"))
+linux_dir=$1
+cd "$linux_dir"
+
 pr_stat()
 {
 	if [ $# -ne 1 ]
