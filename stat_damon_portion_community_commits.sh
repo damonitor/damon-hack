@@ -31,7 +31,7 @@ pr_stat()
 	echo "$range	$from_sj	$from_comm	$portion"
 }
 
-echo "range	from_sj		from_comm	from_comm rate (%)"
+echo "range	from_sj		from_comm	from_comm portion"
 versions=( $(cat "$bindir/stat_branches") )
 prev_version="${versions[0]}"
 for version in "${versions[@]:1}"
