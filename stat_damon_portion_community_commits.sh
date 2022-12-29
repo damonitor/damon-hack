@@ -1,13 +1,14 @@
 #!/bin/bash
 
-if [ $# -ne 1 ]
+if [ $# -ne 2 ]
 then
-	echo "Usage: $0 <linux dir>"
+	echo "Usage: $0 <linux dir> <stat branches>"
 	exit 1
 fi
 
 bindir=$(realpath $(dirname "$0"))
 linux_dir=$1
+stat_branches=$(realpath "$2")
 cd "$linux_dir"
 
 pr_stat()
@@ -32,7 +33,7 @@ pr_stat()
 }
 
 echo "range	from_sj		from_comm	from_comm portion"
-versions=( $(cat "$bindir/stat_branches") )
+versions=( $(cat "$stat_branches") )
 prev_version="${versions[0]}"
 for version in "${versions[@]:1}"
 do
