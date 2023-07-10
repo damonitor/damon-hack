@@ -48,7 +48,7 @@ merged_commits=$(./unmerged_commits.sh --merged --human_readable \
 
 git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
-commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next" \
+commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
 	"$mainline_base..$new_mm_unstable")
 if ! git cherry-pick --allow-empty $commits_to_pick
 then
