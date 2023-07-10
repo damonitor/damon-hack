@@ -46,17 +46,17 @@ cp "$bindir/unmerged_commits.sh" ./
 merged_commits=$(./unmerged_commits.sh --merged --human_readable \
 	"$old_mm_unstable..damon/next" "$mainline_base..$new_mm_unstable")
 
+git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
 commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next" \
 	"$mainline_base..$new_mm_unstable")
 if ! git cherry-pick --allow-empty $commits_to_pick
 then
 	echo "Cherry-pick failed."
-	echo "Rename damon/next.new to damon/next after resolving the issue"
+	echo "Resolve it and do 'git branch -M damon/next.new damon/next'"
 	exit 1
 fi
 
-git branch -M damon/next damon/next.old
 git branch -M damon/next.new damon/next
 
 echo "Below commits have merged"
