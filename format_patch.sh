@@ -22,7 +22,8 @@ then
 	cp "$coverletter" "$coverletter.old"
 fi
 
-git format-patch $recipients --cover-letter --base \
+baseline=$(git describe $(echo "$commit_range" | awk -F "." '{print $1}'))
+git format-patch $recipients --cover-letter --base "$baseline" \
 	--subject-prefix "$subject_prefix" -o "$outdir" $commit_range
 
 echo
