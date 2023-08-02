@@ -22,7 +22,7 @@ then
 	cp "$coverletter" "$coverletter.old"
 fi
 
-git format-patch $recipients --cover-letter \
+git format-patch $recipients --cover-letter --base \
 	--subject-prefix "$subject_prefix" -o "$outdir" $commit_range
 
 echo
