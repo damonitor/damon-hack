@@ -60,9 +60,13 @@ do
 	echo "$cc" >> "$cc_total"
 done
 
-echo "For coverletter:"
-sort "$to_total" | uniq
-sort "$cc_total" | uniq
+coverletter="$outdir"/0000-cover-letter.patch
+coverletter_cp="$coverletter".cp
+cp "$coverletter" "$coverletter_cp"
+sort "$to_total" | uniq > "$coverletter"
+sort "$cc_total" | uniq >> "$coverletter"
+cat "$coverletter_cp" >> "$coverletter"
+rm "$coverletter_cp"
 
 echo "# Do checkpatch"
 
