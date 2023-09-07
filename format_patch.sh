@@ -54,7 +54,10 @@ do
 
 	if echo "$patch" | grep --quiet "damon"
 	then
-		echo "To: Andrew Morton <akpm@linux-foundation.org>" >> "$patch"
+		if ! cat "$patch" | grep "akpm@linux-foundation.org"
+		then
+			echo "To: Andrew Morton <akpm@linux-foundation.org>" >> "$patch"
+		fi
 	fi
 
 	cat "$patch.old" >> "$patch"
