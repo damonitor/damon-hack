@@ -51,6 +51,12 @@ do
 	mv "$patch" "$patch.old"
 	echo "$to" > "$patch"
 	echo "$cc" >> "$patch"
+
+	if echo "$patch" | grep --quiet "damon"
+	then
+		echo "To: Andrew Morton <akpm@linux-foundation.org>" >> "$patch"
+	fi
+
 	cat "$patch.old" >> "$patch"
 	rm "$patch.old"
 
