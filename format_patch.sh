@@ -57,6 +57,7 @@ do
 		if ! cat "$patch" | grep "akpm@linux-foundation.org"
 		then
 			echo "To: Andrew Morton <akpm@linux-foundation.org>" >> "$patch"
+			echo "To: Andrew Morton <akpm@linux-foundation.org>" >> "$to_total"
 		fi
 	fi
 
@@ -65,6 +66,10 @@ do
 		echo "Cc: Brendan Higgins <brendanhiggins@google.com>" >> "$patch"
 		echo "Cc: kunit-dev@googlegroups.com" >> "$patch"
 		echo "Cc: linux-kselftest@vger.kernel.org" >> "$patch"
+
+		echo "Cc: Brendan Higgins <brendanhiggins@google.com>" >> "$cc_total"
+		echo "Cc: kunit-dev@googlegroups.com" >> "$cc_total"
+		echo "Cc: linux-kselftest@vger.kernel.org" >> "$cc_total"
 	fi
 
 	cat "$patch.old" >> "$patch"
