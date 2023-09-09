@@ -60,6 +60,13 @@ do
 		fi
 	fi
 
+	if echo "$patch" | grep "damon" | grep "test" | grep --quiet "unit"
+	then
+		echo "Cc: Brendan Higgins <brendanhiggins@google.com>" >> "$patch"
+		echo "Cc: kunit-dev@googlegroups.com" >> "$patch"
+		echo "Cc: linux-kselftest@vger.kernel.org" >> "$patch"
+	fi
+
 	cat "$patch.old" >> "$patch"
 	rm "$patch.old"
 
