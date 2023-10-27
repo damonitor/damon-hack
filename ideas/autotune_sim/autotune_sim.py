@@ -28,8 +28,10 @@ class Tuner:
 def the_algorithm(goal, past_scores, past_quotas):
     return max(past_quotas[-1] * ((goal - past_scores[-1]) / goal + 1), 1)
 
-def score_of(input_, a, b):
-    return input_ * a + b
+def score_of(input_, a, b, max_error_percent):
+    score_wo_err = input_ * a + b
+    max_error_half = int(score_wo_err * max_error_percent / 100 / 2)
+    return score_wo_err + random.randint(max_error_half * -1 , max_error_half)
 
 def run_simulation():
     '''Returns number of steps to converge'''
@@ -39,7 +41,7 @@ def run_simulation():
     b = random.randint(-100, 100)
     quota = random.randint(0, 1024)
     answer = random.randint(1, 1024)
-    goal = score_of(answer, a, b)
+    goal = score_of(answer, a, b, 0)
 
     target_error = 1
     target_in_error = 5
@@ -47,7 +49,7 @@ def run_simulation():
     tuner = Tuner(the_algorithm, goal)
     nr_in_target = 0
     for i in range(max_steps):
-        score = a * quota + b
+        score = score_of(quota, a, b, 0.5)
         if abs(score - goal) / goal * 100 < target_error:
             nr_in_target += 1
         else:
