@@ -49,16 +49,11 @@ def run_simulation(print_for_plot):
     target_in_error = 5
 
     tuner = Tuner(the_algorithm, goal)
-    nr_consecutive_in_target = 0
     if print_for_plot:
         print('%d_%d_%d_%d' % (a, b, quota, answer))
     for i in range(max_steps):
         score = score_of(quota, a, b, normal_error_percent)
         if abs(score - goal) / goal * 100 < target_error:
-            nr_consecutive_in_target += 1
-        else:
-            nr_consecutive_in_target = 0
-        if nr_consecutive_in_target == target_in_error:
             break
         quota = tuner.get_next_quota(score)
         if print_for_plot:
@@ -68,7 +63,7 @@ def run_simulation(print_for_plot):
         print()
     if i == max_steps - 1:
         return -1
-    return i - nr_consecutive_in_target
+    return i
 
 def main():
     parser = argparse.ArgumentParser()
