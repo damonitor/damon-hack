@@ -28,12 +28,12 @@ class Tuner:
 def the_algorithm(goal, past_scores, past_quotas):
     return max(past_quotas[-1] * ((goal - past_scores[-1]) / goal + 1), 1)
 
-def score_of(input_, a, b, max_error_percent):
+def score_of(input_, a, b, max_error_rate):
     score_wo_err = input_ * a + b
-    max_error_half = abs(int(score_wo_err * max_error_percent / 100 / 2))
+    max_error_half = abs(int(score_wo_err * max_error_rate / 2))
     return score_wo_err + random.randint(max_error_half * -1 , max_error_half)
 
-def run_simulation(print_for_plot):
+def run_simulation(print_for_plot, score_error_rate, target_error_rate):
     '''Returns number of steps to converge'''
     max_steps = 1000
     a = random.randint(0, 100)
@@ -44,16 +44,12 @@ def run_simulation(print_for_plot):
         answer = random.randint(1, 1024)
         goal = score_of(answer, a, b, 0)
 
-    normal_error_percent = 0.9
-    target_error = 1
-    target_in_error = 5
-
     tuner = Tuner(the_algorithm, goal)
     if print_for_plot:
         print('%d_%d_%d_%d' % (a, b, quota, answer))
     for i in range(max_steps):
-        score = score_of(quota, a, b, normal_error_percent)
-        if abs(score - goal) / goal * 100 < target_error:
+        score = score_of(quota, a, b, score_error_rate)
+        if abs(score - goal) / goal < target_error_rate:
             break
         quota = tuner.get_next_quota(score)
         if print_for_plot:
@@ -70,12 +66,18 @@ def main():
     parser.add_argument('nr_runs', type=int, help='number of runs')
     parser.add_argument('--for_plot', action='store_true',
             help='for plotting only')
+    parser.add_argument('--score_error_rate', type=float, default=0.1,
+            help='error rate of score function')
+    parser.add_argument('--target_error_rate', type=float, default=0.01,
+            help='acceptable error rate')
+
     args = parser.parse_args()
 
     success_nr_steps = []
     nr_failures = 0
     for i in range(args.nr_runs):
-        nr_steps = run_simulation(args.for_plot)
+        nr_steps = run_simulation(args.for_plot, args.score_error_rate,
+                args.target_error_rate)
         if nr_steps == -1:
             nr_failures += 1
         else:
