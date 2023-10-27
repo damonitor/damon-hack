@@ -30,7 +30,7 @@ def the_algorithm(goal, past_scores, past_quotas):
 
 def score_of(input_, a, b, max_error_percent):
     score_wo_err = input_ * a + b
-    max_error_half = int(score_wo_err * max_error_percent / 100 / 2)
+    max_error_half = abs(int(score_wo_err * max_error_percent / 100 / 2))
     return score_wo_err + random.randint(max_error_half * -1 , max_error_half)
 
 def run_simulation(print_for_plot):
