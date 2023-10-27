@@ -28,38 +28,59 @@ class Tuner:
 def the_algorithm(goal, past_scores, past_quotas):
     return max(past_quotas[-1] * ((goal - past_scores[-1]) / goal + 1), 1)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('iteration', type=int, help='iteration')
-    args = parser.parse_args()
+def score_of(input_, a, b):
+    return input_ * a + b
 
+def run_simulation():
+    '''Returns number of steps to converge'''
+    max_steps = 1000
+    print_for_plot = False
     a = random.randint(0, 100)
     b = random.randint(-100, 100)
-    quota = random.randint(-100, 100)
+    quota = random.randint(0, 1024)
     answer = random.randint(1, 1024)
-    goal = answer * a + b
+    goal = score_of(answer, a, b)
 
     target_error = 1
     target_in_error = 5
 
     tuner = Tuner(the_algorithm, goal)
     nr_in_target = 0
-#    print('quota\tscore\tgoal')
-    for i in range(args.iteration):
+    for i in range(max_steps):
         score = a * quota + b
         if abs(score - goal) / goal * 100 < target_error:
             nr_in_target += 1
         else:
             nr_in_target = 0
         if nr_in_target == target_in_error:
-#            print('reached to the target accuracy in %d iteration' % i)
             break
         quota = tuner.get_next_quota(score)
-#        print('%10.2f\t%10.2f\t%10.2f' % (quota, score, goal))
-        print(i, score / goal, 1)
-    if i == args.iteration - 1:
-        print('failed')
-        print(i, a, b)
+        if print_for_plot:
+            print(i, score / goal)
+    if i == max_steps - 1:
+        return -1
+    return i
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('nr_runs', type=int, help='number of runs')
+    args = parser.parse_args()
+
+    success_nr_steps = []
+    nr_failures = 0
+    for i in range(args.nr_runs):
+        nr_steps = run_simulation()
+        if nr_steps == -1:
+            nr_failures += 1
+        else:
+            success_nr_steps.append(nr_steps)
+    print('failed %d times' % nr_failures)
+    print('nr steps to success')
+    print('avg %d' % (sum(success_nr_steps) / len(success_nr_steps)))
+    success_nr_steps.sort()
+    print('min/mean/max: %d %d %d' % (success_nr_steps[0],
+        success_nr_steps[int(len(success_nr_steps) / 2)],
+        success_nr_steps[-1]))
 
 if __name__ == '__main__':
     main()
