@@ -44,6 +44,7 @@ def run_simulation(print_for_plot):
         answer = random.randint(1, 1024)
         goal = score_of(answer, a, b, 0)
 
+    normal_error_percent = 0.9
     target_error = 1
     target_in_error = 5
 
@@ -52,7 +53,7 @@ def run_simulation(print_for_plot):
     if print_for_plot:
         print('%d_%d_%d_%d' % (a, b, quota, answer))
     for i in range(max_steps):
-        score = score_of(quota, a, b, 0.9)
+        score = score_of(quota, a, b, normal_error_percent)
         if abs(score - goal) / goal * 100 < target_error:
             nr_consecutive_in_target += 1
         else:
