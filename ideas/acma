@@ -2,6 +2,7 @@ Subject: [RFC IDEA] ACMA: Access/Contiguity-aware Memory Auto-scaling
 
 Hello,
 
+
 I'd like to share an idea for access/contiguity-aware memory auto-scaling.  It
 is designed for memory efficiency of free pages reporting-based memory
 oversubscribed virtual machine systems, but I believe it might also be
@@ -65,8 +66,10 @@ reporting hot-unplugged memory to the host.
 This approach could work, but has some limitations.  Firstly, memory
 hot-[un]plugging takes time, and could fail for any page isolation/migration
 failures.  We were unable to find a good existing solution for the post-report
-contiguity.  Periodic compaction may waste resource for compacting too much
-memory, while required contiguity is only report-granularity.  Finally,
+contiguity.  Periodic compaction could also fail for any page isolation and
+migration failure.  After all, memory contiguity is a long standing issue that
+still not completely solved.  It could also waste resource for compacting too
+much memory, while required contiguity is only report-granularity.  Finally,
 controlling the three different kernel features from user space in efficient
 way is challenging.
 
@@ -121,11 +124,13 @@ less than yet another threshold (low), say, 50%, ACMA starts stolen pages
 returning until the free memory to the working set ratio becomes higher than
 the high threshold.
 
-Expected Results
-----------------
+Expectations
+------------
 
 Since ACMA does stealing in phase 1, which does a sort of compaction on its
 own, in free pages report-granularity, it does only required compaction.
+Because stealing is done for colder pages first, less conflict with users of
+the pages, and hence better isolation/migration success is expected.
 
 Since ACMA-stolen pages are allocated to ACMA, which is in kernel space, no
 other guests can use it before ACMA return those.  Hence, after-report
@@ -158,14 +163,272 @@ free memory to the working set size ratio based activation and deactivation of
 the schemes can be done using goal-oriented auto-tuning of DAMOS.  We could add
 PSI goal to the schemes, too.
 
-Potential Benefit for General Usage
-===================================
+For example, below DAMOS schemes in the DAMO json input format could be
+imagined.  Note that this is not what currently supported.
+
+    [
+        {
+            "action": "acma_steal",
+            "access_pattern": {
+                "sz_bytes": { "min": "2 MB", "max": "max" },
+                "nr_accesses": { "max": "0 %" },
+                "age": { "min": "1 minute" }
+            },
+            "auto_tuning_aims": [
+                {
+                    "metric": "workingset_to_free_mem_ratio",
+                    "workingset_min_age": "1 minute", "target": 1.0
+                },
+                { "metric": "psi_mem_ratio", "target": 0.001, },
+            ],
+        },
+        {
+            "action": "pageout",
+            "access_pattern": {
+                "nr_accesses": { "max": "0 %" },
+                "age": { "min": "1 minute" }
+            },
+            "auto_tuning_goals": [
+                {
+                    "metric": "free_mem_to_workingset_ratio",
+                    "workingset_min_age": "1 minute", "target": 1.0
+                },
+                { "metric": "psi_mem_ratio", "target": 0.001, },
+            ],
+        },
+        {
+            "action": "acma_return",
+            "auto_tuning_aims": [
+                {
+                    "metric": "free_mem_to_workingset_ratio",
+                    "workingset_min_age": "1 minute", "target": 0.5
+                },
+            ],
+        }
+    ]
+
+Potential Benefits for General Usage
+====================================
+
+ACMA is basically designed for memory overcommitted virtual machine systems, as
+described above.  However, it could be useful for general systems that memory
+can physically hot-[un]pluggable.  It could help improving memory efficiency of
+physical clusters, and saving power for unused DRAM or memory devices.
+
+We could also think about extending ACMA to provide contiguous memory
+allocation interface.  Since stolen pages are report-granularity or memory
+block-granularity contiguous and isolated from system's other components, ACMA
+could allocate contiguous memory from the stolen memory, without high latency.
+If the report granularity and required contiguous memory allocation size is
+same (e.g., 2 MiB default free pages reporting granularity and 2 MiB
+hugepages), it would especially efficient.  In the case, ACMA may stands for
+Access-aware Contiguous Memory Allocator.
+
+Request For Comments
+====================
+
+This is in very early stage.  No enoug survey of related works is done, and no
+implementation is made at all.  That said, I hope to share what I'm gonna do,
+and get any comment if possible, not to only success, but rather to learn and
+improve, or even fail fast.
 
 Example ACMA Operation Scenario
 ===============================
 
+Let’s assume a guest using 2MiB size pages.  Each memory block has 9 pages, and
+also 1 page for metadata of the 9 pages.  The system has 10 memory blocks, so
+200 MiB memory in total.
 
+Let’s represent the state of each page as below.
 
+U: stollen-and-unplugged page
+M: metadata of the pages in the page block
+S: stollen-not-yet-unplugged page
+F: Free page
+C: Non-free (assigned) cold (non-workingset) page
+H: Non-free (assigned) hot (workingset) page
+
+And the proposed system is configured like above implementation example.  To
+summarize it again,
+
+* Steal 2MiB-contiguous cold memory in last plugged memory block, when
+  free memory to working set rate > 100%
+* Reclaim cold pages if free memory to working set rate <= 100%
+* Return stollen memory if free memory to working set rate < 50%
+
+The initial state could look like below.
+
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MCCCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 63 pages / 9 pages = 700 %
+
+Stealing memory (down-scaling)
+------------------------------
+
+Since free memory to workingset ratio is larger than 100%, cold pages stealing
+works.  Stolen pages are reported to the host.  As more pages are stollen, the
+free memory to workingset ratio decreases.  For example, if hot/cold pages are
+stable and four free pages are stolen, the status look like below.  Note that
+ACMA can steal allocated-cold pages, too.
+
+    MFSFSFSSFF MFFFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MCCCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 59 pages / 9 pages = 655 %
+
+Stealing works for only last not-yet-unplugged block.  Once all pages of the
+block is stollen, the entire block is unplugged.  The metadata for the block
+also becomes available to the host.  Stealing continue to the next block.
+
+    UUUUUUUUUU MFSFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MFFFFFFFFF
+    MFFFFFFFFF MCCCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 52 pages / 9 pages = 577 %
+
+Reclamation helps stealing
+--------------------------
+
+And the stealing continues... Until free memory to working set rate reaches
+100%.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFFFFFFFF MCCCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 9 pages / 9 pages = 100 %
+
+Now stealing stops, and proactive reclamation starts.  It reclaims cold pages,
+make those free pages.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFFFFFFFF MCFCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 10 pages / 9 pages = 111 %
+
+Now reclamation is deactivated, and stealing be activated.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFSFFFFFF MCFCCCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 9 pages / 9 pages = 100 %
+
+Ping pong of reclamation-stealing continues.  Reclaim,
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFSFFFFFF MCFCFCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 10 pages / 9 pages = 111 %
+
+and then Steal.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFSSFFFFF MCFCFCCCCC
+    MCCCCCCCCC MHHHHHHHHH
+
+    Free mem to working set rate: 9 pages / 9 pages = 100 %
+
+Eventually, converges to system having only workingset and
+workingset-sufficient amount (workingset size) of free memory.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFFFFFFFF MHHHHHHHHH
+
+    Free mem to working set rate: 9 pages / 9 pages = 100 %
+
+In this state, proactive reclaim is still active, but do nothing since no
+allocated cold pages exist.
+
+Stollen pages returning
+-----------------------
+
+User could start allocating more pages and accessing those frequently (make
+hot).  In other words, working set could increase.  Then free memory to
+workingset size ratio decreases.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFFFFFHFF MHHHHHHHHH
+
+    Free mem to working set rate: 8 pages / 10 pages = 80 %
+
+Proactive reclaim is still active, but doesn’t increase the free memory, since
+no allocated and cold page exists.  This situation continues until stolen pages
+returning threshold is met (free memory to working set 50%).
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFHFHFHFF MHHHHHHHHH
+
+    Free mem to working set rate: 6 pages / 12 pages = 50 %
+
+If user stops increasing working set, this could be a stabilized state.
+
+If user adds one more hot page, state becomes like below.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    MFFHFHHHFF MHHHHHHHHH
+
+    Free mem to working set rate: 5 pages / 13 pages = 38 %
+
+Now stollen pages returning is activated.  Since there is no
+stollen-but-plugged page, it plugs last unplugged memory block.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU MFFFFFFFFF
+    MFFHFHHHFF MHHHHHHHHH
+
+    Free mem to working set rate: 14 pages / 13 pages = 107 %
+
+It increased the free memory to working set ratio to a high level, so returning
+and proactive reclamation stops.  Stealing is again activated, decrease the
+free memory to working set ratio.
+
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU UUUUUUUUUU
+    UUUUUUUUUU MFFFSFFFFF
+    MFFHFHHHFF MHHHHHHHHH
+
+    Free mem to working set rate: 13 pages / 13 pages = 100 %
+
+In this way, the system will always have real working set (hot pages) plus
+50-100% of the working set size free memory, and let the host uses the
+remaining guest-physical memory.
 
 [1] https://lpc.events/event/17/contributions/1624/
 [2] https://docs.kernel.org/admin-guide/mm/damon/reclaim.html
