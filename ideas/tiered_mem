@@ -1,0 +1,185 @@
+Subject: [RFC IDEA] DAMOS-based Tiered-Memory Management
+
+Hello,
+
+
+There were attempts to use DAMON at tiered memory system management, from the
+pretty early days of DAMON[1].  I also wanted to dive deep on this topic[2] but
+didn't get time for this, unfortunately.  Meanwhile, a few people explored the
+approach in their own way, and thankfully shared their approaches and results
+with me, sometimes in public, and sometimes in provate.
+
+They used varying approaches and the results were also very different.  Some
+folks achieved nice results, while it was only waste of time for someone.
+Nonetheless, what I commonly heard about from such grateful sharing was the
+difficulty of DAMON tuning[3,4].  My proposal for the tuning difficulty was
+auto-tuning of DAMOS aggressiveness based on user-provided or self-collectable
+feedbacks.  It is still not done, but an early version of the implementation
+has recently shared.  I'd like to share my concept level idea of using the
+auto-tuning for reasonable DAMOS-based tiered memory system management.
+
+Background
+==========
+
+Please read DAMOS auto-tuning RFC patchset's coverletter for detail of it[5].
+In short, the feature allow users define aimed system status (e.g., 0.05%
+memory PSI and/or 50% free memory ratios), and let DAMOS control its
+aggressiveness to achieve the goals.  If the status is far from the goal, DAMOS
+increases its aggressiveness, and vice versa.  Under the limited
+aggressiveness, DAMOS applies the action to pages that more prioritized for the
+action.  For example, colder pages are prioritized for 'pageout' action.
+
+DAMOS-based Tiered-Memory Management Idea
+=========================================
+
+The idea is to set DAMOS schemes for each tiered memory node, like below.
+
+1. If the node has a lower node, demote cold pages of the
+node to the lower node using DAMOS, colder pages first.  Let DAMOS auto-tune
+the aggressiveness of the demotion aiming small amount of (e.g., 5%) free
+memory of the current node.
+
+2. If the node is not the highest node, promote hot pages in the node to the
+upper node using DAMOS, more hot pages first.  Let DAMOS auto-tune the
+aggressiveness of the demotion aiming high utilization rate (e.g., 96%) of the
+upper node.
+
+Discussion
+==========
+
+The simple scheme can be easily extended to multiple tiered memory nodes.
+Higher node will keep highutilization, with hot pages, while lower nodes have
+only cold pages that cannot be accommodated in higher nodes due to out of
+space.
+
+Because the utilization goal and free memory goal overlap, DAMOS will continue
+moving cold pages down and hot pages up.  Since the demotion is for coldest
+pages of the node, and the goal-based aggressiveness auto-tuning makes the
+aggressiveness minimum for the overlapping case, the overhead will be only
+modest.
+
+If the system is memory over-committed, we can also apply DAMOS-based cold
+pages proactive reclamation aiming some level of PSI, and
+Access/Contiguity-aware Memory Auto-scalaing[6] to the lowest node.
+
+Request For Comments
+====================
+
+This is in very early stage.  No enough survey of related works is done, and no
+implementation of the demote/promote DAMOS action are made.  An early version
+of the aim-oriented DAMOS aggressive auto tuning is available, though.  I even
+have no good tiered memory test system setup for myself.  I hope to share this
+approach that I believe might work in general, and get any comment if possible,
+not to only success, but rather to learn and improve, or even fail fast.
+
+Example Operation Scenario
+==========================
+
+Let's suppose a system is having a DRAM and a CXL-based slower node, each can
+accommodate 10 pages.
+
+And the proposed idea is configured.  The free memory ratio and memory
+utilization ratio goals are set as 5% and 96%.  That is, we have the demote
+DAMOS scheme for DRAM node, and promote DAMOS scheme for CXL node.
+
+Let's also represent the hotness of each page in five level, from 0 (cold) to 4
+(hot).  And let's represent free pages as 'F'.
+
+Then a state of the system may represented like below:
+
+    Node 0 (DRAM): 43210 43210  (100% util,   0% free)
+    Node 1 (CXL):  FFFFF FFFFF  (  0% util, 100% free)
+
+Demoting Cold Pages
+-------------------
+
+Since DRAM node is having 0% free memory ratio, which is under the goal of the
+demote scheme, demote scheme is activated.  Meanwhile, since DRAM node
+utilization ratio is 100%, which is higher than the goal of the promote scheme
+(96%), the promote scheme is doing nothing.  Hence, cold pages in Node 0 are
+demoted, colder one first.
+
+    Node 0 (DRAM): 4321F 43210  ( 95% util,   5% free)
+    Node 1 (CXL):  FFFF0 FFFFF  (  5% util,  95% free)
+
+The goal of demote scheme is met, so demote scheme stops.  The DRAM utilization
+ratio is below the promote scheme's goal (96%).  So the scheme is activated and
+promote hot pages of the node, more hot one first.
+
+    Node 0 (DRAM): 43210 43210  (100% util,   0% free)
+    Node 1 (CXL):  FFFFF FFFFF  (  0% util, 100% free)
+
+Then promote scheme again deactivated, and demote scheme activated.  Coldest
+page demoted.
+
+    Node 0 (DRAM): 43210 4321F  ( 95% util,   5% free)
+    Node 1 (CXL):  FFFFF FFFF0  (  5% util,  95% free)
+
+Then promote scheme again activated, and demote scheme deactivated.  Hottest
+page in CXL memory promoted.
+
+    Node 0 (DRAM): 43210 43210  (100% util,   0% free)
+    Node 1 (CXL):  FFFFF FFFFF  (  0% util, 100% free)
+
+In this way, DRAM node keeps high utilization ratio with only hot pages, while
+only cold pages moves back and forth between the two nodes.
+
+Promoting Hot Pages
+-------------------
+
+Let's assume the two cold pages are in CXL node.
+
+    Node 0 (DRAM): 4321F 4321F  ( 90% util,  10% free)
+    Node 1 (CXL):  FFFF0 FFFF0  ( 10% util,  90% free)
+
+And let's assume the demoted pages become hot.
+
+    Node 0 (DRAM): 4321F 4321F  ( 90% util,  10% free)
+    Node 1 (CXL):  FFFF3 FFFF2  ( 10% util,  90% free)
+
+The promotion scheme will promote the hot pages, more hot page first.
+
+    Node 0 (DRAM): 43213 4321F  ( 95% util,   5% free)
+    Node 1 (CXL):  FFFFF FFFF2  (  5% util,  95% free)
+
+The other page in CXL also get promoted following the goals.
+
+    Node 0 (DRAM): 43213 43212  (100% util,   0% free)
+    Node 1 (CXL):  FFFFF FFFFF  (  0% util, 100% free)
+
+Now, the demotion scheme demotes cold pages of the DRAM node, not the now-hot
+just promoted pages.
+
+    Node 0 (DRAM): 432F3 43212  ( 95% util,   5% free)
+    Node 1 (CXL):  FFF1F FFFFF  (  5% util,  95% free)
+
+Extension
+---------
+
+The schemes can be extended for more than two nodes scenario.  For example,
+below system can be configured.
+
+    Node 0 (DRAM): 44444 4443F  ( 95% util,   5% free)
+    Node 1 (CXL):  33333 3321F  ( 95% util,   5% free)
+    Node 2 (CXL2): 11111 100FF  ( 90% util,  19% free)
+
+A demote scheme for Node 0, which aim 5% free memory rate of Node 0, is
+configured.
+
+Two schemes are set for Node 1.  One for a promote scheme which aims 96%
+utilization of Node 0, and one for a demote scheme which aims 5% free memory of
+Node 1.
+
+And Node 2 also has one promote scheme which aims 96% utilization of Node 1.
+
+In the way, higher nodes get high utilization with hot pages.  If working set
+is enough to be accommodated in 95% of highest node, all working set will be
+placed in the node.
+
+
+[1] https://lore.kernel.org/linux-mm/cover.1640171137.git.baolin.wang@linux.alibaba.com/
+[2] https://lore.kernel.org/linux-mm/20230105221109.53398-1-sj@kernel.org/
+[3] https://lore.kernel.org/linux-mm/20230219203138.4873-1-sj@kernel.org/
+[4] https://lwn.net/Articles/931812/
+[5] TODO: Add link to DAMOS autotuning patches
+[6] TODO: Add link to ACMA RFC IDEA
