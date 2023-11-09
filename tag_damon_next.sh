@@ -31,4 +31,4 @@ then
 fi
 
 echo "push"
-"$bindir/push_tag.sh" "$tagname"
+"$bindir/_push_tag.sh" "$tagname"
