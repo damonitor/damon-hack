@@ -3,14 +3,14 @@ Subject: [RFC IDEA] ACMA: Access/Contiguity-aware Memory Auto-scaling
 Hello,
 
 
-I'd like to share an idea for access/contiguity-aware memory auto-scaling.  It
-is designed for memory efficiency of free pages reporting-based memory
-oversubscribed virtual machine systems, but I believe it might also be
-potentially useful for memory/power efficiency and memory contiguity of general
-systems.  There is no implementation but the early idea at the moment, but hope
-to get some comments and find any concern for that first.  I will also share
-this and discuss in the upcoming kernel summit DAMON talk[1]'s future plans
-part.
+I'd like to share an idea for making systems automatically scale up/down memory
+in an access/contiguity-awared way.  It is designed for memory efficiency of
+free pages reporting-like collaboration based memory oversubscribed virtual
+machine systems, but it might also be potentially useful for memory/power
+efficiency and memory contiguity of general systems.  There is no
+implementation at the moment, but I'd like to hear any comments or concerns
+about the idea first if anyone has.  I will also share this in the upcoming
+kernel summit DAMON talk[1]'s future plans part.
 
 Background
 ==========
@@ -19,7 +19,7 @@ On memory oversubscribed virtual machine systems, free pages reporting could be
 used as a core of the collaborative memory management.  That is, the kernel of
 guests report free pages to the host, and the host utilizes the reported pages
 for other guests.  When the guest accesses the reported guest-physical page
-again, the host knows that via the page fault mechanism, allocate a
+again, the host knows that via the page fault mechanism, allocates a
 host-physical page, and provide it to the guest.
 
 Requirements
@@ -29,14 +29,14 @@ For maximizing the memory efficiency of such systems, below properties are
 required to guest machines.
 
 1. Being memory frugal.  The guest should use memory only as really needed.
-Otherwise, only insufficient amounts of free memory are reported to the host
-while guest data that is not really needed are wasting the host-physical pages.
-As a result, the host level memory efficiency is degraded.
+Otherwise, only insufficient amounts of memory are freed and reported to the
+host while the guest is wasting the host-physical pages to accommodate not
+really needed data.  As a result, the host level memory efficiency is degraded.
 
 2. Report-time contiguity of free pages.  To reduce the overhead of the free
 pages reporting, the feature usually works for not every single page but for
-contiguous free pages of user-specifiable granularity.  Hence, even if there
-are many free pages in a guest, if the free pages are not
+contiguous free pages of user-specifiable granularity (e.g., 2 MiB).  Hence,
+even if there are many free pages in a guest, if the free pages are not
 report-granularity-contiguous, those cannot be reported to the host.
 
 3. Post-report contiguity of free pages.  In some cases, the host's page size
@@ -48,96 +48,100 @@ free pages are allocated again and accessed, the whole reported contiguous
 chunk should be returned to the guest.  This kind of ping pong itself could
 also consume some resources.
 
-4. Minimizing the metadata for reported pages.  E.g., 'struct page'.
+4. Minimizing the metadata for reported pages.  Even though the guests report
+free pages, the metadata for the pages (e.g., 'struct page') still exist and
+consume memory.  Ideally, guests should have only metadata for really needed
+pages.
 
 Possible Approach and Limitations
 ---------------------------------
 
 There are kernel features that could be used from the guests' user space for
-the requirements.  DAMON-based proactive reclamation[2] could be turned on
-for being memory frugal with only minimum performance impact.  Proactive
-compaction can also periodically run for the report-time contiguity of free
-pages.  We were unable to find a good existing solution for the post-report
-contiguity of free pages at the moment.  Memory hot-[un]plugging could also be
-used together for freeing the metadata of free pages[3].  This may require some
-changes in the kernel for user-space driven hot-[un]plugging of memory, and
-reporting hot-unplugged memory to the host.
+the requirements.  DAMON-based proactive reclamation[2] could be turned on for
+being memory frugal with only minimum performance impact.  Proactive compaction
+can periodically run for the report-time contiguity of free pages.  Memory
+hot-unplugging can be used for freeing the metadata of free pages[3].  The
+guest would need to hot-plug the memory blocks again depending on memory
+demands.  This may require some changes in the kernel for user-space driven
+hot-[un]plugging of memory, and reporting hot-unplugged memory to the host.
 
 This approach could work, but has some limitations.  Firstly, memory
-hot-[un]plugging takes time, and could fail for any page isolation/migration
-failures.  We were unable to find a good existing solution for the post-report
-contiguity.  Periodic compaction could also fail for any page isolation and
-migration failure.  After all, memory contiguity is a long standing issue that
-still not completely solved.  It could also waste resources for compacting too
-much memory, while required contiguity is only report-granularity.  Finally,
-controlling the three different kernel features from user space in an efficient
-way is challenging.
+hot-[un]plugging needs isolation/migration of the whole pages in the target
+block.  This takes time, and could fail for any page isolation/migration
+failures.    Periodic compaction could also partially fail due to page
+isolation/migration failures.  It could also waste resources for compacting too
+much memory, while required contiguity is only report-granularity.  There is no
+way to avoid the compacted regions being defragmented again.  We were unable to
+find a good existing solution for the post-report contiguity.  Finally,
+efficiently controlling these multiple different kernel features from user
+space is complex and challenging.
 
 ACMA: Access/Contiguity-aware Memory Auto-scaling
 =================================================
 
 We therefore propose a new kernel feature for the requirements, namely
-Access/Contiguity-aware Memory Auto-scaling.
+Access/Contiguity-aware Memory Auto-scaling (ACMA).
 
 Definitions
 -----------
 
 ACMA defines a metric called DAMON-detected working set.  This is a set of
-memory regions that DAMON has detected some access to those regions within a
+memory regions that DAMON has detected access to those regions within a
 user-specifiable time interval, say, one minute.
 
 ACMA also defines a new operation called stealing.  It receives a contiguous
-memory region as its input, and allocates the region.  If some pages in the
-region are in use, migrate those out and update the mapping.  So, similar to
-alloc_contig_range() or memory offlining's isolation/migration.  If the
+memory region as its input, and allocates the pages of the region.  If some
+pages in the region are not free, migrate those out.  Hence it could be thought
+of a variant, or a wrapper of memory offlining or alloc_contig_range().  If the
 allocation is successful, it further reports the region as safe to use to the
 host.  ACMA manages the stealing status of each memory block.  If the entire
 page of a memory block is stolen, it further hot-unplug the block.
 
 It further defines a new operation called stolen pages returning.  The action
 receives an amount of memory size as input.  If there are not-yet-hot-unplugged
-contiguous stolen pages of the size, it frees the page.  If there are no such
-contiguous stolen pages but a hot-unplugged stolen memory block, it hot-plugs
-the block, closer to the not-hot-unplugged block first.  Then the guest users
-can allocate pages of returned ones and access it.  When they access it, the
-host will notify that via page fault and assign/map a host-physical page for
-that.
+stolen pages of the size, it frees the page.  If there are no such stolen pages
+but a hot-unplugged stolen memory block, it hot-plugs the block again, closer
+to the not-hot-unplugged blocks first.  Then the guest users can allocate pages
+of returned ones and access it.  When they access it, the host will notify that
+via page fault and assign/map a host-physical page for that.
 
 Workflow
 --------
 
 With these definitions, ACMA behaves based on system status as follows.
 
-0. It periodically monitors the DAMON-based working set size and free memory
-size of the system.
+Phase 0. It periodically monitors the DAMON-based working set size and free
+memory size of the system.
 
-1. If the free memory to the working set size ratio is more than a threshold
-(high), say, 200%, ACMA steals report-granularity contiguous non-working set
-pages in the last not-yet-hot-unplugged memory block, colder pages first.  The
-ratio will decrease.
+Phase 1. If the free memory to the working set size ratio is more than a
+threshold (high), say, 2:1 (200%), ACMA steals report-granularity contiguous
+non-working set pages in the last not-yet-hot-unplugged memory block, colder
+pages first.  The ratio will decrease.
 
-2. If the free memory to the working set size ratio becomes less than a
-threshold (normal), say, 100%, ACMA reclaims non-workingset pages, colder pages
-first.  The ratio will increase.
+Phase 2. If the free memory to the working set size ratio becomes less than a
+threshold (normal), say, 1:1 (100%), ACMA stops stealing and start reclaiming
+non-workingset pages, colder pages first.  The ratio will increase.  The
+reclamation is continued until the ratio becomes higher than the normal
+threshold.
 
-3. If the non-workingset reclamation is not increasing the ratio and it becomes
-less than yet another threshold (low), say, 50%, ACMA starts returning stolen
-pages until the free memory to the working set ratio becomes higher than the
-high threshold.
+Phase 3. If the non-workingset reclamation is not increasing the ratio and it
+becomes less than yet another threshold (low), say, 1:2 (50%), ACMA starts
+returning stolen pages until the free memory to the working set ratio becomes
+higher than the low threshold.
 
 Expectations
 ------------
 
 Since ACMA does stealing in phase 1, which does a sort of compaction on its
 own, in free pages report-granularity, it does compaction only as much as
-really required.  Because stealing is done for colder pages first, less
-conflict with users of the pages, and hence better isolation/migration success
-is expected.
+really required.  Because the stealing targets colder pages first, it will only
+rarely conflict with users of the pages.  Hence less isolation/migration
+failures, which results in more stealing success is expected.
 
 Since ACMA-stolen pages are allocated to ACMA, which is in kernel space, no
-other guests can use it before ACMA returns those.  Hence, after-report
-contiguity is kept, unless working set size, which represents real memory
-demand, grows enough to make ACMA work in the phase 3.
+other in-guest components can use it before ACMA returns those.  Hence,
+after-report contiguity is kept, unless working set size, which represents real
+memory demand, grows enough to make ACMA work in the phase 3.
 
 Since ACMA does proactive non-workingset cold-pages first reclamation in
 phase 2, the guest becomes memory frugal with minimum performance degradation.
@@ -146,13 +150,14 @@ Because the phase changes based on free memory to working set size ratio, the
 guest system is guaranteed to have only the working set plus normal-high
 (100%-200% in this example) working set size proportional free memory.  This
 wouldn't be true if the working set size is more than 50% of all available
-guest-physical memory of the guest.  In this case, any system has no way but
-OOM.  The host could detect this and add more guest-physical memory so that
-ACMA can hot-plug those automatically.  Because stealing does hot-unplugging of
-the memory, 'struct page' for only really needed pages are used.
+guest-physical memory of the guest.  In this case, if memory demands continues
+increasing, any system has no way but OOM.  The host might be able to detect
+this and add more guest-physical memory so that ACMA can hot-plug those
+automatically, though.  Because stealing does hot-unplugging of the memory,
+'struct page' for only really needed pages are used.
 
 Hence, ACMA provides monitored access pattern based contiguity-aware real
-memory demands based memory scaling.
+memory demands based memory scaling without unnecessary metadata.
 
 Implementation
 --------------
@@ -162,8 +167,8 @@ DAMOS.  That is, the stealing and stolen pages return operation could be
 implemented as a new DAMOS action.  The working set size monitoring can be
 natively done with DAMON.  The three phases can each be implemented as a DAMOS
 scheme.  The free memory to the working set size ratio based activation and
-deactivation of the schemes can be done using goal-oriented auto-tuning of
-DAMOS.  We could add PSI goals to the schemes, too.
+deactivation of the schemes can be done using the aim-oriented auto-tuning of
+DAMOS[4].  We could add PSI goals to the schemes, too.
 
 For example, below DAMOS schemes in the DAMO json input format could be
 imagined.  Note that this is not what is currently supported.
@@ -231,8 +236,8 @@ Request For Comments
 
 This is in very early stage.  No enough survey of related works is done, and no
 implementation is made at all.  That said, I hope to share what I'm gonna do,
-and get any comment if possible, not to only success, but rather to learn and
-improve, or even fail fast.
+and get any comment if possible, not to only success, but rather to learn from
+you and develop it together, or even fail fast.
 
 Example ACMA Operation Scenario
 ===============================
@@ -245,7 +250,7 @@ Let’s represent the state of each page as below.
 
 U: stolen-and-unplugged page
 M: metadata of the pages in the page block
-S: stolen-not-yet-unplugged page
+S: stolen-but-not-yet-unplugged page
 F: Free page
 C: Non-free (assigned) cold (non-workingset) page
 H: Non-free (assigned) hot (workingset) page
@@ -436,3 +441,4 @@ remaining guest-physical memory.
 [1] https://lpc.events/event/17/contributions/1624/
 [2] https://docs.kernel.org/admin-guide/mm/damon/reclaim.html
 [3] https://docs.kernel.org/admin-guide/mm/memory-hotplug.html#phases-of-memory-hotunplug
+[4] TODO: Add Auto-tuning RFC link
