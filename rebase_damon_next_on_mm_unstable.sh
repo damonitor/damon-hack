@@ -48,16 +48,39 @@ merged_commits=$(./unmerged_commits.sh --merged --human_readable \
 
 git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
-commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
+
+old_mainline_base=$(git describe "$old_mm_unstable" --match "v*" --abbrev=0)
+for commit in $(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
 	"$new_mainline_base..$new_mm_unstable")
-if ! git cherry-pick --allow-empty $commits_to_pick
-then
-	echo "Cherry-pick failed."
-	echo "Resolve it and do 'git branch -M damon/next.new damon/next'"
-	exit 1
-fi
+do
+	if [ "$(git log -1 "$commit" --pretty=%s)" = \
+		"Add -damon suffix to the version name" ]
+	then
+		is_damon_version_marking_commit="true"
+	else
+		is_damon_version_marking_commit="false"
+	fi
+
+	if [ ! "$old_mainline_base" = "$new_mainline_base" ] && \
+		[ "$is_damon_version_marking_commit" = "true" ]
+	then
+		continue
+	fi
+
+	if ! git cherry-pick --allow-empty "$commit"
+	then
+		echo "Cherry-pick failed."
+		echo "Resolve it and do 'git branch -M damon/next.new damon/next'"
+		exit 1
+	fi
+done
 
 git branch -M damon/next.new damon/next
+
+if [ ! "$old_mainline_base" = "$new_mainline_base" ]
+then
+	echo "mainline base changed.  Pick the DAMON version commit manually"
+fi
 
 echo "Below commits have merged"
 echo "$merged_commits"
