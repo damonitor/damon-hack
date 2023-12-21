@@ -2,17 +2,15 @@
 
 set -e
 
-if [ $# -ne 1 ] && [ $# -ne 2 ]
+if [ $# -gt 1 ]
 then
-	echo "Usage: $0 <mainline base> [old mm-unstable]"
+	echo "Usage: $0 [old mm-unstable]"
 	exit 1
 fi
 
-mainline_base=$1
-
-if [ $# -eq 2 ]
+if [ $# -eq 1 ]
 then
-	old_mm_unstable=$2
+	old_mm_unstable=$1
 else
 	guess=$(git rev-parse akpm.korg.mm/mm-unstable)
 	if git log damon/next --pretty=%H | grep "$guess" --max-count 1
@@ -42,14 +40,16 @@ then
 	exit 0
 fi
 
+new_mainline_base=$(git describe "$new_mm_unstable" --match "v*" --abbrev=0)
+
 cp "$bindir/unmerged_commits.sh" ./
 merged_commits=$(./unmerged_commits.sh --merged --human_readable \
-	"$old_mm_unstable..damon/next" "$mainline_base..$new_mm_unstable")
+	"$old_mm_unstable..damon/next" "$new_mainline_base..$new_mm_unstable")
 
 git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
 commits_to_pick=$(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
-	"$mainline_base..$new_mm_unstable")
+	"$new_mainline_base..$new_mm_unstable")
 if ! git cherry-pick --allow-empty $commits_to_pick
 then
 	echo "Cherry-pick failed."
