@@ -23,7 +23,7 @@ else
 		if [ "$(git log -1 "$commit" --pretty=%s)" = \
 			"=== mark start of DAMON hack tree ===" ]
 		then
-			old_mm_unstable="$(git rev-parse commit^)"
+			old_mm_unstable="$(git rev-parse "$commit"^)"
 			break
 		fi
 	done
