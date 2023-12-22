@@ -8,6 +8,12 @@ then
 	exit 1
 fi
 
+if [ ! "$(git rev-parse --abbrev-ref HEAD)" = "damon/next" ]
+then
+	echo "You should be on damon/next"
+	exit 1
+fi
+
 if [ $# -eq 1 ]
 then
 	old_mm_unstable=$1
