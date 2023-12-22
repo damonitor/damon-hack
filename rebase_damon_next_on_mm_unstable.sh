@@ -83,8 +83,12 @@ do
 
 	if ! git cherry-pick --allow-empty "$commit"
 	then
-		echo "Cherry-pick failed."
-		echo "Resolve it and do 'git branch -M damon/next.new damon/next'"
+		echo "Cherry-pick failed for $commit."
+		echo "Resolve it, further apply"
+		echo $(./unmerged_commits.sh \
+			"$old_mm_unstable..damon/next.old" \
+			"$new_mainline_base..$new_mm_unstable")
+		echo "and do 'git branch -M damon/next.new damon/next'"
 		exit 1
 	fi
 done
