@@ -12,14 +12,22 @@ if [ $# -eq 1 ]
 then
 	old_mm_unstable=$1
 else
-	guess=$(git rev-parse akpm.korg.mm/mm-unstable)
-	if git log damon/next --pretty=%H | grep "$guess" --max-count 1
+	for commit in $(git log -n 300 --pretty=%h)
+	do
+		if [ "$(git log -1 "$commit" --pretty=%s)" = \
+			"=== mark start of DAMON hack tree ===" ]
+		then
+			old_mm_unstable="$(git rev-parse commit^)"
+			break
+		fi
+	done
+
+	if [ "$old_mm_unstable" = "" ]
 	then
-		old_mm_unstable=$guess
-	else
 		echo "Can't find the old mm-unstable.  Pass it explicitly"
 		exit 1
 	fi
+	echo "old mm-unstable found as $old_mm_unstable"
 fi
 
 new_mm_unstable=akpm.korg.mm/mm-unstable
