@@ -87,9 +87,10 @@ done
 coverletter="$outdir"/0000-cover-letter.patch
 coverletter_cp="$coverletter".cp
 cp "$coverletter" "$coverletter_cp"
-sort "$to_total" | uniq > "$coverletter"
+head -n 2 "$coverletter_cp" > "$coverletter"
+sort "$to_total" | uniq >> "$coverletter"
 sort "$cc_total" | uniq >> "$coverletter"
-cat "$coverletter_cp" >> "$coverletter"
+tail -n +3 "$coverletter_cp" >> "$coverletter"
 rm "$coverletter_cp"
 
 echo "# Do checkpatch"
