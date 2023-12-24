@@ -78,9 +78,7 @@ do
 	tail -n +3 "$patch.old" >> "$patch"
 	rm "$patch.old"
 
-	echo >> "$to_total"
 	echo "$to" >> "$to_total"
-	echo >> "$cc_total"
 	echo "$cc" >> "$cc_total"
 done
 
