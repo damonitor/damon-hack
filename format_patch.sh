@@ -65,10 +65,12 @@ do
 	if echo "$patch" | grep "damon" | grep "test" | grep --quiet "unit"
 	then
 		echo "Cc: Brendan Higgins <brendanhiggins@google.com>" >> "$patch"
+		echo "Cc: David Gow <davidgow@google.com>" >> "$patch"
 		echo "Cc: kunit-dev@googlegroups.com" >> "$patch"
 		echo "Cc: linux-kselftest@vger.kernel.org" >> "$patch"
 
 		echo "Cc: Brendan Higgins <brendanhiggins@google.com>" >> "$cc_total"
+		echo "Cc: David Gow <davidgow@google.com>" >> "$cc_total"
 		echo "Cc: kunit-dev@googlegroups.com" >> "$cc_total"
 		echo "Cc: linux-kselftest@vger.kernel.org" >> "$cc_total"
 	fi
