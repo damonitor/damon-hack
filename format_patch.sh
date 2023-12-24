@@ -49,7 +49,8 @@ do
 	cc=$(sed 's/^/Cc: /' <<< \
 		$("$get_maintainer" --nogit --nogit-fallback --norolestats --nom "$patch"))
 	mv "$patch" "$patch.old"
-	echo "$to" > "$patch"
+	head -n 2 "$patch.old" > "$patch"
+	echo "$to" >> "$patch"
 	echo "$cc" >> "$patch"
 
 	if echo "$patch" | grep --quiet "damon"
@@ -72,7 +73,7 @@ do
 		echo "Cc: linux-kselftest@vger.kernel.org" >> "$cc_total"
 	fi
 
-	cat "$patch.old" >> "$patch"
+	tail -n +3 "$patch.old" >> "$patch"
 	rm "$patch.old"
 
 	echo >> "$to_total"
