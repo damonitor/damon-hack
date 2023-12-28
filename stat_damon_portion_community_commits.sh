@@ -27,12 +27,12 @@ pr_stat()
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
 		$("$bindir/damon_source_files.py") \
 		| wc -l)
-	portion=$(awk "BEGIN {printf \"%.2f %%\", \
+	portion=$(awk "BEGIN {printf \"%.2f%%\", \
 		${from_comm} * 100 / (${from_sj} + ${from_comm})}")
 	echo "$range	$from_sj	$from_comm	$portion"
 }
 
-echo "range	from_sj		from_comm	from_comm portion"
+echo "range	from_sj		non_sj	non_sj_portion"
 versions=( $(cat "$stat_branches") )
 prev_version="${versions[0]}"
 for version in "${versions[@]:1}"
