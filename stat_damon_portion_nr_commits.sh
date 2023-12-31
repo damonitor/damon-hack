@@ -19,8 +19,8 @@ do
 	range="$prev_version..$version"
 	nr_commits_damon=$(git log --pretty=%h --no-merges "$range" \
 		-- $("$bindir/damon_source_files.py") | wc -l)
-	nr_commits_mm=$(git log --pretty=%h --no-merges "$range" -- mm/ | \
-		wc -l)
+	nr_commits_mm=$(git log --pretty=%h --no-merges "$range" \
+		-- $("$bindir/mm_source_files.py") | wc -l)
 	nr_commits_total=$(git log --pretty=%h --no-merges "$range" | wc -l)
 
 	line="$range	$nr_commits_damon	$nr_commits_mm	"
