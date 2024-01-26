@@ -16,7 +16,7 @@ nr_stable_patches=$(git rev-list --count "$mm_stable_range")
 nr_unstable_patches=$(git rev-list --count "$mm_unstable_range")
 
 echo "mm-stable: $nr_stable_patches patches"
-echo "$(git log "$mm_stable_range" | grep "Patch series")"
+echo "$(git log --reverse "$mm_stable_range" | grep "Patch series")"
 echo
 echo "mm-unstable: $nr_unstable_patches patches"
-echo "$(git log "$mm_unstable_range" | grep "Patch series")"
+echo "$(git log --reverse "$mm_unstable_range" | grep "Patch series")"
