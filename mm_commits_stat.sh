@@ -1,13 +1,7 @@
 #!/bin/bash
 
-if [ $# -ne 2 ]
-then
-	echo "Usage: $0 <remote> <baseline>"
-	exit 1
-fi
-
-remote=$1
-baseline=$2
+remote="akpm.korg.mm"
+baseline=$(git describe --match "v*" --abbrev=0 akpm.korg.mm/mm-stable)
 
 mm_stable_range="$baseline..$remote/mm-stable"
 mm_unstable_range="$remote/mm-stable..$remote/mm-unstable"
