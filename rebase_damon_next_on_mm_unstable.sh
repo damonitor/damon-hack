@@ -97,7 +97,9 @@ git branch -M damon/next.new damon/next
 
 if [ ! "$old_mainline_base" = "$new_mainline_base" ]
 then
-	echo "mainline base changed.  Pick the DAMON version commit manually"
+	echo
+	echo "! mainline base changed.  Pick the DAMON version commit manually"
+	echo
 fi
 
 echo "Below commits have merged"
