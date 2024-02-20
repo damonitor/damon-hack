@@ -43,6 +43,7 @@ do
 	for ((j = 0; j < $max_reply; j++))
 	do
 		if "$bindir/build_damon_kernel.sh" $ODIR
+		then
 			result="PASS"
 			break
 		fi
