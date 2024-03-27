@@ -1,19 +1,11 @@
 #!/bin/bash
 
-if [ $# -ne 2 ]
-then
-	echo "Usage: $0 <directory> <commits>"
-	exit 1
-fi
+bindir=$(dirname $0)
+dest_dir=$(realpath "$bindir/patches/next")
+commits="akpm.korg.mm/mm-unstable..damon/next"
 
-dest_dir=$1
-commits=$2
-
+git -C "$bindir" rm -r "$dest_dir"
 mkdir -p "$dest_dir"
-if [ -e "$dest_dir/series" ]
-then
-	rm -f "$dest_dir/series"
-fi
 
 for commit in $(git log --reverse --pretty=%H "$commits")
 do
@@ -27,3 +19,6 @@ do
 	mv "$patch" "$dest_dir/$final_name"
 	echo "$final_name" >> "$dest_dir/series"
 done
+
+git -C "$bindir" add "$dest_dir"
+git -C "$bindir" commit -s -m "backup damon/next patches"
