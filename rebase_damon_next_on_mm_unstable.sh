@@ -63,6 +63,7 @@ merged_commits=$(./unmerged_commits.sh --merged --human_readable \
 git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-unstable -b damon/next.new
 
+version_marking_commit=""
 old_mainline_base=$(git describe "$old_mm_unstable" --match "v*" --abbrev=0)
 for commit in $(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
 	"$new_mainline_base..$new_mm_unstable")
@@ -78,6 +79,7 @@ do
 	if [ ! "$old_mainline_base" = "$new_mainline_base" ] && \
 		[ "$is_damon_version_marking_commit" = "true" ]
 	then
+		version_marking_commit="$commit"
 		continue
 	fi
 
@@ -98,7 +100,8 @@ git branch -M damon/next.new damon/next
 if [ ! "$old_mainline_base" = "$new_mainline_base" ]
 then
 	echo
-	echo "! mainline base changed.  Pick the DAMON version commit manually"
+	echo "!!! Pick the DAMON version commit manually"
+	echo "!!! ($version_marking_commit)"
 	echo
 fi
 
