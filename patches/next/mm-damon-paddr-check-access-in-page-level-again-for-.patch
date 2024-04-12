@@ -1,0 +1,54 @@
+From acc820dc05de5ebd29cd4a7c8c2caf6339c562b2 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 8 Mar 2024 16:06:00 -0800
+Subject: [PATCH] mm/damon/paddr: check access in page level again for pageout
+ DAMOS
+
+DAMON does access monitoring in the region granularity in best level.
+Hence, a region could be reported as cold, while a few pages in the
+region is hot.  To fill the gap, DAMOS pageout action implementation of
+DAMON operations set for the physical address space (paddr) checks the
+access to each page again by setting 'ignore_references' argument of
+'reclaim_pages()' as false.  Since DAMOS filters of young type is
+introduced, doing the recheck always could ignore users' intention.  Do
+the recheck only if users didn't make specific such request by adding
+the young type DAMOS filter.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 5685ba485097..d5f2f7ddf863 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -244,6 +244,16 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s)
+ {
+ 	unsigned long addr, applied;
+ 	LIST_HEAD(folio_list);
++	bool ignore_references = false;
++	struct damos_filter *filter;
++
++	/* respect user's page level reference check handling request */
++	damos_for_each_filter(filter, s) {
++		if (filter->type == DAMOS_FILTER_TYPE_YOUNG) {
++			ignore_references = true;
++			break;
++		}
++	}
+ 
+ 	for (addr = r->ar.start; addr < r->ar.end; addr += PAGE_SIZE) {
+ 		struct folio *folio = damon_get_folio(PHYS_PFN(addr));
+@@ -265,7 +275,7 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s)
+ put_folio:
+ 		folio_put(folio);
+ 	}
+-	applied = reclaim_pages(&folio_list, false);
++	applied = reclaim_pages(&folio_list, ignore_references);
+ 	cond_resched();
+ 	return applied * PAGE_SIZE;
+ }
+-- 
+2.39.2
+
