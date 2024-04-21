@@ -5,10 +5,11 @@
 
 bindir=$(dirname "$0")
 lbx_path=$(realpath "$bindir/../lazybox")
+stable_commits_check="$lbx_path/linux_hack/stable_commits_check.py"
 
-if [ ! -d "$lbx_path" ]
+if [ ! -x "$stable_commits_check" ]
 then
-	echo "lazybox not found at $lbx_path"
+	echo "$stable_commits_check not found"
 	exit 1
 fi
 
@@ -18,7 +19,6 @@ do
 	dst="v$tree..stable/linux-$tree.y"
 	echo "src: $src, dst: $dst"
 	echo
-	"$lbx_path/linux_hack/stable_commits_check.py" \
-		--src "$src" --dest "$dst" \
-		--file mm/damon include/linux/damon.h --need_merge
+	"$stable_commits_check" --src "$src" --dest "$dst" --need_merge \
+		--file mm/damon include/linux/damon.h
 done
