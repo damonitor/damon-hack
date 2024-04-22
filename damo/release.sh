@@ -29,8 +29,8 @@ fi
 new_version="$first.$second.$third"
 
 echo "will mark as $new_version and release"
-read -p "ok? [y/N]" answer
-if [ "$answer" -ne "y" ]
+read -p "ok? [y/N] " answer
+if [ ! "$answer" = "y" ]
 then
 	exit 0
 fi
