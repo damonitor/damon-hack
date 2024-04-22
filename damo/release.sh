@@ -12,7 +12,7 @@ first=$(./damo version | awk -F'.' '{print $1}')
 second=$(./damo version | awk -F'.' '{print $2}')
 third=$(./damo version | awk -F'.' '{print $3}')
 
-current version is "$first.$second.$third"
+echo "current version is $first.$second.$third"
 
 if [ "$third" -ne 9 ]
 then
@@ -38,7 +38,7 @@ then
 fi
 
 echo "__version__ = '$new_version'" > damo_version.py
-if [ $("./damo version") -ne "$new_version" ]
+if [ ! $(./damo version) = "$new_version" ]
 then
 	echo "Making new version failed"
 	exit 1
