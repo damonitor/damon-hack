@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 if [ ! -x ./damo ]
 then
 	echo "This is supposed to be called from damo repo"
