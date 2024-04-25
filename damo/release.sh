@@ -47,7 +47,10 @@ fi
 git commit -as -m "Update the version"
 
 bindir=$(dirname "$0")
-"$bindir/../ensure_gpg_password.sh"
+if ! "$bindir/../ensure_gpg_password.sh"
+then
+	echo "ensuring gpg password failed, as expected"
+fi
 git tag -s -m "DAMO $new_version" "v$new_version"
 for remote in downstream upstream korg
 do
