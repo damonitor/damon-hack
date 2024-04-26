@@ -1,0 +1,92 @@
+From d873a51cf634e928f184903d569f7b9ab929564b Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Sun, 31 Dec 2023 12:17:10 -0800
+Subject: [PATCH 1/8] selftests/damon/_damon_sysfs: support DAMOS quota
+
+Update the test-purpose DAMON sysfs control Python module to support
+DAMOS quota.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/_damon_sysfs.py | 42 +++++++++++++++----
+ 1 file changed, 33 insertions(+), 9 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/_damon_sysfs.py b/tools/testing/selftests/damon/_damon_sysfs.py
+index e98cf4b6a4b7..b4f6e385c564 100644
+--- a/tools/testing/selftests/damon/_damon_sysfs.py
++++ b/tools/testing/selftests/damon/_damon_sysfs.py
+@@ -70,18 +70,48 @@ class DamosAccessPattern:
+         if err != None:
+             return err
+ 
++class DamosQuota:
++    sz = None                   # size quota, in bytes
++    ms = None                   # time quota
++    reset_interval_ms = None    # quota reset interval
++    scheme = None               # owner scheme
++
++    def __init__(self, sz=0, ms=0, reset_interval_ms=0):
++        self.sz = sz
++        self.ms = ms
++        self.reset_interval_ms = reset_interval_ms
++
++    def sysfs_dir(self):
++        return os.path.join(self.scheme.sysfs_dir(), 'quotas')
++
++    def stage(self):
++        err = write_file(os.path.join(self.sysfs_dir(), 'bytes'), self.sz)
++        if err != None:
++            return err
++        err = write_file(os.path.join(self.sysfs_dir(), 'ms'), self.ms)
++        if err != None:
++            return err
++        err = write_file(os.path.join(self.sysfs_dir(), 'reset_interval_ms'),
++                         self.reset_interval_ms)
++        if err != None:
++            return err
++
+ class Damos:
+     action = None
+     access_pattern = None
+-    # todo: Support quotas, watermarks, stats, tried_regions
++    quota = None
++    # todo: Support watermarks, stats, tried_regions
+     idx = None
+     context = None
+     tried_bytes = None
+ 
+-    def __init__(self, action='stat', access_pattern=DamosAccessPattern()):
++    def __init__(self, action='stat', access_pattern=DamosAccessPattern(),
++                 quota=DamosQuota()):
+         self.action = action
+         self.access_pattern = access_pattern
+         self.access_pattern.scheme = self
++        self.quota = quota
++        self.quota.scheme = self
+ 
+     def sysfs_dir(self):
+         return os.path.join(
+@@ -94,13 +124,7 @@ class Damos:
+         err = self.access_pattern.stage()
+         if err != None:
+             return err
+-
+-        # disable quotas
+-        err = write_file(os.path.join(self.sysfs_dir(), 'quotas', 'ms'), '0')
+-        if err != None:
+-            return err
+-        err = write_file(
+-                os.path.join(self.sysfs_dir(), 'quotas', 'bytes'), '0')
++        err = self.quota.stage()
+         if err != None:
+             return err
+ 
+-- 
+2.39.2
+

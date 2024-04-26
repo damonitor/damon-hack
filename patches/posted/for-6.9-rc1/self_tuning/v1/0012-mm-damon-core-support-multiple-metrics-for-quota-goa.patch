@@ -1,0 +1,160 @@
+From bf59630169a421f5d8afd3a4e1dd021e74ac457a Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 16 Feb 2024 15:21:38 -0800
+Subject: [PATCH 12/20] mm/damon/core: support multiple metrics for quota goal
+
+DAMOS quota auto-tuning asks users to assess the current tuned quota and
+provide the feedback in a manual and repeated way.  It allows users
+generate the feedback from a source that the kernel cannot access, and
+writing a script or a function for doing the manual and repeated feeding
+is not a big deal.  However, additional works are additional works, and
+it could be more efficient if DAMOS could do the fetch itself,
+especially in case of DAMON sysfs interface use case, since it can avoid
+the context switches between the user-space and the kernel-space, though
+the overhead would be only trivial in most cases.  Also in many cases,
+feedbacks could be made from kernel-accessible sources, such as PSI, CPU
+usage, etc.  Make the quota goal to support multiple types of metrics
+including such ones.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    | 26 +++++++++++++++++++++++---
+ mm/damon/core.c          | 22 +++++++++++++++++++---
+ mm/damon/sysfs-schemes.c |  5 +++--
+ 3 files changed, 45 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index de0cdc7f96d2..5a06993d8479 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -126,18 +126,37 @@ enum damos_action {
+ 	NR_DAMOS_ACTIONS,
+ };
+ 
++/**
++ * enum damos_quota_goal_metric - Represents the metric to be used as the goal
++ *
++ * @DAMOS_QUOTA_USER_INPUT:	User-input value.
++ * @NR_DAMOS_QUOTA_GOAL_METRICS:	Number of DAMOS quota goal metrics.
++ *
++ * Metrics equal to larger than @NR_DAMOS_QUOTA_GOAL_METRICS are unsupported.
++ */
++enum damos_quota_goal_metric {
++	DAMOS_QUOTA_USER_INPUT,
++	NR_DAMOS_QUOTA_GOAL_METRICS,
++};
++
+ /**
+  * struct damos_quota_goal - DAMOS scheme quota auto-tuning goal.
+- * @target_value:	Target value to achieve with the tuning.
+- * @current_value:	Current value that achieving with the tuning.
++ * @metric:		Metric to be used for representing the goal.
++ * @target_value:	Target value of @metric to achieve with the tuning.
++ * @current_value:	Current value of @metric.
+  * @list:		List head for siblings.
+  *
+  * Data structure for getting the current score of the quota tuning goal.  The
+  * score is calculated by how close @current_value and @target_value are.  Then
+  * the score is entered to DAMON's internal feedback loop mechanism to get the
+  * auto-tuned quota.
++ *
++ * If @metric is DAMOS_QUOTA_USER_INPUT, @current_value should be manually
++ * entered by the user, probably inside the kdamond callbacks.  Otherwise,
++ * DAMON sets @current_value with self-measured value of @metric.
+  */
+ struct damos_quota_goal {
++	enum damos_quota_goal_metric metric;
+ 	unsigned long target_value;
+ 	unsigned long current_value;
+ 	struct list_head list;
+@@ -689,7 +708,8 @@ void damos_add_filter(struct damos *s, struct damos_filter *f);
+ void damos_destroy_filter(struct damos_filter *f);
+ 
+ struct damos_quota_goal *damos_new_quota_goal(
+-		unsigned long target_value, unsigned long current_value);
++		enum damos_quota_goal_metric metric,
++		unsigned long target_value);
+ void damos_add_quota_goal(struct damos_quota *q, struct damos_quota_goal *g);
+ void damos_destroy_quota_goal(struct damos_quota_goal *goal);
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 907f467fc8c0..973423166ee2 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -300,15 +300,16 @@ void damos_destroy_filter(struct damos_filter *f)
+ }
+ 
+ struct damos_quota_goal *damos_new_quota_goal(
+-		unsigned long target_value, unsigned long current_value)
++		enum damos_quota_goal_metric metric,
++		unsigned long target_value)
+ {
+ 	struct damos_quota_goal *goal;
+ 
+ 	goal = kmalloc(sizeof(*goal), GFP_KERNEL);
+ 	if (!goal)
+ 		return NULL;
++	goal->metric = metric;
+ 	goal->target_value = target_value;
+-	goal->current_value = current_value;
+ 	INIT_LIST_HEAD(&goal->list);
+ 	return goal;
+ }
+@@ -1124,16 +1125,31 @@ static unsigned long damon_feed_loop_next_input(unsigned long last_input,
+ 	return min_input;
+ }
+ 
++static void damos_set_quota_goal_current_value(struct damos_quota_goal *goal)
++{
++	u64 now_psi_total;
++
++	switch (goal->metric) {
++	case DAMOS_QUOTA_USER_INPUT:
++		/* User should already set goal->current_value */
++		break;
++	default:
++		break;
++	}
++}
++
+ /* Return the highest score since it makes schemes least aggressive */
+ static unsigned long damos_quota_score(struct damos_quota *quota)
+ {
+ 	struct damos_quota_goal *goal;
+ 	unsigned long highest_score = 0;
+ 
+-	damos_for_each_quota_goal(goal, quota)
++	damos_for_each_quota_goal(goal, quota) {
++		damos_set_quota_goal_current_value(goal);
+ 		highest_score = max(highest_score,
+ 				goal->current_value * 10000 /
+ 				goal->target_value);
++	}
+ 
+ 	return highest_score;
+ }
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 50218a7bfa0a..7a8a39f2679b 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1899,10 +1899,11 @@ static int damos_sysfs_set_quota_score(
+ 		if (!sysfs_goal->target_value)
+ 			continue;
+ 
+-		goal = damos_new_quota_goal(sysfs_goal->target_value,
+-				sysfs_goal->current_value);
++		goal = damos_new_quota_goal(DAMOS_QUOTA_USER_INPUT,
++				sysfs_goal->target_value);
+ 		if (!goal)
+ 			return -ENOMEM;
++		goal->current_value = sysfs_goal->current_value;
+ 		damos_add_quota_goal(quota, goal);
+ 	}
+ 	return 0;
+-- 
+2.39.2
+

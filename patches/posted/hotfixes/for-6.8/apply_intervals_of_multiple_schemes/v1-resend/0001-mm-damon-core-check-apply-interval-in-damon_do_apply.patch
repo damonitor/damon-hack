@@ -1,0 +1,73 @@
+From 8caf0cf18e4ecdbf2976fd568bf5daee0b8990d0 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: stable@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Sun, 4 Feb 2024 12:22:41 -0800
+Subject: [PATCH RESEND] mm/damon/core: check apply interval in damon_do_apply_schemes()
+
+kdamond_apply_schemes() checks apply intervals of schemes and avoid
+further applying any schemes if no scheme passed its apply interval.
+However, the following schemes applying function,
+damon_do_apply_schemes() iterates all schemes without the apply interval
+check.  As a result, the shortest apply interval is applied to all
+schemes.  Fix the problem by checking the apply interval in
+damon_do_apply_schemes().
+
+Fixes: 42f994b71404 ("mm/damon/core: implement scheme-specific apply interval")
+Cc: <stable@vger.kernel.org> # 6.7.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+Sending the same patch[1] again because the subject of the patch was broken.
+
+[1] https://lore.kernel.org/linux-mm/20240204204946.87265-1-sj@kernel.org/
+
+ mm/damon/core.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0c144fb466b8..f444734cc613 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1064,6 +1064,9 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 	damon_for_each_scheme(s, c) {
+ 		struct damos_quota *quota = &s->quota;
+ 
++		if (c->passed_sample_intervals != s->next_apply_sis)
++			continue;
++
+ 		if (!s->wmarks.activated)
+ 			continue;
+ 
+@@ -1216,10 +1219,6 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 		if (c->passed_sample_intervals != s->next_apply_sis)
+ 			continue;
+ 
+-		s->next_apply_sis +=
+-			(s->apply_interval_us ? s->apply_interval_us :
+-			 c->attrs.aggr_interval) / sample_interval;
+-
+ 		if (!s->wmarks.activated)
+ 			continue;
+ 
+@@ -1235,6 +1234,14 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 		damon_for_each_region_safe(r, next_r, t)
+ 			damon_do_apply_schemes(c, t, r);
+ 	}
++
++	damon_for_each_scheme(s, c) {
++		if (c->passed_sample_intervals != s->next_apply_sis)
++			continue;
++		s->next_apply_sis +=
++			(s->apply_interval_us ? s->apply_interval_us :
++			 c->attrs.aggr_interval) / sample_interval;
++	}
+ }
+ 
+ /*
+-- 
+2.39.2
+

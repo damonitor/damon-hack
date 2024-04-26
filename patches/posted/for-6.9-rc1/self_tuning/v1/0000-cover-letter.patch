@@ -1,0 +1,106 @@
+From f7bf74ff9534eac89a7db49f4615f64630269b2d Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Mon, 19 Feb 2024 11:38:04 -0800
+Subject: [PATCH 00/20] mm/damon: let DAMOS feeds and tame/auto-tune itself
+
+The Aim-oriented Feedback-driven DAMOS Aggressiveness Auto-tuning
+patchset[1] which has merged since commit 9294a037c015 ("mm/damon/core:
+implement goal-oriented feedback-driven quota auto-tuning") made the
+mechanism and the policy separated.  That is, users can set a part of
+DAMOS control policies without a deep understanding of the mechanism but
+just their demands such as SLA.
+
+However, users are still required to do some additional work of manually
+collecting their target metric and feeding it to DAMOS.  In the case of
+end-users who use DAMON sysfs interface, the context switches between
+user-space and kernel-space could also make it inefficient.  The
+overhead is supposed to be only trivial in common cases, though.
+Meanwhile, in simple use cases, the target metric could be common system
+metrics that the kernel can efficiently self-retrieve, such as memory
+pressure stall time (PSI).
+
+Extend DAMOS quota auto-tuning to support multiple types of metrics
+including the DAMOS self-retrievable ones, and add support for memory
+pressure stall time metric.  Different types of metrics can be supported
+in future.  The auto-tuning capability is currently supported for only
+users of DAMOS kernel API and DAMON sysfs interface.  Extend the support
+to DAMON_RECLAIM.
+
+Patches Sequence
+================
+
+First five patches are for helping debugging and fine-tuning existing
+quota control features.  The first one (patch 1) exposes the effective
+quota that is made with given user inputs to DAMOS kernel API users
+and kernel-doc documents.  Following four patches implement (patches 1, 2
+and 3) and document (patches 4 and 5) a new DAMON sysfs file that
+exposes the value.
+
+Following six patches cleanup and simplify the existing DAMOS quota
+auto-tuning code by improving layout of comments and data structures
+(patches 6 and 7), supporting common use cases, namely multiple goals
+(patches 8, 9 and 10), and simplifying the interface (patch 11).
+
+Then six patches for the main purpose of this patchset follow.  The
+first three changes extend the core logic for various target metrics
+(patch 12), implement memory pressure stall time-based target metric
+support (patch 13), and update DAMON sysfs interface to support the new
+target metric (patch 14).  Then, documentation updates for the features
+on design (patch 15), ABI (patch 16), and usage (patch 17) follow.
+
+Last three patches add auto-tuning support on DAMON_RECLAIM.  The
+patches implement DAMON_RECLAIM parameters for user-feedback driven
+quota auto-tuning (patch 18), memory pressure stall time-driven quota
+self-tuning (patch 19), and finally update the DAMON_RECLAIM usage
+document for the new parameters (patch 20).
+
+[1] https://lore.kernel.org/all/20231130023652.50284-1-sj@kernel.org/
+
+SeongJae Park (20):
+  mm/damon/core: Set damos_quota->esz as public field and document
+  mm/damon/sysfs-schemes: implement quota effective_bytes file
+  mm/damon/sysfs: implement a kdamond command for updating schemes'
+    effective quotas
+  Docs/ABI/damon: document effective_bytes sysfs file
+  Docs/admin-guide/mm/damon/usage: document effective_bytes file
+  mm/damon: move comments and fields for damos-quota-prioritization to
+    the end
+  mm/damon/core: split out quota goal related fields to a struct
+  mm/damon/core: add multiple goals per damos_quota and helpers for
+    those
+  mm/damon/sysfs: use only quota->goals
+  mm/damon/core: remove ->goal field of damos_quota
+  mm/damon/core: let goal specified with only target and current values
+  mm/damon/core: support multiple metrics for quota goal
+  mm/damon/core: implement PSI metric DAMOS quota goal
+  mm/damon/sysfs-schemes: support PSI-based quota auto-tune
+  Docs/mm/damon/design: document quota goal self-tuning
+  Docs/ABI/damon: document quota goal metric file
+  Docs/admin-guide/mm/damon/usage: document quota goal metric file
+  mm/damon/reclaim: implement user-feedback driven quota auto-tuning
+  mm/damon/reclaim: implement memory PSI-driven quota self-tuning
+  Docs/admin-guide/mm/damon/reclaim: document auto-tuning parameters
+
+ .../ABI/testing/sysfs-kernel-mm-damon         |  16 ++-
+ .../admin-guide/mm/damon/reclaim.rst          |  27 ++++
+ Documentation/admin-guide/mm/damon/usage.rst  |  31 +++--
+ Documentation/mm/damon/design.rst             |  20 ++-
+ include/linux/damon.h                         |  89 ++++++++++---
+ mm/damon/core.c                               | 120 +++++++++++++++--
+ mm/damon/reclaim.c                            |  53 ++++++++
+ mm/damon/sysfs-common.h                       |   6 +-
+ mm/damon/sysfs-schemes.c                      | 124 +++++++++++++++---
+ mm/damon/sysfs.c                              |  33 ++++-
+ 10 files changed, 454 insertions(+), 65 deletions(-)
+
+
+base-commit: ecd6af887705c19e7367f9d3818ae712f4674168
+-- 
+2.39.2
+

@@ -1,0 +1,161 @@
+From f0e03d03468de4bb8f5aa0f9ee418434ba45b946 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Tue, 28 Dec 2021 16:25:19 +0000
+Subject: [PATCH 7/8] selftests/damon: add a test for the pid leak of
+ dbgfs_target_ids_write()
+
+Commit ebb3f994dd92 ("mm/damon/dbgfs: fix 'struct pid' leaks in
+'dbgfs_target_ids_write()'") fixes a pid leak bug in DAMON debugfs
+interface, namely dbgfs_target_ids_write() function.  Add a selftest for
+the issue to prevent the problem from mistakenly recurring.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/.gitignore      |  1 +
+ tools/testing/selftests/damon/Makefile        |  2 +
+ .../damon/debugfs_target_ids_pid_leak.c       | 68 +++++++++++++++++++
+ .../damon/debugfs_target_ids_pid_leak.sh      | 22 ++++++
+ 4 files changed, 93 insertions(+)
+ create mode 100644 tools/testing/selftests/damon/debugfs_target_ids_pid_leak.c
+ create mode 100755 tools/testing/selftests/damon/debugfs_target_ids_pid_leak.sh
+
+diff --git a/tools/testing/selftests/damon/.gitignore b/tools/testing/selftests/damon/.gitignore
+index 7d6c6e062be7..d861701f0327 100644
+--- a/tools/testing/selftests/damon/.gitignore
++++ b/tools/testing/selftests/damon/.gitignore
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ huge_count_read_write
+ debugfs_target_ids_read_before_terminate_race
++debugfs_target_ids_pid_leak
+diff --git a/tools/testing/selftests/damon/Makefile b/tools/testing/selftests/damon/Makefile
+index 8a3a8df003db..789d6949c247 100644
+--- a/tools/testing/selftests/damon/Makefile
++++ b/tools/testing/selftests/damon/Makefile
+@@ -3,6 +3,7 @@
+ 
+ TEST_GEN_FILES += huge_count_read_write
+ TEST_GEN_FILES += debugfs_target_ids_read_before_terminate_race
++TEST_GEN_FILES += debugfs_target_ids_pid_leak
+ TEST_GEN_FILES += access_memory
+ 
+ TEST_FILES = _chk_dependency.sh _debugfs_common.sh
+@@ -11,6 +12,7 @@ TEST_PROGS += debugfs_empty_targets.sh debugfs_huge_count_read_write.sh
+ TEST_PROGS += debugfs_duplicate_context_creation.sh
+ TEST_PROGS += debugfs_rm_non_contexts.sh
+ TEST_PROGS += debugfs_target_ids_read_before_terminate_race.sh
++TEST_PROGS += debugfs_target_ids_pid_leak.sh
+ TEST_PROGS += sysfs.sh sysfs_update_removed_scheme_dir.sh
+ TEST_PROGS += sysfs_update_schemes_tried_regions_hang.py
+ TEST_PROGS += sysfs_update_schemes_tried_regions_wss_estimation.py
+diff --git a/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.c b/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.c
+new file mode 100644
+index 000000000000..0cc2eef7d142
+--- /dev/null
++++ b/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.c
+@@ -0,0 +1,68 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Author: SeongJae Park <sj@kernel.org>
++ */
++
++#define _GNU_SOURCE
++
++#include <fcntl.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <sys/time.h>
++#include <unistd.h>
++
++#define DBGFS_TARGET_IDS "/sys/kernel/debug/damon/target_ids"
++
++static void write_targetid_exit(void)
++{
++	int target_ids_fd = open(DBGFS_TARGET_IDS, O_RDWR);
++	char pid_str[128];
++
++	snprintf(pid_str, sizeof(pid_str), "%d", getpid());
++	write(target_ids_fd, pid_str, sizeof(pid_str));
++	close(target_ids_fd);
++	exit(0);
++}
++
++unsigned long msec_timestamp(void)
++{
++	struct timeval tv;
++
++	gettimeofday(&tv, NULL);
++	return tv.tv_sec * 1000UL + tv.tv_usec / 1000;
++}
++
++int main(int argc, char *argv[])
++{
++	unsigned long start_ms;
++	int time_to_run, nr_forks = 0;
++
++	if (argc != 2) {
++		fprintf(stderr, "Usage: %s <msecs to run>\n", argv[0]);
++		exit(1);
++	}
++	time_to_run = atoi(argv[1]);
++
++	start_ms = msec_timestamp();
++	while (true) {
++		int pid = fork();
++
++		if (pid < 0) {
++			fprintf(stderr, "fork() failed\n");
++			exit(1);
++		}
++		if (pid == 0)
++			write_targetid_exit();
++		wait(NULL);
++		nr_forks++;
++
++		if (msec_timestamp() - start_ms > time_to_run)
++			break;
++	}
++	printf("%d\n", nr_forks);
++	return 0;
++}
+diff --git a/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.sh b/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.sh
+new file mode 100755
+index 000000000000..31fe33c2b032
+--- /dev/null
++++ b/tools/testing/selftests/damon/debugfs_target_ids_pid_leak.sh
+@@ -0,0 +1,22 @@
++#!/bin/bash
++# SPDX-License-Identifier: GPL-2.0
++
++before=$(grep "^pid " /proc/slabinfo | awk '{print $2}')
++
++nr_leaks=$(./debugfs_target_ids_pid_leak 1000)
++expected_after_max=$((before + nr_leaks / 2))
++
++after=$(grep "^pid " /proc/slabinfo | awk '{print $2}')
++
++echo > /sys/kernel/debug/damon/target_ids
++
++echo "tried $nr_leaks pid leak"
++echo "number of active pid slabs: $before -> $after"
++echo "(up to $expected_after_max expected)"
++if [ $after -gt $expected_after_max ]
++then
++	echo "maybe pids are leaking"
++	exit 1
++else
++	exit 0
++fi
+-- 
+2.39.2
+

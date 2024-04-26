@@ -1,0 +1,130 @@
+From 28cb483d8038a1389250faba6b83b51a9158bc0b Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 16 Feb 2024 17:31:06 -0800
+Subject: [PATCH 11/20] mm/damon/core: let goal specified with only target and
+ current values
+
+DAMOS quota auto-tuning feature let users to set the goal by providing a
+function for getting the current score of the tuned quota.  It allows
+flexible goal setup, but only simple user-set quota is currently being
+used.  As a result, the only user of the DAMOS quota auto-tuning is
+using a silly void pointer casting based score value passing function.
+Simplify the interface and the user code by letting user directly set
+the target and the current value.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    | 19 +++++++++----------
+ mm/damon/core.c          |  9 +++++----
+ mm/damon/sysfs-schemes.c | 10 ++--------
+ 3 files changed, 16 insertions(+), 22 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 76c965c1eea3..de0cdc7f96d2 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -128,19 +128,18 @@ enum damos_action {
+ 
+ /**
+  * struct damos_quota_goal - DAMOS scheme quota auto-tuning goal.
+- * @get_score:		Function for getting current score of the goal.
+- * @get_score_arg:	Parameter for @get_score
++ * @target_value:	Target value to achieve with the tuning.
++ * @current_value:	Current value that achieving with the tuning.
+  * @list:		List head for siblings.
+  *
+- * Data structure for getting the current score of the quota tuning goal.
+- * Calling @get_score with @get_score_arg as the parameter should return the
+- * current score.  Then the score is entered to DAMON's internal feedback loop
+- * mechanism to get the auto-tuned quota.  The goal of the tuning is getting
+- * the feedback score value of 10,000.
++ * Data structure for getting the current score of the quota tuning goal.  The
++ * score is calculated by how close @current_value and @target_value are.  Then
++ * the score is entered to DAMON's internal feedback loop mechanism to get the
++ * auto-tuned quota.
+  */
+ struct damos_quota_goal {
+-	unsigned long (*get_score)(void *arg);
+-	void *get_score_arg;
++	unsigned long target_value;
++	unsigned long current_value;
+ 	struct list_head list;
+ };
+ 
+@@ -690,7 +689,7 @@ void damos_add_filter(struct damos *s, struct damos_filter *f);
+ void damos_destroy_filter(struct damos_filter *f);
+ 
+ struct damos_quota_goal *damos_new_quota_goal(
+-		unsigned long (*get_score)(void *), void *get_score_arg);
++		unsigned long target_value, unsigned long current_value);
+ void damos_add_quota_goal(struct damos_quota *q, struct damos_quota_goal *g);
+ void damos_destroy_quota_goal(struct damos_quota_goal *goal);
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 7b06d926c552..907f467fc8c0 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -300,15 +300,15 @@ void damos_destroy_filter(struct damos_filter *f)
+ }
+ 
+ struct damos_quota_goal *damos_new_quota_goal(
+-		unsigned long (*get_score)(void *), void *get_score_arg)
++		unsigned long target_value, unsigned long current_value)
+ {
+ 	struct damos_quota_goal *goal;
+ 
+ 	goal = kmalloc(sizeof(*goal), GFP_KERNEL);
+ 	if (!goal)
+ 		return NULL;
+-	goal->get_score = get_score;
+-	goal->get_score_arg = get_score_arg;
++	goal->target_value = target_value;
++	goal->current_value = current_value;
+ 	INIT_LIST_HEAD(&goal->list);
+ 	return goal;
+ }
+@@ -1132,7 +1132,8 @@ static unsigned long damos_quota_score(struct damos_quota *quota)
+ 
+ 	damos_for_each_quota_goal(goal, quota)
+ 		highest_score = max(highest_score,
+-				goal->get_score(goal->get_score_arg));
++				goal->current_value * 10000 /
++				goal->target_value);
+ 
+ 	return highest_score;
+ }
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 7bf94b1ed6f7..50218a7bfa0a 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1882,11 +1882,6 @@ static int damon_sysfs_set_scheme_filters(struct damos *scheme,
+ 	return 0;
+ }
+ 
+-static unsigned long damos_sysfs_get_quota_score(void *arg)
+-{
+-	return (unsigned long)arg;
+-}
+-
+ static int damos_sysfs_set_quota_score(
+ 		struct damos_sysfs_quota_goals *sysfs_goals,
+ 		struct damos_quota *quota)
+@@ -1904,9 +1899,8 @@ static int damos_sysfs_set_quota_score(
+ 		if (!sysfs_goal->target_value)
+ 			continue;
+ 
+-		goal = damos_new_quota_goal(damos_sysfs_get_quota_score,
+-				(void *)(sysfs_goal->current_value * 10000 /
+-				sysfs_goal->target_value));
++		goal = damos_new_quota_goal(sysfs_goal->target_value,
++				sysfs_goal->current_value);
+ 		if (!goal)
+ 			return -ENOMEM;
+ 		damos_add_quota_goal(quota, goal);
+-- 
+2.39.2
+

@@ -1,0 +1,120 @@
+From 4644867ae1f6ed05acfc370f10f5cfa36ab0f1d9 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 16 Feb 2024 15:21:35 -0800
+Subject: [PATCH 10/20] mm/damon/core: remove ->goal field of damos_quota
+
+DAMOS quota auto-tuning feature supports static signle goal and dynamic
+multiple goals via DAMON kernel API, specifically via ->goal and ->goals
+fields of damos_quota struct, respectively.  All in-tree DAMOS kernel
+API users are using only the dynamic multiple goals now.  Remove the
+unsued static single goal interface.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 12 ++++--------
+ mm/damon/core.c       | 17 +++++------------
+ 2 files changed, 9 insertions(+), 20 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 4bd898eaf80e..76c965c1eea3 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -149,7 +149,6 @@ struct damos_quota_goal {
+  * @reset_interval:	Charge reset interval in milliseconds.
+  * @ms:			Maximum milliseconds that the scheme can use.
+  * @sz:			Maximum bytes of memory that the action can be applied.
+- * @goal:		Quota auto-tuning goal.
+  * @goals:		Head of quota tuning goals (&damos_quota_goal) list.
+  * @esz:		Effective size quota in bytes.
+  *
+@@ -169,12 +168,10 @@ struct damos_quota_goal {
+  * throughput of the scheme's action.  DAMON then compares it against &sz and
+  * uses smaller one as the effective quota.
+  *
+- * If ->get_score field of @goal is set, DAMON calculates yet another size
+- * quota based on the goal using its internal feedback loop algorithm, for
+- * every @reset_interval.  Then, if the new size quota is smaller than the
+- * effective quota, it uses the new size quota as the effective quota.
+- *
+- * If @goals is not empty, same action is taken for each goal of the list.
++ * If @goals is not empt, DAMON calculates yet another size quota based on the
++ * goals using its internal feedback loop algorithm, for every @reset_interval.
++ * Then, if the new size quota is smaller than the effective quota, it uses the
++ * new size quota as the effective quota.
+  *
+  * The resulting effective size quota in bytes is set to @esz.
+  *
+@@ -188,7 +185,6 @@ struct damos_quota {
+ 	unsigned long reset_interval;
+ 	unsigned long ms;
+ 	unsigned long sz;
+-	struct damos_quota_goal goal;
+ 	struct list_head goals;
+ 	unsigned long esz;
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b6cd99b64e85..7b06d926c552 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1130,10 +1130,6 @@ static unsigned long damos_quota_score(struct damos_quota *quota)
+ 	struct damos_quota_goal *goal;
+ 	unsigned long highest_score = 0;
+ 
+-	if (quota->goal.get_score)
+-		highest_score = quota->goal.get_score(
+-				quota->goal.get_score_arg);
+-
+ 	damos_for_each_quota_goal(goal, quota)
+ 		highest_score = max(highest_score,
+ 				goal->get_score(goal->get_score_arg));
+@@ -1142,21 +1138,19 @@ static unsigned long damos_quota_score(struct damos_quota *quota)
+ }
+ 
+ /*
+- * Called only if quota->ms, quota->sz, or quota->goal.get_score are set, or
+- * quota->goals is not empty
++ * Called only if quota->ms, or quota->sz are set, or quota->goals is not empty
+  */
+ static void damos_set_effective_quota(struct damos_quota *quota)
+ {
+ 	unsigned long throughput;
+ 	unsigned long esz;
+ 
+-	if (!quota->ms && !quota->goal.get_score &&
+-			list_empty(&quota->goals)) {
++	if (!quota->ms && list_empty(&quota->goals)) {
+ 		quota->esz = quota->sz;
+ 		return;
+ 	}
+ 
+-	if (quota->goal.get_score || !list_empty(&quota->goals)) {
++	if (!list_empty(&quota->goals)) {
+ 		unsigned long score = damos_quota_score(quota);
+ 
+ 		quota->esz_bp = damon_feed_loop_next_input(
+@@ -1171,7 +1165,7 @@ static void damos_set_effective_quota(struct damos_quota *quota)
+ 				quota->total_charged_ns;
+ 		else
+ 			throughput = PAGE_SIZE * 1024;
+-		if (quota->goal.get_score || !list_empty(&quota->goals))
++		if (!list_empty(&quota->goals))
+ 			esz = min(throughput * quota->ms, esz);
+ 		else
+ 			esz = throughput * quota->ms;
+@@ -1191,8 +1185,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 	unsigned long cumulated_sz;
+ 	unsigned int score, max_score = 0;
+ 
+-	if (!quota->ms && !quota->sz && !quota->goal.get_score &&
+-			list_empty(&quota->goals))
++	if (!quota->ms && !quota->sz && list_empty(&quota->goals))
+ 		return;
+ 
+ 	/* New charge window starts */
+-- 
+2.39.2
+

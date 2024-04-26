@@ -1,0 +1,94 @@
+From 508b5607d7d3ce7c1c305f9ae8171a5582ca8718 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 16 Feb 2024 15:21:23 -0800
+Subject: [PATCH 01/20] mm/damon/core: Set damos_quota->esz as public field and
+ document
+
+DAMOS allow users to specify the quota as they want in multiple ways
+including time quota, size quota, and feedback-based auto-tuning.  DAMOS
+makes one effective quota out of the inputs and use it at the end.
+Knowing the current effective quota helps understanding DAMOS' internal
+mechanism and fine-tuning quotas.  DAMON kernel API users can get the
+information from ->esz field of damos_quota struct, but the field is
+marked as private purpose, and not kernel-doc documented.  Make it
+public and document.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 6 ++++--
+ mm/damon/core.c       | 8 ++++----
+ 2 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 5881e4ac30be..93ef45b87b9c 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -138,6 +138,7 @@ enum damos_action {
+  *
+  * @get_score:		Feedback function for self-tuning quota.
+  * @get_score_arg:	Parameter for @get_score
++ * @esz:		Effective size quota in bytes.
+  *
+  * To avoid consuming too much CPU time or IO resources for applying the
+  * &struct damos->action to large memory, DAMON allows users to set time and/or
+@@ -167,6 +168,8 @@ enum damos_action {
+  * tuning is getting the feedback screo value of 10,000.  If @ms and/or @sz are
+  * set together, those work as a hard limit quota.  If neither @ms nor @sz are
+  * set, the mechanism starts from the quota of one byte.
++ *
++ * The resulting effective size quota in bytes is set to @esz.
+  */
+ struct damos_quota {
+ 	unsigned long ms;
+@@ -179,14 +182,13 @@ struct damos_quota {
+ 
+ 	unsigned long (*get_score)(void *arg);
+ 	void *get_score_arg;
++	unsigned long esz;
+ 
+ /* private: */
+ 	/* For throughput estimation */
+ 	unsigned long total_charged_sz;
+ 	unsigned long total_charged_ns;
+ 
+-	unsigned long esz;	/* Effective size quota in bytes */
+-
+ 	/* For charging the quota */
+ 	unsigned long charged_sz;
+ 	unsigned long charged_from;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 5b325749fc12..0656966a6fc4 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -299,12 +299,12 @@ void damos_destroy_filter(struct damos_filter *f)
+ 	damos_free_filter(f);
+ }
+ 
+-/* initialize private fields of damos_quota and return the pointer */
+-static struct damos_quota *damos_quota_init_priv(struct damos_quota *quota)
++/* initialize fields of @quota that normally API users wouldn't set */
++static struct damos_quota *damos_quota_init(struct damos_quota *quota)
+ {
++	quota->esz = 0;
+ 	quota->total_charged_sz = 0;
+ 	quota->total_charged_ns = 0;
+-	quota->esz = 0;
+ 	quota->charged_sz = 0;
+ 	quota->charged_from = 0;
+ 	quota->charge_target_from = NULL;
+@@ -336,7 +336,7 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
+ 	scheme->stat = (struct damos_stat){};
+ 	INIT_LIST_HEAD(&scheme->list);
+ 
+-	scheme->quota = *(damos_quota_init_priv(quota));
++	scheme->quota = *(damos_quota_init(quota));
+ 
+ 	scheme->wmarks = *wmarks;
+ 	scheme->wmarks.activated = true;
+-- 
+2.39.2
+

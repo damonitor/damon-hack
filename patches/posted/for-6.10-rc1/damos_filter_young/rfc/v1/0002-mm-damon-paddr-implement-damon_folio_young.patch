@@ -1,0 +1,84 @@
+From 6fd03f5bdd52ce382d8dc1b71aa52812b791be17 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: honggyu.kim@sk.com
+Cc: hyeongtak.ji@sk.com
+Cc: kernel_team@skhynix.com
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Tue, 5 Mar 2024 16:03:19 -0800
+Subject: [RFC PATCH 2/3] mm/damon/paddr: implement damon_folio_young()
+
+damon_pa_young() receives physical address, get the folio covering the
+address, and return if the folio is accessed since the last check.
+Split the internal logic for checking access to given folio, for future
+reuse of the logic from code that already got the folio of the address
+of the question.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 26 ++++++++++++++++----------
+ 1 file changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 5e6dc312072c..deee0fdf2e5b 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -111,9 +111,8 @@ static bool __damon_pa_young(struct folio *folio, struct vm_area_struct *vma,
+ 	return *accessed == false;
+ }
+ 
+-static bool damon_pa_young(unsigned long paddr, unsigned long *folio_sz)
++static bool damon_folio_young(struct folio *folio)
+ {
+-	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+ 	bool accessed = false;
+ 	struct rmap_walk_control rwc = {
+ 		.arg = &accessed,
+@@ -122,27 +121,34 @@ static bool damon_pa_young(unsigned long paddr, unsigned long *folio_sz)
+ 	};
+ 	bool need_lock;
+ 
+-	if (!folio)
+-		return false;
+-
+ 	if (!folio_mapped(folio) || !folio_raw_mapping(folio)) {
+ 		if (folio_test_idle(folio))
+-			accessed = false;
++			return false;
+ 		else
+-			accessed = true;
+-		goto out;
++			return true;
+ 	}
+ 
+ 	need_lock = !folio_test_anon(folio) || folio_test_ksm(folio);
+ 	if (need_lock && !folio_trylock(folio))
+-		goto out;
++		return false;
+ 
+ 	rmap_walk(folio, &rwc);
+ 
+ 	if (need_lock)
+ 		folio_unlock(folio);
+ 
+-out:
++	return accessed;
++}
++
++static bool damon_pa_young(unsigned long paddr, unsigned long *folio_sz)
++{
++	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
++	bool accessed;
++
++	if (!folio)
++		return false;
++
++	accessed = damon_folio_young(folio);
+ 	*folio_sz = folio_size(folio);
+ 	folio_put(folio);
+ 	return accessed;
+-- 
+2.39.2
+
