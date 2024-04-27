@@ -1,53 +1,92 @@
-From ce06f01b6783fe654be6d1991b05aca450a842e9 Mon Sep 17 00:00:00 2001
+From e8be5770181fbee42089704eff2126caddc92e0e Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
-Date: Fri, 26 Apr 2024 12:32:52 -0700
+Date: Fri, 8 Mar 2024 16:23:33 -0800
 Subject: [PATCH] mm/vmscan: remove ignore_references argument of
- reclaim_folio_list()
+ reclaim_pages()
 
-All reclaim_folio_list() callers are passing 'true' for
-'ignore_references' parameter.  Simplify the code by removing the
-parameter.
+All reclaim_pages() callers are setting ignore_references as true.
+Remove the argument to make it simple.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/vmscan.c | 10 ++++------
- 1 file changed, 4 insertions(+), 6 deletions(-)
+ mm/damon/paddr.c | 2 +-
+ mm/internal.h    | 2 +-
+ mm/madvise.c     | 4 ++--
+ mm/vmscan.c      | 6 +++---
+ 4 files changed, 7 insertions(+), 7 deletions(-)
 
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 974edef1740d..18797c1b419b 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -283,7 +283,7 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s)
+ 	}
+ 	if (install_young_filter)
+ 		damos_destroy_filter(filter);
+-	applied = reclaim_pages(&folio_list, true);
++	applied = reclaim_pages(&folio_list);
+ 	cond_resched();
+ 	return applied * PAGE_SIZE;
+ }
+diff --git a/mm/internal.h b/mm/internal.h
+index c5552d35d995..b2c75b12014e 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1052,7 +1052,7 @@ extern unsigned long  __must_check vm_mmap_pgoff(struct file *, unsigned long,
+         unsigned long, unsigned long);
+ 
+ extern void set_pageblock_order(void);
+-unsigned long reclaim_pages(struct list_head *folio_list, bool ignore_references);
++unsigned long reclaim_pages(struct list_head *folio_list);
+ unsigned int reclaim_clean_pages_from_list(struct zone *zone,
+ 					    struct list_head *folio_list);
+ /* The ALLOC_WMARK bits are used as an index to zone->watermark */
+diff --git a/mm/madvise.c b/mm/madvise.c
+index c49fef453491..a77893462b92 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -423,7 +423,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
+ huge_unlock:
+ 		spin_unlock(ptl);
+ 		if (pageout)
+-			reclaim_pages(&folio_list, true);
++			reclaim_pages(&folio_list);
+ 		return 0;
+ 	}
+ 
+@@ -547,7 +547,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
+ 		pte_unmap_unlock(start_pte, ptl);
+ 	}
+ 	if (pageout)
+-		reclaim_pages(&folio_list, true);
++		reclaim_pages(&folio_list);
+ 	cond_resched();
+ 
+ 	return 0;
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index fc9dd9a24739..6981a71c8ef0 100644
+index 49bd94423961..fc9dd9a24739 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -2126,8 +2126,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
+@@ -2150,7 +2150,7 @@ static unsigned int reclaim_folio_list(struct list_head *folio_list,
+ 	return nr_reclaimed;
  }
  
- static unsigned int reclaim_folio_list(struct list_head *folio_list,
--				      struct pglist_data *pgdat,
--				      bool ignore_references)
-+				      struct pglist_data *pgdat)
+-unsigned long reclaim_pages(struct list_head *folio_list, bool ignore_references)
++unsigned long reclaim_pages(struct list_head *folio_list)
  {
- 	struct reclaim_stat dummy_stat;
- 	unsigned int nr_reclaimed;
-@@ -2140,7 +2139,7 @@ static unsigned int reclaim_folio_list(struct list_head *folio_list,
- 		.no_demotion = 1,
- 	};
- 
--	nr_reclaimed = shrink_folio_list(folio_list, pgdat, &sc, &dummy_stat, ignore_references);
-+	nr_reclaimed = shrink_folio_list(folio_list, pgdat, &sc, &dummy_stat, true);
- 	while (!list_empty(folio_list)) {
- 		folio = lru_to_folio(folio_list);
- 		list_del(&folio->lru);
-@@ -2172,12 +2171,11 @@ unsigned long reclaim_pages(struct list_head *folio_list)
- 			continue;
+ 	int nid;
+ 	unsigned int nr_reclaimed = 0;
+@@ -2173,11 +2173,11 @@ unsigned long reclaim_pages(struct list_head *folio_list, bool ignore_references
  		}
  
--		nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid),
--						   true);
-+		nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid));
+ 		nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid),
+-						   ignore_references);
++						   true);
  		nid = folio_nid(lru_to_folio(folio_list));
  	} while (!list_empty(folio_list));
  
--	nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid), true);
-+	nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid));
+-	nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid), ignore_references);
++	nr_reclaimed += reclaim_folio_list(&node_folio_list, NODE_DATA(nid), true);
  
  	memalloc_noreclaim_restore(noreclaim_flag);
  
