@@ -14,6 +14,7 @@ patches_dir=$(dirname "$series_file")
 baseline_checked_out="false"
 for patch in $(cat "$series_file")
 do
+	# the first line is the baseline commit hash
 	if [ "$baseline_checked_out" = "false" ]
 	then
 		git checkout "$patch"
