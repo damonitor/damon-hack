@@ -20,7 +20,7 @@ do
 	while [ -e "$dest_dir/$final_name" ]
 	do
 		nr_duplicates=$((nr_duplicates + 1))
-		final_name+="$nr_duplicates"
+		final_name+="-$nr_duplicates"
 	done
 	mv "$patch" "$dest_dir/$final_name"
 	echo "$final_name" >> "$dest_dir/series"
