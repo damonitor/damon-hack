@@ -16,6 +16,12 @@ do
 	fi
 	patch=$(git format-patch "$commit^".."$commit")
 	final_name=$(echo "$patch" | cut -c 6-)
+	nr_duplicates=0
+	while [ -e "$dest_dir/$final_name" ]
+	do
+		nr_duplicates=$((nr_duplicates + 1))
+		final_name+="$nr_duplicates"
+	done
 	mv "$patch" "$dest_dir/$final_name"
 	echo "$final_name" >> "$dest_dir/series"
 done
