@@ -1,0 +1,149 @@
+From 59f77a5fbd86f571fa23e745dca3b5d6d2800f9d Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 29 Apr 2024 13:22:16 -0700
+Subject: [PATCH] Revert "mm/rmap: integrate PMD-mapped folio splitting into
+ pagewalk loop"
+
+This reverts commit 34d66beb14bdedb5c12733f2fd2498634dd1fd91.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/huge_mm.h |  2 --
+ mm/huge_memory.c        | 42 ++++++++++++++++++++---------------------
+ mm/rmap.c               | 26 ++++++-------------------
+ 3 files changed, 26 insertions(+), 44 deletions(-)
+
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index 2daadfcc6776..c8d3ec116e29 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -36,8 +36,6 @@ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
+ int change_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		    pmd_t *pmd, unsigned long addr, pgprot_t newprot,
+ 		    unsigned long cp_flags);
+-void split_huge_pmd_locked(struct vm_area_struct *vma, unsigned long address,
+-			   pmd_t *pmd, bool freeze, struct folio *folio);
+ 
+ vm_fault_t vmf_insert_pfn_pmd(struct vm_fault *vmf, pfn_t pfn, bool write);
+ vm_fault_t vmf_insert_pfn_pud(struct vm_fault *vmf, pfn_t pfn, bool write);
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 145505a1dd05..8261b5669397 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2584,27 +2584,6 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ 	pmd_populate(mm, pmd, pgtable);
+ }
+ 
+-void split_huge_pmd_locked(struct vm_area_struct *vma, unsigned long address,
+-			   pmd_t *pmd, bool freeze, struct folio *folio)
+-{
+-	VM_WARN_ON_ONCE(folio && !folio_test_pmd_mappable(folio));
+-	VM_WARN_ON_ONCE(!IS_ALIGNED(address, HPAGE_PMD_SIZE));
+-	VM_WARN_ON_ONCE(folio && !folio_test_locked(folio));
+-	VM_BUG_ON(freeze && !folio);
+-
+-	/*
+-	 * When the caller requests to set up a migration entry, we
+-	 * require a folio to check the PMD against. Otherwise, there
+-	 * is a risk of replacing the wrong folio.
+-	 */
+-	if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd) ||
+-	    is_pmd_migration_entry(*pmd)) {
+-		if (folio && folio != pmd_folio(*pmd))
+-			return;
+-		__split_huge_pmd_locked(vma, pmd, address, freeze);
+-	}
+-}
+-
+ void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+ 		unsigned long address, bool freeze, struct folio *folio)
+ {
+@@ -2616,7 +2595,26 @@ void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+ 				(address & HPAGE_PMD_MASK) + HPAGE_PMD_SIZE);
+ 	mmu_notifier_invalidate_range_start(&range);
+ 	ptl = pmd_lock(vma->vm_mm, pmd);
+-	split_huge_pmd_locked(vma, range.start, pmd, freeze, folio);
++
++	/*
++	 * If caller asks to setup a migration entry, we need a folio to check
++	 * pmd against. Otherwise we can end up replacing wrong folio.
++	 */
++	VM_BUG_ON(freeze && !folio);
++	VM_WARN_ON_ONCE(folio && !folio_test_locked(folio));
++
++	if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd) ||
++	    is_pmd_migration_entry(*pmd)) {
++		/*
++		 * It's safe to call pmd_page when folio is set because it's
++		 * guaranteed that pmd is present.
++		 */
++		if (folio && folio != pmd_folio(*pmd))
++			goto out;
++		__split_huge_pmd_locked(vma, pmd, range.start, freeze);
++	}
++
++out:
+ 	spin_unlock(ptl);
+ 	mmu_notifier_invalidate_range_end(&range);
+ }
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 43e44b815fda..195d90d06bd6 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1636,6 +1636,9 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 	if (flags & TTU_SYNC)
+ 		pvmw.flags = PVMW_SYNC;
+ 
++	if (flags & TTU_SPLIT_HUGE_PMD)
++		split_huge_pmd_address(vma, address, false, folio);
++
+ 	/*
+ 	 * For THP, we have to assume the worse case ie pmd for invalidation.
+ 	 * For hugetlb, it could be much worse if we need to do pud
+@@ -1647,10 +1650,6 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 	range.end = vma_address_end(&pvmw);
+ 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
+ 				address, range.end);
+-	if (flags & TTU_SPLIT_HUGE_PMD) {
+-		range.start = address & HPAGE_PMD_MASK;
+-		range.end = (address & HPAGE_PMD_MASK) + HPAGE_PMD_SIZE;
+-	}
+ 	if (folio_test_hugetlb(folio)) {
+ 		/*
+ 		 * If sharing is possible, start and end will be adjusted
+@@ -1665,6 +1664,9 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 	mmu_notifier_invalidate_range_start(&range);
+ 
+ 	while (page_vma_mapped_walk(&pvmw)) {
++		/* Unexpected PMD-mapped THP? */
++		VM_BUG_ON_FOLIO(!pvmw.pte, folio);
++
+ 		/*
+ 		 * If the folio is in an mlock()d vma, we must not swap it out.
+ 		 */
+@@ -1676,22 +1678,6 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 			goto walk_done_err;
+ 		}
+ 
+-		if (!pvmw.pte && (flags & TTU_SPLIT_HUGE_PMD)) {
+-			/*
+-			 * We temporarily have to drop the PTL and start once
+-			 * again from that now-PTE-mapped page table.
+-			 */
+-			split_huge_pmd_locked(vma, range.start, pvmw.pmd, false,
+-					      folio);
+-			pvmw.pmd = NULL;
+-			spin_unlock(pvmw.ptl);
+-			flags &= ~TTU_SPLIT_HUGE_PMD;
+-			continue;
+-		}
+-
+-		/* Unexpected PMD-mapped THP? */
+-		VM_BUG_ON_FOLIO(!pvmw.pte, folio);
+-
+ 		pfn = pte_pfn(ptep_get(pvmw.pte));
+ 		subpage = folio_page(folio, pfn - folio_pfn(folio));
+ 		address = pvmw.address;
+-- 
+2.39.2
+
