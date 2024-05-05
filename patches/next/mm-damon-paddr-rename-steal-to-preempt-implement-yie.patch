@@ -1,0 +1,118 @@
+From d9f6cfda93c2b57442fa4b8c44d1881e3ef57ca9 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 5 May 2024 11:48:06 -0700
+Subject: [PATCH] mm/damon/paddr: rename steal to preempt, implement yield
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 87 +++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 75 insertions(+), 12 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index ccdfc627596a..23bddce92fb9 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -327,25 +327,88 @@ static unsigned long damon_pa_deactivate_pages(struct damon_region *r,
+ 
+ #ifdef CONFIG_ACMA
+ 
+-static unsigned long damon_pa_steal(struct damon_region *r, struct damos *s)
++/* unit size of DAMON's memory preemption (preempt 512 pages at once) */
++#define DAMON_MEM_PREEMPT_PAGES	512
++
++static bool damon_pa_preempted(unsigned long pfn)
++{
++	/* todo: implement */
++}
++
++/* always success for preempted=false */
++static int damon_pa_set_preempted(unsigned long pfn, bool preempted)
++{
++	/* todo: implement */
++}
++
++/*
++ * Return ownership of the memory to the system.  At the moment, only user of
++ * this function is virtio-balloon.  They could use page fault-based mechanisms
++ * to catch returned ownership.  Therefore this function doesn't notify this
++ * event to the report subscribers.  In future, we could add some notification
++ * system of this event for more users such as contig memory allocator.
++ */
++static int damon_pa_yield(unsigned long pfn)
++{
++	if (!damon_pa_preemted(pfn))
++		return -EINVAL;
++
++	free_contig_range(pfn, DAMON_MEM_PREEMPT_PAGES);
++	damon_pa_set_preempted(pfn, false);
++	/*
++	 * We intentionally do not report this event to the preempted memory
++	 * report subscriber.  They could use page fault handler like
++	 * mechanisms.
++	 */
++	return 0;
++}
++
++/*
++ * Pass ownership of the memory to page reporting subscribers.  The subscribers
++ * can use the reported memory for their purpose, e.g., letting Host
++ * re-allocate it to other guest, or use as contig allocation memory pool.
++ */
++static int damon_pa_preempt(unsigned long pfn)
++{
++	int err;
++
++	if (damon_pa_preempted(pfn))
++		return -EINVAL;
++	if (alloc_contig_range(pfn, pfn + DAMON_MEM_PREEMPT_PAGES,
++				MIGRATE_MOVABLE, GFP_KERNEL))
++		return -ENOMEM;
++	err = damon_pa_set_preempted(pfn, true);
++	if (err) {
++		free_contig_range(pfn, DAMON_MEM_PREEMPT_PAGES);
++		return err;
++	}
++	err = page_report(pfn, DAMON_MEM_PREEMPT_PAGES);
++	if (err) {
++		damon_pa_yield(pfn);
++		return err;
++	}
++	return 0;
++}
++
++/* Preempt or yield memory regions from system */
++static unsigned long damon_pa_preempt_or_yield(
++		struct damon_region *r, struct damos *s, bool preempt)
+ {
+ 	unsigned long pfn;
+ 	unsigned long applied = 0;
+ 
+-	for (pfn = PHYS_PFN(r->start); pfn < PHYS_PFN(r->end); pfn += 512) {
+-		/* allocate the contig pages */
+-		if (alloc_contig_range(pfn, pfn + 512, MIGRATE_MOVABLE,
+-				GFP_KERNEL))
+-			continue;
+-		/* report as free to use */
+-		if (page_report(pfn, 512)) {
+-			free_contig_range(pfn, 512);
+-			continue;
++	for (pfn = PHYS_PFN(r->start); pfn < PHYS_PFN(r->end);
++			pfn += DAMON_MEM_PREEMPT_PAGES) {
++		if (preempt) {
++			if (damon_pa_preempt(pfn))
++				continue;
++		} else {
++			if (damon_pa_yield(pfn))
++				continue;
+ 		}
+-		stolen_pfns[nr_stolen_pfns++] = pfn;
+ 		applied += 1;
+ 	}
+-	return applied * PAGE_SIZE * 512;
++	return applied * PAGE_SIZE * DAMON_MEM_PREEMPT_PAGES;
+ }
+ 
+ #endif
+-- 
+2.39.2
+
