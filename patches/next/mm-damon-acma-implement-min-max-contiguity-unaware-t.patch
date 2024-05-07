@@ -1,0 +1,252 @@
+From 7558da9cebb52396689807a82ee02fa580db89a1 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 7 May 2024 16:21:05 -0700
+Subject: [PATCH] mm/damon/acma: implement min/max/contiguity-unaware three
+ schemes
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/acma.c | 162 ++++++++++++++++++++++++++++++------------------
+ 1 file changed, 102 insertions(+), 60 deletions(-)
+
+diff --git a/mm/damon/acma.c b/mm/damon/acma.c
+index b84e23c5a770..c664c51eab5e 100644
+--- a/mm/damon/acma.c
++++ b/mm/damon/acma.c
+@@ -79,8 +79,8 @@ static unsigned long cold_min_age __read_mostly = 120000000;
+ module_param(cold_min_age, ulong, 0600);
+ 
+ static struct damos_quota damon_acma_quota = {
+-	/* Use up to 10 ms per 1 sec, by default */
+-	.ms = 10,
++	/* Use up to 15 ms per 1 sec, by default */
++	.ms = 15,
+ 	.sz = 0,
+ 	.reset_interval = 1000,
+ 	/* Within the quota, mark hotter regions accessed first. */
+@@ -135,15 +135,20 @@ module_param(monitor_region_end, ulong, 0600);
+ static int kdamond_pid __read_mostly = -1;
+ module_param(kdamond_pid, int, 0400);
+ 
+-static struct damos_stat damon_acma_hot_stat;
+-DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_hot_stat,
+-		acma_tried_hot_regions, acmaed_hot_regions,
+-		hot_quota_exceeds);
++static struct damos_stat damon_acma_reclaim_stat;
++DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_reclaim_stat,
++		acma_reclaim_tried_regions, acma_reclaim_succ_regions,
++		acma_reclaim_quota_exceeds);
+ 
+-static struct damos_stat damon_acma_cold_stat;
+-DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_cold_stat,
+-		acma_tried_cold_regions, acmaed_cold_regions,
+-		cold_quota_exceeds);
++static struct damos_stat damon_acma_preempt_stat;
++DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_preempt_stat,
++		acma_preempt_tried_regions, acma_preempt_succ_regions,
++		acma_preempt_quota_exceeds);
++
++static struct damos_stat damon_acma_yield_stat;
++DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_yield_stat,
++		acma_yield_tried_regions, acma_yield_succ_regions,
++		acma_yield_quota_exceeds);
+ 
+ static struct damos_access_pattern damon_acma_stub_pattern = {
+ 	/* Find regions having PAGE_SIZE or larger size */
+@@ -165,13 +170,11 @@ static struct damos *damon_acma_new_scheme(
+ {
+ 	struct damos_quota quota = damon_acma_quota;
+ 
+-	/* Use half of total quota for hot/cold pages sorting */
+-	quota.ms = quota.ms / 2;
++	/* Use 1/3 of total quota for hot/cold pages sorting */
++	quota.ms = quota.ms / 3;
+ 
+ 	return damon_new_scheme(
+-			/* find the pattern, and */
+ 			pattern,
+-			/* (de)prioritize on LRU-lists */
+ 			action,
+ 			/* for each aggregation interval */
+ 			0,
+@@ -181,47 +184,36 @@ static struct damos *damon_acma_new_scheme(
+ 			&damon_acma_wmarks);
+ }
+ 
+-/* Create a DAMON-based operation scheme for hot memory regions */
+-static struct damos *damon_acma_new_hot_scheme(unsigned int hot_thres)
+-{
+-	struct damos_access_pattern pattern = damon_acma_stub_pattern;
+-
+-	pattern.min_nr_accesses = hot_thres;
+-	return damon_acma_new_scheme(&pattern, DAMOS_LRU_PRIO);
+-}
+-
+-/* Create a DAMON-based operation scheme for cold memory regions */
+-static struct damos *damon_acma_new_cold_scheme(unsigned int cold_thres)
++/*
++ * Reclaim cold pages on entire physical address space
++ */
++static struct damos *damon_acma_new_reclaim_scheme(unsigned int cold_thres)
+ {
+ 	struct damos_access_pattern pattern = damon_acma_stub_pattern;
+ 
+ 	pattern.max_nr_accesses = 0;
+ 	pattern.min_age_region = cold_thres;
+-	return damon_acma_new_scheme(&pattern, DAMOS_LRU_DEPRIO);
+-}
+-
+-/*
+- * Reclaim cold pages on entire physical address space
+- */
+-static struct damos *damon_acma_new_relclaim_scheme()
+-{
+-	return NULL;
++	return damon_acma_new_scheme(&pattern, DAMOS_PAGEOUT);
+ }
+ 
+ /*
+  * Preempt/report cold pages
+  */
+-static struct damos *damon_acma_new_scale_down_scheme()
++static struct damos *damon_acma_new_preempt_scheme(void)
+ {
+-	return NULL;
++	struct damos_access_pattern pattern = damon_acma_stub_pattern;
++
++	return damon_acma_new_scheme(&pattern, DAMOS_PREEMPT);
+ }
+ 
+ /*
+  * Yield pages
+  */
+-static struct damos *damon_acma_new_scale_up_scheme()
++static struct damos *damon_acma_new_yield_scheme(void)
+ {
+-	return NULL;
++	struct damos_access_pattern pattern = damon_acma_stub_pattern;
++
++	return damon_acma_new_scheme(&pattern, DAMOS_YIELD);
+ }
+ 
+ static void damon_acma_copy_quota_status(struct damos_quota *dst,
+@@ -237,9 +229,12 @@ static void damon_acma_copy_quota_status(struct damos_quota *dst,
+ 
+ static int damon_acma_apply_parameters(void)
+ {
+-	struct damos *scheme, *hot_scheme, *cold_scheme;
+-	struct damos *old_hot_scheme = NULL, *old_cold_scheme = NULL;
+-	unsigned int hot_thres, cold_thres;
++	struct damos *scheme, *reclaim_scheme, *preempt_scheme, *yield_scheme;
++	struct damos *old_reclaim_scheme = NULL, *old_preempt_scheme = NULL;
++	struct damos *old_yied_scheme = NULL;
++	unsigned int cold_thres;
++	struct damos_quota_goal *goal;
++	struct damos_filter *filter;
+ 	int err = 0;
+ 
+ 	err = damon_set_attrs(ctx, &damon_acma_mon_attrs);
+@@ -247,34 +242,81 @@ static int damon_acma_apply_parameters(void)
+ 		return err;
+ 
+ 	damon_for_each_scheme(scheme, ctx) {
+-		if (!old_hot_scheme) {
+-			old_hot_scheme = scheme;
++		if (!old_reclaim_scheme) {
++			old_reclaim_scheme = scheme;
++			continue;
++		}
++		if (!old_preempt_scheme) {
++			old_preempt_scheme = scheme;
+ 			continue;
+ 		}
+-		old_cold_scheme = scheme;
++		old_yield_scheme = scheme;
+ 	}
+ 
+-	hot_thres = damon_max_nr_accesses(&damon_acma_mon_attrs) *
+-		hot_thres_access_freq / 1000;
+-	hot_scheme = damon_acma_new_hot_scheme(hot_thres);
+-	if (!hot_scheme)
++	cold_thres = cold_min_age / damon_acma_mon_attrs.aggr_interval;
++	reclaim_scheme = damon_acma_new_reclaim_scheme(cold_thres);
++	if (!reclaim_scheme)
+ 		return -ENOMEM;
+-	if (old_hot_scheme)
+-		damon_acma_copy_quota_status(&hot_scheme->quota,
+-				&old_hot_scheme->quota);
++	if (old_reclaim_scheme)
++		damon_acma_copy_quota_status(&reclaim_scheme->quota,
++				&old_reclaim_scheme->quota);
++	if (quota_mem_pressure_us) {
++		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PSI_US,
++				quota_mem_pressure_us);
++		if (!goal) {
++			damon_destroy_scheme(reclaim_scheme);
++			return -ENOMEM;
++		}
++		damos_add_quota_goal(&reclaim_scheme->quota, goal);
++	}
+ 
+-	cold_thres = cold_min_age / damon_acma_mon_attrs.aggr_interval;
+-	cold_scheme = damon_acma_new_cold_scheme(cold_thres);
+-	if (!cold_scheme) {
+-		damon_destroy_scheme(hot_scheme);
++	damon_set_schemes(ctx, &reclaim_scheme, 1);
++
++	preempt_scheme = damon_acma_new_preempt_scheme();
++	if (!preempt_scheme) {
++		damon_destroy_scheme(reclaim_scheme);
+ 		return -ENOMEM;
+ 	}
+-	if (old_cold_scheme)
+-		damon_acma_copy_quota_status(&cold_scheme->quota,
+-				&old_cold_scheme->quota);
++	if (old_preempt_scheme)
++		damon_acma_copy_quota_status(&preempt_scheme->quota,
++				&old_preempt_scheme->quota);
++	if (quota_mem_pressure_us) {
++		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PSI_US,
++				quota_mem_pressure_us);
++		if (!goal) {
++			damon_destroy_scheme(preempt_scheme);
++			damon_destroy_scheme(reclaim_scheme);
++			return -ENOMEM;
++		}
++		damos_add_quota_goal(&preempt_scheme->quota, goal);
++	}
++	/* add region filter? */
++	damon_add_scheme(ctx, preempt_scheme);
+ 
+-	damon_set_schemes(ctx, &hot_scheme, 1);
+-	damon_add_scheme(ctx, cold_scheme);
++	yield_scheme = damon_acma_new_yield_scheme();
++	if (!yield_scheme) {
++		damon_destroy_scheme(preempt_scheme);
++		damon_destroy_scheme(reclaim_scheme);
++		return -ENOMEM;
++	}
++	if (old_yield_scheme)
++		damon_acma_copy_quota_status(&yield_scheme->quota,
++				&old_yied_scheme->quota);
++	if (quota_mem_pressure_us) {
++		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PUSI_US,
++				/* reset_interval is in milliseconds */
++				yield_scheme->quota.reset_interval * 1000 -
++				quota_mem_pressure_us);
++		if (!goal) {
++			damon_destroy_scheme(yield_scheme);
++			damon_destroy_scheme(preempt_scheme);
++			damon_destroy_scheme(reclaim_scheme);
++			return -ENOMEM;
++		}
++		damos_add_quota_goal(&yield_scheme->quota, goal);
++	}
++	/* add region filter? */
++	damon_add_scheme(ctx, yield_scheme);
+ 
+ 	return damon_set_region_biggest_system_ram_default(target,
+ 					&monitor_region_start,
+-- 
+2.39.2
+
