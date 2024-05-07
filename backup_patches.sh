@@ -1,5 +1,14 @@
 #!/bin/bash
 
+if [ $# -ne 1 ]
+then
+	echo "Usage: $0 <commit message>"
+	echo
+	echo "e.g., $0 \"rebase on latest mm-unstable\""
+	exit 1
+fi
+
+commit_msg=$1
 bindir=$(dirname $0)
 dest_dir=$(realpath "$bindir/patches/next")
 commits="akpm.korg.mm/mm-unstable..damon/next"
@@ -27,4 +36,4 @@ do
 done
 
 git -C "$bindir" add "$dest_dir"
-git -C "$bindir" commit -s -m "backup damon/next patches"
+git -C "$bindir" commit -s -m "patches/next: $commit_msg"
