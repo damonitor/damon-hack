@@ -1,4 +1,4 @@
-From 7558da9cebb52396689807a82ee02fa580db89a1 Mon Sep 17 00:00:00 2001
+From 0af6de811f309ea022208921f0b8d3718be15093 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Tue, 7 May 2024 16:21:05 -0700
 Subject: [PATCH] mm/damon/acma: implement min/max/contiguity-unaware three
@@ -6,14 +6,37 @@ Subject: [PATCH] mm/damon/acma: implement min/max/contiguity-unaware three
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/acma.c | 162 ++++++++++++++++++++++++++++++------------------
- 1 file changed, 102 insertions(+), 60 deletions(-)
+ mm/damon/acma.c | 178 +++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 116 insertions(+), 62 deletions(-)
 
 diff --git a/mm/damon/acma.c b/mm/damon/acma.c
-index b84e23c5a770..c664c51eab5e 100644
+index b84e23c5a770..5c5725cbda36 100644
 --- a/mm/damon/acma.c
 +++ b/mm/damon/acma.c
-@@ -79,8 +79,8 @@ static unsigned long cold_min_age __read_mostly = 120000000;
+@@ -53,8 +53,20 @@ module_param(min_mem, ulong, 0600);
+ static unsigned long max_mem_kb __read_mostly;
+ module_param(max_mem, ulong, 0600);
+ 
+-static unsigned int mem_pressure_ratio_bp __read_mostly;
+-module_param(mem_pressure_ratio, ulong, 0600);
++/*
++ * Desired level of memory pressure-stall time in microseconds.
++ *
++ * While keeping the caps that set by other quotas, DAMON_RECLAIM automatically
++ * increases and decreases the effective level of the quota aiming this level of
++ * memory pressure is incurred.  System-wide ``some`` memory PSI in microseconds
++ * per quota reset interval (``quota_reset_interval_ms``) is collected and
++ * compared to this value to see if the aim is satisfied.  Value zero means
++ * disabling this auto-tuning feature.
++ *
++ * Disabled by default.
++ */
++static unsigned long quota_mem_pressure_us __read_mostly;
++module_param(quota_mem_pressure_us, ulong, 0600);
+ 
+ /*
+  * Access frequency threshold for hot memory regions identification in permil.
+@@ -79,8 +91,8 @@ static unsigned long cold_min_age __read_mostly = 120000000;
  module_param(cold_min_age, ulong, 0600);
  
  static struct damos_quota damon_acma_quota = {
@@ -24,7 +47,7 @@ index b84e23c5a770..c664c51eab5e 100644
  	.sz = 0,
  	.reset_interval = 1000,
  	/* Within the quota, mark hotter regions accessed first. */
-@@ -135,15 +135,20 @@ module_param(monitor_region_end, ulong, 0600);
+@@ -135,15 +147,20 @@ module_param(monitor_region_end, ulong, 0600);
  static int kdamond_pid __read_mostly = -1;
  module_param(kdamond_pid, int, 0400);
  
@@ -36,16 +59,16 @@ index b84e23c5a770..c664c51eab5e 100644
 +DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_reclaim_stat,
 +		acma_reclaim_tried_regions, acma_reclaim_succ_regions,
 +		acma_reclaim_quota_exceeds);
++
++static struct damos_stat damon_acma_preempt_stat;
++DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_preempt_stat,
++		acma_preempt_tried_regions, acma_preempt_succ_regions,
++		acma_preempt_quota_exceeds);
  
 -static struct damos_stat damon_acma_cold_stat;
 -DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_cold_stat,
 -		acma_tried_cold_regions, acmaed_cold_regions,
 -		cold_quota_exceeds);
-+static struct damos_stat damon_acma_preempt_stat;
-+DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_preempt_stat,
-+		acma_preempt_tried_regions, acma_preempt_succ_regions,
-+		acma_preempt_quota_exceeds);
-+
 +static struct damos_stat damon_acma_yield_stat;
 +DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_acma_yield_stat,
 +		acma_yield_tried_regions, acma_yield_succ_regions,
@@ -53,7 +76,7 @@ index b84e23c5a770..c664c51eab5e 100644
  
  static struct damos_access_pattern damon_acma_stub_pattern = {
  	/* Find regions having PAGE_SIZE or larger size */
-@@ -165,13 +170,11 @@ static struct damos *damon_acma_new_scheme(
+@@ -165,13 +182,11 @@ static struct damos *damon_acma_new_scheme(
  {
  	struct damos_quota quota = damon_acma_quota;
  
@@ -69,7 +92,7 @@ index b84e23c5a770..c664c51eab5e 100644
  			action,
  			/* for each aggregation interval */
  			0,
-@@ -181,47 +184,36 @@ static struct damos *damon_acma_new_scheme(
+@@ -181,47 +196,36 @@ static struct damos *damon_acma_new_scheme(
  			&damon_acma_wmarks);
  }
  
@@ -130,7 +153,7 @@ index b84e23c5a770..c664c51eab5e 100644
  }
  
  static void damon_acma_copy_quota_status(struct damos_quota *dst,
-@@ -237,9 +229,12 @@ static void damon_acma_copy_quota_status(struct damos_quota *dst,
+@@ -237,9 +241,12 @@ static void damon_acma_copy_quota_status(struct damos_quota *dst,
  
  static int damon_acma_apply_parameters(void)
  {
@@ -146,7 +169,7 @@ index b84e23c5a770..c664c51eab5e 100644
  	int err = 0;
  
  	err = damon_set_attrs(ctx, &damon_acma_mon_attrs);
-@@ -247,34 +242,81 @@ static int damon_acma_apply_parameters(void)
+@@ -247,34 +254,81 @@ static int damon_acma_apply_parameters(void)
  		return err;
  
  	damon_for_each_scheme(scheme, ctx) {
@@ -154,13 +177,13 @@ index b84e23c5a770..c664c51eab5e 100644
 -			old_hot_scheme = scheme;
 +		if (!old_reclaim_scheme) {
 +			old_reclaim_scheme = scheme;
-+			continue;
-+		}
-+		if (!old_preempt_scheme) {
-+			old_preempt_scheme = scheme;
  			continue;
  		}
 -		old_cold_scheme = scheme;
++		if (!old_preempt_scheme) {
++			old_preempt_scheme = scheme;
++			continue;
++		}
 +		old_yield_scheme = scheme;
  	}
  

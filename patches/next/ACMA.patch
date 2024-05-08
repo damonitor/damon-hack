@@ -1,7 +1,83 @@
-From 4832acf18d4dca5a8bf08afd9e439922c24cf850 Mon Sep 17 00:00:00 2001
+From 0004cca39b37fe3228a1a1fcc419c82d339d5ed0 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 11 Apr 2024 16:08:52 -0700
 Subject: [PATCH] ==== ACMA ====
+
+Subject: [RFC PATCH v0] mm/damon: introduce Access/Contiguity-aware Memory Auto-scaling (ACMA)
+
+TL; DR
+======
+
+Extend DAMOS for preempting and yielding memory from and to system for
+exclusive usage, and implement a DAMON module that does auto-scale
+system memory in access and contiguity aware way.
+
+Background
+==========
+
+In some usecases, having a way to preempt contiguous memory regions from
+the others of the system and keeping exclusive ownership in access-aware
+ways can be useful.
+
+Memory Overcommit Virtual Machine Systems
+-----------------------------------------
+
+One example use case is guest-cooperation based memory overcommit
+systems.  In such systems, guests voluntarily report their unnecessary
+memory to the host.  Free pages reporting is such a reporting mechanism.
+Then the host reallocate the reported memory to other guests to maximize
+the host level memory utilization.  The host allows the guest to use the
+memory when required again without any action, since the host can detect
+the usage using the page fault.  In the way, guests can cooperate with
+the host without worrying too severe memory restriction from the host.
+
+When there is enough motivation for the host-level memory utilization,
+guests can increase amount of reporting memory using some more kernel
+features.  To be more memory frugal with minimum perofrmance
+degradation, some access-aware proactive reclamation mechanisms such as
+DAMON_RECLAIM can be used.  To increase reporting efficiency with
+minimum reporting overhead, guests could make reporting granularity
+large (e.g., reporting only 2 MiB-contig free pages), and periodically
+run proactive compaction.  The approach is proven to work well on the
+wild.
+
+However, there are some rooms for improvements.  Firstly, the proactive
+compaction works in system-wide, oblivious to the required contiguity
+size (2 MiB in this example).  As a result, the approach can waste
+resource for unnecessarily huge contiguity.  Also, current compaction
+mechanism is access pattern oblivious.  It would be more efficient to
+compact cold regions first, since it would have low probability to meet
+temporarily pinned or performance-important pages.  Secondly, in some
+setups, the host uses pages of size (e.g., 2 MiB) larger than that of
+the guests (e.g., 4 KiB) to maximize TLB benefit.  As a result, if the
+reporting granularity is smaller than the host's page size, even if the
+guest pages are reported, the host cannot reuse those.  Finally, the
+reported pages can be reused at anytime without any control.  Even if a
+single 4 KiB in-guest page in the reported 2 MiB page is accessed, the
+entire 2 MiB page should be returned to the guest.
+
+Having a way to preempt contiguous memory in only really required
+granularity, and keeping the ownership so that returning some of the
+memory in a way that the contiguity is preserved as much as possible can
+be helpful.
+
+Contiguous Memory Allocation
+----------------------------
+
+For contiguous memory allocation, a large contiguous memory pool is
+required.  Current approaches reserve such regions in early boot time
+before the memory is fragmented, or define specific parts of the memory
+as special type of zones utilizing contiguous memory allocation friendly
+policies.  Reservation-based approach can waste memory, while zone-based
+approach has optimum zone size finding challenge.
+
+Design
+======
+
+For such use cases, we design new DAMOS features for access and
+contiguity-aware memory preemption, and implement a module with it for
+auto-scaling the system memory for the first example, namely cooperative
+memory-overcommit virtual machine systems.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
