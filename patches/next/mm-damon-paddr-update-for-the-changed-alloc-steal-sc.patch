@@ -1,0 +1,88 @@
+From 2ca5a8635b8c49dd51a2b8877ad6a656ed8997ab Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 9 May 2024 16:37:24 -0700
+Subject: [PATCH] mm/damon/paddr: update for the changed alloc/steal scheme
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 28 +++++++++++++++-------------
+ 1 file changed, 15 insertions(+), 13 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index b8ab82c55411..21d9f99126fb 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -348,7 +348,7 @@ static int damon_pa_set_preempted(unsigned long pfn, bool preempted)
+  * event to the report subscribers.  In future, we could add some notification
+  * system of this event for more users such as contig memory allocator.
+  */
+-static int damon_pa_yield(unsigned long pfn)
++static int damon_pa_free(unsigned long pfn, struct damos *scheme)
+ {
+ 	if (!damon_pa_preemted(pfn))
+ 		return -EINVAL;
+@@ -368,7 +368,7 @@ static int damon_pa_yield(unsigned long pfn)
+  * can use the reported memory for their purpose, e.g., letting Host
+  * re-allocate it to other guest, or use as contig allocation memory pool.
+  */
+-static int damon_pa_preempt(unsigned long pfn)
++static int damon_pa_alloc(unsigned long pfn, struct damos *scheme)
+ {
+ 	int err;
+ 
+@@ -382,28 +382,30 @@ static int damon_pa_preempt(unsigned long pfn)
+ 		free_contig_range(pfn, DAMON_MEM_PREEMPT_PAGES);
+ 		return err;
+ 	}
+-	err = page_report(pfn, DAMON_MEM_PREEMPT_PAGES);
++	if (!scheme->alloc_callback)
++		return 0;
++	err = scheme->alloc_callback(PFN_PHYS(pfn));
+ 	if (err) {
+-		damon_pa_yield(pfn);
++		damon_pa_free(pfn);
+ 		return err;
+ 	}
+ 	return 0;
+ }
+ 
+ /* Preempt or yield memory regions from system */
+-static unsigned long damon_pa_preempt_or_yield(
+-		struct damon_region *r, struct damos *s, bool preempt)
++static unsigned long damon_pa_alloc_or_free(
++		struct damon_region *r, struct damos *s, bool alloc)
+ {
+ 	unsigned long pfn;
+ 	unsigned long applied = 0;
+ 
+ 	for (pfn = PHYS_PFN(r->start); pfn < PHYS_PFN(r->end);
+ 			pfn += DAMON_MEM_PREEMPT_PAGES) {
+-		if (preempt) {
+-			if (damon_pa_preempt(pfn))
++		if (alloc) {
++			if (damon_pa_alloc(pfn, s))
+ 				continue;
+ 		} else {
+-			if (damon_pa_yield(pfn))
++			if (damon_pa_free(pfn, s))
+ 				continue;
+ 		}
+ 		applied += 1;
+@@ -425,10 +427,10 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 	case DAMOS_LRU_DEPRIO:
+ 		return damon_pa_deactivate_pages(r, scheme);
+ #ifdef CONFIG_ACMA
+-	case DAMOS_PREEMPT:
+-		return damon_pa_preempt(r, scheme);
+-	case DAMOS_YIELD:
+-		return damon_pa_yield(r, scheme);
++	case DAMOS_ALLOC:
++		return damon_pa_alloc_or_free(r, scheme, true);
++	case DAMOS_FREE:
++		return damon_pa_alloc_or_free(r, scheme, false);
+ #endif
+ 	case DAMOS_STAT:
+ 		break;
+-- 
+2.39.2
+

@@ -1,0 +1,303 @@
+From c019e167b3696dde6f7fb6992dd25a9e7c7fb65d Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 9 May 2024 14:13:52 -0700
+Subject: [PATCH] mm/damon/acma: further cleanup
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/acma.c | 206 +++++++++++++++++++-----------------------------
+ 1 file changed, 83 insertions(+), 123 deletions(-)
+
+diff --git a/mm/damon/acma.c b/mm/damon/acma.c
+index 07c2384d1ac8..b953a8e456d3 100644
+--- a/mm/damon/acma.c
++++ b/mm/damon/acma.c
+@@ -62,10 +62,8 @@ module_param(max_mem, ulong, 0600);
+  * per quota reset interval (``quota_reset_interval_ms``) is collected and
+  * compared to this value to see if the aim is satisfied.  Value zero means
+  * disabling this auto-tuning feature.
+- *
+- * Disabled by default.
+  */
+-static unsigned long quota_mem_pressure_us __read_mostly;
++static unsigned long quota_mem_pressure_us __read_mostly = 5000;
+ module_param(quota_mem_pressure_us, ulong, 0600);
+ 
+ /* scale down/up 512 pages at once */
+@@ -83,17 +81,6 @@ module_param(scale_pg_order, uint, 0600);
+ static unsigned long hot_thres_access_freq = 500;
+ module_param(hot_thres_access_freq, ulong, 0600);
+ 
+-/*
+- * Time threshold for cold memory regions identification in microseconds.
+- *
+- * If a memory region is not accessed for this or longer time, DAMON_ACMA
+- * identifies the region as cold, and mark it as unaccessed on the LRU list, so
+- * that it could be reclaimed first under memory pressure.  120 seconds by
+- * default.
+- */
+-static unsigned long cold_min_age __read_mostly = 120000000;
+-module_param(cold_min_age, ulong, 0600);
+-
+ static struct damos_quota damon_acma_quota = {
+ 	/* Use up to 15 ms per 1 sec, by default */
+ 	.ms = 15,
+@@ -200,47 +187,106 @@ static struct damos *damon_acma_new_scheme(
+ 			&damon_acma_wmarks);
+ }
+ 
++static void damon_acma_copy_quota_status(struct damos_quota *dst,
++		struct damos_quota *src)
++{
++	dst->total_charged_sz = src->total_charged_sz;
++	dst->total_charged_ns = src->total_charged_ns;
++	dst->charged_sz = src->charged_sz;
++	dst->charged_from = src->charged_from;
++	dst->charge_target_from = src->charge_target_from;
++	dst->charge_addr_from = src->charge_addr_from;
++}
++
++static int damon_acma_set_scheme_quota(struct damos *scheme, struct damos *old,
++		damos_quota_goal_metric goal_metric)
++{
++	if (old)
++		damon_acma_copy_quota_status(&scheme->quota, &old->quota);
++	goal = damos_new_quota_goal(goal_metric, quota_mem_pressure_us);
++	if (!goal)
++		return -ENOMEM;
++	damos_add_quota_goal(&scheme->quota, goal);
++	return 0;
++}
++
+ /*
+  * Reclaim cold pages on entire physical address space
+  */
+-static struct damos *damon_acma_new_reclaim_scheme(unsigned int cold_thres)
++static struct damos *damon_acma_new_reclaim_scheme(struct damos *old)
+ {
+ 	struct damos_access_pattern pattern = damon_acma_stub_pattern;
++	struct damos *scheme;
++	int err;
+ 
+ 	pattern.max_nr_accesses = 0;
+-	pattern.min_age_region = cold_thres;
+-	return damon_acma_new_scheme(&pattern, DAMOS_PAGEOUT);
++	scheme = damon_acma_new_scheme(&pattern, DAMOS_PAGEOUT);
++	if (!scheme)
++		return NULL;
++	err = damon_acma_set_scheme_quota(scheme, old,
++			DAMOS_QUOTA_SOME_MEM_PSI_US);
++	if (err) {
++		damon_destroy_scheme(scheme);
++		return NULL;
++	}
++	return scheme;
+ }
+ 
+ /*
+- * Preempt/report cold pages
++ * Scale down scheme
+  */
+-static struct damos *damon_acma_new_scale_down_scheme(void)
++static struct damos *damon_acma_new_scale_down_scheme(struct damos *old)
+ {
+ 	struct damos_access_pattern pattern = damon_acma_stub_pattern;
++	struct damos *scheme;
++	int err;
+ 
+-	return damon_acma_new_scheme(&pattern, DAMOS_ALLOC);
++	scheme = damon_acma_new_scheme(&pattern, DAMOS_ALLOC);
++	if (!scheme)
++		return NULL;
++	err = damon_acma_set_scheme_quota(scheme, old,
++			DAMOS_QUOTA_SOME_MEM_PSI_US);
++	if (err) {
++		damon_destroy_scheme(scheme);
++		return NULL;
++	}
++	/* alloc in 512 pages granularity */
++	scheme->alloc_order = scale_pg_order;
++	scheme->alloc_callback = damon_acma_alloc_callback;
++	err = damon_acma_set_scale_down_region_filter(scale_down_scheme);
++	if (err) {
++		damon_destroy_scheme(scheme);
++		return NULL;
++	}
++	return scheme;
+ }
+ 
+ /*
+- * Yield pages
++ * Scale up scheme
+  */
+ static struct damos *damon_acma_new_scale_up_scheme(void)
+ {
+ 	struct damos_access_pattern pattern = damon_acma_stub_pattern;
++	struct damos *scheme;
++	int err;
+ 
+-	return damon_acma_new_scheme(&pattern, DAMOS_FREE);
+-}
+-
+-static void damon_acma_copy_quota_status(struct damos_quota *dst,
+-		struct damos_quota *src)
+-{
+-	dst->total_charged_sz = src->total_charged_sz;
+-	dst->total_charged_ns = src->total_charged_ns;
+-	dst->charged_sz = src->charged_sz;
+-	dst->charged_from = src->charged_from;
+-	dst->charge_target_from = src->charge_target_from;
+-	dst->charge_addr_from = src->charge_addr_from;
++	scheme = damon_acma_new_scheme(&pattern, DAMOS_FREE);
++	if (!scheme)
++		return NULL;
++	err = damon_acma_set_scheme_quota(scheme, old,
++			DAMOS_QUOTA_SOME_MEM_PUSI_US);
++	if (err) {
++		damon_destroy_scheme(scheme);
++		return NULL;
++	}
++	scheme->alloc_order = scale_pg_order;
++	scheme->alloc_callback = NULL;
++	err = damon_acma_set_scale_up_region_filter(scale_up_scheme);
++	if (err) {
++		damon_destroy_scheme(scale_down_scheme);
++		return NULL;
++	}
++	return scheme;
+ }
+ 
+ static int damon_acma_set_scale_down_region_filter(struct damos *scheme)
+@@ -297,32 +343,6 @@ static int damon_acma_set_scale_up_region_filter(struct damos *scheme)
+ 	return 0;
+ }
+ 
+-static int damon_acma_set_scale_down_region_filter(struct damos *scheme)
+-{
+-	struct damos_filter *filter = damos_new_filter(
+-			DAMOS_FILTER_TYPE_ADDR, false);
+-	unsigned long end, sz_mblock = memoy_block_size_bytes();
+-	unsigned long start_limit, end_limit;
+-
+-	if (!filter)
+-		return -ENOMEM;
+-
+-	start_limit = monitor_region_start + min_mem_kb * KB;
+-	end_limit = monitor_region_end;
+-
+-	/* not-completely-alloc-ed memblock of highest address */
+-	for (end = end_limit; end >= start_limit + sz_mblock;
+-			end -= sz_mblock) {
+-		if (!damon_alloced(end - sz_mblock))
+-			break;
+-	}
+-	filter->addr_range.start = end - sz_mblock;
+-	filter->addr_range.end = end;
+-
+-	damos_add_filter(scheme, filter);
+-	return 0;
+-}
+-
+ /*
+  * Called back from DAMOS for every damos->alloc_order contig pages that
+  * just successfully DAMOS_ALLOC-ed.
+@@ -339,7 +359,6 @@ static int damon_acma_apply_parameters(void)
+ 	struct damos *scale_down_scheme, *scale_up_scheme;
+ 	struct damos *old_reclaim_scheme = NULL, *old_scale_down_scheme = NULL;
+ 	struct damos *old_scale_up_scheme = NULL;
+-	unsigned int cold_thres;
+ 	struct damos_quota_goal *goal;
+ 	int err = 0;
+ 
+@@ -359,84 +378,25 @@ static int damon_acma_apply_parameters(void)
+ 		old_scale_up_scheme = scheme;
+ 	}
+ 
+-	cold_thres = cold_min_age / damon_acma_mon_attrs.aggr_interval;
+-	reclaim_scheme = damon_acma_new_reclaim_scheme(cold_thres);
++	reclaim_scheme = damon_acma_new_reclaim_scheme(old_reclaim_scheme);
+ 	if (!reclaim_scheme)
+ 		return -ENOMEM;
+-	if (old_reclaim_scheme)
+-		damon_acma_copy_quota_status(&reclaim_scheme->quota,
+-				&old_reclaim_scheme->quota);
+-	if (quota_mem_pressure_us) {
+-		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PSI_US,
+-				quota_mem_pressure_us);
+-		if (!goal) {
+-			damon_destroy_scheme(reclaim_scheme);
+-			return -ENOMEM;
+-		}
+-		damos_add_quota_goal(&reclaim_scheme->quota, goal);
+-	}
+-
+ 	damon_set_schemes(ctx, &reclaim_scheme, 1);
+ 
+-	scale_down_scheme = damon_acma_new_scale_down_scheme();
++	scale_down_scheme = damon_acma_new_scale_down_scheme(
++			old_scale_down_scheme);
+ 	if (!scale_down_scheme) {
+ 		damon_destroy_scheme(reclaim_scheme);
+ 		return -ENOMEM;
+ 	}
+-	/* alloc in 512 pages granularity */
+-	scale_down_scheme->alloc_order = scale_pg_order;
+-	scale_down_scheme->alloc_callback = damon_acma_alloc_callback;
+-	if (old_scale_down_scheme)
+-		damon_acma_copy_quota_status(&scale_down_scheme->quota,
+-				&old_scale_down_scheme->quota);
+-	if (quota_mem_pressure_us) {
+-		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PSI_US,
+-				quota_mem_pressure_us);
+-		if (!goal) {
+-			damon_destroy_scheme(scale_down_scheme);
+-			damon_destroy_scheme(reclaim_scheme);
+-			return -ENOMEM;
+-		}
+-		damos_add_quota_goal(&scale_down_scheme->quota, goal);
+-	}
+-	err = damon_acma_set_scale_down_region_filter(scale_down_scheme);
+-	if (err) {
+-		damon_destroy_scheme(scale_down_scheme);
+-		damon_destroy_scheme(reclaim_scheme);
+-		return err;
+-	}
+ 	damon_add_scheme(ctx, scale_down_scheme);
+ 
+-	scale_up_scheme = damon_acma_new_scale_up_scheme();
++	scale_up_scheme = damon_acma_new_scale_up_scheme(old_scale_up_scheme);
+ 	if (!scale_up_scheme) {
+ 		damon_destroy_scheme(scale_down_scheme);
+ 		damon_destroy_scheme(reclaim_scheme);
+ 		return -ENOMEM;
+ 	}
+-	scale_up_scheme->alloc_order = scale_pg_order;
+-	scale_up_scheme->alloc_callback = NULL;
+-	if (old_scale_up_scheme)
+-		damon_acma_copy_quota_status(&scale_up_scheme->quota,
+-				&old_yied_scheme->quota);
+-	if (quota_mem_pressure_us) {
+-		goal = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PUSI_US,
+-				/* reset_interval is in milliseconds */
+-				scale_up_scheme->quota.reset_interval * 1000 -
+-				quota_mem_pressure_us);
+-		if (!goal) {
+-			damon_destroy_scheme(scale_up_scheme);
+-			damon_destroy_scheme(scale_down_scheme);
+-			damon_destroy_scheme(reclaim_scheme);
+-			return -ENOMEM;
+-		}
+-		damos_add_quota_goal(&scale_up_scheme->quota, goal);
+-	}
+-	err = damon_acma_set_scale_up_region_filter(scale_up_scheme);
+-	if (err) {
+-		damon_destroy_scheme(scale_down_scheme);
+-		damon_destroy_scheme(reclaim_scheme);
+-		return -ENOMEM;
+-	}
+ 	damon_add_scheme(ctx, scale_up_scheme);
+ 
+ 	return damon_set_region_biggest_system_ram_default(target,
+-- 
+2.39.2
+
