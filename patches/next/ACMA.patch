@@ -1,4 +1,4 @@
-From fc2b5f2edea3a35084a83fb32342e42430f290ac Mon Sep 17 00:00:00 2001
+From 341567b1479ddd5de3dbf370234422b0f20d40ca Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 11 Apr 2024 16:08:52 -0700
 Subject: [PATCH] ==== ACMA ====
@@ -130,133 +130,194 @@ hot-[un]plugging.  Utilizing the four kernel features that not designed
 to be used together for the specific case from user space in an
 efficient way is somewhat challenging.
 
+Both the host and guest systems are under the service provider's
+control, but the workload is not.  Occasional host-level memory pressure
+is hence inevitable.  The host could avoid such situation by setting
+the host-driven hard memory limit on guests.  Balloon drivers like
+methods could be used.  However, such existing mechanisms lacks the
+understanding of the host's different page size and access-awareness.
+
 Design
 ======
 
-We mitigate the limitations by introducing a way to preempt memory from
-others of the system in access-aware way, and implementing a kernel
+We mitigate the limitations by introducing a way to get ownership of
+contiguous memory regions in an access-aware way, implementing a kernel
 module that automatically scales the memory of the system in an
-access/contiguity-aware way for the use case.
+access/contiguity-aware way, and replacing the approach with the module.
 
-Access-aware Memory Preemption
-------------------------------
+Access-aware Contiguous Memory Allocation
+-----------------------------------------
 
-DAMOS is for applying given memory operations in an access-aware manner.
-Therefore, the major memory operations for improving the use case, page
-isolation and migration with keeping the ownership in an acess-aware
-way, can be implemented as DAMOS schemes.  For this, we design two new
-DAMOS actions, namely 'preemption' and 'yield'.
+As mentioned on the above limitations section, doing page isolations and
+migrations, which are core operations of the memory scaling usage, in
+fine granularity for cold pages first can make some improvements.  DAMOS
+helps applying specific memory operations in an access-aware manner.
+Therefore, we implement the core operations as DAMOS schemes.  For this,
+we design two new DAMOS actions, namely 'alloc' and 'free'.
 
-'Preemption' DAMOS action isolates/migrates pages in the DAMOS target
-memory region into pages out of the region, and get the ownership of the
-pages of the region.  The action also receives minimum granularity to
-apply the operation to.  In implementation, 'alloc_contig_range()' may
-be used.  Once the operation is successfully applied, DAMOS does nothing
-with the operation applied pages but notifies those to the scheme user.
-Then the user can use the pages for thir purpose.  In other words,
-'preemption' DAMOS action takes ownership of DAMON-found region of
-specific access pattern in specific granularity and pass the ownership
-to the user.  For example, the guest of the motivation use case can ask
-DAMOS to 'preempt' cold pages and report those to the host.
+'Alloc' DAMOS action migrates in-use pages of the DAMOS target memory
+region out of the region, and get the ownership of the pages.  The
+action also receives the granularity of the operation to apply at once.
+In implementation, 'alloc_contig_range()' may simply be used.  For each
+given-granular contig pages that successfully allocated, DAMOS does
+nothing but notifies those to the user.  Then the user can use the pages
+for their purpose.  In other words, 'alloc' DAMOS action takes ownership
+of DAMON-found region of specific access pattern in specific granularity
+and passes it to the user.  For example, the guest of the motivation use
+case can ask DAMOS to 'alloc' cold regions in 2 MiB granularity and
+report those to the host as unnecessary, to scale the memory down.
 
-'Yield' DAMOS action returns the ownership of the DAMOS target memory
-region to the others of the system.  For safe ownership management, the
-action notifies the scheme user the pages to apply 'yield' action so
+'Free' DAMOS action returns the ownership of the DAMOS target memory
+region to the system.  Same to 'alloc', the user can specify the
+granularity of each operation.  Before returning the ownership, DAMOS
+notifies the user which pages are gonna be returned to the system, so
 that the user can safely forgive the ownership.  In the page fault based
-memory overcommit use case, the user would need to do nothing.
+memory overcommit use case, the user would not need to do anything for
+such notification, though.
 
 Access/Contiguity-aware Memory Auto-scaling (ACMA)
 --------------------------------------------------
 
-Using the two new DAMOS actions, we design a kernel module for
-substituting the abovely mentioned approach.  The module is called
+Using the two new DAMOS actions, we design a kernel module for replacing
+the abovely mentioned approach.  The module is called
 Access/Contiguity-aware Memory Auto-scaling (ACMA).  ACMA receives three
 user inputs.  Those are the minimum amount of memory to let the system
 use ('min-mem'), the maximum amount of memory to let the system use
 ('max-mem'), and the acceptable level of memory pressure
-('mem-pressure').  'Mem-pressure' is measured by memory pressure stall
-information.  Then, it scales the memory of the system while meeting the
-condition utilizing three DAMON-based operation schemes, namely
-'reclaim', 'preempt', and 'yield'.
+('mem-pressure').  'Mem-pressure' is represented by memory pressure
+stall information (PSI).  Then, it scales the memory of the system while
+meeting the condition utilizing three DAMON-based operation schemes,
+namely 'reclaim', 'scale-down', and 'scale-up'.
 
-'Reclaim' scheme makes the system memory frugal and therefore easy to
-migrate pages to some other place, aiming no-less-than 'mem-pressure'
-memory pressure.  It reclaims memory of the system aiming the
-'mem-pressure' amount of memory pressure, cold pages first.  In other
-words, if the system's memory pressure level is lower than
-'mem-pressure', it reclaims some coldest pages of the system.  The
-amount of memory to reclaim is proportional to distance between current
-pressure level and 'mem-pressure'.  If the memory pressure level becomes
-higher than 'mem-pressure', it stops reclaiming memory until the memory
-pressure level becomes lower than 'mem-pressure'.  This can be
-implemented as a DAMOS scheme of 'pageout' action with a quota tuning
-goal with 'mem-pressure' memory pressure target.
+'Reclaim' scheme reclaims memory of the system, coldest pages first,
+aiming the 'mem-pressure' amount of memory pressure.  That is, if the
+system's memory pressure level is lower than 'mem-pressure', it reclaims
+some coldest pages of the system.  The amount of memory to reclaim is
+proportional to distance between current pressure level and
+'mem-pressure'.  If the memory pressure level becomes higher than
+'mem-pressure', it reduces the amount again in a proportional way until
+the memory pressure level becomes same to or lower than 'mem-pressure'.
+This can be implemented as a DAMOS scheme of 'pageout' action with a
+memory pressure type quota tuning goal of 'mem-pressure' value.
 
-'Preempt' scheme scales the memory down aiming no-less-than
-'mem-pressure' memory pressure.  It is implemented as a DAMOS scheme of
-'preempt' action with 2 MiB operation granularity.  Similar to 'reclaim'
-scheme, it has a quota tuning goal with 'mem-pressure' memory pressure
-target.  For preempted 2 MiB granularity pages, it reports those to the
-host so that the host can reuse.  The scheme has 'address range' type
-scheme filter.  The filter makes the scheme to be applied to only the
-not-completely-stolen memory block of highest starting memory address in
-the physical address range starting from 'min-mem' and ending at the end
-of the address space.  Once current filter-in-target address range is
-entirely preempted, ACMA further hot-unplug the memory block to free up
-'struct page' objects, and update the filter to apply the action to next
-lower-address memory block.
+'Scale-down' scheme scales the memory down aiming the 'mem-pressure'
+memory pressure.  It is implemented as a DAMOS scheme of 'alloc' action
+with 2 MiB operation granularity.  Similar to 'reclaim' scheme, it has a
+memory pressure type quota tuning goal of 'mem-pressure' target value.
+For each allocated 2 MiB contig pages, it applies a vmemmap-remapping
+based 'struct page' optimization and reports those to the host so that
+the host can reuse.  The scheme has 'address range' type scheme filter.
+The filter makes the scheme to be applied to only the memory block of
+highest physical address that not completely allocated/reported, and in
+the physical address range starting from 'min-mem' and enging at the end
+of the physical address space of the system.  Once current 'scale-down'
+target memory block is entirely allocated/reported, ACMA updates the
+filter to apply the action to next lower-address memory block.
 
-'Yield' scheme scales the memory up aiming no-more-than 'mem-pressure'
-memory pressure.  It is implemented as a DAMOS scheme of 'yield' action
-with 2 MiB operation granularity.  It uses quota tuning goal with
-'mem-pressure' memory pressure target like 'reclaim' and 'preempt', but
-it notifies DAMOS that the aggressiveness of the scheme and the memory
-pressure are inversely proportional.  Similar to 'preempt' scheme, it
-uses an 'address range' type scheme filter.  The filter makes the scheme
-to be applied to only the not-completely-stolen memory block of lowest
-starting address in the physical address range starting from '0' and
-ending at the 'max-mem' of the address space.  Once current 'yield'
-target address range is entirely preempted, ACMA further hotplug the
-next higher-address memory block and update the filter to apply the
-action to the just-hotplugged memory block.
+'Scale-up' scheme scales the memory up aiming the 'mem-pressure' memory
+pressure.  It is implemented as a DAMOS scheme of 'free' action with 2
+MiB operation granularity.  It also uses a memory pressure type quota
+tuning goal with 'mem-pressure' target value, but it notifies DAMOS that
+the aggressiveness of the scheme and the memory pressure are inversely
+proportional.  Similar to 'scale-up' scheme, it uses an 'address range'
+type scheme filter.  The filter makes the scheme to be applied to only
+the partially or completely 'alloc'-ed and reported memory block of
+lowest starting address in the physical address range starting from '0'
+and ending at the 'max-mem' of the address space.  Inside the
+to-free-pages notification callback, ACMA cancels the vmemmap-remapping
+based 'struct page' optimization for the pages.  Once current 'scale-up'
+target address range is entirely 'free'-ed, ACMA updates the filter to
+apply the action to the just-hotplugged memory block.
 
-Below illustrates the different address ranges that the schemes are
-applied.  Hence, the effective memory size of the system starts from
-'end' bytes, and automatically be changed depends on the memory pressure
-of the system.  Once it becomes lower than 'max' bytes, it will never
-get greater than 'max' bytes.  It can also never gets lower than 'min'
-bytes.  Because all the schemes auto-tune their aggressiveness based on
-'mem-pressure', the system's memory pressure cannot exceed the
-user-acceptable level.
+Overall Picture of ACMA-running System
+--------------------------------------
 
-    Proactive Reclaim
+Below illustrates how the ACMA's three schemes will be applied to
+different address ranges.  The effective memory size of the system
+starts from 'end' bytes, and automatically be changed depends on the
+real memory pressure of the system.  Once it becomes lower than 'max'
+bytes, it will never get greater than 'max' bytes, since 'scale-up'
+cannot make impact over the limit.  It can also never gets lower than
+'min' bytes because 'scale-down' does not cross the line.  'reclaim'
+scheme make the system memory-frugal and helps 'scale-down' by making
+free pages that can be migrate targets.  Because all the schemes
+auto-tune their aggressiveness based on 'mem-pressure', the system's
+memory pressure cannot exceed the user-acceptable level.
+
+          Reclaim
              │
   ┌──────────┴────────────┐
   │                       │
-  │            Preempt    │
+  │          scale-down   │
                  │
          ┌───────┴────────┐
          │                │
-  0     min     max     end (memory address)
+  0      min-mem max-mem  end (memory address)
   │              │
   └──────┬───────┘
          │
-       Yield
+     Scale-up
 
-  < address ranges that the schemes are applied >
+Ballooning-ACMA Integration
+---------------------------
 
-Possible Future Usage of Access-aware Memory Preemption
+As mentioned on the limitations section above, the host may want to use
+ballooning-like host-driven guest memory limit setup, while existing
+approaches are not access/contiguity-oblivious.  We integrate ballooning
+driver and ACMA for such a case.  We modify ballooning to set the
+'max-mem' of ACMA instead of the classic page allocation-based
+ballooning inflation.  Specifically, we expose a function for setting
+the 'max-mem' of ACMA, and update virtio-balloon driver's
+virtballoon_changed() to use the function to set effective hard memory
+limit of the guest.  In this way, the host can simply use the classical
+and universal virtio-balloon interface while the ballooning driver is
+working in the access/contiguity-aware efficient way.
+
+Possible Future Usage of Access-aware Memory Allocation
 =======================================================
+
+As mentioned on the motivation section above, this work is motivated by
+the memory over-commit VM systems.  However, we believe similar
+approaches could be used for more use cases.  Introducing two such cases
+below.
 
 Contiguous Memory Allocation
 ----------------------------
 
 For contiguous memory allocation, a large contiguous memory pool is
 required.  Current approaches reserve such regions in early boot time
-before the memory is fragmented, or define specific parts of the memory
-as special type of zones utilizing contiguous memory allocation friendly
-policies.  Reservation-based approach can waste memory, while zone-based
-approach has optimum zone size finding challenge.
+before the memory is fragmented.  The pool can exclusively used for only
+the contiguous memory allocation, or allow non-contiguous memory
+allocation to use it under special condition such as allowing only
+movable pages.  The second approach improves the memory utilization, but
+sometimes suffers from pages that movable by definition, but not easily
+movable in practice, similar to the memory block-level page migration
+for memory hot unplugging that described on the limitation section.
+Even without the migration reliability and the speed, finding the
+optimum size of the pool is challenging.
+
+We could use ACMA-like approach for dynamically allocating a memory pool
+for contiguous memory allocation.  It will be similar to ACMA but do not
+report DAMOS-alloc-ed pages to the host.  Instead, use the regions as
+contiguous memory allocation pool.
+
+DRAM Consuming Power Saving
+---------------------------
+
+DRAM consumes and emits huge amount of power and carbon, respectively.
+On bare-meta machines, we could scale down memory using ACMA, hot-unplug
+completely DAMOS-alloc-ed memory blocks, and turn off the DRAM device if
+available.
+
+Discussion Points
+=================
+
+- Is there existing better alternatives for memory over-commit VM
+  systems?
+- Is it ok to reuse pages reporting infrastructure from ACMA?
+- Is it ok to reuse virtio-balloon's interface for ACMA-integration?
+- Will access-aware migration make real benefit?
+- Does future usages of access-aware memory allocation make sense?
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
