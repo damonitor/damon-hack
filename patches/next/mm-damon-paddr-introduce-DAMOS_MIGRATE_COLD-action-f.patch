@@ -1,4 +1,4 @@
-From ddba83122ab6c40c525264dc524544ebf26c51ec Mon Sep 17 00:00:00 2001
+From 79850df446cad5501d94e521be1b9eb38d38361f Mon Sep 17 00:00:00 2001
 From: Honggyu Kim <honggyu.kim@sk.com>
 Date: Fri, 5 Apr 2024 15:08:54 +0900
 Subject: [PATCH] mm/damon/paddr: introduce DAMOS_MIGRATE_COLD action for
@@ -43,27 +43,27 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  3 files changed, 151 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 55b6805d4d3a..94d961e7966c 100644
+index 21d6b69a015c..4e034580c14f 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -110,6 +110,7 @@ struct damon_target {
-  *			&struct damos->alloc_order pages at once.
-  * @DAMOS_FREE:		Return DAMOS_ALLOC-ed pages back to the system.
- #endif
+@@ -105,6 +105,7 @@ struct damon_target {
+  * @DAMOS_NOHUGEPAGE:	Call ``madvise()`` for the region with MADV_NOHUGEPAGE.
+  * @DAMOS_LRU_PRIO:	Prioritize the region on its LRU lists.
+  * @DAMOS_LRU_DEPRIO:	Deprioritize the region on its LRU lists.
 + * @DAMOS_MIGRATE_COLD: Migrate for the given cold region.
   * @DAMOS_STAT:		Do nothing but count the stat.
   * @NR_DAMOS_ACTIONS:	Total number of DAMOS actions
   *
-@@ -131,6 +132,7 @@ enum damos_action {
- 	DAMOS_ALLOC,
- 	DAMOS_FREE,
- #endif
+@@ -122,6 +123,7 @@ enum damos_action {
+ 	DAMOS_NOHUGEPAGE,
+ 	DAMOS_LRU_PRIO,
+ 	DAMOS_LRU_DEPRIO,
 +	DAMOS_MIGRATE_COLD,
  	DAMOS_STAT,		/* Do nothing but only record the stat */
  	NR_DAMOS_ACTIONS,
  };
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index 3ad336eb0261..0b2430910d29 100644
+index ccbfb2722e98..7d380e7c2a25 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
 @@ -12,6 +12,9 @@
@@ -238,16 +238,16 @@ index 3ad336eb0261..0b2430910d29 100644
  	default:
  		/* Unexpected migration mode. */
  		return 0;
-@@ -444,6 +584,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
- 	case DAMOS_FREE:
- 		return damon_pa_alloc_or_free(r, scheme, false);
- #endif
+@@ -348,6 +488,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 		return damon_pa_mark_accessed(r, scheme);
+ 	case DAMOS_LRU_DEPRIO:
+ 		return damon_pa_deactivate_pages(r, scheme);
 +	case DAMOS_MIGRATE_COLD:
 +		return damon_pa_migrate(r, scheme, MIG_MIGRATE_COLD);
  	case DAMOS_STAT:
  		break;
  	default:
-@@ -464,6 +606,8 @@ static int damon_pa_scheme_score(struct damon_ctx *context,
+@@ -368,6 +510,8 @@ static int damon_pa_scheme_score(struct damon_ctx *context,
  		return damon_hot_score(context, r, scheme);
  	case DAMOS_LRU_DEPRIO:
  		return damon_cold_score(context, r, scheme);
@@ -257,18 +257,18 @@ index 3ad336eb0261..0b2430910d29 100644
  		break;
  	}
 diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
-index d2705eef3d9f..1e601e3f5e7d 100644
+index 0632d28b67f8..d9578535c198 100644
 --- a/mm/damon/sysfs-schemes.c
 +++ b/mm/damon/sysfs-schemes.c
-@@ -1462,6 +1462,7 @@ static const char * const damon_sysfs_damos_action_strs[] = {
- 	"damos_alloc",
- 	"damos_free",
- #endif
+@@ -1458,6 +1458,7 @@ static const char * const damon_sysfs_damos_action_strs[] = {
+ 	"nohugepage",
+ 	"lru_prio",
+ 	"lru_deprio",
 +	"migrate_cold",
  	"stat",
  };
  
-@@ -1715,6 +1716,9 @@ static ssize_t target_nid_store(struct kobject *kobj,
+@@ -1711,6 +1712,9 @@ static ssize_t target_nid_store(struct kobject *kobj,
  			struct damon_sysfs_scheme, kobj);
  	int err = 0;
  
