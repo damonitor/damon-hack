@@ -1,0 +1,71 @@
+From 600fcee2877ab6cd3613dac71fd6ea4033e652db Mon Sep 17 00:00:00 2001
+From: Honggyu Kim <honggyu.kim@sk.com>
+Date: Fri, 5 Apr 2024 15:08:51 +0900
+Subject: [PATCH] mm: make alloc_demote_folio externally invokable for
+ migration
+
+The alloc_demote_folio can be used out of vmscan.c so it'd be better to
+remove static keyword from it.
+
+This function can also be used for both demotion and promotion so it'd
+be better to rename it from alloc_demote_folio to alloc_migrate_folio.
+
+Signed-off-by: Honggyu Kim <honggyu.kim@sk.com>
+Link: https://lore.kernel.org/20240405060858.2818-3-honggyu.kim@sk.com
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/internal.h |  1 +
+ mm/vmscan.c   | 10 +++++++---
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index b2c75b12014e..9f967842f636 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1052,6 +1052,7 @@ extern unsigned long  __must_check vm_mmap_pgoff(struct file *, unsigned long,
+         unsigned long, unsigned long);
+ 
+ extern void set_pageblock_order(void);
++struct folio *alloc_migrate_folio(struct folio *src, unsigned long private);
+ unsigned long reclaim_pages(struct list_head *folio_list);
+ unsigned int reclaim_clean_pages_from_list(struct zone *zone,
+ 					    struct list_head *folio_list);
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 6981a71c8ef0..fe3de3466d70 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -933,8 +933,7 @@ static void folio_check_dirty_writeback(struct folio *folio,
+ 		mapping->a_ops->is_dirty_writeback(folio, dirty, writeback);
+ }
+ 
+-static struct folio *alloc_demote_folio(struct folio *src,
+-		unsigned long private)
++struct folio *alloc_migrate_folio(struct folio *src, unsigned long private)
+ {
+ 	struct folio *dst;
+ 	nodemask_t *allowed_mask;
+@@ -958,6 +957,11 @@ static struct folio *alloc_demote_folio(struct folio *src,
+ 	if (dst)
+ 		return dst;
+ 
++	/*
++	 * Allocation failed from the target node so try to allocate from
++	 * fallback nodes based on allowed_mask.
++	 * See fallback_alloc() at mm/slab.c.
++	 */
+ 	mtc->gfp_mask &= ~__GFP_THISNODE;
+ 	mtc->nmask = allowed_mask;
+ 
+@@ -997,7 +1001,7 @@ static unsigned int demote_folio_list(struct list_head *demote_folios,
+ 	node_get_allowed_targets(pgdat, &allowed_mask);
+ 
+ 	/* Demotion ignores all cpuset and mempolicy settings */
+-	migrate_pages(demote_folios, alloc_demote_folio, NULL,
++	migrate_pages(demote_folios, alloc_migrate_folio, NULL,
+ 		      (unsigned long)&mtc, MIGRATE_ASYNC, MR_DEMOTION,
+ 		      &nr_succeeded);
+ 
+-- 
+2.39.2
+

@@ -1,0 +1,133 @@
+From f6b959b2a00d8a13cbbbafd09137ed923e4ea118 Mon Sep 17 00:00:00 2001
+From: Hyeongtak Ji <hyeongtak.ji@sk.com>
+Date: Fri, 5 Apr 2024 15:08:55 +0900
+Subject: [PATCH] mm/damon/paddr: introduce DAMOS_MIGRATE_HOT action for
+ promotion
+
+This patch introduces DAMOS_MIGRATE_HOT action, which is similar to
+DAMOS_MIGRATE_COLD, but it is targeted to migrate hot pages.
+
+It migrates pages inside the given region to the 'target_nid' NUMA node
+in the sysfs.
+
+Here is one of the example usage of this 'migrate_hot' action.
+
+  $ cd /sys/kernel/mm/damon/admin/kdamonds/<N>
+  $ cat contexts/<N>/schemes/<N>/action
+  migrate_hot
+  $ echo 0 > contexts/<N>/schemes/<N>/target_nid
+  $ echo commit > state
+  $ numactl -p 2 ./hot_cold 500M 600M &
+  $ numastat -c -p hot_cold
+
+  Per-node process memory usage (in MBs)
+  PID             Node 0 Node 1 Node 2 Total
+  --------------  ------ ------ ------ -----
+  701 (hot_cold)     501      0    601  1101
+
+Signed-off-by: Hyeongtak Ji <hyeongtak.ji@sk.com>
+Signed-off-by: Honggyu Kim <honggyu.kim@sk.com>
+Link: https://lore.kernel.org/20240405060858.2818-7-honggyu.kim@sk.com
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    |  2 ++
+ mm/damon/paddr.c         | 12 ++++++++++--
+ mm/damon/sysfs-schemes.c |  4 +++-
+ 3 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 94d961e7966c..1b4f1d18f168 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -110,6 +110,7 @@ struct damon_target {
+  *			&struct damos->alloc_order pages at once.
+  * @DAMOS_FREE:		Return DAMOS_ALLOC-ed pages back to the system.
+ #endif
++ * @DAMOS_MIGRATE_HOT:  Migrate for the given hot region.
+  * @DAMOS_MIGRATE_COLD: Migrate for the given cold region.
+  * @DAMOS_STAT:		Do nothing but count the stat.
+  * @NR_DAMOS_ACTIONS:	Total number of DAMOS actions
+@@ -132,6 +133,7 @@ enum damos_action {
+ 	DAMOS_ALLOC,
+ 	DAMOS_FREE,
+ #endif
++	DAMOS_MIGRATE_HOT,
+ 	DAMOS_MIGRATE_COLD,
+ 	DAMOS_STAT,		/* Do nothing but only record the stat */
+ 	NR_DAMOS_ACTIONS,
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 0b2430910d29..beb3dfdf34e8 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -245,6 +245,7 @@ static bool damos_pa_filter_out(struct damos *scheme, struct folio *folio)
+ 
+ enum migration_mode {
+ 	MIG_PAGEOUT,
++	MIG_MIGRATE_HOT,
+ 	MIG_MIGRATE_COLD,
+ };
+ 
+@@ -407,8 +408,10 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
+ 		if (damos_pa_filter_out(s, folio))
+ 			goto put_folio;
+ 
+-		folio_clear_referenced(folio);
+-		folio_test_clear_young(folio);
++		if (mm != MIG_MIGRATE_HOT) {
++			folio_clear_referenced(folio);
++			folio_test_clear_young(folio);
++		}
+ 		if (!folio_isolate_lru(folio))
+ 			goto put_folio;
+ 		/*
+@@ -428,6 +431,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
+ 	case MIG_PAGEOUT:
+ 		applied = reclaim_pages(&folio_list);
+ 		break;
++	case MIG_MIGRATE_HOT:
+ 	case MIG_MIGRATE_COLD:
+ 		applied = damon_pa_migrate_pages(&folio_list, mm,
+ 						 s->target_nid);
+@@ -584,6 +588,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 	case DAMOS_FREE:
+ 		return damon_pa_alloc_or_free(r, scheme, false);
+ #endif
++	case DAMOS_MIGRATE_HOT:
++		return damon_pa_migrate(r, scheme, MIG_MIGRATE_HOT);
+ 	case DAMOS_MIGRATE_COLD:
+ 		return damon_pa_migrate(r, scheme, MIG_MIGRATE_COLD);
+ 	case DAMOS_STAT:
+@@ -606,6 +612,8 @@ static int damon_pa_scheme_score(struct damon_ctx *context,
+ 		return damon_hot_score(context, r, scheme);
+ 	case DAMOS_LRU_DEPRIO:
+ 		return damon_cold_score(context, r, scheme);
++	case DAMOS_MIGRATE_HOT:
++		return damon_hot_score(context, r, scheme);
+ 	case DAMOS_MIGRATE_COLD:
+ 		return damon_cold_score(context, r, scheme);
+ 	default:
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 1e601e3f5e7d..96d657ff8fa2 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1462,6 +1462,7 @@ static const char * const damon_sysfs_damos_action_strs[] = {
+ 	"damos_alloc",
+ 	"damos_free",
+ #endif
++	"migrate_hot",
+ 	"migrate_cold",
+ 	"stat",
+ };
+@@ -1716,7 +1717,8 @@ static ssize_t target_nid_store(struct kobject *kobj,
+ 			struct damon_sysfs_scheme, kobj);
+ 	int err = 0;
+ 
+-        if (scheme->action != DAMOS_MIGRATE_COLD)
++        if (scheme->action != DAMOS_MIGRATE_HOT &&
++            scheme->action != DAMOS_MIGRATE_COLD)
+                 return -EINVAL;
+ 
+ 	/* TODO: error handling for target_nid range. */
+-- 
+2.39.2
+

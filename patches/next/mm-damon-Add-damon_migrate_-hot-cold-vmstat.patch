@@ -1,0 +1,101 @@
+From a08dddfdda58073944b01e30aab09a9b18ed7346 Mon Sep 17 00:00:00 2001
+From: Honggyu Kim <honggyu.kim@sk.com>
+Date: Fri, 5 Apr 2024 15:08:56 +0900
+Subject: [PATCH] mm/damon: Add "damon_migrate_{hot,cold}" vmstat
+
+This patch adds "damon_migrate_{hot,cold}" under node specific vmstat
+counters at the following location.
+
+  /sys/devices/system/node/node*/vmstat
+
+The counted values are accumulcated to the global vmstat so it also
+introduces the same counter at /proc/vmstat as well.
+
+Signed-off-by: Honggyu Kim <honggyu.kim@sk.com>
+Link: https://lore.kernel.org/20240405060858.2818-8-honggyu.kim@sk.com
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/mmzone.h |  4 ++++
+ mm/damon/paddr.c       | 17 ++++++++++++++++-
+ mm/vmstat.c            |  4 ++++
+ 3 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index c11b7cde81ef..42eafd3e3232 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -217,6 +217,10 @@ enum node_stat_item {
+ 	PGDEMOTE_KSWAPD,
+ 	PGDEMOTE_DIRECT,
+ 	PGDEMOTE_KHUGEPAGED,
++#ifdef CONFIG_DAMON_PADDR
++	DAMON_MIGRATE_HOT,
++	DAMON_MIGRATE_COLD,
++#endif
+ 	NR_VM_NODE_STAT_ITEMS
+ };
+ 
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index beb3dfdf34e8..6336bc3861c5 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -251,10 +251,23 @@ enum migration_mode {
+ 
+ static unsigned int migrate_folio_list(struct list_head *migrate_folios,
+ 				       struct pglist_data *pgdat,
++				       enum migration_mode mm,
+ 				       int target_nid)
+ {
+ 	unsigned int nr_succeeded;
+ 	nodemask_t allowed_mask = NODE_MASK_NONE;
++	enum node_stat_item node_stat;
++
++	switch (mm) {
++	case MIG_MIGRATE_HOT:
++		node_stat = DAMON_MIGRATE_HOT;
++		break;
++	case MIG_MIGRATE_COLD:
++		node_stat = DAMON_MIGRATE_COLD;
++		break;
++	default:
++		return 0;
++	}
+ 
+ 	struct migration_target_control mtc = {
+ 		/*
+@@ -279,6 +292,8 @@ static unsigned int migrate_folio_list(struct list_head *migrate_folios,
+ 		      (unsigned long)&mtc, MIGRATE_ASYNC, MR_DAMON,
+ 		      &nr_succeeded);
+ 
++	mod_node_page_state(pgdat, node_stat, nr_succeeded);
++
+ 	return nr_succeeded;
+ }
+ 
+@@ -318,7 +333,7 @@ static unsigned int damon_pa_migrate_folio_list(struct list_head *folio_list,
+ 	/* 'folio_list' is always empty here */
+ 
+ 	/* Migrate folios selected for migration */
+-	nr_migrated += migrate_folio_list(&migrate_folios, pgdat, target_nid);
++	nr_migrated += migrate_folio_list(&migrate_folios, pgdat, mm, target_nid);
+ 	/* Folios that could not be migrated are still in @migrate_folios */
+ 	if (!list_empty(&migrate_folios)) {
+ 		/* Folios which weren't migrated go back on @folio_list */
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index db79935e4a54..be9ba89fede1 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -1252,6 +1252,10 @@ const char * const vmstat_text[] = {
+ 	"pgdemote_kswapd",
+ 	"pgdemote_direct",
+ 	"pgdemote_khugepaged",
++#ifdef CONFIG_DAMON_PADDR
++	"damon_migrate_hot",
++	"damon_migrate_cold",
++#endif
+ 
+ 	/* enum writeback_stat_item counters */
+ 	"nr_dirty_threshold",
+-- 
+2.39.2
+
