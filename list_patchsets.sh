@@ -15,6 +15,8 @@ versions=(
 	v6.5
 	v6.6
 	v6.7
+	v6.8
+	v6.9
 )
 
 for (( i=0; i<$(( "${#versions[@]}" - 1 )); i++ ))
