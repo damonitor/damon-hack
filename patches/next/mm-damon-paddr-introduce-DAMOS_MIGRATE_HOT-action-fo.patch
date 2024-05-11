@@ -1,4 +1,4 @@
-From 3ed081c903446101a98a5ed50a9d04690d792cd3 Mon Sep 17 00:00:00 2001
+From 47979a0977f6142c7524ae29a4fa6a406e0ad8ac Mon Sep 17 00:00:00 2001
 From: Hyeongtak Ji <hyeongtak.ji@sk.com>
 Date: Fri, 5 Apr 2024 15:08:55 +0900
 Subject: [PATCH] mm/damon/paddr: introduce DAMOS_MIGRATE_HOT action for
@@ -30,20 +30,20 @@ Signed-off-by: Honggyu Kim <honggyu.kim@sk.com>
 Link: https://lore.kernel.org/20240405060858.2818-7-honggyu.kim@sk.com
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h    |  2 ++
- mm/damon/paddr.c         | 12 ++++++++++--
- mm/damon/sysfs-schemes.c |  1 +
- 3 files changed, 13 insertions(+), 2 deletions(-)
+ include/linux/damon.h    | 2 ++
+ mm/damon/paddr.c         | 8 ++++++--
+ mm/damon/sysfs-schemes.c | 1 +
+ 3 files changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 56714b6eb0d7..04f435f3a9a3 100644
+index 56714b6eb0d7..3d62d98d6359 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -105,6 +105,7 @@ struct damon_target {
   * @DAMOS_NOHUGEPAGE:	Call ``madvise()`` for the region with MADV_NOHUGEPAGE.
   * @DAMOS_LRU_PRIO:	Prioritize the region on its LRU lists.
   * @DAMOS_LRU_DEPRIO:	Deprioritize the region on its LRU lists.
-+ * @DAMOS_MIGRATE_HOT:  Migrate for the given hot region.
++ * @DAMOS_MIGRATE_HOT:  Migrate the regions prioritizing warmer regions.
   * @DAMOS_MIGRATE_COLD:	Migrate the regions prioritizing colder regions.
   * @DAMOS_STAT:		Do nothing but count the stat.
   * @NR_DAMOS_ACTIONS:	Total number of DAMOS actions
@@ -56,7 +56,7 @@ index 56714b6eb0d7..04f435f3a9a3 100644
  	DAMOS_STAT,		/* Do nothing but only record the stat */
  	NR_DAMOS_ACTIONS,
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index f4de97a9cdb9..b8c65279a4c4 100644
+index f4de97a9cdb9..8182af8cb950 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
 @@ -245,6 +245,7 @@ static bool damos_pa_filter_out(struct damos *scheme, struct folio *folio)
@@ -67,20 +67,16 @@ index f4de97a9cdb9..b8c65279a4c4 100644
  	MIG_MIGRATE_COLD,
  };
  
-@@ -400,8 +401,10 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
+@@ -400,8 +401,6 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
  		if (damos_pa_filter_out(s, folio))
  			goto put_folio;
  
 -		folio_clear_referenced(folio);
 -		folio_test_clear_young(folio);
-+		if (mm != MIG_MIGRATE_HOT) {
-+			folio_clear_referenced(folio);
-+			folio_test_clear_young(folio);
-+		}
  		if (!folio_isolate_lru(folio))
  			goto put_folio;
  		/*
-@@ -421,6 +424,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
+@@ -421,6 +420,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
  	case DAMOS_MIG_PAGEOUT:
  		applied = reclaim_pages(&folio_list);
  		break;
@@ -88,7 +84,7 @@ index f4de97a9cdb9..b8c65279a4c4 100644
  	case MIG_MIGRATE_COLD:
  		applied = damon_pa_migrate_pages(&folio_list, s->target_nid);
  		break;
-@@ -480,6 +484,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+@@ -480,6 +480,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
  		return damon_pa_mark_accessed(r, scheme);
  	case DAMOS_LRU_DEPRIO:
  		return damon_pa_deactivate_pages(r, scheme);
@@ -97,7 +93,7 @@ index f4de97a9cdb9..b8c65279a4c4 100644
  	case DAMOS_MIGRATE_COLD:
  		return damon_pa_migrate(r, scheme, MIG_MIGRATE_COLD);
  	case DAMOS_STAT:
-@@ -502,6 +508,8 @@ static int damon_pa_scheme_score(struct damon_ctx *context,
+@@ -502,6 +504,8 @@ static int damon_pa_scheme_score(struct damon_ctx *context,
  		return damon_hot_score(context, r, scheme);
  	case DAMOS_LRU_DEPRIO:
  		return damon_cold_score(context, r, scheme);
