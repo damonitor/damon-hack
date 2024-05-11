@@ -1,4 +1,4 @@
-From a7816bfff63cabd19b2a004f5e0663b6c1b0860f Mon Sep 17 00:00:00 2001
+From d400c1ccae46eaaa4c114e9d647da1d41adf480d Mon Sep 17 00:00:00 2001
 From: Honggyu Kim <honggyu.kim@sk.com>
 Date: Fri, 5 Apr 2024 15:08:56 +0900
 Subject: [PATCH] mm/damon: Add "damon_migrate_{hot,cold}" vmstat
@@ -16,9 +16,9 @@ Link: https://lore.kernel.org/20240405060858.2818-8-honggyu.kim@sk.com
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/mmzone.h |  4 ++++
- mm/damon/paddr.c       | 24 ++++++++++++++++++++----
+ mm/damon/paddr.c       | 30 ++++++++++++++++++++++++------
  mm/vmstat.c            |  4 ++++
- 3 files changed, 28 insertions(+), 4 deletions(-)
+ 3 files changed, 32 insertions(+), 6 deletions(-)
 
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
 index c11b7cde81ef..42eafd3e3232 100644
@@ -36,7 +36,7 @@ index c11b7cde81ef..42eafd3e3232 100644
  };
  
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index 7903d346c7d8..91b938f9a261 100644
+index 8182af8cb950..a0cc48ed3e63 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
 @@ -251,10 +251,23 @@ enum migration_mode {
@@ -88,24 +88,42 @@ index 7903d346c7d8..91b938f9a261 100644
  	/*
  	 * Folios that could not be migrated are still in @migrate_folios.  Add
  	 * those back on @folio_list
-@@ -407,7 +423,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
- 		 * Since unevictable folios can be migrated, unevictable test
- 		 * is needed only for pageout.
- 		 */
--		if (mm == MIG_PAGEOUT && folio_test_unevictable(folio))
-+		if (mode == MIG_PAGEOUT && folio_test_unevictable(folio))
- 			folio_putback_lru(folio);
- 		else
- 			list_add(&folio->lru, &folio_list);
-@@ -422,7 +438,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
+@@ -334,7 +350,8 @@ static unsigned int damon_pa_migrate_folio_list(struct list_head *folio_list,
+ }
+ 
+ static unsigned long damon_pa_migrate_pages(struct list_head *folio_list,
+-					    int target_nid)
++					    int target_nid,
++					    enum migration_mode mode)
+ {
+ 	int nid;
+ 	unsigned long nr_migrated = 0;
+@@ -357,13 +374,13 @@ static unsigned long damon_pa_migrate_pages(struct list_head *folio_list,
+ 
+ 		nr_migrated += damon_pa_migrate_folio_list(&node_folio_list,
+ 							   NODE_DATA(nid),
+-							   target_nid);
++							   mode, target_nid);
+ 		nid = folio_nid(lru_to_folio(folio_list));
+ 	} while (!list_empty(folio_list));
+ 
+ 	nr_migrated += damon_pa_migrate_folio_list(&node_folio_list,
+ 						   NODE_DATA(nid),
+-						   target_nid);
++						   mode, target_nid);
+ 
+ 	memalloc_noreclaim_restore(noreclaim_flag);
+ 
+@@ -422,7 +439,8 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s,
  		break;
  	case MIG_MIGRATE_HOT:
  	case MIG_MIGRATE_COLD:
--		applied = damon_pa_migrate_pages(&folio_list, mm,
-+		applied = damon_pa_migrate_pages(&folio_list, mode,
- 						 s->target_nid);
+-		applied = damon_pa_migrate_pages(&folio_list, s->target_nid);
++		applied = damon_pa_migrate_pages(&folio_list, s->target_nid,
++				mode);
  		break;
  	default:
+ 		/* Unexpected migration mode. */
 diff --git a/mm/vmstat.c b/mm/vmstat.c
 index db79935e4a54..be9ba89fede1 100644
 --- a/mm/vmstat.c
