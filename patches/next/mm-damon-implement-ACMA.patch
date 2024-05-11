@@ -1,21 +1,21 @@
-From 08583c19c7bb16c2b573acc962f8cf6483e8c2db Mon Sep 17 00:00:00 2001
+From 5292b2a570bca063173844811c5fc687a48ecc66 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Sat, 4 May 2024 15:23:05 -0700
 Subject: [PATCH] mm/damon: implement ACMA
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h    |  11 +
+ include/linux/damon.h    |  37 +++
  mm/damon/Kconfig         |  10 +
  mm/damon/Makefile        |   1 +
- mm/damon/acma.c          | 522 +++++++++++++++++++++++++++++++++++++++
- mm/damon/paddr.c         |  96 +++++++
+ mm/damon/acma.c          | 546 +++++++++++++++++++++++++++++++++++++++
+ mm/damon/paddr.c         |  93 +++++++
  mm/damon/sysfs-schemes.c |   4 +
- 6 files changed, 644 insertions(+)
+ 6 files changed, 691 insertions(+)
  create mode 100644 mm/damon/acma.c
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 79feff94fe1b..577fba452d0a 100644
+index 79feff94fe1b..6a87fc483f6b 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -107,6 +107,11 @@ struct damon_target {
@@ -41,15 +41,62 @@ index 79feff94fe1b..577fba452d0a 100644
  	DAMOS_STAT,		/* Do nothing but only record the stat */
  	NR_DAMOS_ACTIONS,
  };
-@@ -409,6 +418,8 @@ struct damos_access_pattern {
+@@ -375,6 +384,11 @@ struct damos_access_pattern {
+  * struct damos - Represents a Data Access Monitoring-based Operation Scheme.
+  * @pattern:		Access pattern of target regions.
+  * @action:		&damo_action to be applied to the target regions.
++#ifdef CONFIG_ACMA
++ * @alloc_order:	DAMOS_ALLOC/FREE applying granularity.
++ * @alloc_callback:	DAMOS_ALLOC success callback.
++ * @free_callback:	DAMOS_FREE callback.
++#endif
+  * @apply_interval_us:	The time between applying the @action.
+  * @quota:		Control the aggressiveness of this scheme.
+  * @wmarks:		Watermarks for automated (in)activation of this scheme.
+@@ -388,6 +402,18 @@ struct damos_access_pattern {
+  * CPU time or IO resources for the &action, &quota is used.
+  *
+  * If @apply_interval_us is zero, &damon_attrs->aggr_interval is used instead.
++#ifdef CONFIG_ACMA
++ *
++ * If @action is CONFIG_ALLOC or CONFIG_FREE, the action is applied to
++ * @alloc_order pages of the region at once.  For example, if the region has
++ * 1024 pages, and @alloc_order is 9, DAMOS tries to allocate or free first 512
++ * (2^9) contiguous pages at once, and then next 512 pages.
++ *
++ * For each success of such allocation attemp, @alloc_callback is called back.
++ * For each attempt of deallocation, @free_callback is called back first,
++ * before trying the deallocation.  If @free_callback returns non-zero, the
++ * deallocation attempt is aborted.
++#endif
+  *
+  * To do the work only when needed, schemes can be activated for specific
+  * system situations using &wmarks.  If all schemes that registered to the
+@@ -409,6 +435,11 @@ struct damos_access_pattern {
  struct damos {
  	struct damos_access_pattern pattern;
  	enum damos_action action;
++#ifdef CONFIG_ACMA
 +	unsigned int alloc_order;
 +	int (*alloc_callback)(unsigned long start_addr);
++	int (*free_callback)(unsigned long start_addr);
++#endif
  	unsigned long apply_interval_us;
  /* private: internal use only */
  	/*
+@@ -784,6 +815,12 @@ int damon_stop(struct damon_ctx **ctxs, int nr_ctxs);
+ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+ 				unsigned long *start, unsigned long *end);
+ 
++#ifdef CONFIG_ACMA
++
++unsigned long damon_alloced_bytes(void);
++
++#endif
++
+ #endif	/* CONFIG_DAMON */
+ 
+ #endif	/* _DAMON_H */
 diff --git a/mm/damon/Kconfig b/mm/damon/Kconfig
 index fecb8172410c..4fe7520601dd 100644
 --- a/mm/damon/Kconfig
@@ -80,10 +127,10 @@ index f7add3f4aa79..814c8da3081b 100644
 +obj-$(CONFIG_DAMON_ACMA)	+= modules-common.o acma.o
 diff --git a/mm/damon/acma.c b/mm/damon/acma.c
 new file mode 100644
-index 000000000000..bdc3694cfc26
+index 000000000000..32827cbf2fa7
 --- /dev/null
 +++ b/mm/damon/acma.c
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,546 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * DAMON-based Access/Contiguity-aware Memory Auto-scaling
@@ -133,9 +180,17 @@ index 000000000000..bdc3694cfc26
 +static bool commit_inputs __read_mostly;
 +module_param(commit_inputs, bool, 0600);
 +
++/*
++ * Minimum amount of memory to be guaranteed to the system.  In other words,
++ * the lower limit of the scaling.
++ */
 +static unsigned long min_mem_kb __read_mostly;
 +module_param(min_mem, ulong, 0600);
 +
++/*
++ * Maximum amount of memory to be guaranteed to the system.  In other words,
++ * the upper limit of the scaling.
++ */
 +static unsigned long max_mem_kb __read_mostly;
 +module_param(max_mem, ulong, 0600);
 +
@@ -148,27 +203,27 @@ index 000000000000..bdc3694cfc26
 + * per quota reset interval (``quota_reset_interval_ms``) is collected and
 + * compared to this value to see if the aim is satisfied.  Value zero means
 + * disabling this auto-tuning feature.
++ *
++ * 1 ms/ 1 second (0.1%) by default.  Inspired by the PSI threshold of TMO
++ * (https://dl.acm.org/doi/10.1145/3503222.3507731).
 + */
-+static unsigned long quota_mem_pressure_us __read_mostly = 5000;
++static unsigned long quota_mem_pressure_us __read_mostly = 1000;
 +module_param(quota_mem_pressure_us, ulong, 0600);
 +
-+/* scale down/up 512 pages at once */
++/*
++ * Basic scale down/up granularity.  ACMA will allocate and report contiguous
++ * pages of this size at once.  512 pages (2 MiB for 4 KiB page setup) by
++ * default.
++ *
++ * To minimize DAMON-internal ALLOC-ed memory management overhead, we further
++ * apply SCALE_WINDOW.  Refer to damon_acma_set_scale_down_region_filter() for
++ * more detail about it.
++ */
 +static unsigned int scale_pg_order __read_mostly = 9;
 +module_param(scale_pg_order, uint, 0600);
 +
-+/*
-+ * Access frequency threshold for hot memory regions identification in permil.
-+ *
-+ * If a memory region is accessed in frequency of this or higher,
-+ * DAMON_ACMA identifies the region as hot, and mark it as accessed on the
-+ * LRU list, so that it could not be reclaimed under memory pressure.  50% by
-+ * default.
-+ */
-+static unsigned long hot_thres_access_freq = 500;
-+module_param(hot_thres_access_freq, ulong, 0600);
-+
 +static struct damos_quota damon_acma_quota = {
-+	/* Use up to 15 ms per 1 sec, by default */
++	/* Use up to 15 ms per 1 sec for scaling, by default */
 +	.ms = 15,
 +	.sz = 0,
 +	.reset_interval = 1000,
@@ -180,17 +235,12 @@ index 000000000000..bdc3694cfc26
 +DEFINE_DAMON_MODULES_DAMOS_TIME_QUOTA(damon_acma_quota);
 +
 +static struct damos_watermarks damon_acma_wmarks = {
-+	.metric = DAMOS_WMARK_FREE_MEM_RATE,
-+	.interval = 5000000,	/* 5 seconds */
-+	.high = 200,		/* 20 percent */
-+	.mid = 150,		/* 15 percent */
-+	.low = 50,		/* 5 percent */
++	.metric = DAMOS_WMARK_NONE,
 +};
-+DEFINE_DAMON_MODULES_WMARKS_PARAMS(damon_acma_wmarks);
 +
 +static struct damon_attrs damon_acma_mon_attrs = {
-+	.sample_interval = 5000,	/* 5 ms */
-+	.aggr_interval = 100000,	/* 100 ms */
++	.sample_interval = 1000000,	/* 1 second */
++	.aggr_interval = 20000000,	/* 20 seconds */
 +	.ops_update_interval = 0,
 +	.min_nr_regions = 10,
 +	.max_nr_regions = 1000,
@@ -265,8 +315,8 @@ index 000000000000..bdc3694cfc26
 +	return damon_new_scheme(
 +			pattern,
 +			action,
-+			/* for each aggregation interval */
-+			0,
++			/* work for every second */
++			1000000,
 +			/* under the quota. */
 +			&quota,
 +			/* (De)activate this according to the watermarks. */
@@ -294,6 +344,91 @@ index 000000000000..bdc3694cfc26
 +		return -ENOMEM;
 +	damos_add_quota_goal(&scheme->quota, goal);
 +	return 0;
++}
++
++/*
++ * scale_pg_order is for basic scaling granularity.  Have a larger granularity
++ * to limit DAMON-internal alloc-ed pages management overhead.
++ */
++#define SCALE_WINDOW	(128 * MB)
++
++/*
++ * Set scale_down scheme's address range type filter to apply scaling down to
++ * only current scaling window.  Scaling window is SCALE_WINDOW size contiguous
++ * memory region of highest address that not yet completely DAMOS_ALLOC-ed and
++ * reported.
++ *
++ * TODO: Apply 'struct page' reduction in SCALE_WINDOW or lower granularity.
++ * E.g., hot-unplug the memory block, or apply vmemmap remapping-based approach
++ * like hugetlb vmemmap optimization
++ * (https://docs.kernel.org/mm/vmemmap_dedup.html).
++ */
++static int damon_acma_set_scale_down_region_filter(struct damos *scheme)
++{
++	struct damos_filter *filter = damos_new_filter(
++			DAMOS_FILTER_TYPE_ADDR, false);
++	unsigned long end;
++	unsigned long start_limit, end_limit;
++
++	if (!filter)
++		return -ENOMEM;
++
++	/* scale down no below min_mem_kb */
++	end_limit = monitor_region_end;
++	start_limit = monitor_region_start + min_mem_kb * KB;
++
++	/* not-completely-alloc-ed SCALE_WINDOW region of highest address */
++	for (end = end_limit; end >= start_limit + SCALE_WINDOW;
++			end -= SCALE_WINDOW) {
++		if (damon_alloced_bytes(end, end - SCALE_WINDOW)
++				!= SCALE_WINDOW)
++			break;
++	}
++	filter->addr_range.start = max(start_limit, end - SCALE_WINDOW);
++	filter->addr_range.end = end;
++
++	damos_add_filter(scheme, filter);
++	return 0;
++}
++
++/*
++ * Similar to damon_acma_set_scale_down_region_filter() but for scaling up.
++ */
++static int damon_acma_set_scale_up_region_filter(struct damos *scheme)
++{
++	struct damos_filter *filter = damos_new_filter(
++			DAMOS_FILTER_TYPE_ADDR, false);
++	unsigned long start;
++	unsigned long start_limit, end_limit;
++
++	if (!filter)
++		return -ENOMEM;
++
++	/* scale up no above max_mem_kb */
++	start_limit = monitor_region_start;
++	end_limit = start_limit + max_mem_kb * KB;
++
++	/* not-completely-free-ed SCALE_WINDOW region of lowest address */
++	for (start = start_limit; start <= end_limit - SCALE_WINDOW;
++			start += SCALE_WINDOW) {
++		if (damon_alloced_bytes(end - SCALE_WINDOW))
++			break;
++	}
++	filter->addr_range.start = start;
++	filter->addr_range.end = min(end_limit, start + SCALE_WINDOW);
++
++	damos_add_filter(scheme, filter);
++	return 0;
++}
++
++/*
++ * Called back from DAMOS for every damos->alloc_order contig pages that
++ * just successfully DAMOS_ALLOC-ed.
++ */
++static int damon_acma_alloc_callback(unsigned long start_addr)
++{
++	/* For non-zero return value, DAMOS free the pages. */
++	return page_report(PHYS_PFN(addr), 1 << scale_pg_order);
 +}
 +
 +/*
@@ -373,70 +508,6 @@ index 000000000000..bdc3694cfc26
 +		return NULL;
 +	}
 +	return scheme;
-+}
-+
-+static int damon_acma_set_scale_down_region_filter(struct damos *scheme)
-+{
-+	struct damos_filter *filter = damos_new_filter(
-+			DAMOS_FILTER_TYPE_ADDR, false);
-+	unsigned long end, sz_mblock = memoy_block_size_bytes();
-+	unsigned long start_limit, end_limit;
-+
-+	if (!filter)
-+		return -ENOMEM;
-+
-+	/* scale down no below min_mem_kb */
-+	end_limit = monitor_region_end;
-+	start_limit = monitor_region_start + min_mem_kb * KB;
-+
-+	/* not-completely-alloc-ed memblock of highest address */
-+	for (end = end_limit; end >= start_limit + sz_mblock;
-+			end -= sz_mblock) {
-+		if (damon_alloced_bytes(end, end - sz_mblock) != sz_mblock)
-+			break;
-+	}
-+	filter->addr_range.start = max(start_limit, end - sz_mblock);
-+	filter->addr_range.end = end;
-+
-+	damos_add_filter(scheme, filter);
-+	return 0;
-+}
-+
-+static int damon_acma_set_scale_up_region_filter(struct damos *scheme)
-+{
-+	struct damos_filter *filter = damos_new_filter(
-+			DAMOS_FILTER_TYPE_ADDR, false);
-+	unsigned long start, sz_mblock = memoy_block_size_bytes();
-+	unsigned long start_limit, end_limit;
-+
-+	if (!filter)
-+		return -ENOMEM;
-+
-+	/* scale up no above max_mem_kb */
-+	start_limit = monitor_region_start;
-+	end_limit = start_limit + max_mem_kb * KB;
-+
-+	/* not-completely-free-ed memblock of lowest address */
-+	for (start = start_limit; start <= end_limit - sz_mblock;
-+			start += sz_mblock) {
-+		if (damon_alloced_bytes(end - sz_mblock))
-+			break;
-+	}
-+	filter->addr_range.start = start;
-+	filter->addr_range.end = min(end_limit, start + sz_mblock);
-+
-+	damos_add_filter(scheme, filter);
-+	return 0;
-+}
-+
-+/*
-+ * Called back from DAMOS for every damos->alloc_order contig pages that
-+ * just successfully DAMOS_ALLOC-ed.
-+ */
-+static int damon_acma_alloc_callback(unsigned long start_addr)
-+{
-+	/* For non-zero return value, DAMOS free the pages. */
-+	return page_report(PHYS_PFN(addr), 1 << scale_pg_order);
 +}
 +
 +static int damon_acma_apply_parameters(void)
@@ -607,17 +678,14 @@ index 000000000000..bdc3694cfc26
 +
 +module_init(damon_acma_init);
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index 2619d91d132f..140db84fa86e 100644
+index 2619d91d132f..38c0f6944168 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -496,6 +496,96 @@ static unsigned long damon_pa_deactivate_pages(struct damon_region *r,
+@@ -496,6 +496,93 @@ static unsigned long damon_pa_deactivate_pages(struct damon_region *r,
  	return damon_pa_mark_accessed_or_deactivate(r, s, false);
  }
  
 +#ifdef CONFIG_ACMA
-+
-+/* unit size of DAMON's memory preemption (preempt 512 pages at once) */
-+#define DAMON_MEM_PREEMPT_PAGES	512
 +
 +static bool damon_pa_preempted(unsigned long pfn)
 +{
@@ -707,7 +775,7 @@ index 2619d91d132f..140db84fa86e 100644
  static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
  		struct damon_target *t, struct damon_region *r,
  		struct damos *scheme)
-@@ -511,6 +601,12 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+@@ -511,6 +598,12 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
  		return damon_pa_migrate(r, scheme, MIG_MIGRATE_HOT);
  	case DAMOS_MIGRATE_COLD:
  		return damon_pa_migrate(r, scheme, MIG_MIGRATE_COLD);
