@@ -1,0 +1,121 @@
+From 822ace0091623e6d934707414ac52751222c3dd1 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 26 Apr 2024 11:21:15 -0700
+Subject: [PATCH 2/2] selftests/damon: add a test for DAMOS quota goal
+
+Add a selftest for DAMOS quota goal.  It tests the feature by setting a
+user_input metric based goal, change the current feedback, and check if
+the effective quota size is increased and decreased as expected.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/Makefile        |  2 +-
+ .../selftests/damon/damos_quota_goal.py       | 77 +++++++++++++++++++
+ 2 files changed, 78 insertions(+), 1 deletion(-)
+ create mode 100755 tools/testing/selftests/damon/damos_quota_goal.py
+
+diff --git a/tools/testing/selftests/damon/Makefile b/tools/testing/selftests/damon/Makefile
+index 789d6949c247..06c248880172 100644
+--- a/tools/testing/selftests/damon/Makefile
++++ b/tools/testing/selftests/damon/Makefile
+@@ -16,7 +16,7 @@ TEST_PROGS += debugfs_target_ids_pid_leak.sh
+ TEST_PROGS += sysfs.sh sysfs_update_removed_scheme_dir.sh
+ TEST_PROGS += sysfs_update_schemes_tried_regions_hang.py
+ TEST_PROGS += sysfs_update_schemes_tried_regions_wss_estimation.py
+-TEST_PROGS += damos_quota.py damos_apply_interval.py
++TEST_PROGS += damos_quota.py damos_quota_goal.py damos_apply_interval.py
+ TEST_PROGS += reclaim.sh lru_sort.sh
+ 
+ include ../lib.mk
+diff --git a/tools/testing/selftests/damon/damos_quota_goal.py b/tools/testing/selftests/damon/damos_quota_goal.py
+new file mode 100755
+index 000000000000..18246f3b62f7
+--- /dev/null
++++ b/tools/testing/selftests/damon/damos_quota_goal.py
+@@ -0,0 +1,77 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: GPL-2.0
++
++import subprocess
++import time
++
++import _damon_sysfs
++
++def main():
++    # access two 10 MiB memory regions, 2 second per each
++    sz_region = 10 * 1024 * 1024
++    proc = subprocess.Popen(['./access_memory', '2', '%d' % sz_region, '2000'])
++
++    goal = _damon_sysfs.DamosQuotaGoal(
++            metric=_damon_sysfs.qgoal_metric_user_input, target_value=10000)
++    kdamonds = _damon_sysfs.Kdamonds([_damon_sysfs.Kdamond(
++            contexts=[_damon_sysfs.DamonCtx(
++                ops='vaddr',
++                targets=[_damon_sysfs.DamonTarget(pid=proc.pid)],
++                schemes=[_damon_sysfs.Damos(
++                    action='stat',
++                    quota=_damon_sysfs.DamosQuota(
++                        goals=[goal], reset_interval_ms=100),
++                    )] # schemes
++                )] # contexts
++            )]) # kdamonds
++
++    err = kdamonds.start()
++    if err != None:
++        print('kdamond start failed: %s' % err)
++        exit(1)
++
++    score_values_to_test = [0, 15000, 5000, 18000]
++    while proc.poll() == None:
++        if len(score_values_to_test) == 0:
++            time.sleep(0.1)
++            continue
++
++        goal.current_value = score_values_to_test.pop(0)
++        expect_increase = goal.current_value < goal.target_value
++
++        err = kdamonds.kdamonds[0].commit_schemes_quota_goals()
++        if err is not None:
++            print('commit_schemes_quota_goals failed: %s' % err)
++            exit(1)
++
++        err = kdamonds.kdamonds[0].update_schemes_effective_quotas()
++        if err is not None:
++            print('before-update_schemes_effective_quotas failed: %s' % err)
++            exit(1)
++        last_effective_bytes = goal.effective_bytes
++
++        time.sleep(0.5)
++
++        err = kdamonds.kdamonds[0].update_schemes_effective_quotas()
++        if err is not None:
++            print('after-update_schemes_effective_quotas failed: %s' % err)
++            exit(1)
++
++        print('score: %s, effective quota: %d -> %d (%.3fx)' % (
++            goal.current_value, last_effective_bytes, goal.effective_bytes,
++            goal.effective_bytes / last_effective_bytes
++            if last_effective_bytes != 0 else -1.0))
++
++        if last_effective_bytes == goal.effective_bytes:
++            print('efective bytes not changed: %d' % goal.effective_bytes)
++            exit(1)
++
++        increased = last_effective_bytes < goal.effective_bytes
++        if expect_increase != increased:
++            print('expectation of increase (%s) != increased (%s)' %
++                  (expect_increase, increased))
++            exit(1)
++        last_effective_bytes = goal.effective_bytes
++
++if __name__ == '__main__':
++    main()
+-- 
+2.39.2
+
