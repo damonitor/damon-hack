@@ -1,4 +1,4 @@
-From 65433a0e9f213e5b155e6561a1e40c029b5882e6 Mon Sep 17 00:00:00 2001
+From 40475439de721986370c9d26f53596e2bd4e1416 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 11 Apr 2024 16:08:52 -0700
 Subject: [PATCH] ==== ACMA ====
@@ -6,37 +6,49 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-mm/damon: introduce Access/Contiguity-aware Memory Auto-scaling (ACMA)
+[RFC IDEA v2] mm/damon: introduce Access/Contiguity-aware Memory Auto-scaling (ACMA)
 
-Extend DAMOS for getting temporal but exclusive owndership of contiguous
-memory regions in access-aware way, and implement a module for
-efficiently and automatically scaling system memory using the feature.
+Extend DAMOS for access-aware gradual contiguous memory regions
+allocation, and implement a module for efficiently and automatically
+scaling system memory using the feature.
+
+This is not a valid patchset but a summary of the idea and pseudo-code
+level partial implementation examples of the idea.  The implementation
+examples are only for helping people's understanding of the idea and how
+it would be implemented.  The code is not tested at all.  It is even not
+attempted to be compiled ever.
 
 Motivation: Memory Overcommit Virtual Machine Systems
 =====================================================
 
 This work is motivated by an effort to improve efficiency and
 reliability of a memory over-committed virtual machine system operation
-method.  This section describes a business model using such systems, an
+method.  This section describes a business model of such systems, an
 available approach, and its limitations.
 
 Business Model
 --------------
 
-The business model services compute/memory resource for users'
-workloads.  The service provider receives the workload from the user,
-runs the workloads on their virtual guest machines, and returns the
-workload's output back to the user.  The provider further calculates how
-much of the resource is consumed by the workload, and ask the user to
-pay the price for the real usage.
+The business services compute/memory resource for users' workloads.  The
+service provider receives the workload from the user, runs the workload
+on their guest virtual machines, and returns the workload's output back
+to the user.  The provider calculates how much of their resource is
+consumed by the workload, and ask the user to pay for the real usage.
 
 To maximize the host-level memory utilization while providing the
 highest performance and lowest price to the user, the provider
-automatically scales the guests' memory based on their estimation of the
-workload's real memory demand, and overcommit the host's memory.  To
-avoid low performance or high price resulting from the provider's
-mistakes in the auto-scaling, the user can specify the minimum and
-maximum amount of memory for their guest machine.
+overcommit the host's memory and automatically scales the guests' memory
+based on their estimation of the workload's true memory demand in
+runtime.  To avoid low performance or high price resulting from the
+provider's mistakes in the auto-scaling, the user can specify the
+minimum and maximum amount of memory for their guest machine.
+
+  User                              Service Provider
+                                   ┌─────────────────┐
+  workload, min/max memory ──────► │                 │
+                                   │      ???        │
+  workload output, bill    ◄────── │                 │
+                                   └─────────────────┘
 
 Existing Approach
 -----------------
@@ -50,7 +62,7 @@ Specifically, free pages reporting is being used.
 
 The host-level reuse of the page is invisible to guests.  Guests can
 simply use their pages regardless of the reporting.  If a guest access a
-page that reported before, the host detects it from page fault, and give
+page that reported before, the host detects it via page faults, and give
 the memory back to the guest.
 
 Unless the guest is memory-frugal, only small amount of the guests'
@@ -81,7 +93,7 @@ The guest uses 4 KiB-size regular page by default while the host uses 2
 MiB-size regular page for efficient management of the huge host-level
 memory.  Hence, even if a guest reports a 4 KiB-page, the host cannot
 use it unless its 511 neighbor pages are also reported.  Letting the
-guest report every 4 KiB-page only increase the reporting overhead.
+guest reports every 4 KiB-page only increase the reporting overhead.
 Hence the free pages reporting is tuned to work in 2 MiB granularity.
 To avoid fragmented free pages not being reported, guests also
 proactively run memory compaction ('/proc/sys/vm/compact_memory').
@@ -99,9 +111,15 @@ memory limit.
 Limitations
 -----------
 
+The approach uses four kernel features, namely free pages reporting,
+DAMON-based proactive reclamation, compaction, and memory
+hot-[un]plugging.  Utilizing the four kernel features that not designed
+to be used together for the specific case from user space in an
+efficient way is somewhat challenging.
+
 Memory hot-unplugging is slow and easy to fail.  The problem mainly
 comes from the fact that the operation requires isolating and migrating
-pages in the block into other blocks, and the operation works in memory
+pages in the block to other blocks, and the operation works in memory
 block granularity, which is huge compared to pages.  The minimum amount
 of works for doing it is not small, and the probability to meet
 unmovable pages in the huge block is not low.  This makes the
@@ -114,28 +132,22 @@ that anyway will not be able to be reported to the host for reuse.
 
 Both hot-unplugging and compaction require pages isolations and
 migrations, which are valid to fail for some reasons.  The operations
-are better to be applied to cold pages first, since cold pages would
+may better to be applied to cold pages first, since cold pages would
 have lower probability to be pinned or making performance impact.  But
 both hot-unplugging and compaction are access pattern oblivious.
 
 There is no control to the reported pages.  This helps keeping the
-system simple, but it makes reported pages reuse unreliable.  Any
+system simple, but it makes reusing reported pages unreliable.  Any
 reported page can be accessed again by the guest.  And even if only one
 page among the reported 512 pages are accessed again, the entire 512
 pages need to be returned to the guest.
-
-The approach uses four kernel features, namely free pages reporting,
-DAMON-based proactive reclamation, compaction, and memory
-hot-[un]plugging.  Utilizing the four kernel features that not designed
-to be used together for the specific case from user space in an
-efficient way is somewhat challenging.
 
 Both the host and guest systems are under the service provider's
 control, but the workload is not.  Occasional host-level memory pressure
 is hence inevitable.  The host could avoid such situation by setting
 the host-driven hard memory limit on guests.  Balloon drivers like
 methods could be used.  However, such existing mechanisms lacks the
-understanding of the host's different page size and access-awareness.
+understanding of the host's different page size and access-oblivious.
 
 Design
 ======
@@ -150,10 +162,10 @@ Access-aware Contiguous Memory Allocation
 
 As mentioned on the above limitations section, doing page isolations and
 migrations, which are core operations of the memory scaling usage, in
-fine granularity for cold pages first can make some improvements.  DAMOS
-helps applying specific memory operations in an access-aware manner.
-Therefore, we implement the core operations as DAMOS schemes.  For this,
-we design two new DAMOS actions, namely 'alloc' and 'free'.
+fine granularity for cold pages first may makes some improvements.
+DAMOS helps applying specific memory operations in an access-aware
+manner.  Therefore, we implement the core operations as DAMOS schemes.
+For this, we design two new DAMOS actions, namely 'alloc' and 'free'.
 
 'Alloc' DAMOS action migrates in-use pages of the DAMOS target memory
 region out of the region, and get the ownership of the pages.  The
@@ -172,8 +184,8 @@ region to the system.  Same to 'alloc', the user can specify the
 granularity of each operation.  Before returning the ownership, DAMOS
 notifies the user which pages are gonna be returned to the system, so
 that the user can safely forgive the ownership.  In the page fault based
-memory overcommit use case, the user would not need to do anything for
-such notification, though.
+memory overcommit use case, the user would need to do nothing for such
+notification, though.
 
 Access/Contiguity-aware Memory Auto-scaling (ACMA)
 --------------------------------------------------
@@ -239,8 +251,8 @@ real memory pressure of the system.  Once it becomes lower than 'max'
 bytes, it will never get greater than 'max' bytes, since 'scale-up'
 cannot make impact over the limit.  It can also never gets lower than
 'min' bytes because 'scale-down' does not cross the line.  'reclaim'
-scheme make the system memory-frugal and helps 'scale-down' by making
-free pages that can be migrate targets.  Because all the schemes
+scheme makes the system memory-frugal and helps 'scale-down' by making
+free pages that can be migration destinations.  Because all the schemes
 auto-tune their aggressiveness based on 'mem-pressure', the system's
 memory pressure cannot exceed the user-acceptable level.
 
@@ -263,15 +275,15 @@ Ballooning-ACMA Integration
 
 As mentioned on the limitations section above, the host may want to use
 ballooning-like host-driven guest memory limit setup, while existing
-approaches are not access/contiguity-oblivious.  We integrate ballooning
+implementation is not access/contiguity-aware.  We integrate ballooning
 driver and ACMA for such a case.  We modify ballooning to set the
 'max-mem' of ACMA instead of the classic page allocation-based
 ballooning inflation.  Specifically, we expose a function for setting
 the 'max-mem' of ACMA, and update virtio-balloon driver's
 virtballoon_changed() to use the function to set effective hard memory
 limit of the guest.  In this way, the host can simply use the classical
-and universal virtio-balloon interface while the ballooning driver is
-working in the access/contiguity-aware efficient way.
+virtio-balloon interface while the ballooning driver is working in the
+access/contiguity-aware efficient way.
 
 Possible Future Usage of Access-aware Memory Allocation
 =======================================================
@@ -286,15 +298,15 @@ Contiguous Memory Allocation
 
 For contiguous memory allocation, a large contiguous memory pool is
 required.  Current approaches reserve such regions in early boot time
-before the memory is fragmented.  The pool can exclusively used for only
-the contiguous memory allocation, or allow non-contiguous memory
-allocation to use it under special condition such as allowing only
-movable pages.  The second approach improves the memory utilization, but
-sometimes suffers from pages that movable by definition, but not easily
-movable in practice, similar to the memory block-level page migration
-for memory hot unplugging that described on the limitation section.
-Even without the migration reliability and the speed, finding the
-optimum size of the pool is challenging.
+before the memory is fragmented, or define zones of specific types.  The
+pool can exclusively used for only the contiguous memory allocation, or
+allow non-contiguous memory allocation to use it under special condition
+such as allowing only movable pages.  The second approach improves the
+memory utilization, but sometimes suffers from pages that movable by
+definition, but not easily movable in practice, similar to the memory
+block-level page migration for memory hot unplugging that described on
+the limitation section.  Even without the migration reliability and the
+speed, finding the optimum size of the pool is challenging.
 
 We could use ACMA-like approach for dynamically allocating a memory pool
 for contiguous memory allocation.  It will be similar to ACMA but do not
@@ -306,8 +318,8 @@ DRAM Consuming Power Saving
 
 DRAM consumes and emits huge amount of power and carbon, respectively.
 On bare-meta machines, we could scale down memory using ACMA, hot-unplug
-completely DAMOS-alloc-ed memory blocks, and turn off the DRAM device if
-available.
+completely DAMOS-alloc-ed memory blocks, and power off the DRAM device if
+the hardware supports such operation.
 
 Discussion Points
 =================
