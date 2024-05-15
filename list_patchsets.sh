@@ -17,6 +17,7 @@ versions=(
 	v6.7
 	v6.8
 	v6.9
+	akpm.korg.mm/mm-unstable
 )
 
 for (( i=0; i<$(( "${#versions[@]}" - 1 )); i++ ))
@@ -24,6 +25,12 @@ do
 	from="${versions[$i]}"
 	to="${versions[$((i + 1))]}-rc1"
 	echo "$to"
+
+	if [ "$to" = "akpm.korg.mm/mm-unstable-rc1" ]
+	then
+		from+="-rc1"
+		to="akpm.korg.mm/mm-unstable"
+	fi
 
 	git log "$from..$to" --author sj@kernel.org --author sjpark@amazon.de | grep "Patch series"
 done
