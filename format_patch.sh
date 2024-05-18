@@ -41,6 +41,8 @@ for patch in "$outdir"/*.patch
 do
 	if [ "$(basename "$patch")" = "0000-cover-letter.patch" ]
 	then
+		# assume the baseline is coverletter commit
+		git log -1 --pretty=%b "$baseline" >> "$patch"
 		continue
 	fi
 
