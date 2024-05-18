@@ -37,7 +37,14 @@ then
 	exit 0
 fi
 
-echo "__version__ = '$new_version'" > damo_version.py
+# damo_version.py has moved from root to src/ after v2.3.4.  Support <=2.3.4
+# versions.
+damo_version_py="src/damo_version.py"
+if [ ! -e damo_version.py ]
+then
+	damo_version_py=damo_version.py
+fi
+echo "__version__ = '$new_version'" > "$damo_version_py"
 if [ ! $(./damo version) = "$new_version" ]
 then
 	echo "Making new version failed"
