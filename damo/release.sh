@@ -40,7 +40,7 @@ fi
 # damo_version.py has moved from root to src/ after v2.3.4.  Support <=2.3.4
 # versions.
 damo_version_py="src/damo_version.py"
-if [ ! -e damo_version.py ]
+if [ ! -e "$damo_version_py" ]
 then
 	damo_version_py=damo_version.py
 fi
