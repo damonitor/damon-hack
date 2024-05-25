@@ -10,7 +10,7 @@ fi
 
 commit_msg=$1
 bindir=$(dirname $0)
-dest_dir=$(realpath "$bindir/patches/next")
+dest_dir=$(realpath "$bindir/../patches/next")
 commits="akpm.korg.mm/mm-unstable..damon/next"
 
 git -C "$bindir" rm -r "$dest_dir"
