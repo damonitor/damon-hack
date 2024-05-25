@@ -3,7 +3,7 @@
 set -e
 
 bindir=$(dirname "$0")
-patches_dir="$bindir/patches/next"
+patches_dir="$bindir/../patches/next"
 series_file="$patches_dir/series"
 
 git checkout akpm.korg.mm/mm-unstable
