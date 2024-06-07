@@ -1,4 +1,4 @@
-From 996dfc019b369885c2e68433b23fce18f4fb5ba2 Mon Sep 17 00:00:00 2001
+From a9c0678a0f4ab436e8eaab5c901b7e66afd97437 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
 Date: Mon, 19 Feb 2024 22:00:35 -0800
 Subject: [PATCH] mm/damon: implement DAMON context input-only update function
@@ -8,26 +8,26 @@ work in progress.  Only build on test machine confirmed.
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |   1 +
- mm/damon/core.c       | 302 ++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 303 insertions(+)
+ mm/damon/core.c       | 320 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 321 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 3d62d98d6359..59538fb203ab 100644
+index 3d62d98d6359..c63e85488901 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -755,6 +755,7 @@ void damon_destroy_ctx(struct damon_ctx *ctx);
  int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs);
  void damon_set_schemes(struct damon_ctx *ctx,
  			struct damos **schemes, ssize_t nr_schemes);
-+int damon_cp_ctx_params(struct damon_ctx *old_ctx, struct damon_ctx *new_ctx);
++int damon_commit_ctx(struct damon_ctx *old_ctx, struct damon_ctx *new_ctx);
  int damon_nr_running_ctxs(void);
  bool damon_is_registered_ops(enum damon_ops_id id);
  int damon_register_ops(struct damon_operations *ops);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 32c261aeff88..f0ce5effdd7c 100644
+index 32c261aeff88..28c4c6dffa83 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -695,6 +695,308 @@ void damon_set_schemes(struct damon_ctx *ctx, struct damos **schemes,
+@@ -695,6 +695,326 @@ void damon_set_schemes(struct damon_ctx *ctx, struct damos **schemes,
  		damon_add_scheme(ctx, schemes[i]);
  }
  
@@ -44,16 +44,17 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return NULL;
 +}
 +
-+static void damos_cp_quota_goal_params(
++static void damos_commit_quota_goal(
 +		struct damos_quota_goal *dst, struct damos_quota_goal *src)
 +{
 +	dst->metric = src->metric;
 +	dst->target_value = src->target_value;
-+	dst->current_value = src->current_value;
-+	dst->last_psi_total = src->last_psi_total;
++	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
++		dst->current_value = src->current_value;
++	/* keep last_psi_total as is, since it will be updated in next cycle */
 +}
 +
-+static int damos_cp_quota_goals_params(
++static int damos_commit_quota_goals(
 +		struct damos_quota *dst, struct damos_quota *src)
 +{
 +	struct damos_quota_goal *dst_goal, *next, *src_goal, *new_goal;
@@ -62,7 +63,7 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	damos_for_each_quota_goal_safe(dst_goal, next, dst) {
 +		src_goal = damos_nth_quota_goal(i++, src);
 +		if (src_goal)
-+			damos_cp_quota_goal_params(dst_goal, src_goal);
++			damos_commit_quota_goal(dst_goal, src_goal);
 +		else
 +			damos_destroy_quota_goal(dst_goal);
 +	}
@@ -78,6 +79,23 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return 0;
 +}
 +
++static int damos_commit_quota(
++		struct damos_quota *dst, struct damos_quota *src)
++{
++	int err;
++
++	dst->reset_interval = src->reset_interval;
++	dst->ms = src->ms;
++	dst->sz = src->sz;
++	err = damos_commit_quota_goals(dst, src);
++	if (err)
++		return err;
++	dst->weight_sz = src->weight_sz;
++	dst->weight_nr_accesses = src->weight_nr_accesses;
++	dst->weight_age = src->weight_age;
++	return 0;
++}
++
 +static struct damos_filter *damos_nth_filter(int n, struct damos *s)
 +{
 +	struct damos_filter *filter;
@@ -90,16 +108,33 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return NULL;
 +}
 +
-+static void damos_cp_filter_params(
++static void damos_commit_filter_arg(
 +		struct damos_filter *dst, struct damos_filter *src)
 +{
-+	struct list_head list = dst->list;
-+
-+	*dst = *src;
-+	dst->list = list;
++	switch (dst->type) {
++	case DAMOS_FILTER_TYPE_MEMCG:
++		dst->memcg_id = src->memcg_id;
++		break;
++	case DAMOS_FILTER_TYPE_ADDR:
++		dst->addr_range = src->addr_range;
++		break;
++	case DAMOS_FILTER_TYPE_TARGET:
++		dst->target_idx = src->target_idx;
++		break;
++	default:
++		break;
++	}
 +}
 +
-+static int damos_cp_filters_params(struct damos *dst, struct damos *src)
++static void damos_commit_filter(
++		struct damos_filter *dst, struct damos_filter *src)
++{
++	dst->type = src->type;
++	dst->matching = src->matching;
++	damos_commit_filter_arg(dst, src);
++}
++
++static int damos_commit_filters(struct damos *dst, struct damos *src)
 +{
 +	struct damos_filter *dst_filter, *next, *src_filter, *new_filter;
 +	int i = 0, j = 0;
@@ -107,7 +142,7 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	damos_for_each_filter_safe(dst_filter, next, dst) {
 +		src_filter = damos_nth_filter(i++, src);
 +		if (src_filter)
-+			damos_cp_filter_params(dst_filter, src_filter);
++			damos_commit_filter(dst_filter, src_filter);
 +		else
 +			damos_destroy_filter(dst_filter);
 +	}
@@ -116,10 +151,11 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +		if (j++ < i)
 +			continue;
 +
-+		new_filter = kmalloc(sizeof(*new_filter), GFP_KERNEL);
++		new_filter = damos_new_filter(
++				src_filter->type, src_filter->matching);
 +		if (!new_filter)
 +			return -ENOMEM;
-+		damos_cp_filter_params(new_filter, src_filter);
++		damos_commit_filter_arg(new_filter, src_filter);
 +		damos_add_filter(dst, new_filter);
 +	}
 +	return 0;
@@ -137,24 +173,7 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return NULL;
 +}
 +
-+static int damos_cp_quota_params(
-+		struct damos_quota *dst, struct damos_quota *src)
-+{
-+	int err;
-+
-+	dst->reset_interval = src->reset_interval;
-+	dst->ms = src->ms;
-+	dst->sz = src->sz;
-+	err = damos_cp_quota_goals_params(dst, src);
-+	if (err)
-+		return err;
-+	dst->weight_sz = src->weight_sz;
-+	dst->weight_nr_accesses = src->weight_nr_accesses;
-+	dst->weight_age = src->weight_age;
-+	return 0;
-+}
-+
-+static int damos_cp_params(struct damos *dst, struct damos *src)
++static int damos_commit(struct damos *dst, struct damos *src)
 +{
 +	int err;
 +
@@ -162,18 +181,17 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	dst->action = src->action;
 +	dst->apply_interval_us = src->apply_interval_us;
 +
-+	err = damos_cp_quota_params(&dst->quota, &src->quota);
++	err = damos_commit_quota(&dst->quota, &src->quota);
 +	if (err)
 +		return err;
 +
 +	dst->wmarks = src->wmarks;
 +
-+	err = damos_cp_filters_params(dst, src);
++	err = damos_commit_filters(dst, src);
 +	return err;
 +}
 +
-+static int damon_cp_schemes_params(
-+		struct damon_ctx *dst, struct damon_ctx *src)
++static int damon_commit_schemes(struct damon_ctx *dst, struct damon_ctx *src)
 +{
 +	struct damos *dst_scheme, *next, *src_scheme, *new_scheme;
 +	int i = 0, j = 0, err;
@@ -181,7 +199,7 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	damon_for_each_scheme_safe(dst_scheme, next, dst) {
 +		src_scheme = damon_nth_scheme(i++, src);
 +		if (src_scheme) {
-+			err = damos_cp_params(dst_scheme, src_scheme);
++			err = damos_commit(dst_scheme, src_scheme);
 +			if (err)
 +				return err;
 +		} else {
@@ -192,13 +210,28 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	damon_for_each_scheme_safe(src_scheme, next, src) {
 +		if (j++ < i)
 +			continue;
-+		new_scheme = kmalloc(sizeof(*new_scheme), GFP_KERNEL);
-+		err = damos_cp_params(new_scheme, src_scheme);
-+		if (err)
-+			return err;
++		new_scheme = damon_new_scheme(&src_scheme->pattern,
++				src_scheme->action,
++				src_scheme->apply_interval_us,
++				&src_scheme->quota, &src_scheme->wmarks,
++				NUMA_NO_NODE);
++		if (!new_scheme)
++			return -ENOMEM;
 +		damon_add_scheme(dst, new_scheme);
 +	}
 +	return 0;
++}
++
++static struct damon_target *damon_nth_target(int n, struct damon_ctx *ctx)
++{
++	struct damon_target *t;
++	int i = 0;
++
++	damon_for_each_target(t, ctx) {
++		if (i++ == n)
++			return t;
++	}
++	return NULL;
 +}
 +
 +/*
@@ -208,7 +241,7 @@ index 32c261aeff88..f0ce5effdd7c 100644
 + *
 + * If @src has no region, @dst keeps current regions.
 + */
-+static int damon_cp_target_regions_params(
++static int damon_commit_target_regions(
 +		struct damon_target *dst, struct damon_target *src)
 +{
 +	struct damon_region *src_region;
@@ -231,25 +264,13 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return err;
 +}
 +
-+static struct damon_target *damon_nth_target(int n, struct damon_ctx *ctx)
-+{
-+	struct damon_target *t;
-+	int i = 0;
-+
-+	damon_for_each_target(t, ctx) {
-+		if (i++ == n)
-+			return t;
-+	}
-+	return NULL;
-+}
-+
-+static int damon_cp_target_params(
++static int damon_commit_target(
 +		struct damon_target *dst, bool dst_has_pid,
 +		struct damon_target *src, bool src_has_pid)
 +{
 +	int err;
 +
-+	err = damon_cp_target_regions_params(dst, src);
++	err = damon_commit_target_regions(dst, src);
 +	if (err)
 +		return err;
 +	if (dst_has_pid)
@@ -260,38 +281,35 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +	return 0;
 +}
 +
-+static int damon_cp_targets_params(
++static int damon_commit_targets(
 +		struct damon_ctx *dst, struct damon_ctx *src)
 +{
-+	struct damon_target *t, *next;
++	struct damon_target *dst_target, *next, *src_target, *new_target;
 +	int i = 0, j = 0, err;
 +
-+	damon_for_each_target_safe(t, next, dst) {
-+		struct damon_target *src_target = damon_nth_target(i++, src);
-+
++	damon_for_each_target_safe(dst_target, next, dst) {
++		src_target = damon_nth_target(i++, src);
 +		if (src_target) {
-+			err = damon_cp_target_params(
-+					t, damon_target_has_pid(dst),
++			err = damon_commit_target(
++					dst_target, damon_target_has_pid(dst),
 +					src_target, damon_target_has_pid(src));
 +			if (err)
 +				return err;
 +		} else {
 +			if (damon_target_has_pid(dst))
-+				put_pid(t->pid);
-+			damon_destroy_target(t);
++				put_pid(dst_target->pid);
++			damon_destroy_target(dst_target);
 +		}
 +	}
 +
-+	damon_for_each_target_safe(t, next, src) {
-+		struct damon_target *new_target;
-+
++	damon_for_each_target_safe(src_target, next, src) {
 +		if (j++ < i)
 +			continue;
 +		new_target = damon_new_target();
 +		if (!new_target)
 +			return -ENOMEM;
-+		err = damon_cp_target_params(new_target, false,
-+				t, damon_target_has_pid(src));
++		err = damon_commit_target(new_target, false,
++				src_target, damon_target_has_pid(src));
 +		if (err)
 +			return err;
 +	}
@@ -299,31 +317,31 @@ index 32c261aeff88..f0ce5effdd7c 100644
 +}
 +
 +/**
-+ * damon_cp_ctx_params() - Copy parameters of a DAMON context to another.
-+ * @dst:	Parameters copying destination DAMON context.
-+ * @src:	Parameters copying source DAMON context.
++ * damon_commit_ctx() - Commit parameters of a DAMON context to another.
++ * @dst:	The commit destination DAMON context.
++ * @src:	The commit source DAMON context.
 + *
-+ * DAMON context contains user-specified parameters, internal status, and the
-+ * operations results.  This function copies user-specified parameters from
-+ * @src to @dst and update the internal status and results accordingly.  Users
-+ * should use this function for context-level parameters update, instead of
-+ * manual in-place updates.
++ * This function copies user-specified parameters from @src to @dst and update
++ * the internal status and results accordingly.  Users should use this function
++ * for context-level parameters update of running context, instead of manual
++ * in-place updates.
 + */
-+int damon_cp_ctx_params(struct damon_ctx *dst, struct damon_ctx *src)
++int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
 +{
 +	int err;
 +
-+	err = damon_cp_schemes_params(dst, src);
++	err = damon_commit_schemes(dst, src);
 +	if (err)
 +		return err;
-+	err = damon_cp_targets_params(dst, src);
++	err = damon_commit_targets(dst, src);
 +	if (err)
 +		return err;
 +	/*
 +	 * schemes and targets should be updated first, since
 +	 * 1. damon_set_attrs() updates monitoring results of targets and
 +	 * next_apply_sis of schemes, and
-+	 * 2. ops update should be done after pid handling is done.
++	 * 2. ops update should be done after pid handling is done (target
++	 *    committing require putting pids).
 +	 */
 +	err = damon_set_attrs(dst, &src->attrs);
 +	if (err)
