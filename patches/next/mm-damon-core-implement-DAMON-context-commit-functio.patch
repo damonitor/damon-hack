@@ -1,21 +1,19 @@
-From a9c0678a0f4ab436e8eaab5c901b7e66afd97437 Mon Sep 17 00:00:00 2001
+From 189114343ee2c10d96fa04864d1f961f7cf0361e Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
-Date: Mon, 19 Feb 2024 22:00:35 -0800
-Subject: [PATCH] mm/damon: implement DAMON context input-only update function
-
-work in progress.  Only build on test machine confirmed.
+Date: Fri, 7 Jun 2024 16:04:34 -0700
+Subject: [PATCH] mm/damon/core: implement DAMON context commit function
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |   1 +
- mm/damon/core.c       | 320 ++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 321 insertions(+)
+ mm/damon/core.c       | 255 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 256 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 3d62d98d6359..c63e85488901 100644
+index 0cbf1a364f2c..bff04a7bfbca 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -755,6 +755,7 @@ void damon_destroy_ctx(struct damon_ctx *ctx);
+@@ -787,6 +787,7 @@ void damon_destroy_ctx(struct damon_ctx *ctx);
  int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs);
  void damon_set_schemes(struct damon_ctx *ctx,
  			struct damos **schemes, ssize_t nr_schemes);
@@ -24,78 +22,13 @@ index 3d62d98d6359..c63e85488901 100644
  bool damon_is_registered_ops(enum damon_ops_id id);
  int damon_register_ops(struct damon_operations *ops);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 32c261aeff88..28c4c6dffa83 100644
+index e415500dce44..1dbca1d62a1c 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -695,6 +695,326 @@ void damon_set_schemes(struct damon_ctx *ctx, struct damos **schemes,
- 		damon_add_scheme(ctx, schemes[i]);
+@@ -759,6 +759,261 @@ int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
+ 	return 0;
  }
  
-+static struct damos_quota_goal *damos_nth_quota_goal(
-+		int n, struct damos_quota *q)
-+{
-+	struct damos_quota_goal *goal;
-+	int i = 0;
-+
-+	damos_for_each_quota_goal(goal, q) {
-+		if (i++ == n)
-+			return goal;
-+	}
-+	return NULL;
-+}
-+
-+static void damos_commit_quota_goal(
-+		struct damos_quota_goal *dst, struct damos_quota_goal *src)
-+{
-+	dst->metric = src->metric;
-+	dst->target_value = src->target_value;
-+	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
-+		dst->current_value = src->current_value;
-+	/* keep last_psi_total as is, since it will be updated in next cycle */
-+}
-+
-+static int damos_commit_quota_goals(
-+		struct damos_quota *dst, struct damos_quota *src)
-+{
-+	struct damos_quota_goal *dst_goal, *next, *src_goal, *new_goal;
-+	int i = 0, j = 0;
-+
-+	damos_for_each_quota_goal_safe(dst_goal, next, dst) {
-+		src_goal = damos_nth_quota_goal(i++, src);
-+		if (src_goal)
-+			damos_commit_quota_goal(dst_goal, src_goal);
-+		else
-+			damos_destroy_quota_goal(dst_goal);
-+	}
-+	damos_for_each_quota_goal_safe(src_goal, next, src) {
-+		if (j++ < i)
-+			continue;
-+		new_goal = damos_new_quota_goal(
-+				src_goal->metric, src_goal->target_value);
-+		if (!new_goal)
-+			return -ENOMEM;
-+		damos_add_quota_goal(dst, new_goal);
-+	}
-+	return 0;
-+}
-+
-+static int damos_commit_quota(
-+		struct damos_quota *dst, struct damos_quota *src)
-+{
-+	int err;
-+
-+	dst->reset_interval = src->reset_interval;
-+	dst->ms = src->ms;
-+	dst->sz = src->sz;
-+	err = damos_commit_quota_goals(dst, src);
-+	if (err)
-+		return err;
-+	dst->weight_sz = src->weight_sz;
-+	dst->weight_nr_accesses = src->weight_nr_accesses;
-+	dst->weight_age = src->weight_age;
-+	return 0;
-+}
-+
 +static struct damos_filter *damos_nth_filter(int n, struct damos *s)
 +{
 +	struct damos_filter *filter;
