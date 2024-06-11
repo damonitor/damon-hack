@@ -1,0 +1,96 @@
+From 1a1c27ff5a5a5d178a835ba872fe2f1af4640725 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 7 Jun 2024 16:21:51 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: use damos_commit_quota_goals()
+
+DAMON_SYSFS manually manipulates the DAMOS quota structs for online
+quotal goals parameter update.  Since the struct contains not only input
+parameters but also internal status and operation results, it is not
+that simple.  Now DAMON core layer provides a function for the usage,
+namely damon_commit_quota_goals().  Replace the manual manipulation
+logic with the function.  The core layer function could have its own
+bugs, but this change removes a source of bugs.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    |  2 +-
+ mm/damon/core.c          |  5 ++---
+ mm/damon/sysfs-schemes.c | 14 ++++++++++++--
+ 3 files changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index bff04a7bfbca..fcccaa9b9d54 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -773,7 +773,7 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
+ 			int target_nid);
+ void damon_add_scheme(struct damon_ctx *ctx, struct damos *s);
+ void damon_destroy_scheme(struct damos *s);
+-int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src);
++int damos_commit_quota_goals(struct damos_quota *dst, struct damos_quota *src);
+ 
+ struct damon_target *damon_new_target(void);
+ void damon_add_target(struct damon_ctx *ctx, struct damon_target *t);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1dbca1d62a1c..97c4b2de5828 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -718,8 +718,7 @@ static void damos_commit_quota_goal(
+ 	/* keep last_psi_total as is, since it will be updated in next cycle */
+ }
+ 
+-static int damos_commit_quota_goals(
+-		struct damos_quota *dst, struct damos_quota *src)
++int damos_commit_quota_goals(struct damos_quota *dst, struct damos_quota *src)
+ {
+ 	struct damos_quota_goal *dst_goal, *next, *src_goal, *new_goal;
+ 	int i = 0, j = 0;
+@@ -743,7 +742,7 @@ static int damos_commit_quota_goals(
+ 	return 0;
+ }
+ 
+-int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
++static int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
+ {
+ 	int err;
+ 
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 54be4d661881..945ef1c128a4 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1987,10 +1987,13 @@ int damos_sysfs_set_quota_scores(struct damon_sysfs_schemes *sysfs_schemes,
+ 		struct damon_ctx *ctx)
+ {
+ 	struct damos *scheme;
++	struct damos_quota quota = {};
+ 	int i = 0;
+ 
++	INIT_LIST_HEAD(&quota.goals);
+ 	damon_for_each_scheme(scheme, ctx) {
+ 		struct damon_sysfs_scheme *sysfs_scheme;
++		struct damos_quota_goal *g, *g_next;
+ 		int err;
+ 
+ 		/* user could have removed the scheme sysfs dir */
+@@ -1999,9 +2002,16 @@ int damos_sysfs_set_quota_scores(struct damon_sysfs_schemes *sysfs_schemes,
+ 
+ 		sysfs_scheme = sysfs_schemes->schemes_arr[i];
+ 		err = damos_sysfs_set_quota_score(sysfs_scheme->quotas->goals,
+-				&scheme->quota);
++				&quota);
++		if (err) {
++			damos_for_each_quota_goal_safe(g, g_next, &quota)
++				damos_destroy_quota_goal(g);
++			return err;
++		}
++		err = damos_commit_quota_goals(&scheme->quota, &quota);
++		damos_for_each_quota_goal_safe(g, g_next, &quota)
++			damos_destroy_quota_goal(g);
+ 		if (err)
+-			/* kdamond will clean up schemes and terminated */
+ 			return err;
+ 		i++;
+ 	}
+-- 
+2.39.2
+
