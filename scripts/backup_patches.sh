@@ -37,5 +37,3 @@ done
 
 git -C "$bindir" add "$dest_dir"
 git -C "$bindir" commit -s -m "patches/next: $commit_msg"
-
-"$bindir/push_branches.sh"
