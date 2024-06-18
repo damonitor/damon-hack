@@ -1,0 +1,62 @@
+From 21a883b9e03c9760e5a4958c75f02d8a51e23e01 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Fri, 7 Jun 2024 16:21:51 -0700
+Subject: [PATCH 04/12] mm/damon/sysfs-schemes: use damos_commit_quota_goals()
+
+DAMON_SYSFS manually manipulates the DAMOS quota structs for online
+quotal goals parameter update.  Since the struct contains not only input
+parameters but also internal status and operation results, it is not
+that simple.  Now DAMON core layer provides a function for the usage,
+namely damon_commit_quota_goals().  Replace the manual manipulation
+logic with the function.  The core layer function could have its own
+bugs, but this change removes a source of bugs.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 66fccfa776d7..1bccf2619e11 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1983,10 +1983,13 @@ int damos_sysfs_set_quota_scores(struct damon_sysfs_schemes *sysfs_schemes,
+ 		struct damon_ctx *ctx)
+ {
+ 	struct damos *scheme;
++	struct damos_quota quota = {};
+ 	int i = 0;
+ 
++	INIT_LIST_HEAD(&quota.goals);
+ 	damon_for_each_scheme(scheme, ctx) {
+ 		struct damon_sysfs_scheme *sysfs_scheme;
++		struct damos_quota_goal *g, *g_next;
+ 		int err;
+ 
+ 		/* user could have removed the scheme sysfs dir */
+@@ -1995,9 +1998,16 @@ int damos_sysfs_set_quota_scores(struct damon_sysfs_schemes *sysfs_schemes,
+ 
+ 		sysfs_scheme = sysfs_schemes->schemes_arr[i];
+ 		err = damos_sysfs_set_quota_score(sysfs_scheme->quotas->goals,
+-				&scheme->quota);
++				&quota);
++		if (err) {
++			damos_for_each_quota_goal_safe(g, g_next, &quota)
++				damos_destroy_quota_goal(g);
++			return err;
++		}
++		err = damos_commit_quota_goals(&scheme->quota, &quota);
++		damos_for_each_quota_goal_safe(g, g_next, &quota)
++			damos_destroy_quota_goal(g);
+ 		if (err)
+-			/* kdamond will clean up schemes and terminated */
+ 			return err;
+ 		i++;
+ 	}
+-- 
+2.39.2
+
