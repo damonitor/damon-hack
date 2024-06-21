@@ -1,37 +1,34 @@
-From 6189e8247770ed838f362cc6e33250e49ac76066 Mon Sep 17 00:00:00 2001
+From ed9a0b087dc7dd482fac390230a12900a6ad5880 Mon Sep 17 00:00:00 2001
 From: SeongJae Park <sj@kernel.org>
-Date: Wed, 19 Jun 2024 16:48:29 -0700
-Subject: [PATCH] selftests/damon: implement DAMOS tried regions test
-
-Implement a test for DAMOS tried regions command of DAMON sysfs
-interface.  It ensures the command is entred without error, and expected
-number of monitoring regions are created.
+Date: Fri, 21 Jun 2024 15:06:23 -0700
+Subject: [PATCH] selftests/damon: implement test for min/max_nr_regions
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- tools/testing/selftests/damon/Makefile        |  1 +
- .../selftests/damon/damos_tried_regions.py    | 65 +++++++++++++++++++
- 2 files changed, 66 insertions(+)
- create mode 100644 tools/testing/selftests/damon/damos_tried_regions.py
+ tools/testing/selftests/damon/Makefile        |  2 +-
+ .../selftests/damon/damon_nr_regions.py       | 85 +++++++++++++++++++
+ 2 files changed, 86 insertions(+), 1 deletion(-)
+ create mode 100644 tools/testing/selftests/damon/damon_nr_regions.py
 
 diff --git a/tools/testing/selftests/damon/Makefile b/tools/testing/selftests/damon/Makefile
-index 7b972b5cf487..356b4e9a515d 100644
+index 356b4e9a515d..1e2e98cc809d 100644
 --- a/tools/testing/selftests/damon/Makefile
 +++ b/tools/testing/selftests/damon/Makefile
-@@ -13,6 +13,7 @@ TEST_PROGS = debugfs_attrs.sh debugfs_schemes.sh debugfs_target_ids.sh
+@@ -13,7 +13,7 @@ TEST_PROGS = debugfs_attrs.sh debugfs_schemes.sh debugfs_target_ids.sh
  TEST_PROGS += sysfs.sh
  TEST_PROGS += sysfs_update_schemes_tried_regions_wss_estimation.py
  TEST_PROGS += damos_quota.py damos_quota_goal.py damos_apply_interval.py
-+TEST_PROGS += damos_tried_regions.py
+-TEST_PROGS += damos_tried_regions.py
++TEST_PROGS += damos_tried_regions.py damon_nr_regions.py
  TEST_PROGS += reclaim.sh lru_sort.sh
  
  # regression tests (reproducers of previously found bugs)
-diff --git a/tools/testing/selftests/damon/damos_tried_regions.py b/tools/testing/selftests/damon/damos_tried_regions.py
+diff --git a/tools/testing/selftests/damon/damon_nr_regions.py b/tools/testing/selftests/damon/damon_nr_regions.py
 new file mode 100644
-index 000000000000..3b347eb28bd2
+index 000000000000..dd2735923c59
 --- /dev/null
-+++ b/tools/testing/selftests/damon/damos_tried_regions.py
-@@ -0,0 +1,65 @@
++++ b/tools/testing/selftests/damon/damon_nr_regions.py
+@@ -0,0 +1,85 @@
 +#!/usr/bin/env python3
 +# SPDX-License-Identifier: GPL-2.0
 +
@@ -40,14 +37,24 @@ index 000000000000..3b347eb28bd2
 +
 +import _damon_sysfs
 +
-+def main():
-+    # repeatedly access even-numbered ones in 14 regions of 10 MiB size
++def test_nr_regions(real_nr_regions, min_nr_regions, max_nr_regions):
++    '''
++    Create process of the given 'real_nr_regions' regions, monitor it using
++    DAMON with given '{min,max}_nr_regions' monitoring parameter.
++
++    Exit with non-zero return code if the given {min,max}_nr_regions is not
++    kept.
++    '''
 +    sz_region = 10 * 1024 * 1024
-+    proc = subprocess.Popen(['./access_memory_even', '14', '%d' % sz_region])
++    proc = subprocess.Popen(['./access_memory_even', '%d' % real_nr_regions,
++                             '%d' % sz_region])
 +
 +    # stat every monitored regions
 +    kdamonds = _damon_sysfs.Kdamonds([_damon_sysfs.Kdamond(
 +            contexts=[_damon_sysfs.DamonCtx(
++                monitoring_attrs=_damon_sysfs.DamonAttrs(
++                    min_nr_regions=min_nr_regions,
++                    max_nr_regions=max_nr_regions),
 +                ops='vaddr',
 +                targets=[_damon_sysfs.DamonTarget(pid=proc.pid)],
 +                schemes=[_damon_sysfs.Damos(action='stat',
@@ -85,15 +92,25 @@ index 000000000000..3b347eb28bd2
 +        if len(collected_nr_regions) > 10:
 +            break
 +    proc.terminate()
++    kdamonds.stop()
 +
-+    collected_nr_regions.sort()
-+    sample = collected_nr_regions[4]
-+    print('50-th percentile nr_regions: %d' % sample)
-+    print('expectation (>= 14) is %s' % 'met' if sample >= 14 else 'not met')
-+    if collected_nr_regions[4] < 14:
-+        print('full nr_regions:')
-+        print('\n'.join(collected_nr_regions))
++    test_name = 'nr_regions test with %d/%d/%d real/min/max nr_regions' % (
++            real_nr_regions, min_nr_regions, max_nr_regions)
++    if (collected_nr_regions[0] < min_nr_regions or
++        collected_nr_regions[-1] > max_nr_regions):
++        print('fail %s' % test_name)
++        print('number of regions that collected are:')
++        for nr in collected_nr_regions:
++            print(nr)
 +        exit(1)
++    print('pass %s ' % test_name)
++
++def main():
++    # test min_nr_regions larger than real nr regions
++    test_nr_regions(10, 20, 100)
++
++    # test max_nr_regions smaller than real nr regions
++    test_nr_regions(15, 3, 10)
 +
 +if __name__ == '__main__':
 +    main()
