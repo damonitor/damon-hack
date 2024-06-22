@@ -105,5 +105,7 @@ then
 	echo
 fi
 
+echo
 echo "Below commits have merged"
 echo "$merged_commits"
+echo
