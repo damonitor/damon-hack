@@ -1,0 +1,72 @@
+From a1d9e386007a4a3ab0bb38d416d614baf878e7ce Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Wed, 19 Jun 2024 14:35:45 -0700
+Subject: [PATCH] mm/damon/core: merge regions aggressively when
+ max_nr_regions is unmet
+
+DAMON keeps the number of regions under max_nr_regions by skipping
+regions split operations when doing so can make the number higher than
+the limit.  It works well for preventing violation of the limit.  But,
+if somehow the violation happens, it cannot recovery well depending on
+the situation.  In detail, if the real number of regions having
+different access pattern is higher than the limit, the mechanism cannot
+reduce the number below the limit.  In such a case, the system could
+suffer from high monitoring overhead of DAMON.
+
+The violation can actually happen.  For an example, the user could
+reduce max_nr_regions while DAMON is running, to be lower than the
+current number of regions.  Fix the problem by repeating the merge
+operations with increasing aggressiveness in kdamond_merge_regions() for
+the case, until the limit is met.
+
+Fixes: b9a6ac4e4ede ("mm/damon: adaptively adjust regions")
+Cc: <stable@vger.kernel.org> # 5.15.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f69250b68bcc..e6598c44b53c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1694,14 +1694,30 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+  * access frequencies are similar.  This is for minimizing the monitoring
+  * overhead under the dynamically changeable access pattern.  If a merge was
+  * unnecessarily made, later 'kdamond_split_regions()' will revert it.
++ *
++ * The total number of regions could be temporarily higher than the
++ * user-defined limit, max_nr_regions for some cases.  For an example, the user
++ * updates max_nr_regions to a number that lower than the current number of
++ * regions while DAMON is running.  Depending on the access pattern, it could
++ * take indefinitve time to reduce the number below the limit.  For such a
++ * case, repeat merging until the limit is met while increasing @threshold and
++ * @sz_limit.
+  */
+ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 				  unsigned long sz_limit)
+ {
+ 	struct damon_target *t;
++	unsigned int nr_regions;
+ 
+-	damon_for_each_target(t, c)
+-		damon_merge_regions_of(t, threshold, sz_limit);
++	do {
++		nr_regions = 0;
++		damon_for_each_target(t, c) {
++			damon_merge_regions_of(t, threshold, sz_limit);
++			nr_regions += damon_nr_regions(t);
++		}
++		threshold = max(1, threshold * 2);
++		sz_limit = max(1, sz_limit * 2);
++	} while (nr_regions > c->attrs.max_nr_regions);
+ }
+ 
+ /*
+-- 
+2.39.2
+
