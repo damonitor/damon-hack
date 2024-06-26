@@ -1,0 +1,41 @@
+From a72472f7e338907e0d8ec8ddf1c5f95500cf24fd Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 26 Jun 2024 14:25:04 -0700
+Subject: [PATCH] mm/damon/core: ensure max threshold attempt for
+ max_nr_regions violation
+
+kdamond_merge_regions() stops the repeated merge attempts for
+max_nr_regions if the merge threshold that increased for next attempt is
+higher than the possible maximum threshold.  Because the increase of the
+threshold is made by multiplying two to the last-used threshold, the
+merge attempt with maximum threshold will not be made unless both the
+maximum threshold and the threshold to increase are powers of two.  In
+extreme situations (e.g., region 1 has 100% access frequency, region 2
+has 0% access frequency, so on), this means the max_nr_regions violation
+cannot be recovered by the attempts.
+
+Fix this by stopping the attempt only if the last-used threshold is same
+to or higher than the maximum possible threshold.
+
+Fixes: dc2dfc760f8a ("mm/damon/core: increase regions merge aggressiveness while respecting min_nr_regions") # damon/next
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index dac27b949403..7a87628b76ab 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1718,7 +1718,7 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 		}
+ 		threshold = max(1, threshold * 2);
+ 	} while (nr_regions > c->attrs.max_nr_regions &&
+-			threshold <= max_thres);
++			threshold / 2 < max_thres);
+ }
+ 
+ /*
+-- 
+2.39.2
+
