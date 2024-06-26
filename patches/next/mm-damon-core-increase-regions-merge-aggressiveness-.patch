@@ -1,0 +1,82 @@
+From dc2dfc760f8aa054a34e4ad66037e57f5f63b5e8 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 26 Jun 2024 09:04:29 -0700
+Subject: [PATCH] mm/damon/core: increase regions merge aggressiveness while
+ respecting min_nr_regions
+
+DAMON's merge mechanism has two thresholds, namely those for access
+frequency and size.  The access frequency threshold avoids merging two
+adjacent regions that having pretty different access frequency.
+
+The size threshold is calculated as total size of regions divided by
+min_nr_regions.  Merging operation skip merging two adjacent regions if
+the resulting region's size can be larger than the threshold.  This is
+for meeting min_nr_regions.
+
+Commit 44fdaf596984 ("mm/damon/core: merge regions aggressively when
+max_nr_regions is unmet") of mm-unstable, however, ignores the
+min_nr_regions by increasing not only access frequency threshold but
+also the size threshold.
+
+The commit also has one more problem.  User could set DAMON target
+regions with more than max_nr_regions discrete regions.  Because DAMON
+cannot merge non-adjacent regions, the number of regions will never be
+lower than max_nr_regions regardless of the increased thresholds.  As a
+result, the function can infinitely repeat the loop.
+
+Increase only access frequency threshold, up to only possible maximum
+value.
+
+Fixes: 44fdaf596984 ("mm/damon/core: merge regions aggressively when max_nr_regions is unmet") # mm-unstable
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 19 ++++++++++---------
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index e6598c44b53c..dac27b949403 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1695,20 +1695,21 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+  * overhead under the dynamically changeable access pattern.  If a merge was
+  * unnecessarily made, later 'kdamond_split_regions()' will revert it.
+  *
+- * The total number of regions could be temporarily higher than the
+- * user-defined limit, max_nr_regions for some cases.  For an example, the user
+- * updates max_nr_regions to a number that lower than the current number of
+- * regions while DAMON is running.  Depending on the access pattern, it could
+- * take indefinitve time to reduce the number below the limit.  For such a
+- * case, repeat merging until the limit is met while increasing @threshold and
+- * @sz_limit.
++ * The total number of regions could be higher than the user-defined limit,
++ * max_nr_regions for some cases.  For example, the user can update
++ * max_nr_regions to a number that lower than the current number of regions
++ * while DAMON is running.  For such a case, repeat merging until the limit is
++ * met while increasing @threshold up to possible maximum level.
+  */
+ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 				  unsigned long sz_limit)
+ {
+ 	struct damon_target *t;
+ 	unsigned int nr_regions;
++	unsigned int max_thres;
+ 
++	max_thres = c->attrs.aggr_interval /
++		(c->attrs.sample_interval ?  c->attrs.sample_interval : 1);
+ 	do {
+ 		nr_regions = 0;
+ 		damon_for_each_target(t, c) {
+@@ -1716,8 +1717,8 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 			nr_regions += damon_nr_regions(t);
+ 		}
+ 		threshold = max(1, threshold * 2);
+-		sz_limit = max(1, sz_limit * 2);
+-	} while (nr_regions > c->attrs.max_nr_regions);
++	} while (nr_regions > c->attrs.max_nr_regions &&
++			threshold <= max_thres);
+ }
+ 
+ /*
+-- 
+2.39.2
+
