@@ -1,0 +1,53 @@
+From ea15d37815f7e304658e4fa585f546ca788e529f Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 16 Jul 2024 17:49:23 -0700
+Subject: [PATCH] mm/damon/core-test: fix damon_test_ops_registration() for
+ DAMON_VADDR unset case
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core-test.h | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core-test.h b/mm/damon/core-test.h
+index ef36d586d6ee..9fcaa3b6e58e 100644
+--- a/mm/damon/core-test.h
++++ b/mm/damon/core-test.h
+@@ -248,7 +248,16 @@ static void damon_test_ops_registration(struct kunit *test)
+ 	struct damon_ctx *c = damon_new_ctx();
+ 	struct damon_operations ops = {.id = DAMON_OPS_VADDR}, bak;
+ 
+-	/* DAMON_OPS_VADDR is registered on subsys_initcall */
++	/*
++	 * DAMON_OPS_VADDR is registered on subsys_initcall only if
++	 * CONFIG_DAMON_VADDR is set
++	 */
++#ifndef CONFIG_DAMON_VADDR
++	bak.id = DAMON_OPS_VADDR;
++	KUNIT_EXPECT_EQ(test, damon_register_ops(&bak), 0);
++#endif
++
++	/* DAMON_OPS_VADDR is ensured to be registered */
+ 	KUNIT_EXPECT_EQ(test, damon_select_ops(c, DAMON_OPS_VADDR), 0);
+ 
+ 	/* Double-registration is prohibited */
+@@ -273,6 +282,16 @@ static void damon_test_ops_registration(struct kunit *test)
+ 	/* Check double-registration failure again */
+ 	KUNIT_EXPECT_EQ(test, damon_register_ops(&ops), -EINVAL);
+ 
++	/*
++	 * Unregister DAMON_OPS_VADDR if we registered at the beginning of this
++	 * test.
++	 */
++#ifndef CONFIG_DAMON_VADDR
++	mutex_lock(&damon_ops_lock);
++	damon_registered_ops[DAMON_OPS_VADDR] = (struct damon_operations){};
++	mutex_unlock(&damon_ops_lock);
++#endif
++
+ 	damon_destroy_ctx(c);
+ }
+ 
+-- 
+2.39.2
+
