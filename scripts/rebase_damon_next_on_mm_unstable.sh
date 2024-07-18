@@ -40,10 +40,6 @@ new_mm_unstable=akpm.korg.mm/mm-unstable
 
 bindir=$(dirname "$0")
 
-if ! "$bindir/ensure_gpg_password.sh"
-then
-	echo "ensure_gpg_password failed, as expected"
-fi
 git fetch akpm.korg.mm
 
 old_mm_unstable_commit=$(git rev-parse "$old_mm_unstable")
