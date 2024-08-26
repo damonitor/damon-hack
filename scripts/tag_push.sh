@@ -15,7 +15,7 @@ datetime=$(date +"%Y-%m-%d-%H-%M")
 baseline=$(git describe --match "v*" --abbrev=0)
 tagname=damon/next-$datetime-on-$baseline
 echo "tagging as $tagname"
-git -C "$bindir" tag -s "$tagname"
+git -C "$bindir" tag -as "$tagname" -m "$tagname"
 
 echo "push"
 echo "gh"
