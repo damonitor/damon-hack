@@ -24,6 +24,12 @@ do
 		echo "$baseline" > "$dest_dir/series"
 	fi
 	patch=$(git format-patch "$commit^".."$commit")
+
+	# remove magic timestamp line to avoid unnecessary diff
+	no_magic_tmp_patch=$(mktemp no_magic_timestamp_XXXX)
+	tail -n +2 "$patch" > "$no_magic_tmp_patch"
+	mv "$no_magic_tmp_patch" "$patch"
+
 	final_name=$(echo "$patch" | cut -c 6-)
 	nr_duplicates=0
 	while [ -e "$dest_dir/$final_name" ]
