@@ -1,0 +1,69 @@
+From 8d4c3b367f0482e4c81819119707fac3be7c65e2 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: "Liam R. Howlett" <Liam.Howlett@Oracle.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Brendan Higgins <brendanhiggins@google.com>
+Cc: David Gow <davidgow@google.com>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Tue, 3 Sep 2024 16:19:55 -0700
+Subject: [PATCH] mm/damon/tests/vaddr-kunit: don't use mas_lock for
+ MM_MT_FLAGS-initialized maple tree
+
+damon_test_three_regions_in_vmas() initializes a maple tree with
+MM_MT_FLAGS.  The flags contains MT_FLAGS_LOCK_EXTERN, which means
+mt_lock of the maple tree will not be used.  And therefore the maple
+tree initialization code skips initialization of the mt_lock.  However,
+__link_vmas(), which adds vmas for test to the maple tree, uses the
+mt_lock.  In other words, the uninitialized spinlock is used.  The
+problem becomes celar when spinlock debugging is turned on, since it
+reports spinlock bad magic bug.  Fix the issue by not using the mt_lock
+as promised.
+
+Reported-by: Guenter Roeck <linux@roeck-us.net>
+Closes: https://lore.kernel.org/1453b2b2-6119-4082-ad9e-f3c5239bf87e@roeck-us.net
+Fixes: d0cf3dd47f0d ("damon: convert __damon_va_three_regions to use the VMA iterator")
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/tests/vaddr-kunit.h | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/tests/vaddr-kunit.h b/mm/damon/tests/vaddr-kunit.h
+index 83626483f82b..c6c7e0e0ab07 100644
+--- a/mm/damon/tests/vaddr-kunit.h
++++ b/mm/damon/tests/vaddr-kunit.h
+@@ -17,23 +17,19 @@
+ static int __link_vmas(struct maple_tree *mt, struct vm_area_struct *vmas,
+ 			ssize_t nr_vmas)
+ {
+-	int i, ret = -ENOMEM;
++	int i;
+ 	MA_STATE(mas, mt, 0, 0);
+ 
+ 	if (!nr_vmas)
+ 		return 0;
+ 
+-	mas_lock(&mas);
+ 	for (i = 0; i < nr_vmas; i++) {
+ 		mas_set_range(&mas, vmas[i].vm_start, vmas[i].vm_end - 1);
+ 		if (mas_store_gfp(&mas, &vmas[i], GFP_KERNEL))
+-			goto failed;
++			return -ENOMEM;
+ 	}
+ 
+-	ret = 0;
+-failed:
+-	mas_unlock(&mas);
+-	return ret;
++	return 0;
+ }
+ 
+ /*
+-- 
+2.39.2
+
