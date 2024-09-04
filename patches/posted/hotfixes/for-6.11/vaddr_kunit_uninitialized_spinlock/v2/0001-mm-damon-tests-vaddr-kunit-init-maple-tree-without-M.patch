@@ -1,0 +1,61 @@
+From 814e56bc79143470814bde7654a55282c20aab79 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: "Liam R. Howlett" <Liam.Howlett@Oracle.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Brendan Higgins <brendanhiggins@google.com>
+Cc: David Gow <davidgow@google.com>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Date: Wed, 4 Sep 2024 10:15:29 -0700
+Subject: [PATCH v2] mm/damon/tests/vaddr-kunit: init maple tree without
+ MT_FLAGS_LOCK_EXTERN
+
+damon_test_three_regions_in_vmas() initializes a maple tree with
+MM_MT_FLAGS.  The flags contains MT_FLAGS_LOCK_EXTERN, which means
+mt_lock of the maple tree will not be used.  And therefore the maple
+tree initialization code skips initialization of the mt_lock.  However,
+__link_vmas(), which adds vmas for test to the maple tree, uses the
+mt_lock.  In other words, the uninitialized spinlock is used.  The
+problem becomes clear when spinlock debugging is turned on, since it
+reports spinlock bad magic bug.
+
+Fix the issue by excluding MT_FLAGS_LOCK_EXTERN from the maple tree
+initialization flags.  Note that we don't use empty flags to make it
+further similar to the usage of mm maple tree, and to be prepared for
+possible future changes, as suggested by Liam.
+
+Reported-by: Guenter Roeck <linux@roeck-us.net>
+Closes: https://lore.kernel.org/1453b2b2-6119-4082-ad9e-f3c5239bf87e@roeck-us.net
+Fixes: d0cf3dd47f0d ("damon: convert __damon_va_three_regions to use the VMA iterator")
+Suggested-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+Changes from v1
+(https://lore.kernel.org/20240904004534.1189-1-sj@kernel.org)
+- Keep lock usage and update the initialization flags (Liam)
+- Fix a typo: s/celar/clear/ (Guenter)
+
+ mm/damon/tests/vaddr-kunit.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/tests/vaddr-kunit.h b/mm/damon/tests/vaddr-kunit.h
+index 83626483f82b..a339d117150f 100644
+--- a/mm/damon/tests/vaddr-kunit.h
++++ b/mm/damon/tests/vaddr-kunit.h
+@@ -77,7 +77,7 @@ static void damon_test_three_regions_in_vmas(struct kunit *test)
+ 		(struct vm_area_struct) {.vm_start = 307, .vm_end = 330},
+ 	};
+ 
+-	mt_init_flags(&mm.mm_mt, MM_MT_FLAGS);
++	mt_init_flags(&mm.mm_mt, MT_FLAGS_ALLOC_RANGE | MT_FLAGS_USE_RCU);
+ 	if (__link_vmas(&mm.mm_mt, vmas, ARRAY_SIZE(vmas)))
+ 		kunit_skip(test, "Failed to create VMA tree");
+ 
+-- 
+2.39.2
+
