@@ -59,7 +59,7 @@ then
 	echo "ensuring gpg password failed, as expected"
 fi
 git tag -s -m "DAMO $new_version" "v$new_version"
-for remote in downstream upstream korg
+for remote in upstream korg
 do
 	git push "$remote" next next:master "v$new_version"
 done
