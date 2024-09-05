@@ -1,0 +1,83 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 4 Sep 2024 22:31:40 -0700
+Subject: [PATCH] mm/damon/core: support zero intervals
+
+Below makes damo infinitely blocked.
+
+    damo start -s 0 -a 0
+    damo tune -s 5ms -a 100ms
+
+It's because next_aggregate_sis becomes passed_sis.  Fix it.
+
+TODO: add more details on commit message; consider breaking for each
+interval.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1d2c4daef157..d4069b1239ef 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1444,7 +1444,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 	damon_for_each_scheme(s, c) {
+ 		struct damos_quota *quota = &s->quota;
+ 
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+ 
+ 		if (!s->wmarks.activated)
+@@ -1657,7 +1657,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	bool has_schemes_to_apply = false;
+ 
+ 	damon_for_each_scheme(s, c) {
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+ 
+ 		if (!s->wmarks.activated)
+@@ -1677,9 +1677,9 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	}
+ 
+ 	damon_for_each_scheme(s, c) {
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+-		s->next_apply_sis +=
++		s->next_apply_sis = c->passed_sample_intervals +
+ 			(s->apply_interval_us ? s->apply_interval_us :
+ 			 c->attrs.aggr_interval) / sample_interval;
+ 	}
+@@ -2056,7 +2056,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 
+-		if (ctx->passed_sample_intervals == next_aggregation_sis) {
++		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
+ 			kdamond_merge_regions(ctx,
+ 					max_nr_accesses / 10,
+ 					sz_limit);
+@@ -2074,7 +2074,7 @@ static int kdamond_fn(void *data)
+ 
+ 		sample_interval = ctx->attrs.sample_interval ?
+ 			ctx->attrs.sample_interval : 1;
+-		if (ctx->passed_sample_intervals == next_aggregation_sis) {
++		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
+ 			ctx->next_aggregation_sis = next_aggregation_sis +
+ 				ctx->attrs.aggr_interval / sample_interval;
+ 
+@@ -2084,7 +2084,7 @@ static int kdamond_fn(void *data)
+ 				ctx->ops.reset_aggregated(ctx);
+ 		}
+ 
+-		if (ctx->passed_sample_intervals == next_ops_update_sis) {
++		if (ctx->passed_sample_intervals >= next_ops_update_sis) {
+ 			ctx->next_ops_update_sis = next_ops_update_sis +
+ 				ctx->attrs.ops_update_interval /
+ 				sample_interval;
+-- 
+2.39.2
+

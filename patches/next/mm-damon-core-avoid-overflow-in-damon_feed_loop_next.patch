@@ -1,0 +1,65 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 4 Sep 2024 23:55:11 -0700
+Subject: [PATCH] mm/damon/core: avoid overflow in damon_feed_loop_next_input()
+
+TODO: cleanup code, add more details, test, add Fixes:
+
+Closes: https://lore.kernel.org/944f3d5b-9177-48e7-8ec9-7f1331a3fea3@roeck-us.net
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 36 ++++++++++++++++++++++++++++++------
+ 1 file changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index d4069b1239ef..74e32116173b 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1488,15 +1488,39 @@ static unsigned long damon_feed_loop_next_input(unsigned long last_input,
+ 		unsigned long score)
+ {
+ 	const unsigned long goal = 10000;
+-	unsigned long score_goal_diff = max(goal, score) - min(goal, score);
+-	unsigned long score_goal_diff_bp = score_goal_diff * 10000 / goal;
+-	unsigned long compensation = last_input * score_goal_diff_bp / 10000;
+ 	/* Set minimum input as 10000 to avoid compensation be zero */
+ 	const unsigned long min_input = 10000;
++	unsigned long score_goal_diff = max(goal, score) - min(goal, score);
++	unsigned long compensation;
++
++	/*
++	 * if current > goal and diff > goal, always return min_input.
++	 * if current < goal and diff > goal, always return last_input * 2
++	 */
++	score_goal_diff = min(score_goal_diff, goal);
+ 
+-	if (goal > score)
+-		return last_input + compensation;
+-	if (last_input > compensation + min_input)
++	/*
++	 * goal == 10000, diff <= 10000, last_input is arbitrary
++	 * compensation = last_input * diff / goal,
++	 * so compensation <= last_input
++	 */
++	if (last_input < ULONG_MAX / score_goal_diff)
++		compensation = last_input * score_goal_diff / goal;
++	/* last_input > goal because ULONG_MAX > goal * 40000 even on 32bit */
++	/* maybe we can check
++	 * 	else if (last_input / goal < ULONG_MAX / score_goal_diff)
++	 * But, because goal >= diff and last_input < ULONG_MAX, the check is
++	 * always true
++	*/
++	else
++		compensation = last_input / goal * score_goal_diff;
++
++	/* last_input and compensation could still be ULONG_MAX) */
++	if (goal > score) {
++		if (last_input < ULONG_MAX - compensation)
++			return last_input + compensation;
++		return ULONG_MAX;
++	if (last_input > compensation && last_input - compensation > min_input)
+ 		return last_input - compensation;
+ 	return min_input;
+ }
+-- 
+2.39.2
+
