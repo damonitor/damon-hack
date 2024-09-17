@@ -21,6 +21,14 @@ then
 	exit 1
 fi
 
+if [ ! -f $HOME/.gnupg/sshcontrol ]
+then
+	echo "Add keygrip to $HOME/.gnupg/sshcontrol"
+	echo "You may use gpg --list-secret-keys --with-keygrip to get keygrip"
+	exit 1
+fi
+
+
 gpg-connect-agent updatestartuptty /bye > /dev/null
 ssh gitolite.kernel.org help > /dev/null
 ssh git@github.com &> /dev/null
