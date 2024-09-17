@@ -28,6 +28,11 @@ then
 	exit 1
 fi
 
+if ! diff "$bindir/_gpg_agent_conf" "$HOME/.gnupg/gpg-agent.conf"
+then
+	echo "Please tset $HOME/.gnupg/gpg-agent.conf same to $bindir/_gpg_agent_conf"
+	exit 1
+fi
 
 gpg-connect-agent updatestartuptty /bye > /dev/null
 ssh gitolite.kernel.org help > /dev/null
