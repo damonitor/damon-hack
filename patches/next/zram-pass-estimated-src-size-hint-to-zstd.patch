@@ -1,0 +1,45 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:55:57 +0900
+Subject: [PATCH] zram: pass estimated src size hint to zstd
+
+zram works with PAGE_SIZE buffers, so we always know exact size of the
+source buffer and hence can pass estimated_src_size to zstd_get_params().
+
+This hint on x86_64, for example, reduces the size of the work memory
+buffer from 1303520 bytes down to 90080 bytes.  Given that compression
+streams are per-CPU that's quite some memory saving.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-10-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/backend_zstd.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/block/zram/backend_zstd.c b/drivers/block/zram/backend_zstd.c
+index abec68d1104b..310d970078e2 100644
+--- a/drivers/block/zram/backend_zstd.c
++++ b/drivers/block/zram/backend_zstd.c
+@@ -35,7 +35,7 @@ static void *zstd_create(void)
+ 		return NULL;
+ 
+ 	ctx->level = zstd_default_clevel();
+-	params = zstd_get_params(ctx->level, 0);
++	params = zstd_get_params(ctx->level, PAGE_SIZE);
+ 	sz = zstd_cctx_workspace_bound(&params.cParams);
+ 	ctx->cctx_mem = vzalloc(sz);
+ 	if (!ctx->cctx_mem)
+@@ -65,7 +65,7 @@ static int zstd_compress(void *ctx, const unsigned char *src, size_t src_len,
+ 			 unsigned char *dst, size_t *dst_len)
+ {
+ 	struct zstd_ctx *zctx = ctx;
+-	const zstd_parameters params = zstd_get_params(zctx->level, 0);
++	const zstd_parameters params = zstd_get_params(zctx->level, PAGE_SIZE);
+ 	size_t ret;
+ 
+ 	ret = zstd_compress_cctx(zctx->cctx, dst, *dst_len,
+-- 
+2.46.1
+

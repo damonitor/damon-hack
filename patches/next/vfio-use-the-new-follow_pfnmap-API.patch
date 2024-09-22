@@ -1,0 +1,82 @@
+From: Peter Xu <peterx@redhat.com>
+Date: Mon, 26 Aug 2024 16:43:47 -0400
+Subject: [PATCH] vfio: use the new follow_pfnmap API
+
+Use the new API that can understand huge pfn mappings.
+
+Link: https://lkml.kernel.org/r/20240826204353.2228736-14-peterx@redhat.com
+Signed-off-by: Peter Xu <peterx@redhat.com>
+Cc: Alex Williamson <alex.williamson@redhat.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Gavin Shan <gshan@redhat.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Niklas Schnelle <schnelle@linux.ibm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/vfio/vfio_iommu_type1.c | 16 ++++++----------
+ 1 file changed, 6 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/vfio/vfio_iommu_type1.c b/drivers/vfio/vfio_iommu_type1.c
+index 0960699e7554..bf391b40e576 100644
+--- a/drivers/vfio/vfio_iommu_type1.c
++++ b/drivers/vfio/vfio_iommu_type1.c
+@@ -513,12 +513,10 @@ static int follow_fault_pfn(struct vm_area_struct *vma, struct mm_struct *mm,
+ 			    unsigned long vaddr, unsigned long *pfn,
+ 			    bool write_fault)
+ {
+-	pte_t *ptep;
+-	pte_t pte;
+-	spinlock_t *ptl;
++	struct follow_pfnmap_args args = { .vma = vma, .address = vaddr };
+ 	int ret;
+ 
+-	ret = follow_pte(vma, vaddr, &ptep, &ptl);
++	ret = follow_pfnmap_start(&args);
+ 	if (ret) {
+ 		bool unlocked = false;
+ 
+@@ -532,19 +530,17 @@ static int follow_fault_pfn(struct vm_area_struct *vma, struct mm_struct *mm,
+ 		if (ret)
+ 			return ret;
+ 
+-		ret = follow_pte(vma, vaddr, &ptep, &ptl);
++		ret = follow_pfnmap_start(&args);
+ 		if (ret)
+ 			return ret;
+ 	}
+ 
+-	pte = ptep_get(ptep);
+-
+-	if (write_fault && !pte_write(pte))
++	if (write_fault && !args.writable)
+ 		ret = -EFAULT;
+ 	else
+-		*pfn = pte_pfn(pte);
++		*pfn = args.pfn;
+ 
+-	pte_unmap_unlock(ptep, ptl);
++	follow_pfnmap_end(&args);
+ 	return ret;
+ }
+ 
+-- 
+2.46.1
+

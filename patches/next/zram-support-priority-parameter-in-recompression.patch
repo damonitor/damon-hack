@@ -1,0 +1,68 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:56:12 +0900
+Subject: [PATCH] zram: support priority parameter in recompression
+
+recompress device attribute supports alg=NAME parameter so that we can
+specify only one particular algorithm we want to perform recompression
+with.  However, with algo params we now can have several exactly same
+secondary algorithms but each with its own params tuning (e.g.  priority 1
+configured to use more aggressive level, and priority 2 configured to use
+a pre-trained dictionary).  Support priority=NUM parameter so that we can
+correctly determine which secondary algorithm we want to use.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-25-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/blockdev/zram.rst |  5 ++++-
+ drivers/block/zram/zram_drv.c               | 12 ++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/admin-guide/blockdev/zram.rst b/Documentation/admin-guide/blockdev/zram.rst
+index d3b676273528..678d70d6e1c3 100644
+--- a/Documentation/admin-guide/blockdev/zram.rst
++++ b/Documentation/admin-guide/blockdev/zram.rst
+@@ -512,11 +512,14 @@ registered compression algorithms, increases our chances of finding the
+ algorithm that successfully compresses a particular page. Sometimes, however,
+ it is convenient (and sometimes even necessary) to limit recompression to
+ only one particular algorithm so that it will not try any other algorithms.
+-This can be achieved by providing a algo=NAME parameter:::
++This can be achieved by providing a `algo` or `priority` parameter:::
+ 
+ 	#use zstd algorithm only (if registered)
+ 	echo "type=huge algo=zstd" > /sys/block/zramX/recompress
+ 
++	#use zstd algorithm only (if zstd was registered under priority 1)
++	echo "type=huge priority=1" > /sys/block/zramX/recompress
++
+ memory tracking
+ ===============
+ 
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 9b29f9e6cb50..1f1bf175a6c3 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -1855,6 +1855,18 @@ static ssize_t recompress_store(struct device *dev,
+ 			algo = val;
+ 			continue;
+ 		}
++
++		if (!strcmp(param, "priority")) {
++			ret = kstrtouint(val, 10, &prio);
++			if (ret)
++				return ret;
++
++			if (prio == ZRAM_PRIMARY_COMP)
++				prio = ZRAM_SECONDARY_COMP;
++
++			prio_max = min(prio + 1, ZRAM_MAX_COMPS);
++			continue;
++		}
+ 	}
+ 
+ 	if (threshold >= huge_class_size)
+-- 
+2.46.1
+

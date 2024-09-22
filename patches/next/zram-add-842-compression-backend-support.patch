@@ -1,0 +1,183 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:55:59 +0900
+Subject: [PATCH] zram: add 842 compression backend support
+
+Add s/w 842 compression support.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-12-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/Kconfig       | 11 ++++++
+ drivers/block/zram/Makefile      |  1 +
+ drivers/block/zram/backend_842.c | 68 ++++++++++++++++++++++++++++++++
+ drivers/block/zram/backend_842.h | 10 +++++
+ drivers/block/zram/zcomp.c       |  4 ++
+ 5 files changed, 94 insertions(+)
+ create mode 100644 drivers/block/zram/backend_842.c
+ create mode 100644 drivers/block/zram/backend_842.h
+
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 9dedd2edfb28..1e0e7e5910b8 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -44,6 +44,12 @@ config ZRAM_BACKEND_DEFLATE
+ 	select ZLIB_DEFLATE
+ 	select ZLIB_INFLATE
+ 
++config ZRAM_BACKEND_842
++	bool "842 compression support"
++	depends on ZRAM
++	select 842_COMPRESS
++	select 842_DECOMPRESS
++
+ choice
+ 	prompt "Default zram compressor"
+ 	default ZRAM_DEF_COMP_LZORLE
+@@ -73,6 +79,10 @@ config ZRAM_DEF_COMP_DEFLATE
+ 	bool "deflate"
+ 	depends on ZRAM_BACKEND_DEFLATE
+ 
++config ZRAM_DEF_COMP_842
++	bool "842"
++	depends on ZRAM_BACKEND_842
++
+ endchoice
+ 
+ config ZRAM_DEF_COMP
+@@ -83,6 +93,7 @@ config ZRAM_DEF_COMP
+ 	default "lz4hc" if ZRAM_DEF_COMP_LZ4HC
+ 	default "zstd" if ZRAM_DEF_COMP_ZSTD
+ 	default "deflate" if ZRAM_DEF_COMP_DEFLATE
++	default "842" if ZRAM_DEF_COMP_842
+ 	default "unset-value"
+ 
+ config ZRAM_WRITEBACK
+diff --git a/drivers/block/zram/Makefile b/drivers/block/zram/Makefile
+index 266430548437..0fdefd576691 100644
+--- a/drivers/block/zram/Makefile
++++ b/drivers/block/zram/Makefile
+@@ -7,5 +7,6 @@ zram-$(CONFIG_ZRAM_BACKEND_LZ4)		+= backend_lz4.o
+ zram-$(CONFIG_ZRAM_BACKEND_LZ4HC)	+= backend_lz4hc.o
+ zram-$(CONFIG_ZRAM_BACKEND_ZSTD)	+= backend_zstd.o
+ zram-$(CONFIG_ZRAM_BACKEND_DEFLATE)	+= backend_deflate.o
++zram-$(CONFIG_ZRAM_BACKEND_842)		+= backend_842.o
+ 
+ obj-$(CONFIG_ZRAM)	+=	zram.o
+diff --git a/drivers/block/zram/backend_842.c b/drivers/block/zram/backend_842.c
+new file mode 100644
+index 000000000000..005f3fcb9024
+--- /dev/null
++++ b/drivers/block/zram/backend_842.c
+@@ -0,0 +1,68 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/sw842.h>
++#include <linux/vmalloc.h>
++
++#include "backend_842.h"
++
++struct sw842_ctx {
++	void *mem;
++};
++
++static void destroy_842(void *ctx)
++{
++	struct sw842_ctx *zctx = ctx;
++
++	kfree(zctx->mem);
++	kfree(zctx);
++}
++
++static void *create_842(void)
++{
++	struct sw842_ctx *ctx;
++
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return NULL;
++
++	ctx->mem = kmalloc(SW842_MEM_COMPRESS, GFP_KERNEL);
++	if (!ctx->mem)
++		goto error;
++
++	return ctx;
++
++error:
++	destroy_842(ctx);
++	return NULL;
++}
++
++static int compress_842(void *ctx, const unsigned char *src, size_t src_len,
++			unsigned char *dst, size_t *dst_len)
++{
++	struct sw842_ctx *zctx = ctx;
++	unsigned int dlen = *dst_len;
++	int ret;
++
++	ret = sw842_compress(src, src_len, dst, &dlen, zctx->mem);
++	if (ret == 0)
++		*dst_len = dlen;
++	return ret;
++}
++
++static int decompress_842(void *ctx, const unsigned char *src, size_t src_len,
++			  unsigned char *dst, size_t dst_len)
++{
++	unsigned int dlen = dst_len;
++
++	return sw842_decompress(src, src_len, dst, &dlen);
++}
++
++const struct zcomp_ops backend_842 = {
++	.compress	= compress_842,
++	.decompress	= decompress_842,
++	.create_ctx	= create_842,
++	.destroy_ctx	= destroy_842,
++	.name		= "842",
++};
+diff --git a/drivers/block/zram/backend_842.h b/drivers/block/zram/backend_842.h
+new file mode 100644
+index 000000000000..4dc85c188799
+--- /dev/null
++++ b/drivers/block/zram/backend_842.h
+@@ -0,0 +1,10 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#ifndef __BACKEND_842_H__
++#define __BACKEND_842_H__
++
++#include "zcomp.h"
++
++extern const struct zcomp_ops backend_842;
++
++#endif /* __BACKEND_842_H__ */
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index d1396fe82b1d..94e1c9503267 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -18,6 +18,7 @@
+ #include "backend_lz4hc.h"
+ #include "backend_zstd.h"
+ #include "backend_deflate.h"
++#include "backend_842.h"
+ 
+ static const struct zcomp_ops *backends[] = {
+ #if IS_ENABLED(CONFIG_ZRAM_BACKEND_LZO)
+@@ -35,6 +36,9 @@ static const struct zcomp_ops *backends[] = {
+ #endif
+ #if IS_ENABLED(CONFIG_ZRAM_BACKEND_DEFLATE)
+ 	&backend_deflate,
++#endif
++#if IS_ENABLED(CONFIG_ZRAM_BACKEND_842)
++	&backend_842,
+ #endif
+ 	NULL
+ };
+-- 
+2.46.1
+

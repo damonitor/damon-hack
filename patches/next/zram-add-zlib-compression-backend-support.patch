@@ -1,0 +1,247 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:55:58 +0900
+Subject: [PATCH] zram: add zlib compression backend support
+
+Add s/w zlib (inflate/deflate) compression.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-11-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/Kconfig           |  11 +++
+ drivers/block/zram/Makefile          |   1 +
+ drivers/block/zram/backend_deflate.c | 132 +++++++++++++++++++++++++++
+ drivers/block/zram/backend_deflate.h |  10 ++
+ drivers/block/zram/zcomp.c           |   4 +
+ 5 files changed, 158 insertions(+)
+ create mode 100644 drivers/block/zram/backend_deflate.c
+ create mode 100644 drivers/block/zram/backend_deflate.h
+
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 71cd0d5d8f35..9dedd2edfb28 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -38,6 +38,12 @@ config ZRAM_BACKEND_ZSTD
+ 	select ZSTD_COMPRESS
+ 	select ZSTD_DECOMPRESS
+ 
++config ZRAM_BACKEND_DEFLATE
++	bool "deflate compression support"
++	depends on ZRAM
++	select ZLIB_DEFLATE
++	select ZLIB_INFLATE
++
+ choice
+ 	prompt "Default zram compressor"
+ 	default ZRAM_DEF_COMP_LZORLE
+@@ -63,6 +69,10 @@ config ZRAM_DEF_COMP_ZSTD
+ 	bool "zstd"
+ 	depends on ZRAM_BACKEND_ZSTD
+ 
++config ZRAM_DEF_COMP_DEFLATE
++	bool "deflate"
++	depends on ZRAM_BACKEND_DEFLATE
++
+ endchoice
+ 
+ config ZRAM_DEF_COMP
+@@ -72,6 +82,7 @@ config ZRAM_DEF_COMP
+ 	default "lz4" if ZRAM_DEF_COMP_LZ4
+ 	default "lz4hc" if ZRAM_DEF_COMP_LZ4HC
+ 	default "zstd" if ZRAM_DEF_COMP_ZSTD
++	default "deflate" if ZRAM_DEF_COMP_DEFLATE
+ 	default "unset-value"
+ 
+ config ZRAM_WRITEBACK
+diff --git a/drivers/block/zram/Makefile b/drivers/block/zram/Makefile
+index a2ca227e199c..266430548437 100644
+--- a/drivers/block/zram/Makefile
++++ b/drivers/block/zram/Makefile
+@@ -6,5 +6,6 @@ zram-$(CONFIG_ZRAM_BACKEND_LZO)		+= backend_lzorle.o backend_lzo.o
+ zram-$(CONFIG_ZRAM_BACKEND_LZ4)		+= backend_lz4.o
+ zram-$(CONFIG_ZRAM_BACKEND_LZ4HC)	+= backend_lz4hc.o
+ zram-$(CONFIG_ZRAM_BACKEND_ZSTD)	+= backend_zstd.o
++zram-$(CONFIG_ZRAM_BACKEND_DEFLATE)	+= backend_deflate.o
+ 
+ obj-$(CONFIG_ZRAM)	+=	zram.o
+diff --git a/drivers/block/zram/backend_deflate.c b/drivers/block/zram/backend_deflate.c
+new file mode 100644
+index 000000000000..acefb86701b9
+--- /dev/null
++++ b/drivers/block/zram/backend_deflate.c
+@@ -0,0 +1,132 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/vmalloc.h>
++#include <linux/zlib.h>
++
++#include "backend_deflate.h"
++
++/* Use the same value as crypto API */
++#define DEFLATE_DEF_WINBITS		11
++#define DEFLATE_DEF_MEMLEVEL		MAX_MEM_LEVEL
++
++struct deflate_ctx {
++	struct z_stream_s cctx;
++	struct z_stream_s dctx;
++	s32 level;
++};
++
++static void deflate_destroy(void *ctx)
++{
++	struct deflate_ctx *zctx = ctx;
++
++	if (zctx->cctx.workspace) {
++		zlib_deflateEnd(&zctx->cctx);
++		vfree(zctx->cctx.workspace);
++	}
++	if (zctx->dctx.workspace) {
++		zlib_inflateEnd(&zctx->dctx);
++		vfree(zctx->dctx.workspace);
++	}
++	kfree(zctx);
++}
++
++static void *deflate_create(void)
++{
++	struct deflate_ctx *ctx;
++	size_t sz;
++	int ret;
++
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return NULL;
++
++	/* @FIXME: using a hardcoded Z_DEFAULT_COMPRESSION for now */
++	ctx->level = Z_DEFAULT_COMPRESSION;
++	sz = zlib_deflate_workspacesize(-DEFLATE_DEF_WINBITS, MAX_MEM_LEVEL);
++	ctx->cctx.workspace = vzalloc(sz);
++	if (!ctx->cctx.workspace)
++		goto error;
++
++	ret = zlib_deflateInit2(&ctx->cctx, ctx->level, Z_DEFLATED,
++				-DEFLATE_DEF_WINBITS, DEFLATE_DEF_MEMLEVEL,
++				Z_DEFAULT_STRATEGY);
++	if (ret != Z_OK)
++		goto error;
++
++	sz = zlib_inflate_workspacesize();
++	ctx->dctx.workspace = vzalloc(sz);
++	if (!ctx->dctx.workspace)
++		goto error;
++
++	ret = zlib_inflateInit2(&ctx->dctx, -DEFLATE_DEF_WINBITS);
++	if (ret != Z_OK)
++		goto error;
++
++	return ctx;
++
++error:
++	deflate_destroy(ctx);
++	return NULL;
++}
++
++static int deflate_compress(void *ctx, const unsigned char *src,
++			    size_t src_len, unsigned char *dst,
++			    size_t *dst_len)
++{
++	struct deflate_ctx *zctx = ctx;
++	struct z_stream_s *deflate;
++	int ret;
++
++	deflate = &zctx->cctx;
++	ret = zlib_deflateReset(deflate);
++	if (ret != Z_OK)
++		return -EINVAL;
++
++	deflate->next_in = (u8 *)src;
++	deflate->avail_in = src_len;
++	deflate->next_out = (u8 *)dst;
++	deflate->avail_out = *dst_len;
++
++	ret = zlib_deflate(deflate, Z_FINISH);
++	if (ret != Z_STREAM_END)
++		return -EINVAL;
++
++	*dst_len = deflate->total_out;
++	return 0;
++}
++
++static int deflate_decompress(void *ctx, const unsigned char *src,
++			      size_t src_len, unsigned char *dst,
++			      size_t dst_len)
++{
++	struct deflate_ctx *zctx = ctx;
++	struct z_stream_s *inflate;
++	int ret;
++
++	inflate = &zctx->dctx;
++
++	ret = zlib_inflateReset(inflate);
++	if (ret != Z_OK)
++		return -EINVAL;
++
++	inflate->next_in = (u8 *)src;
++	inflate->avail_in = src_len;
++	inflate->next_out = (u8 *)dst;
++	inflate->avail_out = dst_len;
++
++	ret = zlib_inflate(inflate, Z_SYNC_FLUSH);
++	if (ret != Z_STREAM_END)
++		return -EINVAL;
++
++	return 0;
++}
++
++const struct zcomp_ops backend_deflate = {
++	.compress	= deflate_compress,
++	.decompress	= deflate_decompress,
++	.create_ctx	= deflate_create,
++	.destroy_ctx	= deflate_destroy,
++	.name		= "deflate",
++};
+diff --git a/drivers/block/zram/backend_deflate.h b/drivers/block/zram/backend_deflate.h
+new file mode 100644
+index 000000000000..a39ac12b114c
+--- /dev/null
++++ b/drivers/block/zram/backend_deflate.h
+@@ -0,0 +1,10 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#ifndef __BACKEND_DEFLATE_H__
++#define __BACKEND_DEFLATE_H__
++
++#include "zcomp.h"
++
++extern const struct zcomp_ops backend_deflate;
++
++#endif /* __BACKEND_DEFLATE_H__ */
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index 07147659f4a2..d1396fe82b1d 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -17,6 +17,7 @@
+ #include "backend_lz4.h"
+ #include "backend_lz4hc.h"
+ #include "backend_zstd.h"
++#include "backend_deflate.h"
+ 
+ static const struct zcomp_ops *backends[] = {
+ #if IS_ENABLED(CONFIG_ZRAM_BACKEND_LZO)
+@@ -31,6 +32,9 @@ static const struct zcomp_ops *backends[] = {
+ #endif
+ #if IS_ENABLED(CONFIG_ZRAM_BACKEND_ZSTD)
+ 	&backend_zstd,
++#endif
++#if IS_ENABLED(CONFIG_ZRAM_BACKEND_DEFLATE)
++	&backend_deflate,
+ #endif
+ 	NULL
+ };
+-- 
+2.46.1
+

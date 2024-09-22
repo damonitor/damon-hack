@@ -1,0 +1,151 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:56:03 +0900
+Subject: [PATCH] zram: introduce algorithm_params device attribute
+
+This attribute is used to setup compression algorithms' parameters, so we
+can tweak algorithms' characteristics.  At this point only 'level' is
+supported (to be extended in the future).
+
+Each call sets up parameters for one particular algorithm, which should be
+specified either by the algorithm's priority or algo name.  This is
+expected to be called after corresponding algorithm is selected via
+comp_algorithm or recomp_algorithm.
+
+ echo "priority=0 level=1" > /sys/block/zram0/algorithm_params
+or
+ echo "algo=zstd level=1" > /sys/block/zram0/algorithm_params
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-16-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/ABI/testing/sysfs-block-zram  |  7 +++
+ Documentation/admin-guide/blockdev/zram.rst |  1 +
+ drivers/block/zram/zram_drv.c               | 68 +++++++++++++++++++++
+ 3 files changed, 76 insertions(+)
+
+diff --git a/Documentation/ABI/testing/sysfs-block-zram b/Documentation/ABI/testing/sysfs-block-zram
+index 628a00fb20a9..1ef69e0271f9 100644
+--- a/Documentation/ABI/testing/sysfs-block-zram
++++ b/Documentation/ABI/testing/sysfs-block-zram
+@@ -151,3 +151,10 @@ Contact:	Sergey Senozhatsky <senozhatsky@chromium.org>
+ Description:
+ 		The recompress file is write-only and triggers re-compression
+ 		with secondary compression algorithms.
++
++What:		/sys/block/zram<id>/algorithm_params
++Date:		August 2024
++Contact:	Sergey Senozhatsky <senozhatsky@chromium.org>
++Description:
++		The algorithm_params file is write-only and is used to setup
++		compression algorithm parameters.
+diff --git a/Documentation/admin-guide/blockdev/zram.rst b/Documentation/admin-guide/blockdev/zram.rst
+index 181d55d64326..96d81dc12528 100644
+--- a/Documentation/admin-guide/blockdev/zram.rst
++++ b/Documentation/admin-guide/blockdev/zram.rst
+@@ -198,6 +198,7 @@ writeback_limit_enable  RW	show and set writeback_limit feature
+ max_comp_streams  	RW	the number of possible concurrent compress
+ 				operations
+ comp_algorithm    	RW	show and change the compression algorithm
++algorithm_params	WO	setup compression algorithm parameters
+ compact           	WO	trigger memory compaction
+ debug_stat        	RO	this file is used for zram debugging purposes
+ backing_dev	  	RW	set up backend storage for zram to write out
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index ff6724bbdf91..e29e952b99c3 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -998,6 +998,72 @@ static int __comp_algorithm_store(struct zram *zram, u32 prio, const char *buf)
+ 	return 0;
+ }
+ 
++static int comp_params_store(struct zram *zram, u32 prio, s32 level)
++{
++	zram->params[prio].level = level;
++	return 0;
++}
++
++static ssize_t algorithm_params_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf,
++				      size_t len)
++{
++	s32 prio = ZRAM_PRIMARY_COMP, level = ZCOMP_PARAM_NO_LEVEL;
++	char *args, *param, *val, *algo = NULL;
++	struct zram *zram = dev_to_zram(dev);
++	int ret;
++
++	args = skip_spaces(buf);
++	while (*args) {
++		args = next_arg(args, &param, &val);
++
++		if (!val || !*val)
++			return -EINVAL;
++
++		if (!strcmp(param, "priority")) {
++			ret = kstrtoint(val, 10, &prio);
++			if (ret)
++				return ret;
++			continue;
++		}
++
++		if (!strcmp(param, "level")) {
++			ret = kstrtoint(val, 10, &level);
++			if (ret)
++				return ret;
++			continue;
++		}
++
++		if (!strcmp(param, "algo")) {
++			algo = val;
++			continue;
++		}
++	}
++
++	/* Lookup priority by algorithm name */
++	if (algo) {
++		s32 p;
++
++		prio = -EINVAL;
++		for (p = ZRAM_PRIMARY_COMP; p < ZRAM_MAX_COMPS; p++) {
++			if (!zram->comp_algs[p])
++				continue;
++
++			if (!strcmp(zram->comp_algs[p], algo)) {
++				prio = p;
++				break;
++			}
++		}
++	}
++
++	if (prio < ZRAM_PRIMARY_COMP || prio >= ZRAM_MAX_COMPS)
++		return -EINVAL;
++
++	ret = comp_params_store(zram, prio, level);
++	return ret ? ret : len;
++}
++
+ static ssize_t comp_algorithm_show(struct device *dev,
+ 				   struct device_attribute *attr,
+ 				   char *buf)
+@@ -2169,6 +2235,7 @@ static DEVICE_ATTR_RW(writeback_limit_enable);
+ static DEVICE_ATTR_RW(recomp_algorithm);
+ static DEVICE_ATTR_WO(recompress);
+ #endif
++static DEVICE_ATTR_WO(algorithm_params);
+ 
+ static struct attribute *zram_disk_attrs[] = {
+ 	&dev_attr_disksize.attr,
+@@ -2196,6 +2263,7 @@ static struct attribute *zram_disk_attrs[] = {
+ 	&dev_attr_recomp_algorithm.attr,
+ 	&dev_attr_recompress.attr,
+ #endif
++	&dev_attr_algorithm_params.attr,
+ 	NULL,
+ };
+ 
+-- 
+2.46.1
+

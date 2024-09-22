@@ -1,0 +1,73 @@
+From: Kinsey Ho <kinseyho@google.com>
+Date: Tue, 27 Aug 2024 23:07:39 +0000
+Subject: [PATCH] mm: don't hold css->refcnt during traversal
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+To obtain the pointer to the next memcg position, mem_cgroup_iter()
+currently holds css->refcnt during memcg traversal only to put css->refcnt
+at the end of the routine.  This isn't necessary as an rcu_read_lock is
+already held throughout the function.  The use of the RCU read lock with
+css_next_descendant_pre() guarantees that sibling linkage is safe without
+holding a ref on the passed-in @css.
+
+Remove css->refcnt usage during traversal by leveraging RCU.
+
+Link: https://lkml.kernel.org/r/20240827230753.2073580-3-kinseyho@google.com
+Signed-off-by: Kinsey Ho <kinseyho@google.com>
+Reviewed-by: T.J. Mercier <tjmercier@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Cc: Zefan Li <lizefan.x@bytedance.com>
+Cc: Hugh Dickins <hughd@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 18 +-----------------
+ 1 file changed, 1 insertion(+), 17 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 35431035e782..67b1994377b7 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1013,20 +1013,7 @@ struct mem_cgroup *mem_cgroup_iter(struct mem_cgroup *root,
+ 		else if (reclaim->generation != iter->generation)
+ 			goto out_unlock;
+ 
+-		while (1) {
+-			pos = READ_ONCE(iter->position);
+-			if (!pos || css_tryget(&pos->css))
+-				break;
+-			/*
+-			 * css reference reached zero, so iter->position will
+-			 * be cleared by ->css_released. However, we should not
+-			 * rely on this happening soon, because ->css_released
+-			 * is called from a work queue, and by busy-waiting we
+-			 * might block it. So we clear iter->position right
+-			 * away.
+-			 */
+-			(void)cmpxchg(&iter->position, pos, NULL);
+-		}
++		pos = READ_ONCE(iter->position);
+ 	} else if (prev) {
+ 		pos = prev;
+ 	}
+@@ -1067,9 +1054,6 @@ struct mem_cgroup *mem_cgroup_iter(struct mem_cgroup *root,
+ 		 */
+ 		(void)cmpxchg(&iter->position, pos, memcg);
+ 
+-		if (pos)
+-			css_put(&pos->css);
+-
+ 		if (!memcg)
+ 			iter->generation++;
+ 	}
+-- 
+2.46.1
+

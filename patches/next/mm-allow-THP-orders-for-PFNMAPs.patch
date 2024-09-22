@@ -1,0 +1,82 @@
+From: Peter Xu <peterx@redhat.com>
+Date: Mon, 26 Aug 2024 16:43:38 -0400
+Subject: [PATCH] mm: allow THP orders for PFNMAPs
+
+This enables PFNMAPs to be mapped at either pmd/pud layers.  Generalize the
+dax case into vma_is_special_huge() so as to cover both.  Meanwhile, rename
+the macro to THP_ORDERS_ALL_SPECIAL.
+
+Link: https://lkml.kernel.org/r/20240826204353.2228736-5-peterx@redhat.com
+Signed-off-by: Peter Xu <peterx@redhat.com>
+Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Gavin Shan <gshan@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alex Williamson <alex.williamson@redhat.com>
+Cc: Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Niklas Schnelle <schnelle@linux.ibm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/huge_mm.h | 6 +++---
+ mm/huge_memory.c        | 4 ++--
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index b550b5a248bb..4da102b74a8c 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -76,9 +76,9 @@ extern struct kobj_attribute thpsize_shmem_enabled_attr;
+ /*
+  * Mask of all large folio orders supported for file THP. Folios in a DAX
+  * file is never split and the MAX_PAGECACHE_ORDER limit does not apply to
+- * it.
++ * it.  Same to PFNMAPs where there's neither page* nor pagecache.
+  */
+-#define THP_ORDERS_ALL_FILE_DAX		\
++#define THP_ORDERS_ALL_SPECIAL		\
+ 	(BIT(PMD_ORDER) | BIT(PUD_ORDER))
+ #define THP_ORDERS_ALL_FILE_DEFAULT	\
+ 	((BIT(MAX_PAGECACHE_ORDER + 1) - 1) & ~BIT(0))
+@@ -87,7 +87,7 @@ extern struct kobj_attribute thpsize_shmem_enabled_attr;
+  * Mask of all large folio orders supported for THP.
+  */
+ #define THP_ORDERS_ALL	\
+-	(THP_ORDERS_ALL_ANON | THP_ORDERS_ALL_FILE_DAX | THP_ORDERS_ALL_FILE_DEFAULT)
++	(THP_ORDERS_ALL_ANON | THP_ORDERS_ALL_SPECIAL | THP_ORDERS_ALL_FILE_DEFAULT)
+ 
+ #define TVA_SMAPS		(1 << 0)	/* Will be used for procfs */
+ #define TVA_IN_PF		(1 << 1)	/* Page fault handler */
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 2ba9dbb9e812..c34df296a512 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -96,8 +96,8 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
+ 	/* Check the intersection of requested and supported orders. */
+ 	if (vma_is_anonymous(vma))
+ 		supported_orders = THP_ORDERS_ALL_ANON;
+-	else if (vma_is_dax(vma))
+-		supported_orders = THP_ORDERS_ALL_FILE_DAX;
++	else if (vma_is_special_huge(vma))
++		supported_orders = THP_ORDERS_ALL_SPECIAL;
+ 	else
+ 		supported_orders = THP_ORDERS_ALL_FILE_DEFAULT;
+ 
+-- 
+2.46.1
+

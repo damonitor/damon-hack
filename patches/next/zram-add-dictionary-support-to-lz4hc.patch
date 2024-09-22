@@ -1,0 +1,149 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:56:09 +0900
+Subject: [PATCH] zram: add dictionary support to lz4hc
+
+Support pre-trained dictionary param.  Just like lz4, lz4hc doesn't
+mandate specific format of the dictionary and zstd --train can be used to
+train a dictionary for lz4, according to [1].
+
+TEST
+====
+
+*** lz4hc
+/sys/block/zram0/mm_stat
+1750638592 608954620 621031424        0 621031424        1        0    34288    34288
+
+*** lz4hc dict=/etc/lz4-dict-amd64
+/sys/block/zram0/mm_stat
+1750671360 505068582 514994176        0 514994176        1        0    34278    34278
+
+[1] https://github.com/lz4/lz4/issues/557
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-22-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/backend_lz4hc.c | 75 +++++++++++++++++++++++++++---
+ 1 file changed, 68 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/block/zram/backend_lz4hc.c b/drivers/block/zram/backend_lz4hc.c
+index 928a6ea78668..5f37d5abcaeb 100644
+--- a/drivers/block/zram/backend_lz4hc.c
++++ b/drivers/block/zram/backend_lz4hc.c
+@@ -5,6 +5,13 @@
+ 
+ #include "backend_lz4hc.h"
+ 
++struct lz4hc_ctx {
++	void *mem;
++
++	LZ4_streamDecode_t *dstrm;
++	LZ4_streamHC_t *cstrm;
++};
++
+ static void lz4hc_release_params(struct zcomp_params *params)
+ {
+ }
+@@ -19,25 +26,67 @@ static int lz4hc_setup_params(struct zcomp_params *params)
+ 
+ static void lz4hc_destroy(struct zcomp_ctx *ctx)
+ {
+-	vfree(ctx->context);
++	struct lz4hc_ctx *zctx = ctx->context;
++
++	if (!zctx)
++		return;
++
++	kfree(zctx->dstrm);
++	kfree(zctx->cstrm);
++	vfree(zctx->mem);
++	kfree(zctx);
+ }
+ 
+ static int lz4hc_create(struct zcomp_params *params, struct zcomp_ctx *ctx)
+ {
+-	ctx->context = vmalloc(LZ4HC_MEM_COMPRESS);
+-	if (!ctx->context)
++	struct lz4hc_ctx *zctx;
++
++	zctx = kzalloc(sizeof(*zctx), GFP_KERNEL);
++	if (!zctx)
+ 		return -ENOMEM;
+ 
++	ctx->context = zctx;
++	if (params->dict_sz == 0) {
++		zctx->mem = vmalloc(LZ4HC_MEM_COMPRESS);
++		if (!zctx->mem)
++			goto error;
++	} else {
++		zctx->dstrm = kzalloc(sizeof(*zctx->dstrm), GFP_KERNEL);
++		if (!zctx->dstrm)
++			goto error;
++
++		zctx->cstrm = kzalloc(sizeof(*zctx->cstrm), GFP_KERNEL);
++		if (!zctx->cstrm)
++			goto error;
++	}
++
+ 	return 0;
++
++error:
++	lz4hc_destroy(ctx);
++	return -EINVAL;
+ }
+ 
+ static int lz4hc_compress(struct zcomp_params *params, struct zcomp_ctx *ctx,
+ 			  struct zcomp_req *req)
+ {
++	struct lz4hc_ctx *zctx = ctx->context;
+ 	int ret;
+ 
+-	ret = LZ4_compress_HC(req->src, req->dst, req->src_len, req->dst_len,
+-			      params->level, ctx->context);
++	if (!zctx->cstrm) {
++		ret = LZ4_compress_HC(req->src, req->dst, req->src_len,
++				      req->dst_len, params->level,
++				      zctx->mem);
++	} else {
++		/* Cstrm needs to be reset */
++		LZ4_resetStreamHC(zctx->cstrm, params->level);
++		ret = LZ4_loadDictHC(zctx->cstrm, params->dict,
++				     params->dict_sz);
++		if (ret != params->dict_sz)
++			return -EINVAL;
++		ret = LZ4_compress_HC_continue(zctx->cstrm, req->src, req->dst,
++					       req->src_len, req->dst_len);
++	}
+ 	if (!ret)
+ 		return -EINVAL;
+ 	req->dst_len = ret;
+@@ -47,10 +96,22 @@ static int lz4hc_compress(struct zcomp_params *params, struct zcomp_ctx *ctx,
+ static int lz4hc_decompress(struct zcomp_params *params, struct zcomp_ctx *ctx,
+ 			    struct zcomp_req *req)
+ {
++	struct lz4hc_ctx *zctx = ctx->context;
+ 	int ret;
+ 
+-	ret = LZ4_decompress_safe(req->src, req->dst, req->src_len,
+-				  req->dst_len);
++	if (!zctx->dstrm) {
++		ret = LZ4_decompress_safe(req->src, req->dst, req->src_len,
++					  req->dst_len);
++	} else {
++		/* Dstrm needs to be reset */
++		ret = LZ4_setStreamDecode(zctx->dstrm, params->dict,
++					  params->dict_sz);
++		if (!ret)
++			return -EINVAL;
++		ret = LZ4_decompress_safe_continue(zctx->dstrm, req->src,
++						   req->dst, req->src_len,
++						   req->dst_len);
++	}
+ 	if (ret < 0)
+ 		return -EINVAL;
+ 	return 0;
+-- 
+2.46.1
+

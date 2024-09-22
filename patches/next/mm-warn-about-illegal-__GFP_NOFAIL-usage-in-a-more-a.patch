@@ -1,0 +1,146 @@
+From: Barry Song <v-songbaohua@oppo.com>
+Date: Sat, 31 Aug 2024 08:28:23 +1200
+Subject: [PATCH] mm: warn about illegal __GFP_NOFAIL usage in a more
+ appropriate location and manner
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three points for this change:
+
+1. We should consolidate all warnings in one place. Currently, the
+   order > 1 warning is in the hotpath, while others are in less
+   likely scenarios. Moving all warnings to the slowpath will reduce
+   the overhead for order > 1 and increase the visibility of other
+   warnings.
+
+2. We currently have two warnings for order: one for order > 1 in
+   the hotpath and another for order > costly_order in the laziest
+   path. I suggest standardizing on order > 1 since it's been in
+   use for a long time.
+
+3. We don't need to check for __GFP_NOWARN in this case. __GFP_NOWARN
+   is meant to suppress allocation failure reports, but here we're
+   dealing with bug detection, not allocation failures. So replace
+   WARN_ON_ONCE_GFP by WARN_ON_ONCE.
+
+Link: https://lkml.kernel.org/r/20240830202823.21478-4-21cnbao@gmail.com
+Signed-off-by: Barry Song <v-songbaohua@oppo.com>
+Suggested-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Acked-by: David Hildenbrand <david@redhat.com>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Eugenio Pérez" <eperezma@redhat.com>
+Cc: Hailong.Liu <hailong.liu@oppo.com>
+Cc: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: Joonsoo Kim <iamjoonsoo.kim@lge.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Linus Torvalds <torvalds@linux-foundation.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Maxime Coquelin <maxime.coquelin@redhat.com>
+Cc: "Michael S. Tsirkin" <mst@redhat.com>
+Cc: Pekka Enberg <penberg@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Xie Yongji <xieyongji@bytedance.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Yafang Shao <laoar.shao@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 50 ++++++++++++++++++++++++-------------------------
+ 1 file changed, 25 insertions(+), 25 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index bd093237c185..afe77b65e8ca 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -3039,12 +3039,6 @@ struct page *rmqueue(struct zone *preferred_zone,
+ {
+ 	struct page *page;
+ 
+-	/*
+-	 * We most definitely don't want callers attempting to
+-	 * allocate greater than order-1 page units with __GFP_NOFAIL.
+-	 */
+-	WARN_ON_ONCE((gfp_flags & __GFP_NOFAIL) && (order > 1));
+-
+ 	if (likely(pcp_allowed_order(order))) {
+ 		page = rmqueue_pcplist(preferred_zone, zone, order,
+ 				       migratetype, alloc_flags);
+@@ -4182,6 +4176,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ {
+ 	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
+ 	bool can_compact = gfp_compaction_allowed(gfp_mask);
++	bool nofail = gfp_mask & __GFP_NOFAIL;
+ 	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
+ 	struct page *page = NULL;
+ 	unsigned int alloc_flags;
+@@ -4194,6 +4189,25 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	unsigned int zonelist_iter_cookie;
+ 	int reserve_flags;
+ 
++	if (unlikely(nofail)) {
++		/*
++		 * We most definitely don't want callers attempting to
++		 * allocate greater than order-1 page units with __GFP_NOFAIL.
++		 */
++		WARN_ON_ONCE(order > 1);
++		/*
++		 * Also we don't support __GFP_NOFAIL without __GFP_DIRECT_RECLAIM,
++		 * otherwise, we may result in lockup.
++		 */
++		WARN_ON_ONCE(!can_direct_reclaim);
++		/*
++		 * PF_MEMALLOC request from this context is rather bizarre
++		 * because we cannot reclaim anything and only can loop waiting
++		 * for somebody to do a work for us.
++		 */
++		WARN_ON_ONCE(current->flags & PF_MEMALLOC);
++	}
++
+ restart:
+ 	compaction_retries = 0;
+ 	no_progress_loops = 0;
+@@ -4411,29 +4425,15 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	 * Make sure that __GFP_NOFAIL request doesn't leak out and make sure
+ 	 * we always retry
+ 	 */
+-	if (gfp_mask & __GFP_NOFAIL) {
++	if (unlikely(nofail)) {
+ 		/*
+-		 * All existing users of the __GFP_NOFAIL are blockable, so warn
+-		 * of any new users that actually require GFP_NOWAIT
++		 * Lacking direct_reclaim we can't do anything to reclaim memory,
++		 * we disregard these unreasonable nofail requests and still
++		 * return NULL
+ 		 */
+-		if (WARN_ON_ONCE_GFP(!can_direct_reclaim, gfp_mask))
++		if (!can_direct_reclaim)
+ 			goto fail;
+ 
+-		/*
+-		 * PF_MEMALLOC request from this context is rather bizarre
+-		 * because we cannot reclaim anything and only can loop waiting
+-		 * for somebody to do a work for us
+-		 */
+-		WARN_ON_ONCE_GFP(current->flags & PF_MEMALLOC, gfp_mask);
+-
+-		/*
+-		 * non failing costly orders are a hard requirement which we
+-		 * are not prepared for much so let's warn about these users
+-		 * so that we can identify them and convert them to something
+-		 * else.
+-		 */
+-		WARN_ON_ONCE_GFP(costly_order, gfp_mask);
+-
+ 		/*
+ 		 * Help non-failing allocations by giving some access to memory
+ 		 * reserves normally used for high priority non-blocking
+-- 
+2.46.1
+

@@ -1,0 +1,88 @@
+From: Jingxiang Zeng <linuszeng@tencent.com>
+Date: Fri, 30 Aug 2024 16:22:44 +0800
+Subject: [PATCH] mm/memcontrol: add per-memcg pgpgin/pswpin counter
+
+In proactive memory reclamation scenarios, it is necessary to estimate the
+pswpin and pswpout metrics of the cgroup to determine whether to continue
+reclaiming anonymous pages in the current batch.  This patch will collect
+these metrics and expose them.
+
+Link: https://lkml.kernel.org/r/20240830082244.156923-1-jingxiangzeng.cas@gmail.com
+Signed-off-by: Jingxiang Zeng <linuszeng@tencent.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol-v1.c | 2 ++
+ mm/memcontrol.c    | 2 ++
+ mm/page_io.c       | 4 ++++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/mm/memcontrol-v1.c b/mm/memcontrol-v1.c
+index b37c0d870816..44803cbea38a 100644
+--- a/mm/memcontrol-v1.c
++++ b/mm/memcontrol-v1.c
+@@ -2729,6 +2729,8 @@ static const char *const memcg1_stat_names[] = {
+ static const unsigned int memcg1_events[] = {
+ 	PGPGIN,
+ 	PGPGOUT,
++	PSWPIN,
++	PSWPOUT,
+ 	PGFAULT,
+ 	PGMAJFAULT,
+ };
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 8998bb492245..bda6f75d22ff 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -418,6 +418,8 @@ static const unsigned int memcg_vm_event_stat[] = {
+ 	PGPGIN,
+ 	PGPGOUT,
+ #endif
++	PSWPIN,
++	PSWPOUT,
+ 	PGSCAN_KSWAPD,
+ 	PGSCAN_DIRECT,
+ 	PGSCAN_KHUGEPAGED,
+diff --git a/mm/page_io.c b/mm/page_io.c
+index b6f1519d63b0..4bc77d1c6bfa 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -310,6 +310,7 @@ static inline void count_swpout_vm_event(struct folio *folio)
+ 	}
+ 	count_mthp_stat(folio_order(folio), MTHP_STAT_SWPOUT);
+ #endif
++	count_memcg_folio_events(folio, PSWPOUT, folio_nr_pages(folio));
+ 	count_vm_events(PSWPOUT, folio_nr_pages(folio));
+ }
+ 
+@@ -505,6 +506,7 @@ static void sio_read_complete(struct kiocb *iocb, long ret)
+ 		for (p = 0; p < sio->pages; p++) {
+ 			struct folio *folio = page_folio(sio->bvec[p].bv_page);
+ 
++			count_memcg_folio_events(folio, PSWPIN, folio_nr_pages(folio));
+ 			folio_mark_uptodate(folio);
+ 			folio_unlock(folio);
+ 		}
+@@ -588,6 +590,7 @@ static void swap_read_folio_bdev_sync(struct folio *folio,
+ 	 * attempt to access it in the page fault retry time check.
+ 	 */
+ 	get_task_struct(current);
++	count_memcg_folio_events(folio, PSWPIN, folio_nr_pages(folio));
+ 	count_vm_event(PSWPIN);
+ 	submit_bio_wait(&bio);
+ 	__end_swap_bio_read(&bio);
+@@ -603,6 +606,7 @@ static void swap_read_folio_bdev_async(struct folio *folio,
+ 	bio->bi_iter.bi_sector = swap_folio_sector(folio);
+ 	bio->bi_end_io = end_swap_bio_read;
+ 	bio_add_folio_nofail(bio, folio, folio_size(folio), 0);
++	count_memcg_folio_events(folio, PSWPIN, folio_nr_pages(folio));
+ 	count_vm_event(PSWPIN);
+ 	submit_bio(bio);
+ }
+-- 
+2.46.1
+

@@ -1,0 +1,101 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Fri, 30 Aug 2024 10:46:09 +0530
+Subject: [PATCH] selftests/mm: relax test to fail after 100 migration failures
+
+It was recently observed at [1] that during the folio unmapping stage of
+migration, when the PTEs are cleared, a racing thread faulting on that
+folio may increase the refcount of the folio, sleep on the folio lock (the
+migration path has the lock), and migration ultimately fails when
+asserting the actual refcount against the expected.  Thereby, the
+migration selftest fails on shared-anon mappings.  The above enforces the
+fact that migration is a best-effort service, therefore, it is wrong to
+fail the test for just a single failure; hence, fail the test after 100
+consecutive failures (where 100 is still a subjective choice).  Note that,
+this has no effect on the execution time of the test since that is
+controlled by a timeout.
+
+[1] https://lore.kernel.org/all/20240801081657.1386743-1-dev.jain@arm.com/
+
+Link: https://lkml.kernel.org/r/20240830051609.4037834-1-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Suggested-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
+Tested-by: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Gavin Shan <gshan@redhat.com>
+Cc: "Huang, Ying" <ying.huang@intel.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Kirill A. Shutemov <kirill.shutemov@linux.intel.com>
+Cc: Lance Yang <ioworker0@gmail.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Mel Gorman <mgorman@techsingularity.net>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/migration.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/migration.c b/tools/testing/selftests/mm/migration.c
+index 6908569ef406..64bcbb7151cf 100644
+--- a/tools/testing/selftests/mm/migration.c
++++ b/tools/testing/selftests/mm/migration.c
+@@ -15,10 +15,10 @@
+ #include <signal.h>
+ #include <time.h>
+ 
+-#define TWOMEG (2<<20)
+-#define RUNTIME (20)
+-
+-#define ALIGN(x, a) (((x) + (a - 1)) & (~((a) - 1)))
++#define TWOMEG		(2<<20)
++#define RUNTIME		(20)
++#define MAX_RETRIES	100
++#define ALIGN(x, a)	(((x) + (a - 1)) & (~((a) - 1)))
+ 
+ FIXTURE(migration)
+ {
+@@ -65,6 +65,7 @@ int migrate(uint64_t *ptr, int n1, int n2)
+ 	int ret, tmp;
+ 	int status = 0;
+ 	struct timespec ts1, ts2;
++	int failures = 0;
+ 
+ 	if (clock_gettime(CLOCK_MONOTONIC, &ts1))
+ 		return -1;
+@@ -79,13 +80,17 @@ int migrate(uint64_t *ptr, int n1, int n2)
+ 		ret = move_pages(0, 1, (void **) &ptr, &n2, &status,
+ 				MPOL_MF_MOVE_ALL);
+ 		if (ret) {
+-			if (ret > 0)
++			if (ret > 0) {
++				/* Migration is best effort; try again */
++				if (++failures < MAX_RETRIES)
++					continue;
+ 				printf("Didn't migrate %d pages\n", ret);
++			}
+ 			else
+ 				perror("Couldn't migrate pages");
+ 			return -2;
+ 		}
+-
++		failures = 0;
+ 		tmp = n2;
+ 		n2 = n1;
+ 		n1 = tmp;
+-- 
+2.46.1
+

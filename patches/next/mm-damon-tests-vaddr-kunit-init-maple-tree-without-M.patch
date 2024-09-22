@@ -1,0 +1,47 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 4 Sep 2024 10:29:31 -0700
+Subject: [PATCH] mm/damon/tests/vaddr-kunit: init maple tree without
+ MT_FLAGS_LOCK_EXTERN
+
+damon_test_three_regions_in_vmas() initializes a maple tree with
+MM_MT_FLAGS.  The flags contains MT_FLAGS_LOCK_EXTERN, which means mt_lock
+of the maple tree will not be used.  And therefore the maple tree
+initialization code skips initialization of the mt_lock.  However,
+__link_vmas(), which adds vmas for test to the maple tree, uses the
+mt_lock.  In other words, the uninitialized spinlock is used.  The problem
+becomes clear when spinlock debugging is turned on, since it reports
+spinlock bad magic bug.
+
+Fix the issue by excluding MT_FLAGS_LOCK_EXTERN from the maple tree
+initialization flags.  Note that we don't use empty flags to make it
+further similar to the usage of mm maple tree, and to be prepared for
+possible future changes, as suggested by Liam.
+
+Link: https://lkml.kernel.org/r/20240904172931.1284-1-sj@kernel.org
+Fixes: d0cf3dd47f0d ("damon: convert __damon_va_three_regions to use the VMA iterator")
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Reported-by: Guenter Roeck <linux@roeck-us.net>
+Closes: https://lore.kernel.org/1453b2b2-6119-4082-ad9e-f3c5239bf87e@roeck-us.net
+Suggested-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Tested-by: Guenter Roeck <linux@roeck-us.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/tests/vaddr-kunit.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/tests/vaddr-kunit.h b/mm/damon/tests/vaddr-kunit.h
+index 83626483f82b..a339d117150f 100644
+--- a/mm/damon/tests/vaddr-kunit.h
++++ b/mm/damon/tests/vaddr-kunit.h
+@@ -77,7 +77,7 @@ static void damon_test_three_regions_in_vmas(struct kunit *test)
+ 		(struct vm_area_struct) {.vm_start = 307, .vm_end = 330},
+ 	};
+ 
+-	mt_init_flags(&mm.mm_mt, MM_MT_FLAGS);
++	mt_init_flags(&mm.mm_mt, MT_FLAGS_ALLOC_RANGE | MT_FLAGS_USE_RCU);
+ 	if (__link_vmas(&mm.mm_mt, vmas, ARRAY_SIZE(vmas)))
+ 		kunit_skip(test, "Failed to create VMA tree");
+ 
+-- 
+2.46.1
+

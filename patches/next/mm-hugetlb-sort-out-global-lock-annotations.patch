@@ -1,0 +1,52 @@
+From: Mateusz Guzik <mjguzik@gmail.com>
+Date: Wed, 28 Aug 2024 18:07:04 +0200
+Subject: [PATCH] mm/hugetlb: sort out global lock annotations
+
+The mutex array pointer shares a cacheline with the spinlock:
+ffffffff84187480 B hugetlb_fault_mutex_table
+ffffffff84187488 B hugetlb_lock
+
+This is because the former is annotated with a macro forcing cacheline
+alignment.  I suspect it was meant to be the variant which on top of it
+makes sure the object does not share the cacheline with anyone.
+
+Since array pointer itself is de facto read-only such an annotation does
+not make sense there anyway.  Instead mark it __ro_after_init along with
+the size var.
+
+Do however move the spinlock out of the way.
+
+Link: https://lkml.kernel.org/r/20240828160704.1425767-1-mjguzik@gmail.com
+Signed-off-by: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index a122c963d217..4d952c1b167f 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -72,14 +72,14 @@ static unsigned int default_hugepages_in_node[MAX_NUMNODES] __initdata;
+  * Protects updates to hugepage_freelists, hugepage_activelist, nr_huge_pages,
+  * free_huge_pages, and surplus_huge_pages.
+  */
+-DEFINE_SPINLOCK(hugetlb_lock);
++__cacheline_aligned_in_smp DEFINE_SPINLOCK(hugetlb_lock);
+ 
+ /*
+  * Serializes faults on the same logical page.  This is used to
+  * prevent spurious OOMs when the hugepage pool is fully utilized.
+  */
+-static int num_fault_mutexes;
+-struct mutex *hugetlb_fault_mutex_table ____cacheline_aligned_in_smp;
++static __ro_after_init int num_fault_mutexes;
++__ro_after_init struct mutex *hugetlb_fault_mutex_table;
+ 
+ /* Forward declaration */
+ static int hugetlb_acct_memory(struct hstate *h, long delta);
+-- 
+2.46.1
+

@@ -1,0 +1,107 @@
+From: Kinsey Ho <kinseyho@google.com>
+Date: Tue, 27 Aug 2024 23:07:38 +0000
+Subject: [PATCH] cgroup: clarify css sibling linkage is protected by
+ cgroup_mutex or RCU
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pach series "Improve mem_cgroup_iter()", v3.
+
+Incremental cgroup iteration is being used again [1].  This patchset
+improves the reliability of mem_cgroup_iter().  It also improves
+simplicity and code readability.
+
+[1] https://lore.kernel.org/20240514202641.2821494-1-hannes@cmpxchg.org/
+
+
+This patch (of 5):
+
+Explicitly document that css sibling/descendant linkage is protected by
+cgroup_mutex or RCU.  Also, document in css_next_descendant_pre() and
+similar functions that it isn't necessary to hold a ref on @pos.
+
+The following changes in this patchset rely on this clarification for
+simplification in memcg iteration code.
+
+Link: https://lkml.kernel.org/r/20240827230753.2073580-1-kinseyho@google.com
+Link: https://lkml.kernel.org/r/20240827230753.2073580-2-kinseyho@google.com
+Suggested-by: Yosry Ahmed <yosryahmed@google.com>
+Reviewed-by: Michal Koutný <mkoutny@suse.com>
+Signed-off-by: Kinsey Ho <kinseyho@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Zefan Li <lizefan.x@bytedance.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: T.J. Mercier <tjmercier@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/cgroup-defs.h |  6 +++++-
+ kernel/cgroup/cgroup.c      | 16 +++++++++-------
+ 2 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/cgroup-defs.h b/include/linux/cgroup-defs.h
+index 7fc2d0195f56..ca7e912b8355 100644
+--- a/include/linux/cgroup-defs.h
++++ b/include/linux/cgroup-defs.h
+@@ -172,7 +172,11 @@ struct cgroup_subsys_state {
+ 	/* reference count - access via css_[try]get() and css_put() */
+ 	struct percpu_ref refcnt;
+ 
+-	/* siblings list anchored at the parent's ->children */
++	/*
++	 * siblings list anchored at the parent's ->children
++	 *
++	 * linkage is protected by cgroup_mutex or RCU
++	 */
+ 	struct list_head sibling;
+ 	struct list_head children;
+ 
+diff --git a/kernel/cgroup/cgroup.c b/kernel/cgroup/cgroup.c
+index 0a97cb2ef124..ece2316e2bca 100644
+--- a/kernel/cgroup/cgroup.c
++++ b/kernel/cgroup/cgroup.c
+@@ -4602,8 +4602,9 @@ struct cgroup_subsys_state *css_next_child(struct cgroup_subsys_state *pos,
+  *
+  * While this function requires cgroup_mutex or RCU read locking, it
+  * doesn't require the whole traversal to be contained in a single critical
+- * section.  This function will return the correct next descendant as long
+- * as both @pos and @root are accessible and @pos is a descendant of @root.
++ * section. Additionally, it isn't necessary to hold onto a reference to @pos.
++ * This function will return the correct next descendant as long as both @pos
++ * and @root are accessible and @pos is a descendant of @root.
+  *
+  * If a subsystem synchronizes ->css_online() and the start of iteration, a
+  * css which finished ->css_online() is guaranteed to be visible in the
+@@ -4651,8 +4652,9 @@ EXPORT_SYMBOL_GPL(css_next_descendant_pre);
+  *
+  * While this function requires cgroup_mutex or RCU read locking, it
+  * doesn't require the whole traversal to be contained in a single critical
+- * section.  This function will return the correct rightmost descendant as
+- * long as @pos is accessible.
++ * section. Additionally, it isn't necessary to hold onto a reference to @pos.
++ * This function will return the correct rightmost descendant as long as @pos
++ * is accessible.
+  */
+ struct cgroup_subsys_state *
+ css_rightmost_descendant(struct cgroup_subsys_state *pos)
+@@ -4696,9 +4698,9 @@ css_leftmost_descendant(struct cgroup_subsys_state *pos)
+  *
+  * While this function requires cgroup_mutex or RCU read locking, it
+  * doesn't require the whole traversal to be contained in a single critical
+- * section.  This function will return the correct next descendant as long
+- * as both @pos and @cgroup are accessible and @pos is a descendant of
+- * @cgroup.
++ * section. Additionally, it isn't necessary to hold onto a reference to @pos.
++ * This function will return the correct next descendant as long as both @pos
++ * and @cgroup are accessible and @pos is a descendant of @cgroup.
+  *
+  * If a subsystem synchronizes ->css_online() and the start of iteration, a
+  * css which finished ->css_online() is guaranteed to be visible in the
+-- 
+2.46.1
+

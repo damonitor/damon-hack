@@ -1,0 +1,78 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:56:00 +0900
+Subject: [PATCH] zram: check that backends array has at least one backend
+
+Make sure that backends array has anything apart from the sentinel NULL
+value.
+
+We also select LZO_BACKEND if none backends were selected.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-13-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/Kconfig | 19 +++++++++++++------
+ drivers/block/zram/zcomp.c |  8 ++++++++
+ 2 files changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 1e0e7e5910b8..6aea609b795c 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -14,12 +14,6 @@ config ZRAM
+ 
+ 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
+ 
+-config ZRAM_BACKEND_LZO
+-	bool "lzo and lzo-rle compression support"
+-	depends on ZRAM
+-	select LZO_COMPRESS
+-	select LZO_DECOMPRESS
+-
+ config ZRAM_BACKEND_LZ4
+ 	bool "lz4 compression support"
+ 	depends on ZRAM
+@@ -50,6 +44,19 @@ config ZRAM_BACKEND_842
+ 	select 842_COMPRESS
+ 	select 842_DECOMPRESS
+ 
++config ZRAM_BACKEND_FORCE_LZO
++	depends on ZRAM
++	def_bool !ZRAM_BACKEND_LZ4 && !ZRAM_BACKEND_LZ4HC && \
++		!ZRAM_BACKEND_ZSTD && !ZRAM_BACKEND_DEFLATE && \
++		!ZRAM_BACKEND_842
++
++config ZRAM_BACKEND_LZO
++	bool "lzo and lzo-rle compression support" if !ZRAM_BACKEND_FORCE_LZO
++	depends on ZRAM
++	default ZRAM_BACKEND_FORCE_LZO
++	select LZO_COMPRESS
++	select LZO_DECOMPRESS
++
+ choice
+ 	prompt "Default zram compressor"
+ 	default ZRAM_DEF_COMP_LZORLE
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index 94e1c9503267..76d21ee77067 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -192,6 +192,14 @@ struct zcomp *zcomp_create(const char *alg)
+ 	struct zcomp *comp;
+ 	int error;
+ 
++	/*
++	 * The backends array has a sentinel NULL value, so the minimum
++	 * size is 1. In order to be valid the array, apart from the
++	 * sentinel NULL element, should have at least one compression
++	 * backend selected.
++	 */
++	BUILD_BUG_ON(ARRAY_SIZE(backends) <= 1);
++
+ 	comp = kzalloc(sizeof(struct zcomp), GFP_KERNEL);
+ 	if (!comp)
+ 		return ERR_PTR(-ENOMEM);
+-- 
+2.46.1
+

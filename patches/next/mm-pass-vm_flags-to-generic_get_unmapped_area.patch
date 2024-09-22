@@ -1,0 +1,142 @@
+From: Mark Brown <broonie@kernel.org>
+Date: Wed, 4 Sep 2024 17:58:00 +0100
+Subject: [PATCH] mm: pass vm_flags to generic_get_unmapped_area()
+
+In preparation for using vm_flags to ensure guard pages for shadow stacks
+supply them as an argument to generic_get_unmapped_area().  The only user
+outside of the core code is the PowerPC book3s64 implementation which is
+trivially wrapping the generic implementation in the radix_enabled() case.
+
+No functional changes.
+
+Link: https://lkml.kernel.org/r/20240904-mm-generic-shadow-stack-guard-v2-2-a46b8b6dc0ed@kernel.org
+Signed-off-by: Mark Brown <broonie@kernel.org>
+Acked-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Acked-by: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: Chris Zankel <chris@zankel.net>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Helge Deller <deller@gmx.de>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Ivan Kokshaysky <ink@jurassic.park.msu.ru>
+Cc: James Bottomley <James.Bottomley@HansenPartnership.com>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Naveen N Rao <naveen@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Richard Henderson <richard.henderson@linaro.org>
+Cc: Rich Felker <dalias@libc.org>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/mm/book3s64/slice.c |  4 ++--
+ include/linux/sched/mm.h         |  4 ++--
+ mm/mmap.c                        | 10 ++++++----
+ 3 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/arch/powerpc/mm/book3s64/slice.c b/arch/powerpc/mm/book3s64/slice.c
+index ada6bf896ef8..87307d0fc3b8 100644
+--- a/arch/powerpc/mm/book3s64/slice.c
++++ b/arch/powerpc/mm/book3s64/slice.c
+@@ -641,7 +641,7 @@ unsigned long arch_get_unmapped_area(struct file *filp,
+ 				     vm_flags_t vm_flags)
+ {
+ 	if (radix_enabled())
+-		return generic_get_unmapped_area(filp, addr, len, pgoff, flags);
++		return generic_get_unmapped_area(filp, addr, len, pgoff, flags, vm_flags);
+ 
+ 	return slice_get_unmapped_area(addr, len, flags,
+ 				       mm_ctx_user_psize(&current->mm->context), 0);
+@@ -655,7 +655,7 @@ unsigned long arch_get_unmapped_area_topdown(struct file *filp,
+ 					     vm_flags_t vm_flags)
+ {
+ 	if (radix_enabled())
+-		return generic_get_unmapped_area_topdown(filp, addr0, len, pgoff, flags);
++		return generic_get_unmapped_area_topdown(filp, addr0, len, pgoff, flags, vm_flags);
+ 
+ 	return slice_get_unmapped_area(addr0, len, flags,
+ 				       mm_ctx_user_psize(&current->mm->context), 1);
+diff --git a/include/linux/sched/mm.h b/include/linux/sched/mm.h
+index c4d34abc45d4..07bb8d4181d7 100644
+--- a/include/linux/sched/mm.h
++++ b/include/linux/sched/mm.h
+@@ -204,11 +204,11 @@ unsigned long mm_get_unmapped_area_vmflags(struct mm_struct *mm,
+ unsigned long
+ generic_get_unmapped_area(struct file *filp, unsigned long addr,
+ 			  unsigned long len, unsigned long pgoff,
+-			  unsigned long flags);
++			  unsigned long flags, vm_flags_t vm_flags);
+ unsigned long
+ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
+ 				  unsigned long len, unsigned long pgoff,
+-				  unsigned long flags);
++				  unsigned long flags, vm_flags_t vm_flags);
+ #else
+ static inline void arch_pick_mmap_layout(struct mm_struct *mm,
+ 					 struct rlimit *rlim_stack) {}
+diff --git a/mm/mmap.c b/mm/mmap.c
+index 98249266196e..14d36be65ce7 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -738,7 +738,7 @@ unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
+ unsigned long
+ generic_get_unmapped_area(struct file *filp, unsigned long addr,
+ 			  unsigned long len, unsigned long pgoff,
+-			  unsigned long flags)
++			  unsigned long flags, vm_flags_t vm_flags)
+ {
+ 	struct mm_struct *mm = current->mm;
+ 	struct vm_area_struct *vma, *prev;
+@@ -772,7 +772,8 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
+ 		       unsigned long len, unsigned long pgoff,
+ 		       unsigned long flags, vm_flags_t vm_flags)
+ {
+-	return generic_get_unmapped_area(filp, addr, len, pgoff, flags);
++	return generic_get_unmapped_area(filp, addr, len, pgoff, flags,
++					 vm_flags);
+ }
+ #endif
+ 
+@@ -783,7 +784,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
+ unsigned long
+ generic_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
+ 				  unsigned long len, unsigned long pgoff,
+-				  unsigned long flags)
++				  unsigned long flags, vm_flags_t vm_flags)
+ {
+ 	struct vm_area_struct *vma, *prev;
+ 	struct mm_struct *mm = current->mm;
+@@ -836,7 +837,8 @@ arch_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
+ 			       unsigned long len, unsigned long pgoff,
+ 			       unsigned long flags, vm_flags_t vm_flags)
+ {
+-	return generic_get_unmapped_area_topdown(filp, addr, len, pgoff, flags);
++	return generic_get_unmapped_area_topdown(filp, addr, len, pgoff, flags,
++						 vm_flags);
+ }
+ #endif
+ 
+-- 
+2.46.1
+

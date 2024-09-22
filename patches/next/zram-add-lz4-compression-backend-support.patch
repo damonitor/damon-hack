@@ -1,0 +1,184 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 2 Sep 2024 19:55:54 +0900
+Subject: [PATCH] zram: add lz4 compression backend support
+
+Add s/w lz4 compression support.
+
+Link: https://lkml.kernel.org/r/20240902105656.1383858-7-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nick Terrell <terrelln@fb.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/Kconfig       | 11 +++++
+ drivers/block/zram/Makefile      |  1 +
+ drivers/block/zram/backend_lz4.c | 72 ++++++++++++++++++++++++++++++++
+ drivers/block/zram/backend_lz4.h | 10 +++++
+ drivers/block/zram/zcomp.c       |  4 ++
+ 5 files changed, 98 insertions(+)
+ create mode 100644 drivers/block/zram/backend_lz4.c
+ create mode 100644 drivers/block/zram/backend_lz4.h
+
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 5d329a887b12..f1e76fc8431a 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -20,6 +20,12 @@ config ZRAM_BACKEND_LZO
+ 	select LZO_COMPRESS
+ 	select LZO_DECOMPRESS
+ 
++config ZRAM_BACKEND_LZ4
++	bool "lz4 compression support"
++	depends on ZRAM
++	select LZ4_COMPRESS
++	select LZ4_DECOMPRESS
++
+ choice
+ 	prompt "Default zram compressor"
+ 	default ZRAM_DEF_COMP_LZORLE
+@@ -33,12 +39,17 @@ config ZRAM_DEF_COMP_LZO
+ 	bool "lzo"
+ 	depends on ZRAM_BACKEND_LZO
+ 
++config ZRAM_DEF_COMP_LZ4
++	bool "lz4"
++	depends on ZRAM_BACKEND_LZ4
++
+ endchoice
+ 
+ config ZRAM_DEF_COMP
+ 	string
+ 	default "lzo-rle" if ZRAM_DEF_COMP_LZORLE
+ 	default "lzo" if ZRAM_DEF_COMP_LZO
++	default "lz4" if ZRAM_DEF_COMP_LZ4
+ 	default "unset-value"
+ 
+ config ZRAM_WRITEBACK
+diff --git a/drivers/block/zram/Makefile b/drivers/block/zram/Makefile
+index 2a3db3368af9..567f4434aee8 100644
+--- a/drivers/block/zram/Makefile
++++ b/drivers/block/zram/Makefile
+@@ -3,5 +3,6 @@
+ zram-y	:=	zcomp.o zram_drv.o
+ 
+ zram-$(CONFIG_ZRAM_BACKEND_LZO)	+= backend_lzorle.o backend_lzo.o
++zram-$(CONFIG_ZRAM_BACKEND_LZ4)	+= backend_lz4.o
+ 
+ obj-$(CONFIG_ZRAM)	+=	zram.o
+diff --git a/drivers/block/zram/backend_lz4.c b/drivers/block/zram/backend_lz4.c
+new file mode 100644
+index 000000000000..c1d19fed5af2
+--- /dev/null
++++ b/drivers/block/zram/backend_lz4.c
+@@ -0,0 +1,72 @@
++#include <linux/kernel.h>
++#include <linux/lz4.h>
++#include <linux/slab.h>
++#include <linux/vmalloc.h>
++
++#include "backend_lz4.h"
++
++struct lz4_ctx {
++	void *mem;
++	s32 level;
++};
++
++static void lz4_destroy(void *ctx)
++{
++	struct lz4_ctx *zctx = ctx;
++
++	vfree(zctx->mem);
++	kfree(zctx);
++}
++
++static void *lz4_create(void)
++{
++	struct lz4_ctx *ctx;
++
++	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return NULL;
++
++	/* @FIXME: using a hardcoded LZ4_ACCELERATION_DEFAULT for now */
++	ctx->level = LZ4_ACCELERATION_DEFAULT;
++	ctx->mem = vmalloc(LZ4_MEM_COMPRESS);
++	if (!ctx->mem)
++		goto error;
++
++	return ctx;
++error:
++	lz4_destroy(ctx);
++	return NULL;
++}
++
++static int lz4_compress(void *ctx, const unsigned char *src, size_t src_len,
++			unsigned char *dst, size_t *dst_len)
++{
++	struct lz4_ctx *zctx = ctx;
++	int ret;
++
++	ret = LZ4_compress_fast(src, dst, src_len, *dst_len,
++				zctx->level, zctx->mem);
++	if (!ret)
++		return -EINVAL;
++	*dst_len = ret;
++	return 0;
++}
++
++static int lz4_decompress(void *ctx, const unsigned char *src,
++			  size_t src_len, unsigned char *dst, size_t dst_len)
++{
++	int ret;
++
++	ret = LZ4_decompress_safe(src, dst, src_len, dst_len);
++	if (ret < 0)
++		return -EINVAL;
++	return 0;
++}
++
++const struct zcomp_ops backend_lz4 = {
++	.compress	= lz4_compress,
++	.decompress	= lz4_decompress,
++	.create_ctx	= lz4_create,
++	.destroy_ctx	= lz4_destroy,
++	.name		= "lz4",
++};
+diff --git a/drivers/block/zram/backend_lz4.h b/drivers/block/zram/backend_lz4.h
+new file mode 100644
+index 000000000000..c11fa602a703
+--- /dev/null
++++ b/drivers/block/zram/backend_lz4.h
+@@ -0,0 +1,10 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#ifndef __BACKEND_LZ4_H__
++#define __BACKEND_LZ4_H__
++
++#include "zcomp.h"
++
++extern const struct zcomp_ops backend_lz4;
++
++#endif /* __BACKEND_LZ4_H__ */
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index a49d3e355c23..5da64e8fc798 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -14,11 +14,15 @@
+ 
+ #include "backend_lzo.h"
+ #include "backend_lzorle.h"
++#include "backend_lz4.h"
+ 
+ static const struct zcomp_ops *backends[] = {
+ #if IS_ENABLED(CONFIG_ZRAM_BACKEND_LZO)
+ 	&backend_lzorle,
+ 	&backend_lzo,
++#endif
++#if IS_ENABLED(CONFIG_ZRAM_BACKEND_LZ4)
++	&backend_lz4,
+ #endif
+ 	NULL
+ };
+-- 
+2.46.1
+

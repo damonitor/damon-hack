@@ -1,0 +1,88 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 25 Aug 2024 21:23:20 -0700
+Subject: [PATCH] mm/damon/core: introduce per-context region priorities
+ histogram buffer
+
+Patch series "replace per-quota region priorities histogram buffer with
+per-context one".
+
+Each DAMOS quota (struct damos_quota) maintains a histogram for total
+regions size per its prioritization score.  DAMOS calcultes minimum
+prioritization score of regions that are ok to apply the DAMOS action to
+while respecting the quota.  The histogram is constructed only for the
+calculation of the minimum score in damos_adjust_quota() for each quota
+which called by kdamond_fn().
+
+Hence, there is no real reason to have per-quota histogram.  Only
+per-kdamond histogram is needed, since parallel kdamonds could have races
+otherwise.  The current implementation is only wasting the memory, and can
+easily cause unintended stack usage[1].
+
+So, introducing a per-kdamond histogram and replacing the per-quota one
+with it would be the right solution for the issue.  However, supporting
+multiple DAMON contexts per kdamond is still an ongoing work[2] without a
+clear estimated time of arrival.  Meanwhile, per-context histogram could
+be an effective and straightforward solution having no blocker.  Let's fix
+the problem first in the way.
+
+
+This patch (of 4):
+
+Introduce per-context buffer for region priority scores-total size
+histogram.  Same to the per-quota one (->histogram of struct damos_quota),
+the new buffer is hidden from DAMON API users by being defined as a
+private field of DAMON context structure.  It is dynamically allocated and
+de-allocated at the beginning and ending of the execution of the kdamond
+by kdamond_fn() itself.
+
+[1] commit 0742cadf5e4c ("mm/damon/lru_sort: adjust local variable to dynamic allocation")
+[2] https://lore.kernel.org/20240531122320.909060-1-yorha.op@gmail.com
+
+Link: https://lkml.kernel.org/r/20240826042323.87025-1-sj@kernel.org
+Link: https://lkml.kernel.org/r/20240826042323.87025-2-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h | 2 ++
+ mm/damon/core.c       | 5 +++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 27c546bfc6d4..60cb8eada3d6 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -630,6 +630,8 @@ struct damon_ctx {
+ 	unsigned long next_ops_update_sis;
+ 	/* for waiting until the execution of the kdamond_fn is started */
+ 	struct completion kdamond_started;
++	/* for scheme quotas prioritization */
++	unsigned long *regions_score_histogram;
+ 
+ /* public: */
+ 	struct task_struct *kdamond;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 086294279b07..40266d85eebf 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1957,6 +1957,10 @@ static int kdamond_fn(void *data)
+ 		ctx->ops.init(ctx);
+ 	if (ctx->callback.before_start && ctx->callback.before_start(ctx))
+ 		goto done;
++	ctx->regions_score_histogram = kmalloc_array(DAMOS_MAX_SCORE + 1,
++			sizeof(*ctx->regions_score_histogram), GFP_KERNEL);
++	if (!ctx->regions_score_histogram)
++		goto done;
+ 
+ 	sz_limit = damon_region_sz_limit(ctx);
+ 
+@@ -2034,6 +2038,7 @@ static int kdamond_fn(void *data)
+ 		ctx->callback.before_terminate(ctx);
+ 	if (ctx->ops.cleanup)
+ 		ctx->ops.cleanup(ctx);
++	kfree(ctx->regions_score_histogram);
+ 
+ 	pr_debug("kdamond (%d) finishes\n", current->pid);
+ 	mutex_lock(&ctx->kdamond_lock);
+-- 
+2.46.1
+
