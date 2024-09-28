@@ -2,9 +2,10 @@
 
 bindir=$(dirname "$0")
 
-if ! diff "$bindir/_ssh_config" $HOME/.ssh/config
+if ! grep --quiet "Host gitolite.kernel.org"
 then
-	echo "Please set $HOME/.ssh/config same to $bindir/_ssh_config"
+	echo "$HOME/.ssh/config has no lines for gitolite.kernel.org"
+	echo "You may refer to $bindir/_ssh_config"
 	exit 1
 fi
 
