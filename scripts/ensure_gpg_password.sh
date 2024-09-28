@@ -2,13 +2,12 @@
 
 bindir=$(dirname "$0")
 
-if ! grep --quiet "Host gitolite.kernel.org"
+if ! grep --quiet "Host gitolite.kernel.org" "$HOME/.ssh/config"
 then
 	echo "$HOME/.ssh/config has no lines for gitolite.kernel.org"
 	echo "You may refer to $bindir/_ssh_config"
 	exit 1
 fi
-
 
 if ! grep --quiet "^export SSH_AUTH_SOCK=\$(gpgconf --list-dirs agent-ssh-socket)" "$HOME/.bashrc"
 then
