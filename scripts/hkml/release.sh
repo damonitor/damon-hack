@@ -45,7 +45,7 @@ then
 	echo "ensuring gpg password failed, as expected"
 fi
 git tag -s -m "Hackermail $new_version" "v$new_version" 
-for remote in downstream upstream korg
+for remote in gh.downstream gh.upstream korg
 do
 	git push "$remote" master "v$new_version"
 done
