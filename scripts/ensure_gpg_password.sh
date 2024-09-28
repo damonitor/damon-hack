@@ -34,6 +34,12 @@ then
 	exit 1
 fi
 
+if ! which pinentry-tty > /dev/null
+then
+	echo "pinentry-tty not found"
+	exit 1
+fi
+
 gpg-connect-agent updatestartuptty /bye > /dev/null
 ssh gitolite.kernel.org help > /dev/null
 ssh git@github.com &> /dev/null
