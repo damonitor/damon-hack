@@ -40,6 +40,23 @@ then
 	exit 1
 fi
 
-gpg-connect-agent updatestartuptty /bye > /dev/null
-ssh gitolite.kernel.org help > /dev/null
-ssh git@github.com &> /dev/null
+output=$(gpg-connect-agent updatestartuptty /bye)
+if [ ! "$output" = "OK" ]
+then
+	echo "gpg-connect-agent updatestartuptty /bye failed"
+	exit 1
+fi
+
+if ! ssh gitolite.kernel.org help | grep --quiet "list of remote commands available"
+then
+	echo "gitolite help failed"
+	exit 1
+fi
+
+if ! ssh -T git@github.com 2>&1 | grep --quiet "successfully authenticated"
+then
+	echo "ssh -T git@github failed"
+	exit 1
+fi
+
+exit 0
