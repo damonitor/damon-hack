@@ -52,8 +52,8 @@ fi
 
 new_mainline_base=$(git describe "$new_mm_unstable" --match "v*" --abbrev=0)
 
-cp "$bindir/unmerged_commits.sh" ./
-merged_commits=$(./unmerged_commits.sh --merged --human_readable \
+unmerged_commits_sh="$bindir/unmerged_commits.sh"
+merged_commits=$("$unmerged_commits_sh" --merged --human_readable \
 	"$old_mm_unstable..damon/next" "$new_mainline_base..$new_mm_unstable")
 
 git branch -M damon/next damon/next.old
@@ -61,7 +61,7 @@ git checkout akpm.korg.mm/mm-unstable -b damon/next.new
 
 version_marking_commit=""
 old_mainline_base=$(git describe "$old_mm_unstable" --match "v*" --abbrev=0)
-for commit in $(./unmerged_commits.sh "$old_mm_unstable..damon/next.old" \
+for commit in $("$unmerged_commits_sh" "$old_mm_unstable..damon/next.old" \
 	"$new_mainline_base..$new_mm_unstable")
 do
 	if [ "$(git log -1 "$commit" --pretty=%s)" = \
@@ -83,7 +83,7 @@ do
 	then
 		echo "Cherry-pick failed for $commit."
 		echo "Resolve it, further apply"
-		echo $(./unmerged_commits.sh \
+		echo $("$unmerged_commits_sh" \
 			"$old_mm_unstable..damon/next.old" \
 			"$new_mainline_base..$new_mm_unstable")
 		echo "and do 'git branch -M damon/next.new damon/next'"
