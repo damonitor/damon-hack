@@ -33,3 +33,6 @@ git -C linux remote add akpm.korg.mm https://git.kernel.org/pub/scm/linux/kernel
 git -C linux remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 git -C linux remote update
 git checkout sj.korg/damon/next -b damon/next
+
+git -C "$bindir" remote add korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/damon-hack
+git -C "$bindir" remote add gh git@github.com:damonitor/damon-hack
