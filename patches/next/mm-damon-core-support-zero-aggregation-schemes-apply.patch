@@ -1,17 +1,40 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Wed, 4 Sep 2024 22:31:40 -0700
-Subject: [PATCH] mm/damon/core: support zero intervals
+Subject: [PATCH] mm/damon/core: support zero {aggregation,schemes apply}
+ intervals
 
-Below makes damo infinitely blocked.
+If aggregation interval and schemes apply interval are zero,
+next_aggregation_sis and next_apply_sis are set same to current
+passed_sample_intervals.  Meanwhile, the logics to determine if this is
+the time to do aggregation assumes next_{aggregation,apply}_sis are
+always set larger than passed_sample_intervals.
 
-    damo start -s 0 -a 0
-    damo tune -s 5ms -a 100ms
+As a result, DAMON will stop doing aggregations or applying of schemes.
+Worse yet, this can result in infinite hang of a user thread.
 
-It's because next_aggregate_sis becomes passed_sis.  Fix it.
+Let's suppose that the aggregation interval is zero, and no scheme
+watermarks are set.  If DAMON sysfs interface user tries online tuning
+in the case, DAMON will never call back DAMON sysfs interface's
+aggregatioin or watermarks check callback, which informs DAMON sysfs
+interface completion of the online tuning.  As a result, the DAMON sysfs
+interface user hangs forever.  This can indeed easily be reproduced
+using DAMON user-space tool, damo, like below:
 
-TODO: add more details on commit message; consider breaking for each
-interval.
+    # damo start -s 0 -a 0
+    # damo tune -s 5ms -a 100ms
 
+If there are schemes watermarks, watermarks check callback for DAMON
+sysfs interface can be triggered when DAMON is deactivated by
+watermarks, though.
+
+Zero schemes apply interval will not cause such catastrophic user issue,
+but stops doing applying schemes in the case is anyway unexpected
+behavior.
+
+Fix this.
+
+Fixes: 4472edf63d66 ("mm/damon/core: use number of passed access sampling as a timer") # aggregation, ops_update intervals
+Fixes: 42f994b71404 ("mm/damon/core: implement scheme-specific apply interval") # next_apply_sis
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  mm/damon/core.c | 14 +++++++-------
