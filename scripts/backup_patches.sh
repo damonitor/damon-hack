@@ -13,6 +13,10 @@ bindir=$(dirname $0)
 dest_dir=$(realpath "$bindir/../patches/next")
 commits="akpm.korg.mm/mm-unstable..damon/next"
 
+commit_msg="$commit_msg
+
+$(git rev-parse damon/next)"
+
 git -C "$bindir" rm -r "$dest_dir"
 mkdir -p "$dest_dir"
 
