@@ -1,0 +1,84 @@
+From b156a8a18aadf786e06300161519ea041b9dddb2 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Cc: kernel-team@meta.com
+Date: Wed, 4 Sep 2024 22:31:40 -0700
+Subject: [PATCH 1/2] mm/damon/core: handle zero {aggregation,ops_update}
+ intervals
+
+DAMON's logics to determine if this is the time to do aggregation and
+ops update assumes next_{aggregation,ops_update}_sis are always set
+larger than current passed_sample_intervals.  And therefore it further
+assumes continuously incrementing passed_sample_intervals every sampling
+interval will make it reaches to the next_{aggregation,ops_update}_sis
+in future.  The logic therefore make the action and update
+next_{aggregation,ops_updaste}_sis only if passed_sample_intervals is
+same to the counts, respectively.
+
+If Aggregation interval or Ops update interval are zero, however,
+next_aggregation_sis or next_ops_update_sis are set same to current
+passed_sample_intervals, respectively.  And passed_sample_intervals is
+incremented before doing the next_{aggregation,ops_update}_sis check.
+Hence, passed_sample_intervals becomes larger than
+next_{aggregation,ops_update}_sis, and the logic says it is not the time
+to do the action and update next_{aggregation,ops_update}_sis forever,
+until an overflow happens.  In other words, DAMON stops doing
+aggregations or ops updates effectively forever, and users cannot get
+monitoring results.
+
+Based on the documents and the common sense, a reasonable behavior for
+such inputs is doing an aggregation and an ops update for every sampling
+interval.  Handle the case by removing the assumption.
+
+Note that this could incur particular real issue for DAMON sysfs
+interface users, in case of zero Aggregation interval.  When user starts
+DAMON with zero Aggregation interval and asks online DAMON parameter
+tuning via DAMON sysfs interface, the request is handled by the
+aggregation callback.  Until the callback finishes the work, the user
+who requested the online tuning just waits.  Hence, the user will be
+stuck until the passed_sample_intervals overflows.
+
+Fixes: 4472edf63d66 ("mm/damon/core: use number of passed access sampling as a timer")
+Cc: <stable@vger.kernel.org> # 6.7.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 27745dcf855f..931526fb2d2e 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2014,7 +2014,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 
+-		if (ctx->passed_sample_intervals == next_aggregation_sis) {
++		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
+ 			kdamond_merge_regions(ctx,
+ 					max_nr_accesses / 10,
+ 					sz_limit);
+@@ -2032,7 +2032,7 @@ static int kdamond_fn(void *data)
+ 
+ 		sample_interval = ctx->attrs.sample_interval ?
+ 			ctx->attrs.sample_interval : 1;
+-		if (ctx->passed_sample_intervals == next_aggregation_sis) {
++		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
+ 			ctx->next_aggregation_sis = next_aggregation_sis +
+ 				ctx->attrs.aggr_interval / sample_interval;
+ 
+@@ -2042,7 +2042,7 @@ static int kdamond_fn(void *data)
+ 				ctx->ops.reset_aggregated(ctx);
+ 		}
+ 
+-		if (ctx->passed_sample_intervals == next_ops_update_sis) {
++		if (ctx->passed_sample_intervals >= next_ops_update_sis) {
+ 			ctx->next_ops_update_sis = next_ops_update_sis +
+ 				ctx->attrs.ops_update_interval /
+ 				sample_interval;
+-- 
+2.39.5
+

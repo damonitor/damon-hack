@@ -1,0 +1,73 @@
+From dbb9271ca33a5bd2166dfe75270623747288f562 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Cc: kernel-team@meta.com
+Date: Fri, 25 Oct 2024 10:59:29 -0700
+Subject: [PATCH 2/2] mm/damon/core: handle zero schemes apply interval
+
+DAMON's logics to determine if this is the time to apply damos schemes
+assumes next_apply_sis is always set larger than current
+passed_sample_intervals.  And therefore assume continuously incrementing
+passed_sample_intervals will make it reaches to the next_apply_sis in
+future.  The logic hence does apply the scheme and update next_apply_sis
+only if passed_sample_intervals is same to next_apply_sis.
+
+If Schemes apply interval is set as zero, however, next_apply_sis is set
+same to current passed_sample_intervals, respectively.  And
+passed_sample_intervals is incremented before doing the next_apply_sis
+check.  Hence, next_apply_sis becomes larger than next_apply_sis, and
+the logic says it is not the time to apply schemes and update
+next_apply_sis.  In other words, DAMON stops applying schemes until
+passed_sample_intervals overflows.
+
+Based on the documents and the common sense, a reasonable behavior for
+such inputs would be applying the schemes for every sampling interval.
+Handle the case by removing the assumption.
+
+Fixes: 42f994b71404 ("mm/damon/core: implement scheme-specific apply interval")
+Cc: <stable@vger.kernel.org> # 6.7.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 931526fb2d2e..511c3f61ab44 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1412,7 +1412,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 	damon_for_each_scheme(s, c) {
+ 		struct damos_quota *quota = &s->quota;
+ 
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+ 
+ 		if (!s->wmarks.activated)
+@@ -1636,7 +1636,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	bool has_schemes_to_apply = false;
+ 
+ 	damon_for_each_scheme(s, c) {
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+ 
+ 		if (!s->wmarks.activated)
+@@ -1656,9 +1656,9 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	}
+ 
+ 	damon_for_each_scheme(s, c) {
+-		if (c->passed_sample_intervals != s->next_apply_sis)
++		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+-		s->next_apply_sis +=
++		s->next_apply_sis = c->passed_sample_intervals +
+ 			(s->apply_interval_us ? s->apply_interval_us :
+ 			 c->attrs.aggr_interval) / sample_interval;
+ 	}
+-- 
+2.39.5
+
