@@ -8,7 +8,8 @@ echo "ensure gpg password"
 bindir=$(dirname "$0")
 if ! "$bindir/ensure_gpg_password.sh"
 then
-	echo "ensure_gpg_password failed as expected"
+	echo "ensure_gpg_password failed"
+	exit 1
 fi
 
 datetime=$(date +"%Y-%m-%d-%H-%M")
