@@ -1,0 +1,57 @@
+From 75800d6e487d8b7af58295133a892be767162b20 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Cc: kernel-team@meta.com
+Date: Tue, 12 Nov 2024 15:22:13 -0800
+Subject: [RFC PATCH 5/5] samples/damon/prcl: implement schemes setup
+
+Implement the DAMOS-based cold memory regions proactive reclamation
+logic.  The logic treats memory regions that assumed to not be accessed
+at all for five or more seconds as cold, and reclaim as soon as found.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/prcl.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/samples/damon/prcl.c b/samples/damon/prcl.c
+index 32ccdd91cf55..cf8c6f29d8a3 100644
+--- a/samples/damon/prcl.c
++++ b/samples/damon/prcl.c
+@@ -49,6 +49,7 @@ static int damon_sample_prcl_after_aggregate(struct damon_ctx *c)
+ static int damon_sample_prcl_start(void)
+ {
+ 	struct damon_target *target;
++	struct damos *scheme;
+ 
+ 	pr_info("start\n");
+ 
+@@ -75,6 +76,23 @@ static int damon_sample_prcl_start(void)
+ 
+ 	ctx->callback.after_aggregation = damon_sample_prcl_after_aggregate;
+ 
++	scheme = damon_new_scheme(
++			&(struct damos_access_pattern) {
++			.min_sz_region = PAGE_SIZE,
++			.max_sz_region = ULONG_MAX,
++			.min_nr_accesses = 0,
++			.max_nr_accesses = 0},
++			DAMOS_PAGEOUT,
++			0,
++			&(struct damos_quota){},
++			&(struct damos_watermarks){},
++			NUMA_NO_NODE);
++	if (!scheme) {
++		damon_destroy_ctx(ctx);
++		return -ENOMEM;
++	}
++	damon_set_schemes(ctx, &scheme, 1);
++
+ 	return damon_start(&ctx, 1, true);
+ }
+ 
+-- 
+2.39.5
+

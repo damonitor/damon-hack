@@ -1,0 +1,78 @@
+From 51ed80433887cb91ff01fd4581aae1cd2c16878e Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Cc: kernel-team@meta.com
+Date: Tue, 12 Nov 2024 15:22:09 -0800
+Subject: [RFC PATCH 2/5] samples/damon/wsse: implement DAMON starting and
+ stopping
+
+Start running DAMON for the process that user requested to estimate the
+process via 'pid' parameter, when 'y' is passed to 'enable' parameter.
+If 'n' is passed, stop running DAMON.  Iterating the DAMON monitoring
+results and estimating the working set side is not yet implemented.  It
+will be implemented by the following commit.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/wsse.c | 35 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/samples/damon/wsse.c b/samples/damon/wsse.c
+index 5912f15181c8..119ac8a2c901 100644
+--- a/samples/damon/wsse.c
++++ b/samples/damon/wsse.c
+@@ -27,15 +27,48 @@ static bool enable __read_mostly;
+ module_param_cb(enable, &enable_param_ops, &enable, 0600);
+ MODULE_PARM_DESC(enable, "Enable or disable DAMON_SAMPLE_WSSE");
+ 
++static struct damon_ctx *ctx;
++static struct pid *target_pidp;
++
+ static int damon_sample_wsse_start(void)
+ {
++	struct damon_target *target;
++
+ 	pr_info("start\n");
+-	return 0;
++
++	ctx = damon_new_ctx();
++	if (!ctx)
++		return -ENOMEM;
++	if (damon_select_ops(ctx, DAMON_OPS_VADDR)) {
++		damon_destroy_ctx(ctx);
++		return -EINVAL;
++	}
++
++	target = damon_new_target();
++	if (!target) {
++		damon_destroy_ctx(ctx);
++		return -ENOMEM;
++	}
++	damon_add_target(ctx, target);
++	target_pidp = find_get_pid(target_pid);
++	if (!target_pidp) {
++		damon_destroy_ctx(ctx);
++		return -EINVAL;
++	}
++	target->pid = target_pidp;
++
++	return damon_start(&ctx, 1, true);
+ }
+ 
+ static void damon_sample_wsse_stop(void)
+ {
+ 	pr_info("stop\n");
++	if (ctx) {
++		damon_stop(&ctx, 1);
++		damon_destroy_ctx(ctx);
++	}
++	if (target_pidp)
++		put_pid(target_pidp);
+ }
+ 
+ static int damon_sample_wsse_enable_store(
+-- 
+2.39.5
+
