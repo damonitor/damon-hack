@@ -1,27 +1,25 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Tue, 5 Dec 2023 02:28:58 +0000
-Subject: [PATCH] samples: add proactive reclamation DAMON sample module
+Date: Tue, 12 Nov 2024 15:52:14 -0800
+Subject: [PATCH] samples/damon: implement skeleton code for prcl
 
-Add a sample DAMON application kernel module, namely damon_sample_prcl.
-It is same to the one of the example kernel modules that presented at
-kernel summit 2021 with 10 minutes live coding[1] but updated for the
-latest DAMON interface.
-
-The sample module receives a pid of a process to monitor the access,
-monitors the access to the virtual address space of the process, find
-regions that not accessed and proactively reclaim those using DAMOS.
-
-[1] https://linuxplumbersconf.org/event/11/contributions/984/
-
-Link: https://patch.msgid.link/20231205022858.1540-4-sj@kernel.org
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- samples/damon/Kconfig             |  13 +++
- samples/damon/Makefile            |   1 +
- samples/damon/damon_sample_prcl.c | 138 ++++++++++++++++++++++++++++++
- 3 files changed, 152 insertions(+)
- create mode 100644 samples/damon/damon_sample_prcl.c
+ samples/Makefile       |   1 +
+ samples/damon/Kconfig  |  13 +++++
+ samples/damon/Makefile |   1 +
+ samples/damon/prcl.c   | 120 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 135 insertions(+)
+ create mode 100644 samples/damon/prcl.c
 
+diff --git a/samples/Makefile b/samples/Makefile
+index 726bb5293486..5af6bb8afb07 100644
+--- a/samples/Makefile
++++ b/samples/Makefile
+@@ -40,3 +40,4 @@ obj-$(CONFIG_SAMPLE_CORESIGHT_SYSCFG)	+= coresight/
+ obj-$(CONFIG_SAMPLE_FPROBE)		+= fprobe/
+ obj-$(CONFIG_SAMPLES_RUST)		+= rust/
+ obj-$(CONFIG_SAMPLE_DAMON_WSSE)		+= damon/
++obj-$(CONFIG_SAMPLE_DAMON_PRCL)		+= damon/
 diff --git a/samples/damon/Kconfig b/samples/damon/Kconfig
 index b799e01345c8..63f6dcd71daa 100644
 --- a/samples/damon/Kconfig
@@ -45,19 +43,20 @@ index b799e01345c8..63f6dcd71daa 100644
 +
  endmenu
 diff --git a/samples/damon/Makefile b/samples/damon/Makefile
-index 1ace3ad4aff0..509f6a619dc4 100644
+index ccbe93d40130..7f155143f237 100644
 --- a/samples/damon/Makefile
 +++ b/samples/damon/Makefile
-@@ -1,2 +1,3 @@
+@@ -1,3 +1,4 @@
  # SPDX-License-Identifier: GPL-2.0
- obj-$(CONFIG_SAMPLE_DAMON_WSSE) += damon_sample_wsse.o
-+obj-$(CONFIG_SAMPLE_DAMON_PRCL) += damon_sample_prcl.o
-diff --git a/samples/damon/damon_sample_prcl.c b/samples/damon/damon_sample_prcl.c
+ 
+ obj-$(CONFIG_SAMPLE_DAMON_WSSE) += wsse.o
++obj-$(CONFIG_SAMPLE_DAMON_PRCL) += prcl.o
+diff --git a/samples/damon/prcl.c b/samples/damon/prcl.c
 new file mode 100644
-index 000000000000..71140656971c
+index 000000000000..32ccdd91cf55
 --- /dev/null
-+++ b/samples/damon/damon_sample_prcl.c
-@@ -0,0 +1,138 @@
++++ b/samples/damon/prcl.c
+@@ -0,0 +1,120 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * proactive reclamation: monitor access pattern of a given process, find
@@ -74,17 +73,17 @@ index 000000000000..71140656971c
 +static int target_pid __read_mostly;
 +module_param(target_pid, int, 0600);
 +
-+static int damon_sample_prcl_run_store(
++static int damon_sample_prcl_enable_store(
 +		const char *val, const struct kernel_param *kp);
 +
-+static const struct kernel_param_ops run_param_ops = {
-+	.set = damon_sample_prcl_run_store,
++static const struct kernel_param_ops enable_param_ops = {
++	.set = damon_sample_prcl_enable_store,
 +	.get = param_get_bool,
 +};
 +
-+static bool run __read_mostly;
-+module_param_cb(run, &run_param_ops, &run, 0600);
-+MODULE_PARM_DESC(run, "Run or stop damon_sample_wsse");
++static bool enable __read_mostly;
++module_param_cb(enable, &enable_param_ops, &enable, 0600);
++MODULE_PARM_DESC(enable, "Enable of disable DAMON_SAMPLE_WSSE");
 +
 +static struct damon_ctx *ctx;
 +static struct pid *target_pidp;
@@ -109,7 +108,6 @@ index 000000000000..71140656971c
 +static int damon_sample_prcl_start(void)
 +{
 +	struct damon_target *target;
-+	struct damos *scheme;
 +
 +	pr_info("start\n");
 +
@@ -136,23 +134,6 @@ index 000000000000..71140656971c
 +
 +	ctx->callback.after_aggregation = damon_sample_prcl_after_aggregate;
 +
-+	scheme = damon_new_scheme(
-+			&(struct damos_access_pattern) {
-+			.min_sz_region = PAGE_SIZE,
-+			.max_sz_region = ULONG_MAX,
-+			.min_nr_accesses = 0,
-+			.max_nr_accesses = 0},
-+			DAMOS_PAGEOUT,
-+			0,
-+			&(struct damos_quota){},
-+			&(struct damos_watermarks){},
-+			NUMA_NO_NODE);
-+	if (!scheme) {
-+		damon_destroy_ctx(ctx);
-+		return -ENOMEM;
-+	}
-+	damon_set_schemes(ctx, &scheme, 1);
-+
 +	return damon_start(&ctx, 1, true);
 +}
 +
@@ -167,20 +148,20 @@ index 000000000000..71140656971c
 +		put_pid(target_pidp);
 +}
 +
-+static int damon_sample_prcl_run_store(
++static int damon_sample_prcl_enable_store(
 +		const char *val, const struct kernel_param *kp)
 +{
-+	bool running = run;
++	bool enabled = enable;
 +	int err;
 +
-+	err = kstrtobool(val, &run);
++	err = kstrtobool(val, &enable);
 +	if (err)
 +		return err;
 +
-+	if (run == running)
++	if (enable == enabled)
 +		return 0;
 +
-+	if (run)
++	if (enable)
 +		return damon_sample_prcl_start();
 +	damon_sample_prcl_stop();
 +	return 0;
