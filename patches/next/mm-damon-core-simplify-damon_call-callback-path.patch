@@ -1,0 +1,121 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 16 Nov 2024 14:00:09 -0800
+Subject: [PATCH] mm/damon/core: simplify damon_call() callback path
+
+Invoke the callback only after sampling, and cancel it when DAMON is
+deactivated by watermarks or termination.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 33 ++++++++++++++++++++-------------
+ 2 files changed, 21 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 7c2668a4bb39..f2ed747f4663 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -591,6 +591,7 @@ struct damon_call_req {
+ /* private: internal use only */
+ 	/* for waiting on DAMON's @fn invocation completion. */
+ 	struct completion completion;
++	bool canceled;
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 3930a3ea6929..88bd2dc40a26 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1191,11 +1191,14 @@ int damon_stop(struct damon_ctx **ctxs, int nr_ctxs)
+  *
+  * Ask DAMON worker thread of @ctx to call a given function as specified in
+  * @req and wait for the result.  DAMON worker thread will invoke the requested
+- * function only once, on the fastest one of following events.  After sampling,
+- * after aggregation, after watermarks check, and before termination of the
+- * DAMON context.  The return code of the callback function will be saved in
+- * &->return_code of @req.  The caller of this function will wait until the
+- * invocation is completed.
++ * function.  The function can hence safely access the &struct damon_ctx and
++ * &struct damon_region objects.  If DAMON is deactivated by watermarks or
++ * terminated before the function is called back, the request is ignored and
++ * this function returns ESTALE or EOWNERDEAD, respectively.
++ *
++ * The return code of the callback function will be saved in &->return_code of
++ * @req.  The caller of this function will wait until the invocation is
++ * completed.
+  *
+  * If a parallel damon_call() for same @ctx exists, only one wins and others
+  * return -EBUSY.
+@@ -1214,6 +1217,8 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_req *req)
+ 	mutex_unlock(&ctx->call_request_lock);
+ 
+ 	wait_for_completion(&req->completion);
++	if (req->canceled)
++		return -ECANCELED;
+ 	return 0;
+ }
+ 
+@@ -2008,7 +2013,7 @@ static void kdamond_usleep(unsigned long usecs)
+ 		usleep_idle_range(usecs, usecs + 1);
+ }
+ 
+-static int kdamond_callback(struct damon_ctx *ctx)
++static int kdamond_callback(struct damon_ctx *ctx, bool cancel)
+ {
+ 	struct damon_call_req *req;
+ 	int ret;
+@@ -2019,8 +2024,12 @@ static int kdamond_callback(struct damon_ctx *ctx)
+ 		mutex_unlock(&ctx->call_request_lock);
+ 		return 0;
+ 	}
+-	ret = req->fn(req->arg);
+-	req->return_code = ret;
++	if (cancel) {
++		req->canceled = true;
++	} else {
++		ret = req->fn(req->arg);
++		req->return_code = ret;
++	}
+ 	complete(&req->completion);
+ 	ctx->call_request = NULL;
+ 	mutex_unlock(&ctx->call_request_lock);
+@@ -2051,7 +2060,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+ 		if (ctx->callback.after_wmarks_check &&
+ 				ctx->callback.after_wmarks_check(ctx))
+ 			break;
+-		if (kdamond_callback(ctx))
++		if (kdamond_callback(ctx, true))
+ 			break;
+ 	}
+ 	return -EBUSY;
+@@ -2122,7 +2131,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->callback.after_sampling &&
+ 				ctx->callback.after_sampling(ctx))
+ 			break;
+-		if (kdamond_callback(ctx))
++		if (kdamond_callback(ctx, false))
+ 			break;
+ 
+ 		kdamond_usleep(sample_interval);
+@@ -2138,8 +2147,6 @@ static int kdamond_fn(void *data)
+ 			if (ctx->callback.after_aggregation &&
+ 					ctx->callback.after_aggregation(ctx))
+ 				break;
+-			if (kdamond_callback(ctx))
+-				break;
+ 		}
+ 
+ 		/*
+@@ -2178,7 +2185,7 @@ static int kdamond_fn(void *data)
+ 
+ 	if (ctx->callback.before_terminate)
+ 		ctx->callback.before_terminate(ctx);
+-	kdamond_callback(ctx);
++	kdamond_callback(ctx, true);
+ 	if (ctx->ops.cleanup)
+ 		ctx->ops.cleanup(ctx);
+ 	kfree(ctx->regions_score_histogram);
+-- 
+2.39.5
+
