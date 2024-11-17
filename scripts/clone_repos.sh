@@ -15,7 +15,7 @@ git -C damo remote update
 
 git clone --origin gh.upstream git@github.com:sjp38/hackermail
 git -C hackermail remote add gh.downstream git@github.com:damonitor/hackermail
-git -C hackermail remote add korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/hackermail
+git -C hackermail remote add korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/hkml
 git -C hackermail remote update
 
 git clone --origin gh git@github.com:damonitor/damon-tests
