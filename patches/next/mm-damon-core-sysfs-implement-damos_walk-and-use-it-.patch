@@ -1,0 +1,280 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 20 Nov 2024 19:31:18 -0800
+Subject: [PATCH] mm/damon/core,sysfs: implement damos_walk and use it
+ (work-in-progress)
+
+This is still work in progress.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    | 20 ++++++++++++++
+ mm/damon/core.c          | 49 +++++++++++++++++++++++++++++++++
+ mm/damon/sysfs-schemes.c | 58 ++++++++++++++++++++++++++++++++++++++++
+ mm/damon/sysfs.c         | 28 +++++++++++++++++++
+ 4 files changed, 155 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index f2ed747f4663..81a6ceb7d480 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -361,6 +361,17 @@ struct damos_filter {
+ 	struct list_head list;
+ };
+ 
++#ifdef DAMON_WIP
++struct damos_walk_control {
++	void *arg;
++	int (*prep_fn)(void *arg);
++	int (*walk_fn)(void *arg, struct damos *scheme);
++/* private: internal use only */
++	struct completion completion;
++	bool canceled;
++};
++#endif
++
+ /**
+  * struct damos_access_pattern - Target access pattern of the given scheme.
+  * @min_sz_region:	Minimum size of target regions.
+@@ -446,6 +457,10 @@ struct damos {
+ 	 * @action
+ 	 */
+ 	unsigned long next_apply_sis;
++#ifdef DAMON_WIP
++	/* represents if ongoing DAMOS walk for this scheme is finished */
++	bool walk_completed;
++#endif
+ /* public: */
+ 	struct damos_quota quota;
+ 	struct damos_watermarks wmarks;
+@@ -677,6 +692,11 @@ struct damon_ctx {
+ 	struct damon_call_req *call_request;
+ 	struct mutex call_request_lock;
+ 
++#ifdef DAMON_WIP
++	struct damos_walk_control *walk_control;
++	struct mutex walk_control_lock;
++#endif
++
+ /* public: */
+ 	struct task_struct *kdamond;
+ 	struct mutex kdamond_lock;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1a0bf9ad139a..be9dc96f89c7 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1222,6 +1222,25 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_req *req)
+ 	return 0;
+ }
+ 
++#ifdef DAMON_WIP
++int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control)
++{
++	init_completion(&control->completion);
++	mutex_lock(&ctx->walk_control_lock);
++	if (ctx->walk_control) {
++		mutex_unlock(&ctx->walk_control_lock);
++		return -EBUSY;
++	}
++	ctx->walk_control = control;
++	mutex_unlock(&ctx->walk_control_lock);
++
++	wait_for_completion(&control->completion);
++	if (control->canceled)
++		return -ECANCELED;
++	return 0;
++}
++#endif
++
+ /*
+  * Reset the aggregated monitoring results ('nr_accesses' of each region).
+  */
+@@ -1401,6 +1420,27 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+ 	return false;
+ }
+ 
++#ifdef DAMON_WIP
++static void damos_do_walk(struct damon_ctx *ctx, struct damon_target *t,
++		struct damon_region *r, struct damos *s)
++{
++
++}
++
++static void damos_do_walk_complete(struct damon_ctx *ctx, struct damos *s)
++{
++	struct damos *siter;
++
++	s->walk_completed = true;
++	/* if all schemes completed, signal completion to walker */
++	damon_for_each_scheme(siter, ctx) {
++		if (!siter->walk_completed)
++			return;
++	}
++	/* complete walk_control->completion */
++}
++#endif
++
+ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s)
+ {
+@@ -1464,6 +1504,9 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 					damon_nr_regions(t), do_trace);
+ 			sz_applied = c->ops.apply_scheme(c, t, r, s);
+ 		}
++#ifdef DAMON_WIP
++		damos_do_walk(c, t, r, s);
++#endif
+ 		ktime_get_coarse_ts64(&end);
+ 		quota->total_charged_ns += timespec64_to_ns(&end) -
+ 			timespec64_to_ns(&begin);
+@@ -1723,6 +1766,9 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 			continue;
+ 
+ 		has_schemes_to_apply = true;
++#ifdef DAMON_WIP
++		/* call prep_fn */
++#endif
+ 
+ 		damos_adjust_quota(c, s);
+ 	}
+@@ -1738,6 +1784,9 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	damon_for_each_scheme(s, c) {
+ 		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
++#ifdef DAMON_WIP
++		damos_do_walk_complete(c, s);
++#endif
+ 		s->next_apply_sis = c->passed_sample_intervals +
+ 			(s->apply_interval_us ? s->apply_interval_us :
+ 			 c->attrs.aggr_interval) / sample_interval;
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 6cc976b8e363..d13ac6166fe7 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2187,6 +2187,50 @@ static int damon_sysfs_before_damos_apply(struct damon_ctx *ctx,
+ 	return 0;
+ }
+ 
++#ifdef DAMON_WIP
++int damos_sysfs_walk_add_tried_region(void *arg,
++		struct damon_ctx *ctx, struct damon_target *t,
++		struct damon_region *r, struct damos *s)
++{
++	struct damos_sysfs_regions_walk_arg *walk_arg = arg;
++	struct damon_sysfs_kdamond *kdamond = arg.kdamond;
++	struct damos *scheme;
++	int schemes_idx = 0;
++	struct damon_sysfs_schemes *sysfs_schemes =
++		kdamond->contexts->contexts_arr[0]->schemes;
++	struct damon_sysfs_scheme_regions *sysfs_regions;
++	struct damon_sysfs_scheme_region *region;
++
++	damon_for_each_scheme(scheme, ctx) {
++		if (scheme == s)
++			break;
++		schemes_idx++;
++	}
++
++	/* user could have removed the scheme sysfs dir */
++	if (schemes_idx >= sysfs_schemes->nr)
++		return 0;
++
++	sysfs_regions = sysfs_schemes->schemes_arr[schemes_idx]->tried_regions;
++	sysfs_regions->total_bytes += r->ar.end - r->ar.start;
++	if (walk_arg->total_bytes_only)
++		return 0;
++
++	region = damon_sysfs_scheme_region_alloc(r);
++	if (!region)
++		return 0;
++	list_add_tail(&region->list, &sysfs_regions->regions_list);
++	sysfs_regions->nr_regions++;
++	if (kobject_init_and_add(&region->kobj,
++				&damon_sysfs_scheme_region_ktype,
++				&sysfs_regions->kobj, "%d",
++				sysfs_regions->nr_regions - 1)) {
++		kobject_put(&region->kobj);
++	}
++	return 0;
++}
++#endif
++
+ /*
+  * DAMON callback that called after each accesses sampling.  While this
+  * callback is registered, damon_sysfs_lock should be held to ensure the
+@@ -2233,6 +2277,20 @@ int damon_sysfs_schemes_clear_regions(
+ 	return 0;
+ }
+ 
++#ifdef DAMON_WIP
++int damos_sysfs_walk_clear_tried_regions(void *arg)
++{
++	struct damos_sysfs_regions_walk_arg *walk_arg = arg;
++	struct damon_sysfs_kdamond *kdamond = walk_arg->kdamond;
++	struct damon_ctx *ctx = kdamond->damon_ctx;
++
++	if (!ctx)
++		return -EINVAL;
++	return damon_sysfs_schemes_clear_regions(
++			kdamond->contexts->contexts_arr[0]->schemes, ctx);
++}
++#endif
++
+ static struct damos *damos_sysfs_nth_scheme(int n, struct damon_ctx *ctx)
+ {
+ 	struct damos *scheme;
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index 7155ba226554..b1aeca32d2bf 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1517,6 +1517,13 @@ static int damon_sysfs_turn_damon_off(struct damon_sysfs_kdamond *kdamond)
+ 	 */
+ }
+ 
++#ifdef DAMON_WIP
++struct damos_sysfs_regions_walk_arg {
++	struct damon_sysfs_kdamond *kdamond;
++	bool total_bytes_only;
++};
++#endif
++
+ /*
+  * damon_sysfs_handle_cmd() - Handle a command for a specific kdamond.
+  * @cmd:	The command to handle.
+@@ -1535,6 +1542,13 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+ {
+ 	bool need_wait = true;
+ 	struct damon_call_req call_req = {};
++#ifdef DAMON_WIP
++	struct damos_walk_control walk_control;
++	struct damos_sysfs_regions_walk_arg walk_arg = {
++		.kdamond = kdamond,
++		.total_bytes_only = false};
++	int ret;
++#endif
+ 
+ 	/*
+ 	 * Handle commands that doesn't access DAMON context-internal data, can
+@@ -1557,6 +1571,20 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+ 		call_req.fn = damon_sysfs_clear_schemes_regions;
+ 		call_req.arg = kdamond;
+ 		return damon_call(kdamond->damon_ctx, &call_req);
++#ifdef DAMON_WIP
++	case DAMON_SYSFS_CMD_UPDATE_SCHEMES_TRIED_BYTES:
++		walk_arg.total_bytes_only = true;
++		fallthrough;
++	case DAMON_SYSFS_CMD_UPDATE_SCHEMES_TRIED_REGIONS:
++		walk_control.arg = &walk_arg;
++		walk_control.prep_fn = damos_sysfs_walk_clear_tried_regions;
++		walk_control.walk_fn = damos_sysfs_walk_add_tried_region;
++		ret = damos_walk(kdamond->damon_ctx, &walk_control);
++		if (ret == -ECANCELED) {
++			damos_sysfs_walk_clear_tried_regions(&walk_arg);
++			return ret;
++		}
++#endif
+ 	default:
+ 		break;
+ 	}
+-- 
+2.39.5
+
