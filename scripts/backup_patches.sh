@@ -15,7 +15,7 @@ commits="akpm.korg.mm/mm-unstable..damon/next"
 
 commit_msg="$commit_msg
 
-$(git rev-parse damon/next)"
+Assembled tree: $(git rev-parse damon/next)"
 
 git -C "$bindir" rm -r "$dest_dir"
 mkdir -p "$dest_dir"
