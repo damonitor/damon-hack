@@ -1,0 +1,254 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 22 Nov 2024 13:44:16 -0800
+Subject: [PATCH] mm/damon/core: more wip callback works
+
+- more damos_walk cleanup
+- hold lock only for reading/writing ->walk_control and call_req
+- make callbacks void functions
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 105 ++++++++++++++++++++++++++++--------------------
+ 1 file changed, 61 insertions(+), 44 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1d61650c820c..aae2606b54d7 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1189,28 +1189,25 @@ int damon_stop(struct damon_ctx **ctxs, int nr_ctxs)
+ 
+ /**
+  * damon_call() - Invoke a given function on a DAMON worker thread.
+- * @ctx:	The DAMON context to execute the request on.
+- * @req:	The call request specification.
++ * @ctx:	DAMON context to execute the request for.
++ * @req:	Call request specification.
+  *
+  * Ask DAMON worker thread of @ctx to call a given function as specified in
+- * @req and wait for the result.  DAMON worker thread will invoke the requested
+- * function.  The function can hence safely access the &struct damon_ctx and
+- * &struct damon_region objects.  If DAMON is deactivated by watermarks or
+- * terminated before the function is called back, the request is ignored and
+- * this function returns ESTALE or EOWNERDEAD, respectively.
+- *
+- * The return code of the callback function will be saved in &->return_code of
+- * @req.  The caller of this function will wait until the invocation is
+- * completed.
+- *
+- * If a parallel damon_call() for same @ctx exists, only one wins and others
+- * return -EBUSY.
++ * @req and wait for the result.  The function can hence safely access the
++ * internal data of &struct damon_ctx including &struct damon_region objects
++ * without additional locking.  The return code of the callback function will
++ * be saved in &->return_code of @req.
++
++ * If DAMON is deactivated by watermarks or terminated before the function is
++ * called back, the request is canceled.
+  *
+  * Return: 0 on success, negative error code otherwise.
+  */
+ int damon_call(struct damon_ctx *ctx, struct damon_call_req *req)
+ {
+ 	init_completion(&req->completion);
++	req->canceld = false;
++
+ 	mutex_lock(&ctx->call_request_lock);
+ 	if (ctx->call_request) {
+ 		mutex_unlock(&ctx->call_request_lock);
+@@ -1226,9 +1223,19 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_req *req)
+ }
+ 
+ #ifdef DAMON_WIP
++/**
++ * damos_walk() - Invoke given functions for regions that DAMOS will be applied.
++ * @ctx:	DAMON context to execute the request for.
++ * @control:	Walk request specification.
++ *
++ * Similar to damon_call(), but calls multiple functions on different context,
++ * for regiosn that DAMOS action will be applied.  Read documentation of
++ * &struct damos_walk_control for more detail.
++ */
+ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control)
+ {
+ 	init_completion(&control->completion);
++	control->canceled = false;
+ 	mutex_lock(&ctx->walk_control_lock);
+ 	if (ctx->walk_control) {
+ 		mutex_unlock(&ctx->walk_control_lock);
+@@ -1424,56 +1431,67 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+ }
+ 
+ #ifdef DAMON_WIP
+-static void damos_do_walk_prep(struct damon_ctx *ctx)
++static void damos_walk_call_prep(struct damon_ctx *ctx)
+ {
+ 	struct damos_walk_control *control;
+ 
+ 	mutex_lock(&ctx->walk_control_lock);
+ 	control = ctx->walk_control;
+-	if (!control) {
+-		mutex_unlock(&ctx->walk_control_lock);
++	mutex_unlock(&ctx->walk_control_lock);
++	if (!control)
+ 		return;
+-	}
+ 	conrol->prep_fn(control->arg, ctx);
+-	mutex_unlock(&ctx->walk_control_lock);
+ }
+ 
+-static void damos_do_walk(struct damon_ctx *ctx, struct damon_target *t,
++static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s)
+ {
+ 	struct damos_walk_control *control;
+ 
+ 	mutex_lock(&ctx->walk_control_lock);
+ 	control = ctx->walk_control;
+-	if (!control) {
+-		mutex_unlock(&ctx->walk_control_lock);
++	mutex_unlock(&ctx->walk_control_lock);
++	if (!control)
+ 		return;
+-	}
+ 	conrol->walk_fn(control->arg, ctx);
+-	mutex_unlock(&ctx->walk_control_lock);
+ }
+ 
+-static void damos_do_walk_complete(struct damon_ctx *ctx, struct damos *s)
++static void damos_walk_call_complete(struct damon_ctx *ctx, struct damos *s)
+ {
+ 	struct damos *siter;
+ 	struct damos_walk_control *control;
+ 
+ 	mutex_lock(&ctx->walk_control_lock);
+ 	control = ctx->walk_control;
+-	if (!control) {
+-		mutex_unlock(&ctx->walk_control_lock);
++	mutex_unlock(&ctx->walk_control_lock);
++	if (!control)
+ 		return;
+-	}
+ 
+ 	s->walk_completed = true;
+ 	/* if all schemes completed, signal completion to walker */
+ 	damon_for_each_scheme(siter, ctx) {
+-		if (!siter->walk_completed) {
+-			mutex_unlock(&ctx->walk_control_lock);
++		if (!siter->walk_completed)
+ 			return;
+-		}
+ 	}
+ 	complete(&control->completion);
++	mutex_lock(&ctx->walk_control_lock);
++	ctx->walk_control = NULL;
++	mutex_unlock(&ctx->walk_control_lock);
++}
++
++static void damos_walk_cancel(struct damon_ctx *ctx)
++{
++	struct damos_walk_control *control;
++
++	mutex_lock(&ctx->walk_control_lock);
++	control = ctx->walk_control;
++	mutex_unlock(&ctx->walk_control_lock);
++
++	if (!control)
++		return;
++	control->canceled = true;
++	complete(&control->completion);
++	mutex_lock(&ctx->walk_control_lock);
+ 	ctx->walk_control = NULL;
+ 	mutex_unlock(&ctx->walk_control_lock);
+ }
+@@ -1543,7 +1561,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 			sz_applied = c->ops.apply_scheme(c, t, r, s);
+ 		}
+ #ifdef DAMON_WIP
+-		damos_do_walk(c, t, r, s);
++		damos_walk_call_walk(c, t, r, s);
+ #endif
+ 		ktime_get_coarse_ts64(&end);
+ 		quota->total_charged_ns += timespec64_to_ns(&end) -
+@@ -1805,7 +1823,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 
+ 		has_schemes_to_apply = true;
+ #ifdef DAMON_WIP
+-		damos_do_walk_prep(c);
++		damos_walk_call_prep(c);
+ #endif
+ 
+ 		damos_adjust_quota(c, s);
+@@ -1823,7 +1841,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 		if (c->passed_sample_intervals < s->next_apply_sis)
+ 			continue;
+ #ifdef DAMON_WIP
+-		damos_do_walk_complete(c, s);
++		damos_walk_call_complete(c, s);
+ #endif
+ 		s->next_apply_sis = c->passed_sample_intervals +
+ 			(s->apply_interval_us ? s->apply_interval_us :
+@@ -2100,17 +2118,16 @@ static void kdamond_usleep(unsigned long usecs)
+ 		usleep_idle_range(usecs, usecs + 1);
+ }
+ 
+-static int kdamond_callback(struct damon_ctx *ctx, bool cancel)
++static void kdamond_callback(struct damon_ctx *ctx, bool cancel)
+ {
+ 	struct damon_call_req *req;
+ 	int ret = 0;
+ 
+ 	mutex_lock(&ctx->call_request_lock);
+ 	req = ctx->call_request;
+-	if (!req) {
+-		mutex_unlock(&ctx->call_request_lock);
+-		return 0;
+-	}
++	mutex_unlock(&ctx->call_request_lock);
++	if (!req)
++		return;
+ 	if (cancel) {
+ 		req->canceled = true;
+ 	} else {
+@@ -2118,9 +2135,9 @@ static int kdamond_callback(struct damon_ctx *ctx, bool cancel)
+ 		req->return_code = ret;
+ 	}
+ 	complete(&req->completion);
++	mutex_lock(&ctx->call_request_lock);
+ 	ctx->call_request = NULL;
+ 	mutex_unlock(&ctx->call_request_lock);
+-	return ret;
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+@@ -2147,8 +2164,8 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+ 		if (ctx->callback.after_wmarks_check &&
+ 				ctx->callback.after_wmarks_check(ctx))
+ 			break;
+-		if (kdamond_callback(ctx, true))
+-			break;
++		kdamond_callback(ctx, true);
++		damos_walk_cancel(ctx);
+ 	}
+ 	return -EBUSY;
+ }
+@@ -2218,8 +2235,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->callback.after_sampling &&
+ 				ctx->callback.after_sampling(ctx))
+ 			break;
+-		if (kdamond_callback(ctx, false))
+-			break;
++		kdamond_callback(ctx, false);
+ 
+ 		kdamond_usleep(sample_interval);
+ 		ctx->passed_sample_intervals++;
+@@ -2273,6 +2289,7 @@ static int kdamond_fn(void *data)
+ 	if (ctx->callback.before_terminate)
+ 		ctx->callback.before_terminate(ctx);
+ 	kdamond_callback(ctx, true);
++	damos_walk_cancel(ctx);
+ 	if (ctx->ops.cleanup)
+ 		ctx->ops.cleanup(ctx);
+ 	kfree(ctx->regions_score_histogram);
+-- 
+2.39.5
+
