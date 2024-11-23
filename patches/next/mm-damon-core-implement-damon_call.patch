@@ -4,12 +4,12 @@ Subject: [PATCH] mm/damon/core: implement damon_call()
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h | 24 +++++++++++++++++
- mm/damon/core.c       | 63 +++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 87 insertions(+)
+ include/linux/damon.h | 24 ++++++++++++++
+ mm/damon/core.c       | 73 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 97 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index e8d53c0638b6..0a8a5cfe84de 100644
+index e8d53c0638b6..86211cd65878 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -579,6 +579,24 @@ struct damon_callback {
@@ -20,12 +20,12 @@ index e8d53c0638b6..0a8a5cfe84de 100644
 + * struct damon_call_control - Control DAMON worker thread callback.
 + *
 + * @fn:			Function to be called back from DAMON.
-+ * @arg:		Argument that will be passed to @fn.
++ * @data:		Data that will be passed to @fn.
 + * @return_code:	Return code from @fn.
 + */
 +struct damon_call_control {
-+	int (*fn)(void *arg);
-+	void *arg;
++	int (*fn)(void *data);
++	void *data;
 +	int return_code;
 +/* private: internal use only */
 +	/* for waiting on DAMON's @fn invocation completion. */
@@ -58,7 +58,7 @@ index e8d53c0638b6..0a8a5cfe84de 100644
  				unsigned long *start, unsigned long *end);
  
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index d2eeebca964d..24649b9d7db5 100644
+index fb11c1d42221..c4c682a8abc1 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -533,6 +533,7 @@ struct damon_ctx *damon_new_ctx(void)
@@ -69,10 +69,20 @@ index d2eeebca964d..24649b9d7db5 100644
  
  	ctx->attrs.min_nr_regions = 10;
  	ctx->attrs.max_nr_regions = 1000;
-@@ -1193,6 +1194,42 @@ static bool damon_is_running(struct damon_ctx *ctx)
- 	return running;
+@@ -1183,6 +1184,52 @@ int damon_stop(struct damon_ctx **ctxs, int nr_ctxs)
+ 	return err;
  }
  
++static bool damon_is_running(struct damon_ctx *ctx)
++{
++	bool running;
++
++	mutex_lock(&ctx->kdamond_lock);
++	running = ctx->kdamond != NULL;
++	mutex_unlock(&ctx->kdamond_lock);
++	return running;
++}
++
 +/**
 + * damon_call() - Invoke a given function on a DAMON worker thread.
 + * @ctx:	DAMON context to execute the function for.
@@ -112,7 +122,7 @@ index d2eeebca964d..24649b9d7db5 100644
  /*
   * Reset the aggregated monitoring results ('nr_accesses' of each region).
   */
-@@ -1984,6 +2021,28 @@ static void kdamond_usleep(unsigned long usecs)
+@@ -1974,6 +2021,28 @@ static void kdamond_usleep(unsigned long usecs)
  		usleep_idle_range(usecs, usecs + 1);
  }
  
@@ -129,7 +139,7 @@ index d2eeebca964d..24649b9d7db5 100644
 +	if (cancel) {
 +		control->canceled = true;
 +	} else {
-+		ret = control->fn(control->arg);
++		ret = control->fn(control->data);
 +		control->return_code = ret;
 +	}
 +	complete(&control->completion);
@@ -141,7 +151,7 @@ index d2eeebca964d..24649b9d7db5 100644
  /* Returns negative error code if it's not activated but should return */
  static int kdamond_wait_activation(struct damon_ctx *ctx)
  {
-@@ -2008,6 +2067,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+@@ -1998,6 +2067,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
  		if (ctx->callback.after_wmarks_check &&
  				ctx->callback.after_wmarks_check(ctx))
  			break;
@@ -149,7 +159,7 @@ index d2eeebca964d..24649b9d7db5 100644
  	}
  	return -EBUSY;
  }
-@@ -2077,6 +2137,7 @@ static int kdamond_fn(void *data)
+@@ -2067,6 +2137,7 @@ static int kdamond_fn(void *data)
  		if (ctx->callback.after_sampling &&
  				ctx->callback.after_sampling(ctx))
  			break;
@@ -157,7 +167,7 @@ index d2eeebca964d..24649b9d7db5 100644
  
  		kdamond_usleep(sample_interval);
  		ctx->passed_sample_intervals++;
-@@ -2138,6 +2199,8 @@ static int kdamond_fn(void *data)
+@@ -2128,6 +2199,8 @@ static int kdamond_fn(void *data)
  	ctx->kdamond = NULL;
  	mutex_unlock(&ctx->kdamond_lock);
  
