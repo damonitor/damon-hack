@@ -2,24 +2,21 @@ From: SeongJae Park <sj@kernel.org>
 Date: Fri, 22 Nov 2024 12:12:33 -0800
 Subject: [PATCH] mm/damon: introduce DAMOS filter type UNMAPPED
 
-In some use cases, some DAMOS action may better to be applied to only
-mapped, or unmapped pages.  For example, users might want to use NUMA
-hint fault based CXL-memory promotion for mapped pages, but DAMOS-based
-promotion for unmapped pages because unmapped pages cannot get NUMA hit
-faults.  Also, users might want to proactive reclaim only unmapped page
-cache, since some people do mmap() important files to reduce
-read()/write() system call overheads.  Introduce a new DAMOS filter type
-for unmapped pages to support such use case.
-
-Note that this commit is only defining the type, not implement it.  The
-implementation should be made on DAMON operation sets layer.  Following
-commit will add the implemention on 'paddr' operation set.
+Some DAMOS actions may better to be applied to only mapped, or unmapped
+pages.  For example, users might want to use NUMA hint fault based
+CXL-memory promotion for mapped pages, and DAMOS-based promotion for
+unmapped pages.  For another example, users might want to proactively
+reclaim only unmapped page cache, since some people do mmap() for only
+performance-important files, to reduce read()/write() system call
+overheads.  To support such use cases, introduce a new DAMOS filter type
+for unmapped pages.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h    | 2 ++
+ mm/damon/paddr.c         | 3 +++
  mm/damon/sysfs-schemes.c | 1 +
- 2 files changed, 3 insertions(+)
+ 3 files changed, 6 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 9d8bb6116df4..10fc6df52111 100644
@@ -41,6 +38,20 @@ index 9d8bb6116df4..10fc6df52111 100644
  	DAMOS_FILTER_TYPE_ADDR,
  	DAMOS_FILTER_TYPE_TARGET,
  	NR_DAMOS_FILTER_TYPES,
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 4733aaddcae8..b3cb2578a201 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -222,6 +222,9 @@ static bool __damos_pa_filter_out(struct damos_filter *filter,
+ 		if (matched)
+ 			damon_folio_mkold(folio);
+ 		break;
++	case DAMOS_FILTER_TYPE_UNMAPPED:
++		matched = !folio_mapped(folio) || !folio_raw_mapping(folio);
++		break;
+ 	default:
+ 		break;
+ 	}
 diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
 index 6cc976b8e363..25356fe99273 100644
 --- a/mm/damon/sysfs-schemes.c
