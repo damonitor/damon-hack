@@ -1,0 +1,65 @@
+From: Suren Baghdasaryan <surenb@google.com>
+Date: Fri, 29 Nov 2024 16:14:22 -0800
+Subject: [PATCH] alloc_tag: fix module allocation tags populated area
+ calculation
+
+vm_module_tags_populate() calculation of the populated area assumes that
+area starts at a page boundary and therefore when new pages are allocation,
+the end of the area is page-aligned as well. If the start of the area is
+not page-aligned then allocating a page and incrementing the end of the
+area by PAGE_SIZE leads to an area at the end but within the area boundary
+which is not populated. Accessing this are will lead to a kernel panic.
+Fix the calculation by down-aligning the start of the area and using that
+as the location allocated pages are mapped to.
+
+Link: https://lkml.kernel.org/r/20241130001423.1114965-1-surenb@google.com
+Fixes: 0f9b685626da ("alloc_tag: populate memory for module tags as needed")
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Reported-by: kernel test robot <oliver.sang@intel.com>
+Closes: https://lore.kernel.org/oe-lkp/202411132111.6a221562-lkp@intel.com
+Acked-by: Yu Zhao <yuzhao@google.com>
+Cc: David Wang <00107082@163.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Sourav Panda <souravpanda@google.com>
+Cc: <stable@vger.kernel.org>
+Cc: Hao Ge <gehao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/alloc_tag.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/lib/alloc_tag.c b/lib/alloc_tag.c
+index 35f7560a309a..4ee6caa6d2da 100644
+--- a/lib/alloc_tag.c
++++ b/lib/alloc_tag.c
+@@ -401,19 +401,20 @@ static bool find_aligned_area(struct ma_state *mas, unsigned long section_size,
+ 
+ static int vm_module_tags_populate(void)
+ {
+-	unsigned long phys_size = vm_module_tags->nr_pages << PAGE_SHIFT;
++	unsigned long phys_end = ALIGN_DOWN(module_tags.start_addr, PAGE_SIZE) +
++				 (vm_module_tags->nr_pages << PAGE_SHIFT);
++	unsigned long new_end = module_tags.start_addr + module_tags.size;
+ 
+-	if (phys_size < module_tags.size) {
++	if (phys_end < new_end) {
+ 		struct page **next_page = vm_module_tags->pages + vm_module_tags->nr_pages;
+-		unsigned long addr = module_tags.start_addr + phys_size;
+ 		unsigned long more_pages;
+ 		unsigned long nr;
+ 
+-		more_pages = ALIGN(module_tags.size - phys_size, PAGE_SIZE) >> PAGE_SHIFT;
++		more_pages = ALIGN(new_end - phys_end, PAGE_SIZE) >> PAGE_SHIFT;
+ 		nr = alloc_pages_bulk_array_node(GFP_KERNEL | __GFP_NOWARN,
+ 						 NUMA_NO_NODE, more_pages, next_page);
+ 		if (nr < more_pages ||
+-		    vmap_pages_range(addr, addr + (nr << PAGE_SHIFT), PAGE_KERNEL,
++		    vmap_pages_range(phys_end, phys_end + (nr << PAGE_SHIFT), PAGE_KERNEL,
+ 				     next_page, PAGE_SHIFT) < 0) {
+ 			/* Clean up and error out */
+ 			for (int i = 0; i < nr; i++)
+-- 
+2.39.5
+

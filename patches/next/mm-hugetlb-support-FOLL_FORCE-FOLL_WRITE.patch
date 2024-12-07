@@ -1,0 +1,262 @@
+From: Guillaume Morin <guillaume@morinfr.org>
+Date: Thu, 5 Dec 2024 03:02:26 +0100
+Subject: [PATCH] mm/hugetlb: support FOLL_FORCE|FOLL_WRITE
+
+Eric reported that PTRACE_POKETEXT fails when applications use hugetlb
+for mapping text using huge pages. Before commit 1d8d14641fd9
+("mm/hugetlb: support write-faults in shared mappings"), PTRACE_POKETEXT
+worked by accident, but it was buggy and silently ended up mapping pages
+writable into the page tables even though VM_WRITE was not set.
+
+In general, FOLL_FORCE|FOLL_WRITE does currently not work with hugetlb.
+Let's implement FOLL_FORCE|FOLL_WRITE properly for hugetlb, such that
+what used to work in the past by accident now properly works, allowing
+applications using hugetlb for text etc. to get properly debugged.
+
+This change might also be required to implement uprobes support for
+hugetlb [1].
+
+[1] https://lore.kernel.org/lkml/ZiK50qob9yl5e0Xz@bender.morinfr.org/
+
+Link: https://lkml.kernel.org/r/Z1EJssqd93w2erMZ@bender.morinfr.org
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Eric Hagberg <ehagberg@janestreet.com>
+Signed-off-by: Guillaume Morin <guillaume@morinfr.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/pgtable.h |  5 +++
+ mm/gup.c                | 99 +++++++++++++++++++++--------------------
+ mm/hugetlb.c            | 20 +++++----
+ 3 files changed, 66 insertions(+), 58 deletions(-)
+
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 94d267d02372..7d9ea560e4e9 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -1429,6 +1429,11 @@ static inline int pmd_soft_dirty(pmd_t pmd)
+ 	return 0;
+ }
+ 
++static inline int pud_soft_dirty(pud_t pud)
++{
++	return 0;
++}
++
+ static inline pte_t pte_mksoft_dirty(pte_t pte)
+ {
+ 	return pte;
+diff --git a/mm/gup.c b/mm/gup.c
+index 3b75e631f369..661437545055 100644
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -596,6 +596,33 @@ static struct folio *try_grab_folio_fast(struct page *page, int refs,
+ }
+ #endif	/* CONFIG_HAVE_GUP_FAST */
+ 
++/* Common code for can_follow_write_* */
++static inline bool can_follow_write_common(struct page *page,
++		struct vm_area_struct *vma, unsigned int flags)
++{
++	/* Maybe FOLL_FORCE is set to override it? */
++	if (!(flags & FOLL_FORCE))
++		return false;
++
++	/* But FOLL_FORCE has no effect on shared mappings */
++	if (vma->vm_flags & (VM_MAYSHARE | VM_SHARED))
++		return false;
++
++	/* ... or read-only private ones */
++	if (!(vma->vm_flags & VM_MAYWRITE))
++		return false;
++
++	/* ... or already writable ones that just need to take a write fault */
++	if (vma->vm_flags & VM_WRITE)
++		return false;
++
++	/*
++	 * See can_change_pte_writable(): we broke COW and could map the page
++	 * writable if we have an exclusive anonymous page ...
++	 */
++	return page && PageAnon(page) && PageAnonExclusive(page);
++}
++
+ static struct page *no_page_table(struct vm_area_struct *vma,
+ 				  unsigned int flags, unsigned long address)
+ {
+@@ -622,6 +649,22 @@ static struct page *no_page_table(struct vm_area_struct *vma,
+ }
+ 
+ #ifdef CONFIG_PGTABLE_HAS_HUGE_LEAVES
++/* FOLL_FORCE can write to even unwritable PUDs in COW mappings. */
++static inline bool can_follow_write_pud(pud_t pud, struct page *page,
++					struct vm_area_struct *vma,
++					unsigned int flags)
++{
++	/* If the pud is writable, we can write to the page. */
++	if (pud_write(pud))
++		return true;
++
++	if (!can_follow_write_common(page, vma, flags))
++		return false;
++
++	/* ... and a write-fault isn't required for other reasons. */
++	return !vma_soft_dirty_enabled(vma) || pud_soft_dirty(pud);
++}
++
+ static struct page *follow_huge_pud(struct vm_area_struct *vma,
+ 				    unsigned long addr, pud_t *pudp,
+ 				    int flags, struct follow_page_context *ctx)
+@@ -634,13 +677,16 @@ static struct page *follow_huge_pud(struct vm_area_struct *vma,
+ 
+ 	assert_spin_locked(pud_lockptr(mm, pudp));
+ 
+-	if ((flags & FOLL_WRITE) && !pud_write(pud))
++	pfn += (addr & ~PUD_MASK) >> PAGE_SHIFT;
++	page = pfn_to_page(pfn);
++
++	if ((flags & FOLL_WRITE) &&
++	    !can_follow_write_pud(pud, page, vma, flags))
+ 		return NULL;
+ 
+ 	if (!pud_present(pud))
+ 		return NULL;
+ 
+-	pfn += (addr & ~PUD_MASK) >> PAGE_SHIFT;
+ 
+ 	if (IS_ENABLED(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD) &&
+ 	    pud_devmap(pud)) {
+@@ -662,8 +708,6 @@ static struct page *follow_huge_pud(struct vm_area_struct *vma,
+ 			return ERR_PTR(-EFAULT);
+ 	}
+ 
+-	page = pfn_to_page(pfn);
+-
+ 	if (!pud_devmap(pud) && !pud_write(pud) &&
+ 	    gup_must_unshare(vma, flags, page))
+ 		return ERR_PTR(-EMLINK);
+@@ -686,27 +730,7 @@ static inline bool can_follow_write_pmd(pmd_t pmd, struct page *page,
+ 	if (pmd_write(pmd))
+ 		return true;
+ 
+-	/* Maybe FOLL_FORCE is set to override it? */
+-	if (!(flags & FOLL_FORCE))
+-		return false;
+-
+-	/* But FOLL_FORCE has no effect on shared mappings */
+-	if (vma->vm_flags & (VM_MAYSHARE | VM_SHARED))
+-		return false;
+-
+-	/* ... or read-only private ones */
+-	if (!(vma->vm_flags & VM_MAYWRITE))
+-		return false;
+-
+-	/* ... or already writable ones that just need to take a write fault */
+-	if (vma->vm_flags & VM_WRITE)
+-		return false;
+-
+-	/*
+-	 * See can_change_pte_writable(): we broke COW and could map the page
+-	 * writable if we have an exclusive anonymous page ...
+-	 */
+-	if (!page || !PageAnon(page) || !PageAnonExclusive(page))
++	if (!can_follow_write_common(page, vma, flags))
+ 		return false;
+ 
+ 	/* ... and a write-fault isn't required for other reasons. */
+@@ -807,27 +831,7 @@ static inline bool can_follow_write_pte(pte_t pte, struct page *page,
+ 	if (pte_write(pte))
+ 		return true;
+ 
+-	/* Maybe FOLL_FORCE is set to override it? */
+-	if (!(flags & FOLL_FORCE))
+-		return false;
+-
+-	/* But FOLL_FORCE has no effect on shared mappings */
+-	if (vma->vm_flags & (VM_MAYSHARE | VM_SHARED))
+-		return false;
+-
+-	/* ... or read-only private ones */
+-	if (!(vma->vm_flags & VM_MAYWRITE))
+-		return false;
+-
+-	/* ... or already writable ones that just need to take a write fault */
+-	if (vma->vm_flags & VM_WRITE)
+-		return false;
+-
+-	/*
+-	 * See can_change_pte_writable(): we broke COW and could map the page
+-	 * writable if we have an exclusive anonymous page ...
+-	 */
+-	if (!page || !PageAnon(page) || !PageAnonExclusive(page))
++	if (!can_follow_write_common(page, vma, flags))
+ 		return false;
+ 
+ 	/* ... and a write-fault isn't required for other reasons. */
+@@ -1294,9 +1298,6 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 		if (!(vm_flags & VM_WRITE) || (vm_flags & VM_SHADOW_STACK)) {
+ 			if (!(gup_flags & FOLL_FORCE))
+ 				return -EFAULT;
+-			/* hugetlb does not support FOLL_FORCE|FOLL_WRITE. */
+-			if (is_vm_hugetlb_page(vma))
+-				return -EFAULT;
+ 			/*
+ 			 * We used to let the write,force case do COW in a
+ 			 * VM_MAYWRITE VM_SHARED !VM_WRITE vma, so ptrace could
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index d87880bb4992..f5c303d091aa 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5183,6 +5183,13 @@ static void set_huge_ptep_writable(struct vm_area_struct *vma,
+ 		update_mmu_cache(vma, address, ptep);
+ }
+ 
++static void set_huge_ptep_maybe_writable(struct vm_area_struct *vma,
++					 unsigned long address, pte_t *ptep)
++{
++	if (vma->vm_flags & VM_WRITE)
++		set_huge_ptep_writable(vma, address, ptep);
++}
++
+ bool is_hugetlb_entry_migration(pte_t pte)
+ {
+ 	swp_entry_t swp;
+@@ -5816,13 +5823,6 @@ static vm_fault_t hugetlb_wp(struct folio *pagecache_folio,
+ 	if (!unshare && huge_pte_uffd_wp(pte))
+ 		return 0;
+ 
+-	/*
+-	 * hugetlb does not support FOLL_FORCE-style write faults that keep the
+-	 * PTE mapped R/O such as maybe_mkwrite() would do.
+-	 */
+-	if (WARN_ON_ONCE(!unshare && !(vma->vm_flags & VM_WRITE)))
+-		return VM_FAULT_SIGSEGV;
+-
+ 	/* Let's take out MAP_SHARED mappings first. */
+ 	if (vma->vm_flags & VM_MAYSHARE) {
+ 		set_huge_ptep_writable(vma, vmf->address, vmf->pte);
+@@ -5851,7 +5851,8 @@ static vm_fault_t hugetlb_wp(struct folio *pagecache_folio,
+ 			SetPageAnonExclusive(&old_folio->page);
+ 		}
+ 		if (likely(!unshare))
+-			set_huge_ptep_writable(vma, vmf->address, vmf->pte);
++			set_huge_ptep_maybe_writable(vma, vmf->address,
++						     vmf->pte);
+ 
+ 		delayacct_wpcopy_end();
+ 		return 0;
+@@ -5957,7 +5958,8 @@ static vm_fault_t hugetlb_wp(struct folio *pagecache_folio,
+ 	spin_lock(vmf->ptl);
+ 	vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
+ 	if (likely(vmf->pte && pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte))) {
+-		pte_t newpte = make_huge_pte(vma, &new_folio->page, !unshare);
++		const bool writable = !unshare && (vma->vm_flags & VM_WRITE);
++		pte_t newpte = make_huge_pte(vma, &new_folio->page, writable);
+ 
+ 		/* Break COW or unshare */
+ 		huge_ptep_clear_flush(vma, vmf->address, vmf->pte);
+-- 
+2.39.5
+

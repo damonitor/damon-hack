@@ -1,0 +1,73 @@
+From: Koichiro Den <koichiro.den@canonical.com>
+Date: Thu, 5 Dec 2024 01:55:03 +0900
+Subject: [PATCH] hugetlb: prioritize surplus allocation from current node
+
+Previously, surplus allocations triggered by mmap were typically made from
+the node where the process was running.  On a page fault, the area was
+reliably dequeued from the hugepage_freelists for that node.  However,
+since commit 003af997c8a9 ("hugetlb: force allocating surplus hugepages on
+mempolicy allowed nodes"), dequeue_hugetlb_folio_vma() may fall back to
+other nodes unnecessarily even if there is no MPOL_BIND policy, causing
+folios to be dequeued from nodes other than the current one.
+
+Also, allocating from the node where the current process is running is
+likely to result in a performance win, as mmap-ing processes often touch
+the area not so long after allocation.  This change minimizes surprises
+for users relying on the previous behavior while maintaining the benefit
+introduced by the commit.
+
+So, prioritize the node the current process is running on when possible.
+
+Link: https://lkml.kernel.org/r/20241204165503.628784-1-koichiro.den@canonical.com
+Signed-off-by: Koichiro Den <koichiro.den@canonical.com>
+Acked-by: Aristeu Rozanski <aris@ruivo.org>
+Cc: Aristeu Rozanski <aris@redhat.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 5c8de0f5c760..0fa24e105202 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2463,7 +2463,13 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 	long needed, allocated;
+ 	bool alloc_ok = true;
+ 	int node;
+-	nodemask_t *mbind_nodemask = policy_mbind_nodemask(htlb_alloc_mask(h));
++	nodemask_t *mbind_nodemask, alloc_nodemask;
++
++	mbind_nodemask = policy_mbind_nodemask(htlb_alloc_mask(h));
++	if (mbind_nodemask)
++		nodes_and(alloc_nodemask, *mbind_nodemask, cpuset_current_mems_allowed);
++	else
++		alloc_nodemask = cpuset_current_mems_allowed;
+ 
+ 	lockdep_assert_held(&hugetlb_lock);
+ 	needed = (h->resv_huge_pages + delta) - h->free_huge_pages;
+@@ -2479,8 +2485,16 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 	spin_unlock_irq(&hugetlb_lock);
+ 	for (i = 0; i < needed; i++) {
+ 		folio = NULL;
+-		for_each_node_mask(node, cpuset_current_mems_allowed) {
+-			if (!mbind_nodemask || node_isset(node, *mbind_nodemask)) {
++
++		/* Prioritize current node */
++		if (node_isset(numa_mem_id(), alloc_nodemask))
++			folio = alloc_surplus_hugetlb_folio(h, htlb_alloc_mask(h),
++					numa_mem_id(), NULL);
++
++		if (!folio) {
++			for_each_node_mask(node, alloc_nodemask) {
++				if (node == numa_mem_id())
++					continue;
+ 				folio = alloc_surplus_hugetlb_folio(h, htlb_alloc_mask(h),
+ 						node, NULL);
+ 				if (folio)
+-- 
+2.39.5
+

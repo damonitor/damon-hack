@@ -1,0 +1,79 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 6 Dec 2024 16:36:03 -0800
+Subject: [PATCH] mm/damon: add a new DAMOS action for fine-grained
+ filter-aware stat
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    |  1 +
+ mm/damon/paddr.c         | 22 ++++++++++++++++++++++
+ mm/damon/sysfs-schemes.c |  1 +
+ 3 files changed, 24 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 827971c9d7d6..7ff976b4dda7 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -136,6 +136,7 @@ enum damos_action {
+ 	DAMOS_FREE,
+ #endif
+ 	DAMOS_STAT,		/* Do nothing but only record the stat */
++	DAMOS_STAT2,
+ 	NR_DAMOS_ACTIONS,
+ };
+ 
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index b3cb2578a201..772c6fd790c0 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -477,6 +477,26 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s)
+ 	return applied * PAGE_SIZE;
+ }
+ 
++static unsigned long damon_pa_stat2(struct damon_region *r, struct damos *s)
++{
++	unsigned long addr, applied;
++	LIST_HEAD(folio_list);
++
++	for (addr = r->ar.start; addr < r->ar.end; addr += PAGE_SIZE) {
++		struct folio *folio = damon_get_folio(PHYS_PFN(addr));
++
++		if (!folio)
++			continue;
++
++		if (damos_pa_filter_out(s, folio))
++			goto put_folio;
++		applied += folio_size(folio);
++put_folio:
++		folio_put(folio);
++	}
++	return applied;
++}
++
+ 
+ #ifdef CONFIG_ACMA
+ 
+@@ -587,6 +607,8 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ #endif
+ 	case DAMOS_STAT:
+ 		break;
++	case DAMOS_STAT2:
++		return damon_pa_stat2(r, scheme);
+ 	default:
+ 		/* DAMOS actions that not yet supported by 'paddr'. */
+ 		break;
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index d289d0736e15..9356a4ae8c32 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1421,6 +1421,7 @@ static const char * const damon_sysfs_damos_action_strs[] = {
+ 	"damos_free",
+ #endif
+ 	"stat",
++	"stat2",
+ };
+ 
+ static struct damon_sysfs_scheme *damon_sysfs_scheme_alloc(
+-- 
+2.39.5
+

@@ -1,0 +1,101 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 4 Dec 2024 19:09:44 +0800
+Subject: [PATCH] mm: introduce do_zap_pte_range()
+
+This commit introduces do_zap_pte_range() to actually zap the PTEs, which
+will help improve code readability and facilitate secondary checking of
+the processed PTEs in the future.
+
+No functional change.
+
+Link: https://lkml.kernel.org/r/c3fd16807f83bb7d7a376cc6de023a9f5ead17da.1733305182.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Jann Horn <jannh@google.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory.c | 45 ++++++++++++++++++++++++++-------------------
+ 1 file changed, 26 insertions(+), 19 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index 5624c22bb03c..abe07e6bdd1b 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1657,6 +1657,27 @@ static inline int zap_nonpresent_ptes(struct mmu_gather *tlb,
+ 	return nr;
+ }
+ 
++static inline int do_zap_pte_range(struct mmu_gather *tlb,
++				   struct vm_area_struct *vma, pte_t *pte,
++				   unsigned long addr, unsigned long end,
++				   struct zap_details *details, int *rss,
++				   bool *force_flush, bool *force_break)
++{
++	pte_t ptent = ptep_get(pte);
++	int max_nr = (end - addr) / PAGE_SIZE;
++
++	if (pte_none(ptent))
++		return 1;
++
++	if (pte_present(ptent))
++		return zap_present_ptes(tlb, vma, pte, ptent, max_nr,
++					addr, details, rss, force_flush,
++					force_break);
++
++	return zap_nonpresent_ptes(tlb, vma, pte, ptent, max_nr, addr,
++					 details, rss);
++}
++
+ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 				struct vm_area_struct *vma, pmd_t *pmd,
+ 				unsigned long addr, unsigned long end,
+@@ -1679,28 +1700,14 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 	flush_tlb_batched_pending(mm);
+ 	arch_enter_lazy_mmu_mode();
+ 	do {
+-		pte_t ptent = ptep_get(pte);
+-		int max_nr;
+-
+-		nr = 1;
+-		if (pte_none(ptent))
+-			continue;
+-
+ 		if (need_resched())
+ 			break;
+ 
+-		max_nr = (end - addr) / PAGE_SIZE;
+-		if (pte_present(ptent)) {
+-			nr = zap_present_ptes(tlb, vma, pte, ptent, max_nr,
+-					      addr, details, rss, &force_flush,
+-					      &force_break);
+-			if (unlikely(force_break)) {
+-				addr += nr * PAGE_SIZE;
+-				break;
+-			}
+-		} else {
+-			nr = zap_nonpresent_ptes(tlb, vma, pte, ptent, max_nr,
+-						 addr, details, rss);
++		nr = do_zap_pte_range(tlb, vma, pte, addr, end, details, rss,
++				      &force_flush, &force_break);
++		if (unlikely(force_break)) {
++			addr += nr * PAGE_SIZE;
++			break;
+ 		}
+ 	} while (pte += nr, addr += PAGE_SIZE * nr, addr != end);
+ 
+-- 
+2.39.5
+
