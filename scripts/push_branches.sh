@@ -21,10 +21,4 @@ git push gh.damon damon/next:next --force
 git push gh.damon linus/master:master
 
 echo
-echo "push damon-hack patches queue"
-
-for r in $(git -C "$bindir" remote)
-do
-	echo "push damon-hack master to $r"
-	git -C "$bindir" push "$r" master
-done
+"$bindir/push_damon_hack.sh"
