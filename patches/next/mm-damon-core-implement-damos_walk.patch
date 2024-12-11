@@ -4,15 +4,15 @@ Subject: [PATCH] mm/damon/core: implement damos_walk()
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h | 32 +++++++++++++-
- mm/damon/core.c       | 99 +++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 129 insertions(+), 2 deletions(-)
+ include/linux/damon.h |  33 +++++++++++++-
+ mm/damon/core.c       | 104 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 135 insertions(+), 2 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 0f39f867b090..29c339856ddc 100644
+index 0f39f867b090..827971c9d7d6 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -368,6 +368,29 @@ struct damos_filter {
+@@ -368,6 +368,30 @@ struct damos_filter {
  	struct list_head list;
  };
  
@@ -27,8 +27,8 @@ index 0f39f867b090..29c339856ddc 100644
 + * @data:	Data that will be passed to walk functions.
 + */
 +struct damos_walk_control {
-+	int (*prep_fn)(void *data, struct damon_ctx *ctx);
-+	int (*walk_fn)(void *data, struct damon_ctx *ctx,
++	void (*prep_fn)(void *data, struct damon_ctx *ctx);
++	void (*walk_fn)(void *data, struct damon_ctx *ctx,
 +			struct damon_target *t, struct damon_region *r,
 +			struct damos *s);
 +	void *data;
@@ -36,13 +36,14 @@ index 0f39f867b090..29c339856ddc 100644
 +	/* for waiting on walk completion from DAMON worker thrad. */
 +	struct completion completion;
 +	/* for saving if the walk is canceled. */
++	bool prep_done;
 +	bool canceled;
 +};
 +
  /**
   * struct damos_access_pattern - Target access pattern of the given scheme.
   * @min_sz_region:	Minimum size of target regions.
-@@ -453,6 +476,8 @@ struct damos {
+@@ -453,6 +477,8 @@ struct damos {
  	 * @action
  	 */
  	unsigned long next_apply_sis;
@@ -51,7 +52,7 @@ index 0f39f867b090..29c339856ddc 100644
  /* public: */
  	struct damos_quota quota;
  	struct damos_watermarks wmarks;
-@@ -480,8 +505,6 @@ enum damon_ops_id {
+@@ -480,8 +506,6 @@ enum damon_ops_id {
  	NR_DAMON_OPS,
  };
  
@@ -60,7 +61,7 @@ index 0f39f867b090..29c339856ddc 100644
  /**
   * struct damon_operations - Monitoring operations for given use cases.
   *
-@@ -686,6 +709,10 @@ struct damon_ctx {
+@@ -686,6 +710,10 @@ struct damon_ctx {
  	struct damon_call_control *call_control;
  	struct mutex call_control_lock;
  
@@ -71,7 +72,7 @@ index 0f39f867b090..29c339856ddc 100644
  /* public: */
  	struct task_struct *kdamond;
  	struct mutex kdamond_lock;
-@@ -834,6 +861,7 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive);
+@@ -834,6 +862,7 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive);
  int damon_stop(struct damon_ctx **ctxs, int nr_ctxs);
  
  int damon_call(struct damon_ctx *ctx, struct damon_call_control *control);
@@ -80,7 +81,7 @@ index 0f39f867b090..29c339856ddc 100644
  int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  				unsigned long *start, unsigned long *end);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index cef57d573448..a0384c8ab308 100644
+index cef57d573448..e3a4614a0aee 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -534,6 +534,7 @@ struct damon_ctx *damon_new_ctx(void)
@@ -126,7 +127,7 @@ index cef57d573448..a0384c8ab308 100644
  /*
   * Reset the aggregated monitoring results ('nr_accesses' of each region).
   */
-@@ -1409,6 +1438,71 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1409,6 +1438,74 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
  	return false;
  }
  
@@ -139,7 +140,10 @@ index cef57d573448..a0384c8ab308 100644
 +	mutex_unlock(&ctx->walk_control_lock);
 +	if (!control)
 +		return;
++	if (control->prep_done)
++		return;
 +	control->prep_fn(control->data, ctx);
++	control->prep_done = true;
 +}
 +
 +static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
@@ -198,7 +202,7 @@ index cef57d573448..a0384c8ab308 100644
  static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		struct damon_region *r, struct damos *s)
  {
-@@ -1465,6 +1559,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -1465,6 +1562,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		if (damos_filter_out(c, t, r, s))
  			return;
  		ktime_get_coarse_ts64(&begin);
@@ -206,7 +210,7 @@ index cef57d573448..a0384c8ab308 100644
  		if (c->callback.before_damos_apply)
  			err = c->callback.before_damos_apply(c, t, r, s);
  		if (!err) {
-@@ -1728,6 +1823,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -1728,6 +1826,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  			continue;
  
  		has_schemes_to_apply = true;
@@ -214,7 +218,7 @@ index cef57d573448..a0384c8ab308 100644
  
  		damos_adjust_quota(c, s);
  	}
-@@ -1743,6 +1839,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -1743,6 +1842,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  	damon_for_each_scheme(s, c) {
  		if (c->passed_sample_intervals < s->next_apply_sis)
  			continue;
@@ -222,7 +226,7 @@ index cef57d573448..a0384c8ab308 100644
  		s->next_apply_sis = c->passed_sample_intervals +
  			(s->apply_interval_us ? s->apply_interval_us :
  			 c->attrs.aggr_interval) / sample_interval;
-@@ -2064,6 +2161,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+@@ -2064,6 +2164,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
  				ctx->callback.after_wmarks_check(ctx))
  			break;
  		kdamond_callback(ctx, true);
@@ -230,7 +234,16 @@ index cef57d573448..a0384c8ab308 100644
  	}
  	return -EBUSY;
  }
-@@ -2196,6 +2294,7 @@ static int kdamond_fn(void *data)
+@@ -2156,6 +2257,8 @@ static int kdamond_fn(void *data)
+ 		 */
+ 		if (!list_empty(&ctx->schemes))
+ 			kdamond_apply_schemes(ctx);
++		else
++			damos_walk_cancel(ctx);
+ 
+ 		sample_interval = ctx->attrs.sample_interval ?
+ 			ctx->attrs.sample_interval : 1;
+@@ -2196,6 +2299,7 @@ static int kdamond_fn(void *data)
  	mutex_unlock(&ctx->kdamond_lock);
  
  	kdamond_callback(ctx, true);
