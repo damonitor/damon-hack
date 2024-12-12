@@ -1,0 +1,51 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 11 Dec 2024 19:44:43 -0800
+Subject: [PATCH] mm/damon/sysfs: validate user inputs from
+ damon_sysfs_commit_input()
+
+If user inputs on DAMON sysfs interface is wrong, commit can make
+kdamond stop.  Validate the input first, and avoid committing to the
+running context.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index f97c719b078a..8e8957cbf52f 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1256,11 +1256,11 @@ static struct damon_ctx *damon_sysfs_build_ctx(
+  * damon_sysfs_commit_input() - Commit user inputs to a running kdamond.
+  * @kdamond:	The kobject wrapper for the associated kdamond.
+  *
+- * If the sysfs input is wrong, the kdamond will be terminated.
++ * Returns error if the sysfs input is wrong.
+  */
+ static int damon_sysfs_commit_input(struct damon_sysfs_kdamond *kdamond)
+ {
+-	struct damon_ctx *param_ctx;
++	struct damon_ctx *param_ctx, *test_ctx;
+ 	int err;
+ 
+ 	if (!damon_sysfs_kdamond_running(kdamond))
+@@ -1272,7 +1272,15 @@ static int damon_sysfs_commit_input(struct damon_sysfs_kdamond *kdamond)
+ 	param_ctx = damon_sysfs_build_ctx(kdamond->contexts->contexts_arr[0]);
+ 	if (IS_ERR(param_ctx))
+ 		return PTR_ERR(param_ctx);
++	test_ctx = damon_new_ctx();
++	err = damon_commit_ctx(test_ctx, param_ctx);
++	if (err) {
++		damon_sysfs_destroy_targets(test_ctx);
++		damon_destroy_ctx(test_ctx);
++		goto out;
++	}
+ 	err = damon_commit_ctx(kdamond->damon_ctx, param_ctx);
++out:
+ 	damon_sysfs_destroy_targets(param_ctx);
+ 	damon_destroy_ctx(param_ctx);
+ 	return err;
+-- 
+2.39.5
+
