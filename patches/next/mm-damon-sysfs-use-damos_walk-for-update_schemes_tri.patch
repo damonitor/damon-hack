@@ -1,20 +1,20 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Sun, 1 Dec 2024 12:06:03 -0800
-Subject: [PATCH] mm/damon/sysfs: use damos_walk() for schemes tried regions
- update
+Subject: [PATCH] mm/damon/sysfs: use damos_walk() for
+ update_schemes_tried_{bytes,regions}
 
 DAMON sysfs interface uses damon_callback with its own complicated
-synchronization facility to DAMOS tried regions directories and files
-update, while damos_walk() can support the use case without the
-additional synchronizations.  Convert the code to use damos_walk()
-instead.
+synchronization facility to handle update_schemes_tried_bytes and
+update_schemes_tried_regions commands.  But damos_walk() can support the
+use case without the additional synchronizations.  Convert the code to
+use damos_walk() instead.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/sysfs-common.h  |  5 ++++
- mm/damon/sysfs-schemes.c | 48 ++++++++++++++++++++++++++++++++++++++
- mm/damon/sysfs.c         | 50 ++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 103 insertions(+)
+ mm/damon/sysfs-common.h  |  5 +++++
+ mm/damon/sysfs-schemes.c | 48 ++++++++++++++++++++++++++++++++++++++++
+ mm/damon/sysfs.c         | 44 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 97 insertions(+)
 
 diff --git a/mm/damon/sysfs-common.h b/mm/damon/sysfs-common.h
 index 9a18f3c535d3..115b5827027d 100644
@@ -33,7 +33,7 @@ index 9a18f3c535d3..115b5827027d 100644
  		struct damon_sysfs_schemes *sysfs_schemes,
  		struct damon_ctx *ctx);
 diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
-index 25356fe99273..c80123d4a7c3 100644
+index 25356fe99273..b552f518211f 100644
 --- a/mm/damon/sysfs-schemes.c
 +++ b/mm/damon/sysfs-schemes.c
 @@ -2188,6 +2188,54 @@ static int damon_sysfs_before_damos_apply(struct damon_ctx *ctx,
@@ -44,7 +44,7 @@ index 25356fe99273..c80123d4a7c3 100644
 + * damos_sysfs_populate_region_dir() - Populate a schemes tried region dir.
 + * @sysfs_schemes:	Schemes directory to populate regions directory.
 + * @ctx:		Corresponding DAMON context.
-+ * @t:			DAMON target of the @r.
++ * @t:			DAMON target of @r.
 + * @r:			DAMON region to populate the directory for.
 + * @s:			Corresponding scheme.
 + * @total_bytes_only:	Whether the request is for bytes update only.
@@ -83,7 +83,7 @@ index 25356fe99273..c80123d4a7c3 100644
 +	if (kobject_init_and_add(&region->kobj,
 +				&damon_sysfs_scheme_region_ktype,
 +				&sysfs_regions->kobj, "%d",
-+				sysfs_regions->nr_regions)) {
++				sysfs_regions->nr_regions++)) {
 +		kobject_put(&region->kobj);
 +	}
 +}
@@ -92,10 +92,10 @@ index 25356fe99273..c80123d4a7c3 100644
   * DAMON callback that called after each accesses sampling.  While this
   * callback is registered, damon_sysfs_lock should be held to ensure the
 diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
-index 612f4bd1a002..15b33929c6a5 100644
+index 612f4bd1a002..5bc129b1b846 100644
 --- a/mm/damon/sysfs.c
 +++ b/mm/damon/sysfs.c
-@@ -1521,6 +1521,52 @@ static int damon_sysfs_damon_call(int (*fn)(void *data),
+@@ -1521,6 +1521,46 @@ static int damon_sysfs_damon_call(int (*fn)(void *data),
  	return damon_call(kdamond->damon_ctx, &call_control);
  }
  
@@ -104,17 +104,7 @@ index 612f4bd1a002..15b33929c6a5 100644
 +	bool total_bytes_only;
 +};
 +
-+/* cleanup regions directories */
-+static void damon_sysfs_schemes_tried_regions_upd_prep(void *data, struct damon_ctx *ctx)
-+{
-+	struct damon_sysfs_schemes_walk_data *walk_data = data;
-+	struct damon_sysfs_kdamond *sysfs_kdamond = walk_data->sysfs_kdamond;
-+
-+	damon_sysfs_schemes_clear_regions(
-+			sysfs_kdamond->contexts->contexts_arr[0]->schemes, ctx);
-+}
-+
-+/* poppulate the region directory */
++/* populate the region directory */
 +static void damon_sysfs_schemes_tried_regions_upd_one(void *data, struct damon_ctx *ctx,
 +		struct damon_target *t, struct damon_region *r,
 +		struct damos *s)
@@ -135,20 +125,24 @@ index 612f4bd1a002..15b33929c6a5 100644
 +		.total_bytes_only = total_bytes_only,
 +	};
 +	struct damos_walk_control control = {
-+		.prep_fn = damon_sysfs_schemes_tried_regions_upd_prep,
 +		.walk_fn = damon_sysfs_schemes_tried_regions_upd_one,
 +		.data = &walk_data,
 +	};
++	struct damon_ctx *ctx = sysfs_kdamond->damon_ctx;
 +
-+	if (!sysfs_kdamond->damon_ctx)
++	if (!ctx)
 +		return -EINVAL;
-+	return damos_walk(sysfs_kdamond->damon_ctx, &control);
++
++	damon_sysfs_schemes_clear_regions(
++			sysfs_kdamond->contexts->contexts_arr[0]->schemes,
++			ctx);
++	return damos_walk(ctx, &control);
 +}
 +
  /*
   * damon_sysfs_handle_cmd() - Handle a command for a specific kdamond.
   * @cmd:	The command to handle.
-@@ -1558,6 +1604,10 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+@@ -1558,6 +1598,10 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
  		return damon_sysfs_damon_call(
  				damon_sysfs_upd_schemes_effective_quotas,
  				kdamond);
