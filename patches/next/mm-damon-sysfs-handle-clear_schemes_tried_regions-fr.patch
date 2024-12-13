@@ -1,0 +1,74 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 13 Dec 2024 13:10:15 -0800
+Subject: [PATCH] mm/damon/sysfs: handle clear_schemes_tried_regions from DAMON
+ sysfs context
+
+DAMON sysfs interface handles clear_schemes_tried_regions from DAMON
+callback context (damon_sysfs_cmd_request_callback()).  But no DAMON
+internal data is accessed for the work.  Directly handle it from DAMON
+sysfs interface context, namely damon_sysfs_handle_cmd().
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c |  2 +-
+ mm/damon/sysfs.c         | 17 +++--------------
+ 2 files changed, 4 insertions(+), 15 deletions(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 65f6d3339a77..6c8f9eae75af 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2265,7 +2265,7 @@ static void damos_tried_regions_init_upd_status(
+ 	}
+ }
+ 
+-/* Called from damon_sysfs_cmd_request_callback under damon_sysfs_lock */
++/* Called while damon_sysfs_lock is hold */
+ int damon_sysfs_schemes_update_regions_start(
+ 		struct damon_sysfs_schemes *sysfs_schemes,
+ 		struct damon_ctx *ctx, bool total_bytes_only)
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index 71bc2622ab35..8cb940d21fbe 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1254,17 +1254,6 @@ static int damon_sysfs_upd_schemes_regions_stop(
+ 	return damon_sysfs_schemes_update_regions_stop(ctx);
+ }
+ 
+-static int damon_sysfs_clear_schemes_regions(
+-		struct damon_sysfs_kdamond *kdamond)
+-{
+-	struct damon_ctx *ctx = kdamond->damon_ctx;
+-
+-	if (!ctx)
+-		return -EINVAL;
+-	return damon_sysfs_schemes_clear_regions(
+-			kdamond->contexts->contexts_arr[0]->schemes);
+-}
+-
+ static inline bool damon_sysfs_kdamond_running(
+ 		struct damon_sysfs_kdamond *kdamond)
+ {
+@@ -1417,9 +1406,6 @@ static int damon_sysfs_cmd_request_callback(struct damon_ctx *c, bool active,
+ 			damon_sysfs_schemes_regions_updating = false;
+ 		}
+ 		break;
+-	case DAMON_SYSFS_CMD_CLEAR_SCHEMES_TRIED_REGIONS:
+-		err = damon_sysfs_clear_schemes_regions(kdamond);
+-		break;
+ 	case DAMON_SYSFS_CMD_UPDATE_SCHEMES_EFFECTIVE_QUOTAS:
+ 		err = damon_sysfs_upd_schemes_effective_quotas(kdamond);
+ 		break;
+@@ -1549,6 +1535,9 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+ 		return damon_sysfs_turn_damon_on(kdamond);
+ 	case DAMON_SYSFS_CMD_OFF:
+ 		return damon_sysfs_turn_damon_off(kdamond);
++	case DAMON_SYSFS_CMD_CLEAR_SCHEMES_TRIED_REGIONS:
++		return damon_sysfs_schemes_clear_regions(
++			kdamond->contexts->contexts_arr[0]->schemes);
+ 	default:
+ 		break;
+ 	}
+-- 
+2.39.5
+
