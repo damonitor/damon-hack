@@ -1,0 +1,117 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 16 Dec 2024 12:30:23 -0800
+Subject: [PATCH] mm/damon: pass sz_filtered_out to damos_walk()
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    | 2 +-
+ mm/damon/core.c          | 7 ++++---
+ mm/damon/sysfs-common.h  | 2 +-
+ mm/damon/sysfs-schemes.c | 4 +++-
+ mm/damon/sysfs.c         | 4 ++--
+ 5 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 3ca9c1b611f8..aba89b252ebe 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -406,7 +406,7 @@ struct damos;
+ struct damos_walk_control {
+ 	void (*walk_fn)(void *data, struct damon_ctx *ctx,
+ 			struct damon_target *t, struct damon_region *r,
+-			struct damos *s);
++			struct damos *s, unsigned long sz_filtered_out);
+ 	void *data;
+ /* private: internal use only */
+ 	/* informs if the kdamond finished handling of the walk request */
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 23b6a482e3f6..ccb392621de7 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1464,7 +1464,8 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+  * installed by damos_walk() and not yet uninstalled, invoke it.
+  */
+ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+-		struct damon_region *r, struct damos *s)
++		struct damon_region *r, struct damos *s,
++		unsigned long sz_filtered_out)
+ {
+ 	struct damos_walk_control *control;
+ 
+@@ -1473,7 +1474,7 @@ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+ 	mutex_unlock(&ctx->walk_control_lock);
+ 	if (!control)
+ 		return;
+-	control->walk_fn(control->data, ctx, t, r, s);
++	control->walk_fn(control->data, ctx, t, r, s, sz_filtered_out);
+ }
+ 
+ /*
+@@ -1603,7 +1604,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 			sz_applied = c->ops.apply_scheme(c, t, r, s,
+ 					&sz_ops_filtered);
+ 		}
+-		damos_walk_call_walk(c, t, r, s);
++		damos_walk_call_walk(c, t, r, s, sz_ops_filtered);
+ 		ktime_get_coarse_ts64(&end);
+ 		quota->total_charged_ns += timespec64_to_ns(&end) -
+ 			timespec64_to_ns(&begin);
+diff --git a/mm/damon/sysfs-common.h b/mm/damon/sysfs-common.h
+index b3f63bc658b7..adb209c7c32b 100644
+--- a/mm/damon/sysfs-common.h
++++ b/mm/damon/sysfs-common.h
+@@ -48,7 +48,7 @@ void damon_sysfs_schemes_update_stats(
+ void damos_sysfs_populate_region_dir(struct damon_sysfs_schemes *sysfs_schemes,
+ 		struct damon_ctx *ctx, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s,
+-		bool total_bytes_only);
++		bool total_bytes_only, unsigned long sz_filtered_out);
+ 
+ int damon_sysfs_schemes_clear_regions(
+ 		struct damon_sysfs_schemes *sysfs_schemes);
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 6dcd56b09f0e..8638026b6d10 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2129,7 +2129,8 @@ void damon_sysfs_schemes_update_stats(
+  */
+ void damos_sysfs_populate_region_dir(struct damon_sysfs_schemes *sysfs_schemes,
+ 		struct damon_ctx *ctx, struct damon_target *t,
+-		struct damon_region *r, struct damos *s, bool total_bytes_only)
++		struct damon_region *r, struct damos *s, bool total_bytes_only,
++		unsigned long sz_filtered_out)
+ {
+ 	struct damos *scheme;
+ 	struct damon_sysfs_scheme_regions *sysfs_regions;
+@@ -2154,6 +2155,7 @@ void damos_sysfs_populate_region_dir(struct damon_sysfs_schemes *sysfs_schemes,
+ 	region = damon_sysfs_scheme_region_alloc(r);
+ 	if (!region)
+ 		return;
++	region->sz_filtered_out = sz_filtered_out;
+ 	list_add_tail(&region->list, &sysfs_regions->regions_list);
+ 	sysfs_regions->nr_regions++;
+ 	if (kobject_init_and_add(&region->kobj,
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index edac364b3979..ff7a88de8145 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1462,14 +1462,14 @@ struct damon_sysfs_schemes_walk_data {
+ /* populate the region directory */
+ static void damon_sysfs_schemes_tried_regions_upd_one(void *data, struct damon_ctx *ctx,
+ 		struct damon_target *t, struct damon_region *r,
+-		struct damos *s)
++		struct damos *s, unsigned long sz_filtered_out)
+ {
+ 	struct damon_sysfs_schemes_walk_data *walk_data = data;
+ 	struct damon_sysfs_kdamond *sysfs_kdamond = walk_data->sysfs_kdamond;
+ 
+ 	damos_sysfs_populate_region_dir(
+ 			sysfs_kdamond->contexts->contexts_arr[0]->schemes,
+-			ctx, t, r, s, walk_data->total_bytes_only);
++			ctx, t, r, s, walk_data->total_bytes_only, sz_filtered_out);
+ }
+ 
+ static int damon_sysfs_update_schemes_tried_regions(
+-- 
+2.39.5
+

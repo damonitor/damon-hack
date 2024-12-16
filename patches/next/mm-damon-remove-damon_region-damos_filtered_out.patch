@@ -1,0 +1,135 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 16 Dec 2024 12:06:54 -0800
+Subject: [PATCH] mm/damon: remove damon_region->damos_filtered_out
+
+Let's make operation set to return it, and pass it to
+damos_walk_contro->walk_fn()
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h    |  8 --------
+ mm/damon/core.c          |  1 -
+ mm/damon/paddr.c         | 17 ++++-------------
+ mm/damon/sysfs-schemes.c |  1 -
+ 4 files changed, 4 insertions(+), 23 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index ea5d51b3cdcb..1418338994b6 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -44,7 +44,6 @@ struct damon_addr_range {
+  *			each sampling interval.
+  * @list:		List head for siblings.
+  * @age:		Age of this region.
+- * @damos_filtered_out:	Last DAMOS filter-matched (excluded) bytes.
+  *
+  * @nr_accesses is reset to zero for every &damon_attrs->aggr_interval and be
+  * increased for every &damon_attrs->sample_interval if an access to the region
+@@ -63,11 +62,6 @@ struct damon_addr_range {
+  * to zero again if the access frequency is significantly changed.  If two
+  * regions are merged into a new region, both @nr_accesses and @age of the new
+  * region are set as region size-weighted average of those of the two regions.
+- *
+- * @damos_filtered_out is the size of bytes in the region that was matched to a
+- * DAMOS filter that handled by operation set (&struct damon_operations), on
+- * the last time.  For consistent reads, this should be read just after each
+- * scheme is applied.  damos_walk() can be useful for that.
+  */
+ struct damon_region {
+ 	struct damon_addr_range ar;
+@@ -79,8 +73,6 @@ struct damon_region {
+ 	unsigned int age;
+ /* private: Internal value for age calculation. */
+ 	unsigned int last_nr_accesses;
+-/* public */
+-	unsigned long damos_filtered_out;
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9a0d29644cf8..19be99d45e95 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -140,7 +140,6 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+ 
+ 	region->age = 0;
+ 	region->last_nr_accesses = 0;
+-	region->damos_filtered_out = 0;
+ 
+ 	return region;
+ }
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index f380f25e2df2..0ca1bfd3d300 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -275,10 +275,8 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s)
+ 		if (!folio)
+ 			continue;
+ 
+-		if (damos_pa_filter_out(s, folio)) {
+-			r->damos_filtered_out += folio_size(folio);
++		if (damos_pa_filter_out(s, folio))
+ 			goto put_folio;
+-		}
+ 
+ 		folio_clear_referenced(folio);
+ 		folio_test_clear_young(folio);
+@@ -309,10 +307,8 @@ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
+ 		if (!folio)
+ 			continue;
+ 
+-		if (damos_pa_filter_out(s, folio)) {
+-			r->damos_filtered_out += folio_size(folio);
++		if (damos_pa_filter_out(s, folio))
+ 			goto put_folio;
+-		}
+ 
+ 		if (mark_accessed)
+ 			folio_mark_accessed(folio);
+@@ -469,10 +465,8 @@ static unsigned long damon_pa_migrate(struct damon_region *r, struct damos *s)
+ 		if (!folio)
+ 			continue;
+ 
+-		if (damos_pa_filter_out(s, folio)) {
+-			r->damos_filtered_out += folio_size(folio);
++		if (damos_pa_filter_out(s, folio))
+ 			goto put_folio;
+-		}
+ 
+ 		if (!folio_isolate_lru(folio))
+ 			goto put_folio;
+@@ -496,10 +490,8 @@ static unsigned long damon_pa_stat_full(struct damon_region *r, struct damos *s)
+ 		if (!folio)
+ 			continue;
+ 
+-		if (damos_pa_filter_out(s, folio)) {
+-			r->damos_filtered_out += folio_size(folio);
++		if (damos_pa_filter_out(s, folio))
+ 			goto put_folio;
+-		}
+ 		applied += folio_size(folio);
+ put_folio:
+ 		folio_put(folio);
+@@ -598,7 +590,6 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 		struct damon_target *t, struct damon_region *r,
+ 		struct damos *scheme)
+ {
+-	r->damos_filtered_out = 0;
+ 	switch (scheme->action) {
+ 	case DAMOS_PAGEOUT:
+ 		return damon_pa_pageout(r, scheme);
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 7f3d517ef1f9..6dcd56b09f0e 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -35,7 +35,6 @@ static struct damon_sysfs_scheme_region *damon_sysfs_scheme_region_alloc(
+ 	sysfs_region->ar = region->ar;
+ 	sysfs_region->nr_accesses = region->nr_accesses_bp / 10000;
+ 	sysfs_region->age = region->age;
+-	sysfs_region->sz_filtered_out = region->damos_filtered_out;
+ 	INIT_LIST_HEAD(&sysfs_region->list);
+ 	return sysfs_region;
+ }
+-- 
+2.39.5
+
