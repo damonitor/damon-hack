@@ -5,14 +5,49 @@ Subject: [PATCH] mm/damon/core: revert "call damos_walk() after applying
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ mm/damon/core.c | 16 +++++++++-------
+ 1 file changed, 9 insertions(+), 7 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 19be99d45e95..73d9d9cd8650 100644
+index e28a11afd8cc..de923b3a1084 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -1593,6 +1593,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -1243,7 +1243,7 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+  * finishes handling of the request.
+  *
+  * The kdamond executes the given function in the main loop, for each region
+- * just after it applied any DAMOS actions of @ctx to it.  The invocation is
++ * just before it applies any DAMOS actions of @ctx to it.  The invocation is
+  * made only within one &damos->apply_interval_us since damos_walk()
+  * invocation, for each scheme.  The given callback function can hence safely
+  * access the internal data of &struct damon_ctx and &struct damon_region that
+@@ -1459,9 +1459,11 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+  * @r:		The region of @t that @s will be applied.
+  * @s:		The scheme of @ctx that will be applied to @r.
+  *
+- * This function is called from kdamond whenever it asked the operation set to
+- * apply a DAMOS scheme action to a region.  If a DAMOS walk request is
+- * installed by damos_walk() and not yet uninstalled, invoke it.
++ * This function is called from kdamond whenever it found a region that
++ * eligible to apply a DAMOS scheme's action.  If a DAMOS walk request is
++ * installed by damos_walk() and its &damos_walk_control->walk_fn has not
++ * invoked for the region for the last &damos->apply_interval_us interval,
++ * invoke it.
+  */
+ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s)
+@@ -1482,8 +1484,8 @@ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+  * @s:		A scheme of @ctx that all walks are now done.
+  *
+  * This function is called when kdamond finished applying the action of a DAMOS
+- * scheme to all regions that eligible for the given &damos->apply_interval_us.
+- * If every scheme of @ctx including @s now finished walking for at least one
++ * scheme to regions that eligible for the given &damos->apply_interval_us.  If
++ * every scheme of @ctx including @s now finished walking for at least one
+  * &damos->apply_interval_us, this function makrs the handling of the given
+  * DAMOS walk request is done, so that damos_walk() can wake up and return.
+  */
+@@ -1593,6 +1595,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		if (damos_filter_out(c, t, r, s))
  			return;
  		ktime_get_coarse_ts64(&begin);
@@ -20,7 +55,7 @@ index 19be99d45e95..73d9d9cd8650 100644
  		if (c->callback.before_damos_apply)
  			err = c->callback.before_damos_apply(c, t, r, s);
  		if (!err) {
-@@ -1600,7 +1601,6 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -1600,7 +1603,6 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  					damon_nr_regions(t), do_trace);
  			sz_applied = c->ops.apply_scheme(c, t, r, s);
  		}
