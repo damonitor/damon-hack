@@ -2,140 +2,96 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sat, 7 Dec 2024 12:15:40 -0800
 Subject: [PATCH] ==== sz_ops_filter_passed stats ====
 
-mm/damon: enable page level properties based stat and monitoring
+mm/damon: enable page level properties based access pattern monitoring
 
 TL; DR
 ======
 
-This patch series extends DAMOS stats and regions walk features with
-region-internal DAMOS filters, to eanble access monitoring based on page
-level types including their belonging cgroups.
-
-DAMOS is useful for not only access-aware system operations but also
-efficient acces monitoring results querying.  DAMOS stats and regions
-walk, which exposes accumulated counts and per-region monitoring results
-that filtered by DAMOS target access pattern parameters, are the key
-features.
-
-A few of DAMOS filters work in page level based on types of the pages
-including their belonging cgroups.  The information can be useful for
-monitoring purpose, too.  But DAMOS filter internal is not connected
-with the stats and regions walk.
-
-Expose the amount of filter-passed region-internal memory to per-scheme
-accumulated stat, and regions walk DAMON API features.  For the
-user-space, further expose the information to DAMON sysfs interface, via
-the per-scheme stats file and per-DAMOS-tried region directories.  The
-DAMOS action for pure monitoring, namely DAMOS_STAT skips filters, to
-avoid unnecessary filter-applying overhead.  Add a new DAMOS action for
-pure but filter-aware (page level) DAMOS-based monitoring.
-
-With this patch series, DAMON users can query how many bytes of regions
-of specific access temperature is backed by pages of specific type.  The
-type can be any of DAMOS filter-supporting one, including whether or not
-it is file-backed, belong to specific cgroups, and young.  For example,
-users can visualize access hotness-based page granulairty histogram for
-different cgroups, backing content type, or youngness.  In future, it
-could be extended to more types such as whether it is THP, position on
-LRU lists, etc.
-
-Patches Sequence
-================
-
-Documents cleanup/clarification
-
-Per-scheme filter-passed bytest stat implementation and documentations
-
-Pre-region filter-passed bytes stat implementation and documentations
-
-DAMOS_STAT_FULL
+This patch series eanble access monitoring based on page level
+properties including their anonymousness, belonging cgroups and
+pg-young-ness, by extending DAMOS stats and regions walk features with
+region-internal DAMOS filters.
 
 Background
 ==========
 
-DAMOS for Efficient Access Monitoring
--------------------------------------
+DAMON fundametally provides only access pattern information in region
+granularity.  For some use cases, fixed and fine granularity information
+based on non access pattern properties can be useful, though.  For
+example, on systems having fast swap devices and slow storage devices,
+DAMOS-based proactive reclaim need to be applied differently for
+anonymous pages and file-backed pages.
 
-DAMOS exposes accumulated statistics that help understanding its
-internal behaviors.  The statistics are useful for not only tuning and
-debugging of access-aware system operation optimizations, but also
-efficient querying of the access monitoring results.
+DAMOS makes it possible via DAMOS filters that work in page level
+properties including anonymousness, belonging cgroups, and
+pg-young-ness.  Having only the fine-grained inforamtion without making
+system operation behavior changes can be useful for tuning or monitoring
+purposes.  But currently DAMON provides no way for that.
 
-A special DAMOS action called DAMOS_STAT was introduced for such
-efficienct querying, from the beginning[1] of DAMOS stats.  The action
-makes no change but accounts the statistics.  Hence users can do pure
-and efficient monitoring results querying using DAMOS' target access
-pattern parameters, without interrupting system or workloads' behaviors.
+Idea
+====
 
-Later, we extended[2] DAMOS API to allow users accessing not only the
-accumulated stat numbers but every monitoring information in live for
-region that DAMOS found eligible to apply the DAMOS action.  This
-feature is now called DAMOS regions walking[3].  DAMON sysfs interface
-has also extended to expose the every detail to the user-space.  It is
-now being used[4] by DAMON user-space tool at efficiently capturing live
-snapshot of monitoring results.
+DAMOS has initially developed for only access-aware system operations.
+But, efficient acces monitoring results querying is yet another major
+usage of today's DAMOS.  DAMOS stats and regions walk, which exposes
+accumulated counts and per-region monitoring results that filtered by
+DAMOS parameters including target access pattern and quotas, are the key
+features for that usage.  Special DAMOS action, DAMOS_STAT, was also
+introduced to support doing only monitoring without making any system
+operation behavioral changes.
 
-Requests for Page-granularity and Cgroups-based Monitoring
-----------------------------------------------------------
+Hence, the fine-grained information that already available for
+access-aware system operation can be passed to users by connecting the
+region-internal DAMOS filters with stats and regions walk features.
 
-Currently DAMON supports monitoing virtual address spaces and the
-physical address space in region-granularity.  The region is an abstract
-that DAMON uses with its overhead-accuracy control mechanism.
+Design
+======
 
-Some people were not very convinced with the region-based approach, and
-requested to support page granularity monitoring.  We made DAMON to be
-extensible for future use cases including the page granularity
-monitoring.  The intention was to let the requester implement their own
-extension for page granularity monitoring.  We also provided a PoC-level
-simple implementation[5] of such extension.  There was no further update
-on it from the requester so far, though.
+Update the interface of DAMON operations set layer, which contains
+region-internal DAMOS filters implementation, to report back the amount
+of memory that passed the region-internal DAMOS filters to the core
+layer.  On the core layer, account the operations set layer reported
+stat with a per-scheme accumulated stat.  Also, pass the stat to regions
+walk.  In this way, DAMON API users can efficiently get the fine-grained
+information.
 
-Another request to DAMON was supporting cgroups-based monitoring.  Since
-DAMON allows monitoring multiple virtual address spaces, this was
-available from the beginning,  However, continuously feeding the list of
-processes of cgroups was cumbersome, and DAMON-internal mechanism was
-not optimum for the use case, especially if the number of processes is
-high.  We made rough ideas for better support of cgroups, but it was not
-simple idea, and the implementation has not yet prioritized.
+For the user-space, make DAMON sysfs interface collects the information
+using DAMON core API, and expose those to new per-scheme stats file and
+per-DAMOS-tried region properties file.
 
-DAMOS filter for Fine-grained DAMOS targetting
-----------------------------------------------
+Practical Usages
+================
 
-DAMOS is fundamentally for access pattern-driven system operations.  But
-the access pattern is not always sufficient to draw the full picture.
-Soem additional information such as types of fine-grained memory unit,
-including whether the page is file-backed one, or belongs to specific
-cgroups are useful for real-world usages.  We hence implemented a
-feature called DAMOS filter.  It allows describing the DAMOS action
-target memory using such non-access-pattern information in addition to
-the access pattern information.
+With this patch series, DAMON users can query how many bytes of regions
+of specific access temperature is backed by pages of specific type.  The
+type can be any of DAMOS filter-supporting one, including anonymousness,
+belonging cgroups, and pg-young-ness.  For example, users can visualize
+access hotness-based page granulairty histogram for different cgroups,
+backing content type, or youngness.  In future, it could be extended to
+more types such as whether it is THP, position on LRU lists, etc.  This
+can be useful for estimating benefits of a new or an existing
+access-aware system optimizations without really committing the changes.
 
-DAMOS filter for page granularity cgroups-based Monitoring
-----------------------------------------------------------
+Patches Sequence
+================
 
-Currently, DAMOS fitler internal behavior is not exposed to DAMOS stat
-and regions walking.
+The patches are separated in four sequences.
 
-[1] 2f0b548c9f03 ("mm/damon/schemes: implement statistics feature")
-[2] 44467bbb7e81 ("mm/damon/core: add a callback for scheme target regions check")
-[3] https://lore.kernel.org/20241213215306.54778-1-sj@kernel.org
-[4] https://git.kernel.org/pub/scm/linux/kernel/git/sj/damo.git/tree/USAGE.md?h=v2.6.0#n416
-[5] https://lore.kernel.org/20201215115448.25633-1-sjpark@amazon.com/
+First four patches add adding documentation of background knowledge.
 
-We therefore added a special DAMOS action called DAMOS_STAT.  The action
-makes no system operational changes but accounts the DAMOS-internal
-statisctics.  It was designed for for pure monitoring results querying,
-and .
+Following three patches change the operations set layer interface to
+report back the region-internal filter passed memory size, and make the
+operations set implementations support the changed symantic.
 
-DAMOS has initially introduced as a way to run data access
-monitoring-based operation schemes.  Later, it turned out it can be used
-for not only making system operation optimizations, but also for
-efficiently querying access monitoring results.  The DAMOS statistic
+Following five patches implement per-scheme accumulated stat for
+region-internal filter-passed memory size on core API, DAMON sysfs
+interface.  First two patches of those are for code change, and
+following three patches are for documentation.
 
-DAMOS filter allows the users pin-point scheme target memory with
-non-access pattern information.  The types of the information that
-currently supported include whether or not the page is an anonymous
-page, it is a young page, and belong to specific cgroups.
+Finally, six patches implementing per-region region-internal
+filter-passed memory size follows.  First three patches of these are for
+code change of preparation, API, and DAMON sysfs interface parts.  The
+final three patches are for documentation.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
