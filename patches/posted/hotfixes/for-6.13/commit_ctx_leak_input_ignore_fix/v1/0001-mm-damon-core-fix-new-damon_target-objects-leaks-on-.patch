@@ -1,0 +1,44 @@
+From 7f6e99c633603b468fcb1575a170ce77ad648367 Mon Sep 17 00:00:00 2001
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: damon@lists.linux.dev
+Cc: linux-mm@kvack.org
+Cc: linux-kernel@vger.kernel.org
+Date: Sun, 22 Dec 2024 14:22:29 -0800
+Subject: [PATCH 1/2] mm/damon/core: fix new damon_target objects leaks on
+ damon_commit_targets()
+
+When new DAMON targets are added via damon_commit_targets(), the newly
+created targets are not deallocated when updating the internal data
+(damon_commit_target()) is failed.  Worse yet, even if the setup is
+successfully done, the new target is not linked to the context.  Hence,
+the new targets are always leaked regardless of the internal data setup
+failure.  Fix the leaks.
+
+Fixes: 9cb3d0b9dfce ("mm/damon/core: implement DAMON context commit function")
+Cc: <stable@vger.kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index a71703e05300..931e8e4b1333 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -961,8 +961,11 @@ static int damon_commit_targets(
+ 			return -ENOMEM;
+ 		err = damon_commit_target(new_target, false,
+ 				src_target, damon_target_has_pid(src));
+-		if (err)
++		if (err) {
++			damon_destroy_target(new_target);
+ 			return err;
++		}
++		damon_add_target(dst, new_target);
+ 	}
+ 	return 0;
+ }
+-- 
+2.39.5
+
