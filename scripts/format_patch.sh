@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# hkml patch format should now support everything this script was doing.
+# Suggest using it instead.
+echo "Deprecated.  Please use 'hkml patch format' instead."
+exit 1
+
 if [ $# -lt 3 ]
 then
 	echo "Usage: $0 <commit range> <subject-prefix> <output dir> [recipients file>]"
