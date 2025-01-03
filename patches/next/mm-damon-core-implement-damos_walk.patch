@@ -5,10 +5,11 @@ Subject: [PATCH] mm/damon/core: implement damos_walk()
 Introduce a new core layer interface, damos_walk().  It aims to replace
 some damon_callback usages that access DAMOS schemes applied regions of
 ongoing kdamond with additional synchronizations.  It receives a
-function pointer and asks kdamond to invoke it for any region that it will
-apply any DAMOS action within one scheme apply interval for every scheme
-of it.  The function further waits until the kdamond finishes the
-invocations for every scheme, or cancels the request, and returns.
+function pointer and asks kdamond to invoke it for any region that it
+tries to apply any DAMOS action within one scheme apply interval for
+every scheme of it.  The function further waits until the kdamond
+finishes the invocations for every scheme, or cancels the request, and
+returns.
 
 The kdamond invokes the function as requested within the main loop.  If
 it is deactivated by DAMOS watermarks or going out of the main loop, it
@@ -18,8 +19,8 @@ return.
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  33 ++++++++++-
- mm/damon/core.c       | 134 ++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 165 insertions(+), 2 deletions(-)
+ mm/damon/core.c       | 132 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 163 insertions(+), 2 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index ac2d42a50751..2889de3526c3 100644
@@ -94,7 +95,7 @@ index ac2d42a50751..2889de3526c3 100644
  int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  				unsigned long *start, unsigned long *end);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 97f19ec4179c..de9844dc99ba 100644
+index 97f19ec4179c..d02a7d6da855 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -505,6 +505,7 @@ struct damon_ctx *damon_new_ctx(void)
@@ -119,7 +120,7 @@ index 97f19ec4179c..de9844dc99ba 100644
 + * finishes handling of the request.
 + *
 + * The kdamond executes the given function in the main loop, for each region
-+ * just before it applies any DAMOS actions of @ctx to it.  The invocation is
++ * just after it applied any DAMOS actions of @ctx to it.  The invocation is
 + * made only within one &damos->apply_interval_us since damos_walk()
 + * invocation, for each scheme.  The given callback function can hence safely
 + * access the internal data of &struct damon_ctx and &struct damon_region that
@@ -152,7 +153,7 @@ index 97f19ec4179c..de9844dc99ba 100644
  /*
   * Reset the aggregated monitoring results ('nr_accesses' of each region).
   */
-@@ -1390,6 +1431,93 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1390,6 +1431,91 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
  	return false;
  }
  
@@ -163,11 +164,9 @@ index 97f19ec4179c..de9844dc99ba 100644
 + * @r:		The region of @t that @s will be applied.
 + * @s:		The scheme of @ctx that will be applied to @r.
 + *
-+ * This function is called from kdamond whenever it found a region that
-+ * eligible to apply a DAMOS scheme's action.  If a DAMOS walk request is
-+ * installed by damos_walk() and its &damos_walk_control->walk_fn has not
-+ * invoked for the region for the last &damos->apply_interval_us interval,
-+ * invoke it.
++ * This function is called from kdamond whenever it asked the operation set to
++ * apply a DAMOS scheme action to a region.  If a DAMOS walk request is
++ * installed by damos_walk() and not yet uninstalled, invoke it.
 + */
 +static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
 +		struct damon_region *r, struct damos *s)
@@ -188,8 +187,8 @@ index 97f19ec4179c..de9844dc99ba 100644
 + * @s:		A scheme of @ctx that all walks are now done.
 + *
 + * This function is called when kdamond finished applying the action of a DAMOS
-+ * scheme to regions that eligible for the given &damos->apply_interval_us.  If
-+ * every scheme of @ctx including @s now finished walking for at least one
++ * scheme to all regions that eligible for the given &damos->apply_interval_us.
++ * If every scheme of @ctx including @s now finished walking for at least one
 + * &damos->apply_interval_us, this function makrs the handling of the given
 + * DAMOS walk request is done, so that damos_walk() can wake up and return.
 + */
@@ -246,15 +245,15 @@ index 97f19ec4179c..de9844dc99ba 100644
  static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		struct damon_region *r, struct damos *s)
  {
-@@ -1437,6 +1565,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
- 		if (damos_filter_out(c, t, r, s))
- 			return;
- 		ktime_get_coarse_ts64(&begin);
+@@ -1444,6 +1570,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 					damon_nr_regions(t), do_trace);
+ 			sz_applied = c->ops.apply_scheme(c, t, r, s);
+ 		}
 +		damos_walk_call_walk(c, t, r, s);
- 		if (c->callback.before_damos_apply)
- 			err = c->callback.before_damos_apply(c, t, r, s);
- 		if (!err) {
-@@ -1712,6 +1841,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 		ktime_get_coarse_ts64(&end);
+ 		quota->total_charged_ns += timespec64_to_ns(&end) -
+ 			timespec64_to_ns(&begin);
+@@ -1712,6 +1839,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  	damon_for_each_scheme(s, c) {
  		if (c->passed_sample_intervals < s->next_apply_sis)
  			continue;
@@ -262,7 +261,7 @@ index 97f19ec4179c..de9844dc99ba 100644
  		s->next_apply_sis = c->passed_sample_intervals +
  			(s->apply_interval_us ? s->apply_interval_us :
  			 c->attrs.aggr_interval) / sample_interval;
-@@ -2024,6 +2154,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+@@ -2024,6 +2152,7 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
  				ctx->callback.after_wmarks_check(ctx))
  			break;
  		kdamond_call(ctx, true);
@@ -270,7 +269,7 @@ index 97f19ec4179c..de9844dc99ba 100644
  	}
  	return -EBUSY;
  }
-@@ -2117,6 +2248,8 @@ static int kdamond_fn(void *data)
+@@ -2117,6 +2246,8 @@ static int kdamond_fn(void *data)
  		 */
  		if (!list_empty(&ctx->schemes))
  			kdamond_apply_schemes(ctx);
@@ -279,7 +278,7 @@ index 97f19ec4179c..de9844dc99ba 100644
  
  		sample_interval = ctx->attrs.sample_interval ?
  			ctx->attrs.sample_interval : 1;
-@@ -2157,6 +2290,7 @@ static int kdamond_fn(void *data)
+@@ -2157,6 +2288,7 @@ static int kdamond_fn(void *data)
  	mutex_unlock(&ctx->kdamond_lock);
  
  	kdamond_call(ctx, true);
