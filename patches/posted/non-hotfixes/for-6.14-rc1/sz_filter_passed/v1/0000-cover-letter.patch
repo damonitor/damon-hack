@@ -1,0 +1,154 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 6 Jan 2025 11:31:51 -0800
+Subject: [PATCH 00/16] mm/damon: enable page level properties based monitoring
+
+TL; DR
+======
+
+This patch series enables access monitoring based on page level
+properties including their anonymousness, belonging cgroups and
+young-ness, by extending DAMOS stats and regions walk features with
+region-internal DAMOS filters.
+
+Background
+==========
+
+DAMOS has initially developed for only access-aware system operations.
+But, efficient acces monitoring results querying is yet another major
+usage of today's DAMOS.  DAMOS stats and regions walk, which exposes
+accumulated counts and per-region monitoring results that filtered by
+DAMOS parameters including target access pattern, quotas and DAMOS
+filters, are the key features for that usage.  For tunings and
+investigations, it can be more useful if only the information can be
+exposed without making real system operational change.  Special DAMOS
+action, DAMOS_STAT, was introduced for the purpose.
+
+DAMOS fundametally works with only access pattern information in region
+granularity.  For some use cases, fixed and fine granularity information
+based on non access pattern properties can be useful, though.  For
+example, on systems having swap devices that much faster than storage
+devices for files, DAMOS-based proactive reclaim need to be applied
+differently for anonymous pages and file-backed pages.
+
+DAMOS filters is a feature that makes it possible.  It supports non
+access pattern information including page level properties such as
+anonymousness, belonging cgroups, and young-ness (whether the page has
+accessed since the last access check of it).  The information can be
+useful for tuning and investigations.  DAMOS stat exposes some of it via
+{nr,sz}_applied, but it is mixed with operation failures.  Also,
+exposing the information without making system operation change is
+impossible, since DAMOS_STAT simply ignores the page level properties
+based DAMOS filters.
+
+Design
+======
+
+Expose the exact information for every DAMOS action including DAMOS_STAT
+by implementing below changes.
+
+Extend the interface for DAMON operations set layer, which contains the
+implementation of the page level filters, to report back the amount of
+memory that passed the region-internal DAMOS filters to the core layer.
+On the core layer, account the operations set layer reported stat with
+DAMOS stat for per-scheme monitoring.  Also, pass the information to
+regions walk for per-region monitoring.  In this way, DAMON API users
+can efficiently get the fine-grained information.
+
+For the user-space, make DAMON sysfs interface collects the information
+using the updated DAMON core API, and expose those to new per-scheme
+stats file and per-DAMOS-tried region properties file.
+
+Practical Usages
+================
+
+With this patch series, DAMON users can query how many bytes of regions
+of specific access temperature is backed by pages of specific type.  The
+type can be any of DAMOS filter-supporting one, including anonymousness,
+belonging cgroups, and young-ness.  For example, users can visualize
+access hotness-based page granulairty histogram for different cgroups,
+backing content type, or youngness.  In future, it could be extended to
+more types such as whether it is THP, position on LRU lists, etc.  This
+can be useful for estimating benefits of a new or an existing
+access-aware system optimizations without really committing the changes.
+
+Patches Sequence
+================
+
+The patches are constructed in four sub-sequences.
+
+First three patches (patches 1-3) update documents to have missing
+background knowledges and better structures for easily introducing
+followup changes.
+
+Following three patches (patches 4-6) change the operations set layer
+interface to report back the region-internal filter passed memory size,
+and make the operations set implementations support the changed
+symantic.
+
+Following five patches (patches 7-11) implement per-scheme accumulated
+stat for region-internal filter-passed memory size on core API
+(damos_stat) and DAMON sysfs interface.  First two patches of those are
+for code change, and following three patches are for documentation.
+
+Finally, five patches (patches 12-16) implementing per-region
+region-internal filter-passed memory size follows.  Similar to that for
+per-scheme stat, first two patches implement core-API and sysfs
+interface change.  Then three patches for documentation update follow.
+
+Revision History
+================
+
+Changes from RFC
+(https://lore.kernel.org/20241219040327.61902-1-sj@kernel.org)
+- Fix kernel-doc undocumented parameter
+  (https://lore.kernel.org/oe-kbuild-all/202412191225.f6bEMRT2-lkp@intel.com/)
+- Drop walk_fn() invocation sequence and regions walk documentation
+  - Those are moved to damos_call() intro patch series
+    (https://lore.kernel.org/20250103174400.54890-1-sj@kernel.org)
+- Wordsmith commit messages
+
+SeongJae Park (16):
+  mm/damon: clarify trying vs applying on damos_stat kernel-doc comment
+  Docs/mm/damon/design: add 'statistics' section
+  Docs/admin-guide/mm/damon/usage: link damos stat design doc
+  mm/damon: ask apply_scheme() to report filter-passed region-internal
+    bytes
+  mm/damon/paddr: report filter-passed bytes back for normal actions
+  mm/damon/paddr: report filter-passed bytes back for DAMOS_STAT action
+  mm/damon/core: implement per-scheme ops-handled filter-passed bytes
+    stat
+  mm/damon/syfs-schemes: implement per-scheme filter-passed bytes stat
+  Docs/mm/damon/design: document sz_ops_filter_passed
+  Docs/admin-guide/mm/damon/usage: document sz_ops_filter_passed
+  Docs/ABI/damon: document per-scheme filter-passed bytes stat file
+  mm/damon/core: pass per-region filter-passed bytes to
+    damos_walk_control->walk_fn()
+  mm/damon/sysfs-schemes: expose per-region filter-passed bytes
+  Docs/mm/damon/design: document per-region sz_filter_passed stat
+  Docs/admin-guide/mm/damon/usage: document sz_filtered_out of scheme
+    tried region directories
+  Docs/ABI/damon: document per-region DAMOS filter-passed bytes stat
+    file
+
+ .../ABI/testing/sysfs-kernel-mm-damon         | 13 ++++
+ Documentation/admin-guide/mm/damon/usage.rst  | 29 ++++----
+ Documentation/mm/damon/design.rst             | 45 +++++++++++-
+ include/linux/damon.h                         | 27 ++++++-
+ mm/damon/core.c                               | 17 +++--
+ mm/damon/paddr.c                              | 70 +++++++++++++++----
+ mm/damon/sysfs-common.h                       |  2 +-
+ mm/damon/sysfs-schemes.c                      | 35 +++++++++-
+ mm/damon/sysfs.c                              |  5 +-
+ mm/damon/vaddr.c                              |  2 +-
+ 10 files changed, 202 insertions(+), 43 deletions(-)
+
+-- 
+2.39.5
