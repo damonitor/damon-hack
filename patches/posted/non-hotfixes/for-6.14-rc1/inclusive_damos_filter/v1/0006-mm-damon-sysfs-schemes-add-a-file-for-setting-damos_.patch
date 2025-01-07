@@ -1,0 +1,93 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 22 Dec 2024 11:17:33 -0800
+Subject: [PATCH 06/10] mm/damon/sysfs-schemes: add a file for setting
+         damos_filter->pass
+
+Only kernel-space DAMON API users can use inclusive DAMOS filters.  Add
+a sysfs file named 'pass' under DAMOS filter directory of DAMON sysfs
+interface, to let the user-space users use inclusive DAMOS filters.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 32 +++++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 9a883e8aea1c..9e171046ee94 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -313,6 +313,7 @@ struct damon_sysfs_scheme_filter {
+ 	struct kobject kobj;
+ 	enum damos_filter_type type;
+ 	bool matching;
++	bool pass;
+ 	char *memcg_path;
+ 	struct damon_addr_range addr_range;
+ 	int target_idx;
+@@ -385,6 +386,30 @@ static ssize_t matching_store(struct kobject *kobj,
+ 	return count;
+ }
+ 
++static ssize_t pass_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
++			struct damon_sysfs_scheme_filter, kobj);
++
++	return sysfs_emit(buf, "%c\n", filter->pass ? 'Y' : 'N');
++}
++
++static ssize_t pass_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
++			struct damon_sysfs_scheme_filter, kobj);
++	bool pass;
++	int err = kstrtobool(buf, &pass);
++
++	if (err)
++		return err;
++
++	filter->pass = pass;
++	return count;
++}
++
+ static ssize_t memcg_path_show(struct kobject *kobj,
+ 		struct kobj_attribute *attr, char *buf)
+ {
+@@ -482,6 +507,9 @@ static struct kobj_attribute damon_sysfs_scheme_filter_type_attr =
+ static struct kobj_attribute damon_sysfs_scheme_filter_matching_attr =
+ 		__ATTR_RW_MODE(matching, 0600);
+ 
++static struct kobj_attribute damon_sysfs_scheme_filter_pass_attr =
++		__ATTR_RW_MODE(pass, 0600);
++
+ static struct kobj_attribute damon_sysfs_scheme_filter_memcg_path_attr =
+ 		__ATTR_RW_MODE(memcg_path, 0600);
+ 
+@@ -497,6 +525,7 @@ static struct kobj_attribute damon_sysfs_scheme_filter_damon_target_idx_attr =
+ static struct attribute *damon_sysfs_scheme_filter_attrs[] = {
+ 	&damon_sysfs_scheme_filter_type_attr.attr,
+ 	&damon_sysfs_scheme_filter_matching_attr.attr,
++	&damon_sysfs_scheme_filter_pass_attr.attr,
+ 	&damon_sysfs_scheme_filter_memcg_path_attr.attr,
+ 	&damon_sysfs_scheme_filter_addr_start_attr.attr,
+ 	&damon_sysfs_scheme_filter_addr_end_attr.attr,
+@@ -1901,7 +1930,8 @@ static int damon_sysfs_add_scheme_filters(struct damos *scheme,
+ 			sysfs_filters->filters_arr[i];
+ 		struct damos_filter *filter =
+ 			damos_new_filter(sysfs_filter->type,
+-					sysfs_filter->matching, false);
++					sysfs_filter->matching,
++					sysfs_filter->pass);
+ 		int err;
+ 
+ 		if (!filter)
+-- 
+2.39.5

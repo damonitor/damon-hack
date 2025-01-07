@@ -1,0 +1,80 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 7 Jan 2025 12:15:34 -0800
+Subject: [PATCH 00/10] mm/damon: extend DAMOS filters for inclusion
+
+DAMOS fitlers are exclusive filters.  It only excludes memory of given
+criterias from the DAMOS action targets.  This has below limitations.
+
+First, the name is not explicitly explaining the behavior.  This
+actually resulted in users' confusions[1].  Secondly, combined uses of
+multiple filters provide restriced coverages.  For example, building a
+DAMOS scheme that applies the action to memory that belongs to cgroup A
+"or" cgroup B is impossible.  A workaround would be using two schemes
+that fitlers out memory that not belong to cgroup A and cgroup B,
+respectively.  It is cumbersome, and difficult to control quota-like
+per-scheme features in orchastration.  Monitoring of filter-passed
+memory statistic will also be complicated.
+
+Extend DAMOS filters to support not only exclusion (blocking), but also
+inclusion (pass-through) behavior.  For this, add a new damos_filter
+struct field called 'pass' for DAMON kernel API users.  The filter works
+as an inclusion filter or an exclusion filter when it is set or unset,
+respectively.  For DAMON user-space ABI users, add a DAMON sysfs file of
+same name under DAMOS filter sysfs directory.  To prevent exposing a
+behavioral change to old users, set the blocking as the default
+behavior.
+
+Note that pass filters work for only inclusion, not exclusion of memory
+that not satisfying the criteria.  And the default behavior of DAMOS for
+memory that no filter has involved is that the action can be applied to
+those.  This means that installing pass filters without block filters
+after them is not useful for some usecases.  Read the design document
+update part of this patch series for more details.
+
+[1] https://lore.kernel.org/20240320165619.71478-1-sj@kernel.org
+
+Changes from RFC v2
+(https://lore.kernel.org/20241227210819.63776-1-sj@kernel.org)
+- Wordsmith messages
+- Wordsmith design documentation about monitoring-purpose usage
+- Rebase on latest mm-unstable
+
+Changes from RFC v1
+(https://lore.kernel.org/20241226221445.78433-1-sj@kernel.org)
+- Fix encoding issue on the last patch
+
+SeongJae Park (10):
+  mm/damon: fixup damos_filter kernel-doc
+  mm/damon/core: add damos_filter->pass field
+  mm/damon/core: support damos_filter->pass
+  mm/damon/paddr: support damos_filter->pass
+  mm/damon: add pass argument to damos_new_filter()
+  mm/damon/sysfs-schemes: add a file for setting damos_filter->pass
+  Docs/mm/damon/design: document pass/block filters behaviors
+  Docs/ABI/damon: document DAMOS filter pass sysfs file
+  Docs/admin-guide/mm/damon/usage: omit DAMOS filter details in favor of
+    design doc
+  Docs/admin-guide/mm/damon/usage: document DAMOS filter 'pass' sysfs
+    file
+
+ .../ABI/testing/sysfs-kernel-mm-damon         | 14 +++--
+ Documentation/admin-guide/mm/damon/usage.rst  | 55 ++++++++++---------
+ Documentation/mm/damon/design.rst             | 34 ++++++++++--
+ include/linux/damon.h                         | 15 +++--
+ mm/damon/core.c                               | 12 ++--
+ mm/damon/paddr.c                              |  9 +--
+ mm/damon/reclaim.c                            |  2 +-
+ mm/damon/sysfs-schemes.c                      | 32 ++++++++++-
+ mm/damon/tests/core-kunit.h                   | 14 ++---
+ 9 files changed, 130 insertions(+), 57 deletions(-)
+
+-- 
+2.39.5
