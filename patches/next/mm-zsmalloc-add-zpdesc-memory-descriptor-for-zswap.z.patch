@@ -1,0 +1,242 @@
+From: Alex Shi <alexs@kernel.org>
+Date: Tue, 17 Dec 2024 00:04:32 +0900
+Subject: [PATCH] mm/zsmalloc: add zpdesc memory descriptor for zswap.zpool
+
+Patch series "Add zpdesc memory descriptor for zswap.zpool", v9.
+
+This patch series introduces a new memory descriptor for zswap.zpool that
+currently overlaps with struct page for now.  This is part of the effort
+to reduce the size of struct page and to enable dynamic allocation of
+memory descriptors [1].
+
+This series does not bloat anything for zsmalloc and no functional change
+is intended (except for using zpdesc and folios).
+
+In the near future, the removal of page->index from struct page [2] will
+be addressed and the project also depends on this patch series.
+
+Thanks to everyone got involved in this series, especially, Alex who's
+been pushing it forward this year.
+
+[1] https://lore.kernel.org/linux-mm/ZvRKzKizOfEWBtJp@casper.infradead.org
+[2] https://lore.kernel.org/linux-mm/Z09hOy-UY9KC8WMb@casper.infradead.org
+
+
+This patch (of 18):
+
+The 1st patch introduces new memory descriptor zpdesc and renames
+zspage.first_page to zspage.first_zpdesc, with no functional change.
+
+We removed the comment about PG_owner_priv_1 since it is no longer used
+after commit a41ec880aa7b ("zsmalloc: move huge compressed obj from page
+to zspage").
+
+[42.hyeyoo@gmail.com: rework comments a little bit]
+Link: https://lkml.kernel.org/r/20241216150450.1228021-1-42.hyeyoo@gmail.com
+Link: https://lkml.kernel.org/r/20241216150450.1228021-2-42.hyeyoo@gmail.com
+Originally-by: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Signed-off-by: Alex Shi <alexs@kernel.org>
+Signed-off-by: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Acked-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Tested-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Alex Shi <alexs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zpdesc.h   | 107 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ mm/zsmalloc.c |  28 +++----------
+ 2 files changed, 112 insertions(+), 23 deletions(-)
+ create mode 100644 mm/zpdesc.h
+
+diff --git a/mm/zpdesc.h b/mm/zpdesc.h
+new file mode 100644
+index 000000000000..e0852498aecf
+--- /dev/null
++++ b/mm/zpdesc.h
+@@ -0,0 +1,107 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* zpdesc.h: zswap.zpool memory descriptor
++ *
++ * Written by Alex Shi <alexs@kernel.org>
++ *	      Hyeonggon Yoo <42.hyeyoo@gmail.com>
++ */
++#ifndef __MM_ZPDESC_H__
++#define __MM_ZPDESC_H__
++
++/*
++ * struct zpdesc -	Memory descriptor for zpool memory.
++ * @flags:		Page flags, mostly unused by zsmalloc.
++ * @lru:		Indirectly used by page migration.
++ * @movable_ops:	Used by page migration.
++ * @next:		Next zpdesc in a zspage in zsmalloc zpool.
++ * @handle:		For huge zspage in zsmalloc zpool.
++ * @zspage:		Points to the zspage this zpdesc is a part of.
++ * @first_obj_offset:	First object offset in zsmalloc zpool.
++ * @_refcount:		The number of references to this zpdesc.
++ *
++ * This struct overlays struct page for now. Do not modify without a good
++ * understanding of the issues. In particular, do not expand into the overlap
++ * with memcg_data.
++ *
++ * Page flags used:
++ * * PG_private identifies the first component page.
++ * * PG_locked is used by page migration code.
++ */
++struct zpdesc {
++	unsigned long flags;
++	struct list_head lru;
++	unsigned long movable_ops;
++	union {
++		struct zpdesc *next;
++		unsigned long handle;
++	};
++	struct zspage *zspage;
++	/*
++	 * Only the lower 24 bits are available for offset, limiting a page
++	 * to 16 MiB. The upper 8 bits are reserved for PGTY_zsmalloc.
++	 *
++	 * Do not access this field directly.
++	 * Instead, use {get,set}_first_obj_offset() helpers.
++	 */
++	unsigned int first_obj_offset;
++	atomic_t _refcount;
++};
++#define ZPDESC_MATCH(pg, zp) \
++	static_assert(offsetof(struct page, pg) == offsetof(struct zpdesc, zp))
++
++ZPDESC_MATCH(flags, flags);
++ZPDESC_MATCH(lru, lru);
++ZPDESC_MATCH(mapping, movable_ops);
++ZPDESC_MATCH(index, next);
++ZPDESC_MATCH(index, handle);
++ZPDESC_MATCH(private, zspage);
++ZPDESC_MATCH(page_type, first_obj_offset);
++ZPDESC_MATCH(_refcount, _refcount);
++#undef ZPDESC_MATCH
++static_assert(sizeof(struct zpdesc) <= sizeof(struct page));
++
++/*
++ * zpdesc_page - The first struct page allocated for a zpdesc
++ * @zp: The zpdesc.
++ *
++ * A convenience wrapper for converting zpdesc to the first struct page of the
++ * underlying folio, to communicate with code not yet converted to folio or
++ * struct zpdesc.
++ *
++ */
++#define zpdesc_page(zp)			(_Generic((zp),			\
++	const struct zpdesc *:		(const struct page *)(zp),	\
++	struct zpdesc *:		(struct page *)(zp)))
++
++/**
++ * zpdesc_folio - The folio allocated for a zpdesc
++ * @zpdesc: The zpdesc.
++ *
++ * Zpdescs are descriptors for zpool memory. The zpool memory itself is
++ * allocated as folios that contain the zpool objects, and zpdesc uses specific
++ * fields in the first struct page of the folio - those fields are now accessed
++ * by struct zpdesc.
++ *
++ * It is occasionally necessary convert to back to a folio in order to
++ * communicate with the rest of the mm. Please use this helper function
++ * instead of casting yourself, as the implementation may change in the future.
++ */
++#define zpdesc_folio(zp)		(_Generic((zp),			\
++	const struct zpdesc *:		(const struct folio *)(zp),	\
++	struct zpdesc *:		(struct folio *)(zp)))
++/**
++ * page_zpdesc - Converts from first struct page to zpdesc.
++ * @p: The first (either head of compound or single) page of zpdesc.
++ *
++ * A temporary wrapper to convert struct page to struct zpdesc in situations
++ * where we know the page is the compound head, or single order-0 page.
++ *
++ * Long-term ideally everything would work with struct zpdesc directly or go
++ * through folio to struct zpdesc.
++ *
++ * Return: The zpdesc which contains this page
++ */
++#define page_zpdesc(p)			(_Generic((p),			\
++	const struct page *:		(const struct zpdesc *)(p),	\
++	struct page *:			(struct zpdesc *)(p)))
++
++#endif
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 64b66a4d3e6e..00d111f011be 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -13,24 +13,6 @@
+  * Released under the terms of GNU General Public License Version 2.0
+  */
+ 
+-/*
+- * Following is how we use various fields and flags of underlying
+- * struct page(s) to form a zspage.
+- *
+- * Usage of struct page fields:
+- *	page->private: points to zspage
+- *	page->index: links together all component pages of a zspage
+- *		For the huge page, this is always 0, so we use this field
+- *		to store handle.
+- *	page->page_type: PGTY_zsmalloc, lower 24 bits locate the first object
+- *		offset in a subpage of a zspage
+- *
+- * Usage of struct page flags:
+- *	PG_private: identifies the first component page
+- *	PG_owner_priv_1: identifies the huge component page
+- *
+- */
+-
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ /*
+@@ -67,6 +49,7 @@
+ #include <linux/pagemap.h>
+ #include <linux/fs.h>
+ #include <linux/local_lock.h>
++#include "zpdesc.h"
+ 
+ #define ZSPAGE_MAGIC	0x58
+ 
+@@ -254,7 +237,7 @@ struct zspage {
+ 	};
+ 	unsigned int inuse;
+ 	unsigned int freeobj;
+-	struct page *first_page;
++	struct zpdesc *first_zpdesc;
+ 	struct list_head list; /* fullness list */
+ 	struct zs_pool *pool;
+ 	rwlock_t lock;
+@@ -459,7 +442,7 @@ static inline void mod_zspage_inuse(struct zspage *zspage, int val)
+ 
+ static inline struct page *get_first_page(struct zspage *zspage)
+ {
+-	struct page *first_page = zspage->first_page;
++	struct page *first_page = zpdesc_page(zspage->first_zpdesc);
+ 
+ 	VM_BUG_ON_PAGE(!is_first_page(first_page), first_page);
+ 	return first_page;
+@@ -952,7 +935,7 @@ static void create_page_chain(struct size_class *class, struct zspage *zspage,
+ 		set_page_private(page, (unsigned long)zspage);
+ 		page->index = 0;
+ 		if (i == 0) {
+-			zspage->first_page = page;
++			zspage->first_zpdesc = page_zpdesc(page);
+ 			SetPagePrivate(page);
+ 			if (unlikely(class->objs_per_zspage == 1 &&
+ 					class->pages_per_zspage == 1))
+@@ -1317,8 +1300,7 @@ static unsigned long obj_malloc(struct zs_pool *pool,
+ 		/* record handle in the header of allocated chunk */
+ 		link->handle = handle | OBJ_ALLOCATED_TAG;
+ 	else
+-		/* record handle to page->index */
+-		zspage->first_page->index = handle | OBJ_ALLOCATED_TAG;
++		zspage->first_zpdesc->handle = handle | OBJ_ALLOCATED_TAG;
+ 
+ 	kunmap_local(vaddr);
+ 	mod_zspage_inuse(zspage, 1);
+-- 
+2.39.5
+

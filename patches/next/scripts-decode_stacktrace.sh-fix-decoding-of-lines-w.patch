@@ -1,0 +1,77 @@
+From: Luca Ceresoli <luca.ceresoli@bootlin.com>
+Date: Mon, 30 Dec 2024 22:55:10 +0100
+Subject: [PATCH] scripts/decode_stacktrace.sh: fix decoding of lines with an
+ additional info
+
+Since commit bdf8eafbf7f5 ("arm64: stacktrace: report source of unwind
+data") a stack trace line can contain an additional info field that was not
+present before, in the form of one or more letters in parentheses. E.g.:
+
+  [  504.517915]  led_sysfs_enable+0x54/0x80 (P)
+                                             ^^^
+
+When this is present, decode_stacktrace decodes the line incorrectly:
+
+  [  504.517915] led_sysfs_enable+0x54/0x80 P
+
+Extend parsing to decode it correctly:
+
+  [  504.517915] led_sysfs_enable (drivers/leds/led-core.c:455 (discriminator 7)) (P)
+
+The regex to match such lines assumes the info can be extended in the
+future to other uppercase characters, and will need to be extended in case
+other characters will be used. Using a much more generic regex might incur
+in false positives, so this looked like a good tradeoff.
+
+Link: https://lkml.kernel.org/r/20241230-decode_stacktrace-fix-info-v1-1-984910659173@bootlin.com
+Fixes: bdf8eafbf7f5 ("arm64: stacktrace: report source of unwind data")
+Signed-off-by: Luca Ceresoli <luca.ceresoli@bootlin.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Miroslav Benes <mbenes@suse.cz>
+Cc: Puranjay Mohan <puranjay@kernel.org>
+Cc: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ scripts/decode_stacktrace.sh | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/decode_stacktrace.sh b/scripts/decode_stacktrace.sh
+index 46fa18b80fc1..17abc4e7a985 100755
+--- a/scripts/decode_stacktrace.sh
++++ b/scripts/decode_stacktrace.sh
+@@ -286,6 +286,18 @@ handle_line() {
+ 		last=$(( $last - 1 ))
+ 	fi
+ 
++	# Extract info after the symbol if present. E.g.:
++	# func_name+0x54/0x80 (P)
++	#                     ^^^
++	# The regex assumes only uppercase letters will be used. To be
++	# extended if needed.
++	local info_str=""
++	if [[ ${words[$last]} =~ \([A-Z]*\) ]]; then
++		info_str=${words[$last]}
++		unset words[$last]
++		last=$(( $last - 1 ))
++	fi
++
+ 	if [[ ${words[$last]} =~ \[([^]]+)\] ]]; then
+ 		module=${words[$last]}
+ 		# some traces format is "(%pS)", which like "(foo+0x0/0x1 [bar])"
+@@ -313,9 +325,9 @@ handle_line() {
+ 	# Add up the line number to the symbol
+ 	if [[ -z ${module} ]]
+ 	then
+-		echo "${words[@]}" "$symbol"
++		echo "${words[@]}" "$symbol ${info_str}"
+ 	else
+-		echo "${words[@]}" "$symbol $module"
++		echo "${words[@]}" "$symbol $module ${info_str}"
+ 	fi
+ }
+ 
+-- 
+2.39.5
+

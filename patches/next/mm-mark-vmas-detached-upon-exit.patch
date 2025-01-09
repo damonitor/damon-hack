@@ -1,0 +1,65 @@
+From: Suren Baghdasaryan <surenb@google.com>
+Date: Thu, 26 Dec 2024 09:06:57 -0800
+Subject: [PATCH] mm: mark vmas detached upon exit
+
+When exit_mmap() removes vmas belonging to an exiting task, it does not
+mark them as detached since they can't be reached by other tasks and they
+will be freed shortly.  Once we introduce vma reuse, all vmas will have to
+be in detached state before they are freed to ensure vma when reused is in
+a consistent state.  Add missing vma_mark_detached() before freeing the
+vma.
+
+Link: https://lkml.kernel.org/r/20241226170710.1159679-6-surenb@google.com
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: David Howells <dhowells@redhat.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Hillf Danton <hdanton@sina.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: kernel test robot <oliver.sang@intel.com>
+Cc: Klara Modin <klarasmodin@gmail.com>
+Cc: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Cc: Lokesh Gidra <lokeshgidra@google.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Mel Gorman <mgorman@techsingularity.net>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Minchan Kim <minchan@google.com>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Paul E. McKenney <paulmck@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Sourav Panda <souravpanda@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index ce113dd8c471..4a3deb6f9662 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -413,9 +413,10 @@ void remove_vma(struct vm_area_struct *vma, bool unreachable)
+ 	if (vma->vm_file)
+ 		fput(vma->vm_file);
+ 	mpol_put(vma_policy(vma));
+-	if (unreachable)
++	if (unreachable) {
++		vma_mark_detached(vma);
+ 		__vm_area_free(vma);
+-	else
++	} else
+ 		vm_area_free(vma);
+ }
+ 
+-- 
+2.39.5
+

@@ -1,0 +1,111 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Fri, 13 Dec 2024 16:24:09 +0000
+Subject: [PATCH] tools: testing: add simple __mmap_region() userland test
+
+Introduce demonstrative, basic, __mmap_region() test upon which we can
+base further work upon moving forwards.
+
+This simply asserts that mappings can be made and merges occur as
+expected.
+
+As part of this change, fix the security_vm_enough_memory_mm() stub which
+was previously incorrectly implemented.
+
+Link: https://lkml.kernel.org/r/20241213162409.41498-1-lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/vma/vma.c          | 53 ++++++++++++++++++++++++++++++++
+ tools/testing/vma/vma_internal.h |  2 +-
+ 2 files changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/vma/vma.c b/tools/testing/vma/vma.c
+index 920fba58884e..04ab45e27fb8 100644
+--- a/tools/testing/vma/vma.c
++++ b/tools/testing/vma/vma.c
+@@ -1574,6 +1574,57 @@ static bool test_expand_only_mode(void)
+ 	return true;
+ }
+ 
++static bool test_mmap_region_basic(void)
++{
++	struct mm_struct mm = {};
++	unsigned long addr;
++	struct vm_area_struct *vma;
++	VMA_ITERATOR(vmi, &mm, 0);
++
++	current->mm = &mm;
++
++	/* Map at 0x300000, length 0x3000. */
++	addr = __mmap_region(NULL, 0x300000, 0x3000,
++			     VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE,
++			     0x300, NULL);
++	ASSERT_EQ(addr, 0x300000);
++
++	/* Map at 0x250000, length 0x3000. */
++	addr = __mmap_region(NULL, 0x250000, 0x3000,
++			     VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE,
++			     0x250, NULL);
++	ASSERT_EQ(addr, 0x250000);
++
++	/* Map at 0x303000, merging to 0x300000 of length 0x6000. */
++	addr = __mmap_region(NULL, 0x303000, 0x3000,
++			     VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE,
++			     0x303, NULL);
++	ASSERT_EQ(addr, 0x303000);
++
++	/* Map at 0x24d000, merging to 0x250000 of length 0x6000. */
++	addr = __mmap_region(NULL, 0x24d000, 0x3000,
++			     VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE,
++			     0x24d, NULL);
++	ASSERT_EQ(addr, 0x24d000);
++
++	ASSERT_EQ(mm.map_count, 2);
++
++	for_each_vma(vmi, vma) {
++		if (vma->vm_start == 0x300000) {
++			ASSERT_EQ(vma->vm_end, 0x306000);
++			ASSERT_EQ(vma->vm_pgoff, 0x300);
++		} else if (vma->vm_start == 0x24d000) {
++			ASSERT_EQ(vma->vm_end, 0x253000);
++			ASSERT_EQ(vma->vm_pgoff, 0x24d);
++		} else {
++			ASSERT_FALSE(true);
++		}
++	}
++
++	cleanup_mm(&mm, &vmi);
++	return true;
++}
++
+ int main(void)
+ {
+ 	int num_tests = 0, num_fail = 0;
+@@ -1607,6 +1658,8 @@ int main(void)
+ 	TEST(copy_vma);
+ 	TEST(expand_only_mode);
+ 
++	TEST(mmap_region_basic);
++
+ #undef TEST
+ 
+ 	printf("%d tests run, %d passed, %d failed.\n",
+diff --git a/tools/testing/vma/vma_internal.h b/tools/testing/vma/vma_internal.h
+index b973b3e41c83..ae635eecbfa8 100644
+--- a/tools/testing/vma/vma_internal.h
++++ b/tools/testing/vma/vma_internal.h
+@@ -996,7 +996,7 @@ static inline bool is_file_hugepages(struct file *)
+ 
+ static inline int security_vm_enough_memory_mm(struct mm_struct *, long)
+ {
+-	return true;
++	return 0;
+ }
+ 
+ static inline bool may_expand_vm(struct mm_struct *, vm_flags_t, unsigned long)
+-- 
+2.39.5
+

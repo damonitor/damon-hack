@@ -1,0 +1,151 @@
+From: David Hildenbrand <david@redhat.com>
+Date: Wed, 4 Dec 2024 13:54:32 +0100
+Subject: [PATCH] fs/proc/vmcore: convert vmcore_cb_lock into vmcore_mutex
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "fs/proc/vmcore: kdump support for virtio-mem on s390", v2.
+
+The only "different than everything else" thing about virtio-mem on s390
+is kdump: The crash (2nd) kernel allocates+prepares the elfcore hdr during
+fs_init()->vmcore_init()->elfcorehdr_alloc().  Consequently, the kdump
+kernel must detect memory ranges of the crashed kernel to include via
+PT_LOAD in the vmcore.
+
+On other architectures, all RAM regions (boot + hotplugged) can easily be
+observed on the old (to crash) kernel (e.g., using /proc/iomem) to create
+the elfcore hdr.
+
+On s390, information about "ordinary" memory (heh, "storage") can be
+obtained by querying the hypervisor/ultravisor via SCLP/diag260, and
+that information is stored early during boot in the "physmem" memblock
+data structure.
+
+But virtio-mem memory is always detected by a device driver, which is
+usually built as a module.  So in the crash kernel, this memory can only
+be properly detected once the virtio-mem driver has started up.
+
+The virtio-mem driver already supports the "kdump mode", where it won't
+hotplug any memory but instead queries the device to implement the
+pfn_is_ram() callback, to avoid reading unplugged memory holes when reading
+the vmcore.
+
+With this series, if the virtio-mem driver is included in the kdump
+initrd -- which dracut already takes care of under Fedora/RHEL -- it will
+now detect the device RAM ranges on s390 once it probes the devices, to add
+them to the vmcore using the same callback mechanism we already have for
+pfn_is_ram().
+
+To add these device RAM ranges to the vmcore ("patch the vmcore"), we will
+add new PT_LOAD entries that describe these memory ranges, and update
+all offsets vmcore size so it is all consistent.
+
+My testing when creating+analyzing crash dumps with hotplugged virtio-mem
+memory (incl. holes) did not reveal any surprises.
+
+
+This patch (of 12):
+
+We want to protect vmcore modifications from concurrent opening of the
+vmcore, and also serialize vmcore modification.
+
+(a) We can currently modify the vmcore after it was opened. This can happen
+    if a vmcoredd is added after the vmcore module was initialized and
+    already opened by user space. We want to fix that and prepare for
+    new code wanting to serialize against concurrent opening.
+
+(b) To handle it cleanly we need to protect the modifications against
+    concurrent opening. As the modifications end up allocating memory and
+    can sleep, we cannot rely on the spinlock.
+
+Let's convert the spinlock into a mutex to prepare for further changes.
+
+Link: https://lkml.kernel.org/r/20241204125444.1734652-1-david@redhat.com
+Link: https://lkml.kernel.org/r/20241204125444.1734652-2-david@redhat.com
+Signed-off-by: David Hildenbrand <david@redhat.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
+Cc: Cornelia Huck <cohuck@redhat.com>
+Cc: Dave Young <dyoung@redhat.com>
+Cc: Eric Farman <farman@linux.ibm.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Janosch Frank <frankja@linux.ibm.com>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Huth <thuth@redhat.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/proc/vmcore.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/fs/proc/vmcore.c b/fs/proc/vmcore.c
+index 3d8a82cee63e..6f2800021e95 100644
+--- a/fs/proc/vmcore.c
++++ b/fs/proc/vmcore.c
+@@ -62,7 +62,8 @@ core_param(novmcoredd, vmcoredd_disabled, bool, 0);
+ /* Device Dump Size */
+ static size_t vmcoredd_orig_sz;
+ 
+-static DEFINE_SPINLOCK(vmcore_cb_lock);
++static DEFINE_MUTEX(vmcore_mutex);
++
+ DEFINE_STATIC_SRCU(vmcore_cb_srcu);
+ /* List of registered vmcore callbacks. */
+ static LIST_HEAD(vmcore_cb_list);
+@@ -72,7 +73,7 @@ static bool vmcore_opened;
+ void register_vmcore_cb(struct vmcore_cb *cb)
+ {
+ 	INIT_LIST_HEAD(&cb->next);
+-	spin_lock(&vmcore_cb_lock);
++	mutex_lock(&vmcore_mutex);
+ 	list_add_tail(&cb->next, &vmcore_cb_list);
+ 	/*
+ 	 * Registering a vmcore callback after the vmcore was opened is
+@@ -80,13 +81,13 @@ void register_vmcore_cb(struct vmcore_cb *cb)
+ 	 */
+ 	if (vmcore_opened)
+ 		pr_warn_once("Unexpected vmcore callback registration\n");
+-	spin_unlock(&vmcore_cb_lock);
++	mutex_unlock(&vmcore_mutex);
+ }
+ EXPORT_SYMBOL_GPL(register_vmcore_cb);
+ 
+ void unregister_vmcore_cb(struct vmcore_cb *cb)
+ {
+-	spin_lock(&vmcore_cb_lock);
++	mutex_lock(&vmcore_mutex);
+ 	list_del_rcu(&cb->next);
+ 	/*
+ 	 * Unregistering a vmcore callback after the vmcore was opened is
+@@ -95,7 +96,7 @@ void unregister_vmcore_cb(struct vmcore_cb *cb)
+ 	 */
+ 	if (vmcore_opened)
+ 		pr_warn_once("Unexpected vmcore callback unregistration\n");
+-	spin_unlock(&vmcore_cb_lock);
++	mutex_unlock(&vmcore_mutex);
+ 
+ 	synchronize_srcu(&vmcore_cb_srcu);
+ }
+@@ -120,9 +121,9 @@ static bool pfn_is_ram(unsigned long pfn)
+ 
+ static int open_vmcore(struct inode *inode, struct file *file)
+ {
+-	spin_lock(&vmcore_cb_lock);
++	mutex_lock(&vmcore_mutex);
+ 	vmcore_opened = true;
+-	spin_unlock(&vmcore_cb_lock);
++	mutex_unlock(&vmcore_mutex);
+ 
+ 	return 0;
+ }
+-- 
+2.39.5
+

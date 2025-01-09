@@ -1,0 +1,80 @@
+From: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Date: Tue, 10 Dec 2024 21:48:07 +0900
+Subject: [PATCH] mm/migrate: remove slab checks in isolate_movable_page()
+
+Commit 8b8817630ae8 ("mm/migrate: make isolate_movable_page() skip slab
+pages") introduced slab checks to prevent mis-identification of slab pages
+as movable kernel pages.
+
+However, after Matthew's frozen folio series, these slab checks became
+unnecessary as the migration logic fails to increase the reference count
+for frozen slab folios.  Remove these redundant slab checks and associated
+memory barriers.
+
+Link: https://lkml.kernel.org/r/20241210124807.8584-1-42.hyeyoo@gmail.com
+Signed-off-by: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Acked-by: David Rientjes <rientjes@google.com>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: Joonsoo Kim <iamjoonsoo.kim@lge.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Pekka Enberg <penberg@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate.c | 8 --------
+ mm/slub.c    | 4 ----
+ 2 files changed, 12 deletions(-)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index e9e00d1d1d19..32cc8e0b1cce 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -68,10 +68,6 @@ bool isolate_movable_page(struct page *page, isolate_mode_t mode)
+ 	if (!folio)
+ 		goto out;
+ 
+-	if (unlikely(folio_test_slab(folio)))
+-		goto out_putfolio;
+-	/* Pairs with smp_wmb() in slab freeing, e.g. SLUB's __free_slab() */
+-	smp_rmb();
+ 	/*
+ 	 * Check movable flag before taking the page lock because
+ 	 * we use non-atomic bitops on newly allocated page flags so
+@@ -79,10 +75,6 @@ bool isolate_movable_page(struct page *page, isolate_mode_t mode)
+ 	 */
+ 	if (unlikely(!__folio_test_movable(folio)))
+ 		goto out_putfolio;
+-	/* Pairs with smp_wmb() in slab allocation, e.g. SLUB's alloc_slab_page() */
+-	smp_rmb();
+-	if (unlikely(folio_test_slab(folio)))
+-		goto out_putfolio;
+ 
+ 	/*
+ 	 * As movable pages are not isolated from LRU lists, concurrent
+diff --git a/mm/slub.c b/mm/slub.c
+index a8e9b5106f4c..996691c137eb 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -2429,8 +2429,6 @@ static inline struct slab *alloc_slab_page(gfp_t flags, int node,
+ 
+ 	slab = folio_slab(folio);
+ 	__folio_set_slab(folio);
+-	/* Make the flag visible before any changes to folio->mapping */
+-	smp_wmb();
+ 	if (folio_is_pfmemalloc(folio))
+ 		slab_set_pfmemalloc(slab);
+ 
+@@ -2651,8 +2649,6 @@ static void __free_slab(struct kmem_cache *s, struct slab *slab)
+ 
+ 	__slab_clear_pfmemalloc(slab);
+ 	folio->mapping = NULL;
+-	/* Make the mapping reset visible before clearing the flag */
+-	smp_wmb();
+ 	__folio_clear_slab(folio);
+ 	mm_account_reclaimed_pages(pages);
+ 	unaccount_slab(slab, order, s);
+-- 
+2.39.5
+

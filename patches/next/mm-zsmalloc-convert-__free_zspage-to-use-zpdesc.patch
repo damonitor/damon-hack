@@ -1,0 +1,74 @@
+From: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Date: Tue, 17 Dec 2024 00:04:43 +0900
+Subject: [PATCH] mm/zsmalloc: convert __free_zspage() to use zpdesc
+
+Introduce zpdesc_is_locked() and convert __free_zspage() to use zpdesc.
+
+Link: https://lkml.kernel.org/r/20241216150450.1228021-13-42.hyeyoo@gmail.com
+Signed-off-by: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Signed-off-by: Alex Shi <alexs@kernel.org>
+Acked-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Tested-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zpdesc.h   |  4 ++++
+ mm/zsmalloc.c | 20 ++++++++++----------
+ 2 files changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/mm/zpdesc.h b/mm/zpdesc.h
+index c7c52e05e737..fa80c50993c6 100644
+--- a/mm/zpdesc.h
++++ b/mm/zpdesc.h
+@@ -165,4 +165,8 @@ static inline struct zone *zpdesc_zone(struct zpdesc *zpdesc)
+ 	return page_zone(zpdesc_page(zpdesc));
+ }
+ 
++static inline bool zpdesc_is_locked(struct zpdesc *zpdesc)
++{
++	return folio_test_locked(zpdesc_folio(zpdesc));
++}
+ #endif
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index dded6d1f3b7a..e1f501d51226 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -878,23 +878,23 @@ static int trylock_zspage(struct zspage *zspage)
+ static void __free_zspage(struct zs_pool *pool, struct size_class *class,
+ 				struct zspage *zspage)
+ {
+-	struct page *page, *next;
++	struct zpdesc *zpdesc, *next;
+ 
+ 	assert_spin_locked(&class->lock);
+ 
+ 	VM_BUG_ON(get_zspage_inuse(zspage));
+ 	VM_BUG_ON(zspage->fullness != ZS_INUSE_RATIO_0);
+ 
+-	next = page = get_first_page(zspage);
++	next = zpdesc = get_first_zpdesc(zspage);
+ 	do {
+-		VM_BUG_ON_PAGE(!PageLocked(page), page);
+-		next = get_next_page(page);
+-		reset_zpdesc(page_zpdesc(page));
+-		unlock_page(page);
+-		dec_zone_page_state(page, NR_ZSPAGES);
+-		put_page(page);
+-		page = next;
+-	} while (page != NULL);
++		VM_BUG_ON_PAGE(!zpdesc_is_locked(zpdesc), zpdesc_page(zpdesc));
++		next = get_next_zpdesc(zpdesc);
++		reset_zpdesc(zpdesc);
++		zpdesc_unlock(zpdesc);
++		zpdesc_dec_zone_page_state(zpdesc);
++		zpdesc_put(zpdesc);
++		zpdesc = next;
++	} while (zpdesc != NULL);
+ 
+ 	cache_free_zspage(pool, zspage);
+ 
+-- 
+2.39.5
+

@@ -1,0 +1,47 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 18 Dec 2024 15:34:24 +0900
+Subject: [PATCH] zram: cond_resched() in writeback loop
+
+zram writeback is a costly operation, because every target slot (unless
+ZRAM_HUGE) is decompressed before it gets written to a backing device.
+The writeback to a backing device uses submit_bio_wait() which may look
+like a rescheduling point.  However, if the backing device has
+BD_HAS_SUBMIT_BIO bit set __submit_bio() calls directly
+disk->fops->submit_bio(bio) on the backing device and so when
+submit_bio_wait() calls blk_wait_io() the I/O is already done.  On such
+systems we effective end up in a loop
+
+    for_each (target slot) {
+	decompress(slot)
+	__submit_bio()
+	    disk->fops->submit_bio(bio)
+    }
+
+Which on PREEMPT_NONE systems triggers watchdogs (since there are no
+explicit rescheduling points).  Add cond_resched() to the zram writeback
+loop.
+
+Link: https://lkml.kernel.org/r/20241218063513.297475-8-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 7dd72b58e921..5b8e4f4171ab 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -884,6 +884,8 @@ static ssize_t writeback_store(struct device *dev,
+ next:
+ 		zram_slot_unlock(zram, index);
+ 		release_pp_slot(zram, pps);
++
++		cond_resched();
+ 	}
+ 
+ 	if (blk_idx)
+-- 
+2.39.5
+

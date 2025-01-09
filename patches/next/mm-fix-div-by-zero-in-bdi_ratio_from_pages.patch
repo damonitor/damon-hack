@@ -1,0 +1,51 @@
+From: Stefan Roesch <shr@devkernel.io>
+Date: Fri, 3 Jan 2025 17:20:37 -0800
+Subject: [PATCH] mm: fix div by zero in bdi_ratio_from_pages
+
+During testing it has been detected, that it is possible to get div by
+zero error in bdi_set_min_bytes.  The error is caused by the function
+bdi_ratio_from_pages().  bdi_ratio_from_pages() calls global_dirty_limits.
+If the dirty threshold is 0, the div by zero is raised.  This can happen
+if the root user is setting:
+
+echo 0 > /proc/sys/vm/dirty_ration.
+
+The following is a test case:
+
+echo 0 > /proc/sys/vm/dirty_ratio
+cd /sys/class/bdi/<device>
+echo 1 > strict_limit
+echo 8192 > min_bytes
+
+==> error is raised.
+
+The problem is addressed by returning -EINVAL if dirty_ratio or
+dirty_bytes is set to 0.
+
+Link: https://lkml.kernel.org/r/20250104012037.159386-1-shr@devkernel.io
+Reported-by: cheung wall <zzqq0103.hey@gmail.com>
+Closes: https://lore.kernel.org/linux-mm/87pll35yd0.fsf@devkernel.io/T/#t
+Signed-off-by: Stefan Roesch <shr@devkernel.io>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Qiang Zhang <zzqq0103.hey@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page-writeback.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index d213ead95675..91aa7a5c0078 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -692,6 +692,8 @@ static unsigned long bdi_ratio_from_pages(unsigned long pages)
+ 	unsigned long ratio;
+ 
+ 	global_dirty_limits(&background_thresh, &dirty_thresh);
++	if (!dirty_thresh)
++		return -EINVAL;
+ 	ratio = div64_u64(pages * 100ULL * BDI_RATIO_SCALE, dirty_thresh);
+ 
+ 	return ratio;
+-- 
+2.39.5
+

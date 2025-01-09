@@ -1,0 +1,63 @@
+From: Alex Shi <alexs@kernel.org>
+Date: Tue, 17 Dec 2024 00:04:42 +0900
+Subject: [PATCH] mm/zsmalloc: convert reset_page to reset_zpdesc
+
+zpdesc.zspage matches with page.private, zpdesc.next matches with
+page.index.  They will be reset in reset_page() which is called prior to
+free base pages of a zspage.
+
+Since the fields that need to be initialized are independent of the order
+in struct zpdesc, Keep it to use struct page to ensure robustness against
+potential rearrangements of struct zpdesc fields in the future.
+
+[42.hyeyoo@gmail.com: keep reset_zpdesc() to use struct page fields]
+Link: https://lkml.kernel.org/r/20241216150450.1228021-12-42.hyeyoo@gmail.com
+Signed-off-by: Alex Shi <alexs@kernel.org>
+Signed-off-by: Hyeonggon Yoo <42.hyeyoo@gmail.com>
+Acked-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Tested-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 432e78e61d2e..dded6d1f3b7a 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -843,8 +843,10 @@ static inline bool obj_allocated(struct zpdesc *zpdesc, void *obj,
+ 	return true;
+ }
+ 
+-static void reset_page(struct page *page)
++static void reset_zpdesc(struct zpdesc *zpdesc)
+ {
++	struct page *page = zpdesc_page(zpdesc);
++
+ 	__ClearPageMovable(page);
+ 	ClearPagePrivate(page);
+ 	set_page_private(page, 0);
+@@ -887,7 +889,7 @@ static void __free_zspage(struct zs_pool *pool, struct size_class *class,
+ 	do {
+ 		VM_BUG_ON_PAGE(!PageLocked(page), page);
+ 		next = get_next_page(page);
+-		reset_page(page);
++		reset_zpdesc(page_zpdesc(page));
+ 		unlock_page(page);
+ 		dec_zone_page_state(page, NR_ZSPAGES);
+ 		put_page(page);
+@@ -1865,7 +1867,7 @@ static int zs_page_migrate(struct page *newpage, struct page *page,
+ 		zpdesc_inc_zone_page_state(newzpdesc);
+ 	}
+ 
+-	reset_page(page);
++	reset_zpdesc(zpdesc);
+ 	zpdesc_put(zpdesc);
+ 
+ 	return MIGRATEPAGE_SUCCESS;
+-- 
+2.39.5
+

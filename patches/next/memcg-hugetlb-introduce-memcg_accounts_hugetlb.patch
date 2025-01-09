@@ -1,0 +1,100 @@
+From: Joshua Hahn <joshua.hahnjy@gmail.com>
+Date: Wed, 11 Dec 2024 12:39:49 -0800
+Subject: [PATCH] memcg/hugetlb: introduce memcg_accounts_hugetlb
+
+Patch series "memcg/hugetlb: Rework memcg hugetlb charging", v3.
+
+This series cleans up memcg's hugetlb charging logic by deprecating the
+current memcg hugetlb try-charge + {commit, cancel} logic present in
+alloc_hugetlb_folio.  A single function mem_cgroup_charge_hugetlb takes
+its place instead.  This makes the code more maintainable by simplifying
+the error path and reduces memcg's footprint in hugetlb logic.
+
+This patch introduces a few changes in the hugetlb folio allocation
+error path:
+(a) Instead of having multiple return points, we consolidate them to
+    two: one for reaching the memcg limit or running out of memory
+    (-ENOMEM) and one for hugetlb allocation fails / limit being
+    reached (-ENOSPC).
+(b) Previously, the memcg limit was checked before the folio is acquired,
+    meaning the hugeTLB folio isn't acquired if the limit is reached.
+    This patch performs the charging after the folio is reached, meaning
+    if memcg's limit is reached, the acquired folio is freed right away.
+
+This patch builds on two earlier patch series: [2] which adds memcg
+hugeTLB counters, and [3] which deprecates charge moving and removes the
+last references to mem_cgroup_cancel_charge.  The request for this cleanup
+can be found in [2].
+
+[1] https://lore.kernel.org/all/20231006184629.155543-1-nphamcs@gmail.com/
+[2] https://lore.kernel.org/all/20241101204402.1885383-1-joshua.hahnjy@gmail.com/
+[3] https://lore.kernel.org/linux-mm/20241025012304.2473312-1-shakeel.butt@linux.dev/
+
+
+This patch (of 3):
+
+This patch isolates the check for whether memcg accounts hugetlb.  This
+condition can only be true if the memcg mount option
+memory_hugetlb_accounting is on, which includes hugetlb usage in
+memory.current.
+
+Link: https://lkml.kernel.org/r/20241211203951.764733-1-joshua.hahnjy@gmail.com
+Link: https://lkml.kernel.org/r/20241211203951.764733-2-joshua.hahnjy@gmail.com
+Signed-off-by: Joshua Hahn <joshua.hahnjy@gmail.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 7b3503d12aaf..b25eab9c933e 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1448,6 +1448,18 @@ unsigned long memcg_page_state_local_output(struct mem_cgroup *memcg, int item)
+ 		memcg_page_state_output_unit(item);
+ }
+ 
++#ifdef CONFIG_HUGETLB_PAGE
++static bool memcg_accounts_hugetlb(void)
++{
++	return cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_HUGETLB_ACCOUNTING;
++}
++#else /* CONFIG_HUGETLB_PAGE */
++static bool memcg_accounts_hugetlb(void)
++{
++	return false;
++}
++#endif /* CONFIG_HUGETLB_PAGE */
++
+ static void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
+ {
+ 	int i;
+@@ -1469,7 +1481,7 @@ static void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
+ 
+ #ifdef CONFIG_HUGETLB_PAGE
+ 		if (unlikely(memory_stats[i].idx == NR_HUGETLB) &&
+-		    !(cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_HUGETLB_ACCOUNTING))
++			!memcg_accounts_hugetlb())
+ 			continue;
+ #endif
+ 		size = memcg_page_state_output(memcg, memory_stats[i].idx);
+@@ -4540,8 +4552,7 @@ int mem_cgroup_hugetlb_try_charge(struct mem_cgroup *memcg, gfp_t gfp,
+ 	 * but do not attempt to commit charge later (or cancel on error) either.
+ 	 */
+ 	if (mem_cgroup_disabled() || !memcg ||
+-		!cgroup_subsys_on_dfl(memory_cgrp_subsys) ||
+-		!(cgrp_dfl_root.flags & CGRP_ROOT_MEMORY_HUGETLB_ACCOUNTING))
++		!cgroup_subsys_on_dfl(memory_cgrp_subsys) || !memcg_accounts_hugetlb())
+ 		return -EOPNOTSUPP;
+ 
+ 	if (try_charge(memcg, gfp, nr_pages))
+-- 
+2.39.5
+

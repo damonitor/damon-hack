@@ -1,0 +1,246 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Wed, 18 Dec 2024 19:46:33 +0800
+Subject: [PATCH] mm/swap_cgroup: decouple swap cgroup recording and clearing
+
+The current implementation of swap cgroup tracking is a bit complex and
+fragile:
+
+On charging path, swap_cgroup_record always records an actual memcg id,
+and it depends on the caller to make sure all entries passed in must
+belong to one single folio.  As folios are always charged or uncharged as
+a whole, and always charged and uncharged in order, swap_cgroup doesn't
+need an extra lock.
+
+On uncharging path, swap_cgroup_record always sets the record to zero.
+These entries won't be charged again until uncharging is done.  So there
+is no extra lock needed either.  Worth noting that swap cgroup clearing
+may happen without folio involved, eg.  exiting processes will zap its
+page table without swapin.
+
+The xchg/cmpxchg provides atomic operations and barriers to ensure no
+tearing or synchronization issue of these swap cgroup records.
+
+It works but quite error-prone.  Things can be much clear and robust by
+decoupling recording and clearing into two helpers.  Recording takes the
+actual folio being charged as argument, and clearing always set the record
+to zero, and refine the debug sanity checks to better reflect their usage
+
+Benchmark even showed a very slight improvement as it saved some
+extra arguments and lookups:
+
+make -j96 with defconfig on tmpfs in 1.5G memory cgroup using 4k folios:
+Before: sys 9617.23 (stdev 37.764062)
+After : sys 9541.54 (stdev 42.973976)
+
+make -j96 with defconfig on tmpfs in 2G memory cgroup using 64k folios:
+Before: sys 7358.98 (stdev 54.927593)
+After : sys 7337.82 (stdev 39.398956)
+
+Link: https://lkml.kernel.org/r/20241218114633.85196-5-ryncsn@gmail.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Suggested-by: Chris Li <chrisl@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/swap_cgroup.h | 12 ++++---
+ mm/memcontrol.c             | 13 +++-----
+ mm/swap_cgroup.c            | 66 +++++++++++++++++++++++--------------
+ 3 files changed, 55 insertions(+), 36 deletions(-)
+
+diff --git a/include/linux/swap_cgroup.h b/include/linux/swap_cgroup.h
+index d521ad1c4164..b5ec038069da 100644
+--- a/include/linux/swap_cgroup.h
++++ b/include/linux/swap_cgroup.h
+@@ -6,8 +6,8 @@
+ 
+ #if defined(CONFIG_MEMCG) && defined(CONFIG_SWAP)
+ 
+-extern unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id,
+-					 unsigned int nr_ents);
++extern void swap_cgroup_record(struct folio *folio, swp_entry_t ent);
++extern unsigned short swap_cgroup_clear(swp_entry_t ent, unsigned int nr_ents);
+ extern unsigned short lookup_swap_cgroup_id(swp_entry_t ent);
+ extern int swap_cgroup_swapon(int type, unsigned long max_pages);
+ extern void swap_cgroup_swapoff(int type);
+@@ -15,8 +15,12 @@ extern void swap_cgroup_swapoff(int type);
+ #else
+ 
+ static inline
+-unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id,
+-				  unsigned int nr_ents)
++void swap_cgroup_record(struct folio *folio, swp_entry_t ent)
++{
++}
++
++static inline
++unsigned short swap_cgroup_clear(swp_entry_t ent, unsigned int nr_ents)
+ {
+ 	return 0;
+ }
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 5c373d275e7a..65fb5eee1466 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4959,7 +4959,6 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
+ {
+ 	struct mem_cgroup *memcg, *swap_memcg;
+ 	unsigned int nr_entries;
+-	unsigned short oldid;
+ 
+ 	VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
+ 	VM_BUG_ON_FOLIO(folio_ref_count(folio), folio);
+@@ -4986,11 +4985,10 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
+ 	/* Get references for the tail pages, too */
+ 	if (nr_entries > 1)
+ 		mem_cgroup_id_get_many(swap_memcg, nr_entries - 1);
+-	oldid = swap_cgroup_record(entry, mem_cgroup_id(swap_memcg),
+-				   nr_entries);
+-	VM_BUG_ON_FOLIO(oldid, folio);
+ 	mod_memcg_state(swap_memcg, MEMCG_SWAP, nr_entries);
+ 
++	swap_cgroup_record(folio, entry);
++
+ 	folio_unqueue_deferred_split(folio);
+ 	folio->memcg_data = 0;
+ 
+@@ -5021,7 +5019,6 @@ int __mem_cgroup_try_charge_swap(struct folio *folio, swp_entry_t entry)
+ 	unsigned int nr_pages = folio_nr_pages(folio);
+ 	struct page_counter *counter;
+ 	struct mem_cgroup *memcg;
+-	unsigned short oldid;
+ 
+ 	if (do_memsw_account())
+ 		return 0;
+@@ -5050,10 +5047,10 @@ int __mem_cgroup_try_charge_swap(struct folio *folio, swp_entry_t entry)
+ 	/* Get references for the tail pages, too */
+ 	if (nr_pages > 1)
+ 		mem_cgroup_id_get_many(memcg, nr_pages - 1);
+-	oldid = swap_cgroup_record(entry, mem_cgroup_id(memcg), nr_pages);
+-	VM_BUG_ON_FOLIO(oldid, folio);
+ 	mod_memcg_state(memcg, MEMCG_SWAP, nr_pages);
+ 
++	swap_cgroup_record(folio, entry);
++
+ 	return 0;
+ }
+ 
+@@ -5067,7 +5064,7 @@ void __mem_cgroup_uncharge_swap(swp_entry_t entry, unsigned int nr_pages)
+ 	struct mem_cgroup *memcg;
+ 	unsigned short id;
+ 
+-	id = swap_cgroup_record(entry, 0, nr_pages);
++	id = swap_cgroup_clear(entry, nr_pages);
+ 	rcu_read_lock();
+ 	memcg = mem_cgroup_from_id(id);
+ 	if (memcg) {
+diff --git a/mm/swap_cgroup.c b/mm/swap_cgroup.c
+index cf0445cb35ed..be39078f255b 100644
+--- a/mm/swap_cgroup.c
++++ b/mm/swap_cgroup.c
+@@ -21,17 +21,6 @@ struct swap_cgroup_ctrl {
+ 
+ static struct swap_cgroup_ctrl swap_cgroup_ctrl[MAX_SWAPFILES];
+ 
+-/*
+- * SwapCgroup implements "lookup" and "exchange" operations.
+- * In typical usage, this swap_cgroup is accessed via memcg's charge/uncharge
+- * against SwapCache. At swap_free(), this is accessed directly from swap.
+- *
+- * This means,
+- *  - we have no race in "exchange" when we're accessed via SwapCache because
+- *    SwapCache(and its swp_entry) is under lock.
+- *  - When called via swap_free(), there is no user of this entry and no race.
+- * Then, we don't need lock around "exchange".
+- */
+ static unsigned short __swap_cgroup_id_lookup(struct swap_cgroup *map,
+ 					      pgoff_t offset)
+ {
+@@ -63,29 +52,58 @@ static unsigned short __swap_cgroup_id_xchg(struct swap_cgroup *map,
+ }
+ 
+ /**
+- * swap_cgroup_record - record mem_cgroup for a set of swap entries
++ * swap_cgroup_record - record mem_cgroup for a set of swap entries.
++ * These entries must belong to one single folio, and that folio
++ * must be being charged for swap space (swap out), and these
++ * entries must not have been charged
++ *
++ * @folio: the folio that the swap entry belongs to
++ * @ent: the first swap entry to be recorded
++ */
++void swap_cgroup_record(struct folio *folio, swp_entry_t ent)
++{
++	unsigned int nr_ents = folio_nr_pages(folio);
++	struct swap_cgroup *map;
++	pgoff_t offset, end;
++	unsigned short old;
++
++	offset = swp_offset(ent);
++	end = offset + nr_ents;
++	map = swap_cgroup_ctrl[swp_type(ent)].map;
++
++	do {
++		old = __swap_cgroup_id_xchg(map, offset,
++					    mem_cgroup_id(folio_memcg(folio)));
++		VM_BUG_ON(old);
++	} while (++offset != end);
++}
++
++/**
++ * swap_cgroup_clear - clear mem_cgroup for a set of swap entries.
++ * These entries must be being uncharged from swap. They either
++ * belongs to one single folio in the swap cache (swap in for
++ * cgroup v1), or no longer have any users (slot freeing).
++ *
+  * @ent: the first swap entry to be recorded into
+- * @id: mem_cgroup to be recorded
+  * @nr_ents: number of swap entries to be recorded
+  *
+- * Returns old value at success, 0 at failure.
+- * (Of course, old value can be 0.)
++ * Returns the existing old value.
+  */
+-unsigned short swap_cgroup_record(swp_entry_t ent, unsigned short id,
+-				  unsigned int nr_ents)
++unsigned short swap_cgroup_clear(swp_entry_t ent, unsigned int nr_ents)
+ {
+-	struct swap_cgroup_ctrl *ctrl;
+ 	pgoff_t offset = swp_offset(ent);
+ 	pgoff_t end = offset + nr_ents;
+-	unsigned short old, iter;
+ 	struct swap_cgroup *map;
++	unsigned short old, iter = 0;
+ 
+-	ctrl = &swap_cgroup_ctrl[swp_type(ent)];
+-	map = ctrl->map;
++	offset = swp_offset(ent);
++	end = offset + nr_ents;
++	map = swap_cgroup_ctrl[swp_type(ent)].map;
+ 
+-	old = __swap_cgroup_id_lookup(map, offset);
+ 	do {
+-		iter = __swap_cgroup_id_xchg(map, offset, id);
++		old = __swap_cgroup_id_xchg(map, offset, 0);
++		if (!iter)
++			iter = old;
+ 		VM_BUG_ON(iter != old);
+ 	} while (++offset != end);
+ 
+@@ -119,7 +137,7 @@ int swap_cgroup_swapon(int type, unsigned long max_pages)
+ 
+ 	BUILD_BUG_ON(sizeof(unsigned short) * ID_PER_SC !=
+ 		     sizeof(struct swap_cgroup));
+-	map = vcalloc(DIV_ROUND_UP(max_pages, ID_PER_SC),
++	map = vzalloc(DIV_ROUND_UP(max_pages, ID_PER_SC) *
+ 		      sizeof(struct swap_cgroup));
+ 	if (!map)
+ 		goto nomem;
+-- 
+2.39.5
+

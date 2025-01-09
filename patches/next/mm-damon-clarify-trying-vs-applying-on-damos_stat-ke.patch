@@ -1,0 +1,145 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 6 Jan 2025 11:33:46 -0800
+Subject: [PATCH] mm/damon: clarify trying vs applying on damos_stat kernel-doc
+ comment
+
+Patch series "mm/damon: enable page level properties based monitoring".
+
+TL; DR
+======
+
+This patch series enables access monitoring based on page level properties
+including their anonymousness, belonging cgroups and young-ness, by
+extending DAMOS stats and regions walk features with region-internal DAMOS
+filters.
+
+Background
+==========
+
+DAMOS has initially developed for only access-aware system operations.
+But, efficient acces monitoring results querying is yet another major
+usage of today's DAMOS.  DAMOS stats and regions walk, which exposes
+accumulated counts and per-region monitoring results that filtered by
+DAMOS parameters including target access pattern, quotas and DAMOS
+filters, are the key features for that usage.  For tunings and
+investigations, it can be more useful if only the information can be
+exposed without making real system operational change.  Special DAMOS
+action, DAMOS_STAT, was introduced for the purpose.
+
+DAMOS fundametally works with only access pattern information in region
+granularity.  For some use cases, fixed and fine granularity information
+based on non access pattern properties can be useful, though.  For
+example, on systems having swap devices that much faster than storage
+devices for files, DAMOS-based proactive reclaim need to be applied
+differently for anonymous pages and file-backed pages.
+
+DAMOS filters is a feature that makes it possible.  It supports non access
+pattern information including page level properties such as anonymousness,
+belonging cgroups, and young-ness (whether the page has accessed since the
+last access check of it).  The information can be useful for tuning and
+investigations.  DAMOS stat exposes some of it via {nr,sz}_applied, but it
+is mixed with operation failures.  Also, exposing the information without
+making system operation change is impossible, since DAMOS_STAT simply
+ignores the page level properties based DAMOS filters.
+
+Design
+======
+
+Expose the exact information for every DAMOS action including DAMOS_STAT
+by implementing below changes.
+
+Extend the interface for DAMON operations set layer, which contains the
+implementation of the page level filters, to report back the amount of
+memory that passed the region-internal DAMOS filters to the core layer.
+On the core layer, account the operations set layer reported stat with
+DAMOS stat for per-scheme monitoring.  Also, pass the information to
+regions walk for per-region monitoring.  In this way, DAMON API users can
+efficiently get the fine-grained information.
+
+For the user-space, make DAMON sysfs interface collects the information
+using the updated DAMON core API, and expose those to new per-scheme stats
+file and per-DAMOS-tried region properties file.
+
+Practical Usages
+================
+
+With this patch series, DAMON users can query how many bytes of regions of
+specific access temperature is backed by pages of specific type.  The type
+can be any of DAMOS filter-supporting one, including anonymousness,
+belonging cgroups, and young-ness.  For example, users can visualize
+access hotness-based page granulairty histogram for different cgroups,
+backing content type, or youngness.  In future, it could be extended to
+more types such as whether it is THP, position on LRU lists, etc.  This
+can be useful for estimating benefits of a new or an existing access-aware
+system optimizations without really committing the changes.
+
+Patches Sequence
+================
+
+The patches are constructed in four sub-sequences.
+
+First three patches (patches 1-3) update documents to have missing
+background knowledges and better structures for easily introducing
+followup changes.
+
+Following three patches (patches 4-6) change the operations set layer
+interface to report back the region-internal filter passed memory size,
+and make the operations set implementations support the changed symantic.
+
+Following five patches (patches 7-11) implement per-scheme accumulated
+stat for region-internal filter-passed memory size on core API
+(damos_stat) and DAMON sysfs interface.  First two patches of those are
+for code change, and following three patches are for documentation.
+
+Finally, five patches (patches 12-16) implementing per-region
+region-internal filter-passed memory size follows.  Similar to that for
+per-scheme stat, first two patches implement core-API and sysfs interface
+change.  Then three patches for documentation update follow.
+
+
+This patch (of 16):
+
+DAMOS stat kernel-doc documentation is using terms that bit ambiguous.
+Without reading the code, understanding it correctly is not that easy.
+Add the clarification on the kernel-doc comment.
+
+Link: https://lkml.kernel.org/r/20250106193401.109161-1-sj@kernel.org
+Link: https://lkml.kernel.org/r/20250106193401.109161-2-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 2889de3526c3..b85eae388f5b 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -287,6 +287,23 @@ struct damos_watermarks {
+  * @nr_applied:	Total number of regions that the scheme is applied.
+  * @sz_applied:	Total size of regions that the scheme is applied.
+  * @qt_exceeds: Total number of times the quota of the scheme has exceeded.
++ *
++ * "Tried an action to a region" in this context means the DAMOS core logic
++ * determined the region as eligible to apply the action.  The access pattern
++ * (&struct damos_access_pattern), quotas (&struct damos_quota), watermarks
++ * (&struct damos_watermarks) and filters (&struct damos_filter) that handled
++ * on core logic can affect this.  The core logic asks the operation set
++ * (&struct damon_operations) to apply the action to the region.
++ *
++ * "Applied an action to a region" in this context means the operation set
++ * (&struct damon_operations) successfully applied the action to the region, at
++ * least to a part of the region.  The filters (&struct damos_filter) that
++ * handled on operation set layer and type of the action and pages of the
++ * region can affect this.  For example, if a filter is set to exclude
++ * anonymous pages and the region has only anonymous pages, the region will be
++ * failed at applying the action.  If the action is &DAMOS_PAGEOUT and all
++ * pages of the region are already paged out, the region will be failed at
++ * applying the action.
+  */
+ struct damos_stat {
+ 	unsigned long nr_tried;
+-- 
+2.39.5
+

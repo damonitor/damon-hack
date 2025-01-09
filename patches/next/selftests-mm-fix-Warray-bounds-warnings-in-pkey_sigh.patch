@@ -1,0 +1,83 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Mon, 9 Dec 2024 09:50:09 +0000
+Subject: [PATCH] selftests/mm: fix -Warray-bounds warnings in
+ pkey_sighandler_tests
+
+GCC doesn't like dereferencing a pointer set to 0x1 (when building
+at -O2):
+
+pkey_sighandler_tests.c:166:9: warning: array subscript 0 is outside array bounds of 'int[0]' [-Warray-bounds=]
+  166 |         *(int *) (0x1) = 1;
+      |         ^~~~~~~~~~~~~~
+cc1: note: source object is likely at address zero
+
+Using NULL instead seems to make it happy.  This should make no difference
+in practice (SIGSEGV with SEGV_MAPERR will be the outcome regardless), we
+just need to update the expected si_addr.
+
+Link: https://lkml.kernel.org/r/20241209095019.1732120-5-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Aruna Ramakrishna <aruna.ramakrishna@oracle.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Keith Lucas <keith.lucas@oracle.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: kernel test robot <lkp@intel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/pkey_sighandler_tests.c | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/pkey_sighandler_tests.c b/tools/testing/selftests/mm/pkey_sighandler_tests.c
+index c593a426341c..e7b91794f184 100644
+--- a/tools/testing/selftests/mm/pkey_sighandler_tests.c
++++ b/tools/testing/selftests/mm/pkey_sighandler_tests.c
+@@ -163,7 +163,7 @@ static void *thread_segv_with_pkey0_disabled(void *ptr)
+ 	__write_pkey_reg(pkey_reg_restrictive_default());
+ 
+ 	/* Segfault (with SEGV_MAPERR) */
+-	*(int *) (0x1) = 1;
++	*(int *)NULL = 1;
+ 	return NULL;
+ }
+ 
+@@ -179,7 +179,6 @@ static void *thread_segv_pkuerr_stack(void *ptr)
+ static void *thread_segv_maperr_ptr(void *ptr)
+ {
+ 	stack_t *stack = ptr;
+-	int *bad = (int *)1;
+ 	u64 pkey_reg;
+ 
+ 	/*
+@@ -195,7 +194,7 @@ static void *thread_segv_maperr_ptr(void *ptr)
+ 	__write_pkey_reg(pkey_reg);
+ 
+ 	/* Segfault */
+-	*bad = 1;
++	*(int *)NULL = 1;
+ 	syscall_raw(SYS_exit, 0, 0, 0, 0, 0, 0);
+ 	return NULL;
+ }
+@@ -234,7 +233,7 @@ static void test_sigsegv_handler_with_pkey0_disabled(void)
+ 
+ 	ksft_test_result(siginfo.si_signo == SIGSEGV &&
+ 			 siginfo.si_code == SEGV_MAPERR &&
+-			 siginfo.si_addr == (void *)1,
++			 siginfo.si_addr == NULL,
+ 			 "%s\n", __func__);
+ }
+ 
+@@ -349,7 +348,7 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+ 
+ 	ksft_test_result(siginfo.si_signo == SIGSEGV &&
+ 			 siginfo.si_code == SEGV_MAPERR &&
+-			 siginfo.si_addr == (void *)1,
++			 siginfo.si_addr == NULL,
+ 			 "%s\n", __func__);
+ }
+ 
+-- 
+2.39.5
+

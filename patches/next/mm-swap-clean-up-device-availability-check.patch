@@ -1,0 +1,208 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Tue, 31 Dec 2024 01:46:13 +0800
+Subject: [PATCH] mm, swap: clean up device availability check
+
+Remove highest_bit and lowest_bit.  After the HDD allocation path has been
+removed, the only purpose of these two fields is to determine whether the
+device is full or not, which can instead be determined by checking the
+inuse_pages.
+
+Link: https://lkml.kernel.org/r/20241230174621.61185-6-ryncsn@gmail.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <v-songbaohua@oppo.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kalesh Singh <kaleshsingh@google.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/btrfs/inode.c     |  1 -
+ fs/f2fs/data.c       |  1 -
+ fs/iomap/swapfile.c  |  1 -
+ include/linux/swap.h |  2 --
+ mm/page_io.c         |  1 -
+ mm/swapfile.c        | 38 ++++++++------------------------------
+ 6 files changed, 8 insertions(+), 36 deletions(-)
+
+diff --git a/fs/btrfs/inode.c b/fs/btrfs/inode.c
+index 488edca8333a..a1ba78afab2c 100644
+--- a/fs/btrfs/inode.c
++++ b/fs/btrfs/inode.c
+@@ -10044,7 +10044,6 @@ static int btrfs_swap_activate(struct swap_info_struct *sis, struct file *file,
+ 	*span = bsi.highest_ppage - bsi.lowest_ppage + 1;
+ 	sis->max = bsi.nr_pages;
+ 	sis->pages = bsi.nr_pages - 1;
+-	sis->highest_bit = bsi.nr_pages - 1;
+ 	return bsi.nr_extents;
+ }
+ #else
+diff --git a/fs/f2fs/data.c b/fs/f2fs/data.c
+index a2478c2afb3a..a9eddd782dbc 100644
+--- a/fs/f2fs/data.c
++++ b/fs/f2fs/data.c
+@@ -4043,7 +4043,6 @@ static int check_swap_activate(struct swap_info_struct *sis,
+ 		cur_lblock = 1;	/* force Empty message */
+ 	sis->max = cur_lblock;
+ 	sis->pages = cur_lblock - 1;
+-	sis->highest_bit = cur_lblock - 1;
+ out:
+ 	if (not_aligned)
+ 		f2fs_warn(sbi, "Swapfile (%u) is not align to section: 1) creat(), 2) ioctl(F2FS_IOC_SET_PIN_FILE), 3) fallocate(%lu * N)",
+diff --git a/fs/iomap/swapfile.c b/fs/iomap/swapfile.c
+index 5fc0ac36dee3..b90d0eda9e51 100644
+--- a/fs/iomap/swapfile.c
++++ b/fs/iomap/swapfile.c
+@@ -189,7 +189,6 @@ int iomap_swapfile_activate(struct swap_info_struct *sis,
+ 	*pagespan = 1 + isi.highest_ppage - isi.lowest_ppage;
+ 	sis->max = isi.nr_pages;
+ 	sis->pages = isi.nr_pages - 1;
+-	sis->highest_bit = isi.nr_pages - 1;
+ 	return isi.nr_extents;
+ }
+ EXPORT_SYMBOL_GPL(iomap_swapfile_activate);
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 0c681aa5cb98..0c222017b5c6 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -306,8 +306,6 @@ struct swap_info_struct {
+ 	struct list_head frag_clusters[SWAP_NR_ORDERS];
+ 					/* list of cluster that are fragmented or contented */
+ 	unsigned int frag_cluster_nr[SWAP_NR_ORDERS];
+-	unsigned int lowest_bit;	/* index of first free in swap_map */
+-	unsigned int highest_bit;	/* index of last free in swap_map */
+ 	unsigned int pages;		/* total of usable pages of swap */
+ 	unsigned int inuse_pages;	/* number of those currently in use */
+ 	struct percpu_cluster __percpu *percpu_cluster; /* per cpu's swap location */
+diff --git a/mm/page_io.c b/mm/page_io.c
+index 4b4ea8e49cf6..9b983de351f9 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -163,7 +163,6 @@ int generic_swapfile_activate(struct swap_info_struct *sis,
+ 		page_no = 1;	/* force Empty message */
+ 	sis->max = page_no;
+ 	sis->pages = page_no - 1;
+-	sis->highest_bit = page_no - 1;
+ out:
+ 	return ret;
+ bad_bmap:
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index d0e5b9fa0c48..7963a0c646a4 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -55,7 +55,7 @@ static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
+ static void free_swap_count_continuations(struct swap_info_struct *);
+ static void swap_entry_range_free(struct swap_info_struct *si, swp_entry_t entry,
+ 				  unsigned int nr_pages);
+-static void swap_range_alloc(struct swap_info_struct *si, unsigned long offset,
++static void swap_range_alloc(struct swap_info_struct *si,
+ 			     unsigned int nr_entries);
+ static bool folio_swapcache_freeable(struct folio *folio);
+ static struct swap_cluster_info *lock_cluster(struct swap_info_struct *si,
+@@ -650,7 +650,7 @@ static bool cluster_alloc_range(struct swap_info_struct *si, struct swap_cluster
+ 	}
+ 
+ 	memset(si->swap_map + start, usage, nr_pages);
+-	swap_range_alloc(si, start, nr_pages);
++	swap_range_alloc(si, nr_pages);
+ 	ci->count += nr_pages;
+ 
+ 	if (ci->count == SWAPFILE_CLUSTER) {
+@@ -888,19 +888,11 @@ static void del_from_avail_list(struct swap_info_struct *si)
+ 	spin_unlock(&swap_avail_lock);
+ }
+ 
+-static void swap_range_alloc(struct swap_info_struct *si, unsigned long offset,
++static void swap_range_alloc(struct swap_info_struct *si,
+ 			     unsigned int nr_entries)
+ {
+-	unsigned int end = offset + nr_entries - 1;
+-
+-	if (offset == si->lowest_bit)
+-		si->lowest_bit += nr_entries;
+-	if (end == si->highest_bit)
+-		WRITE_ONCE(si->highest_bit, si->highest_bit - nr_entries);
+ 	WRITE_ONCE(si->inuse_pages, si->inuse_pages + nr_entries);
+ 	if (si->inuse_pages == si->pages) {
+-		si->lowest_bit = si->max;
+-		si->highest_bit = 0;
+ 		del_from_avail_list(si);
+ 
+ 		if (si->cluster_info && vm_swap_full())
+@@ -933,15 +925,8 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
+ 	for (i = 0; i < nr_entries; i++)
+ 		clear_bit(offset + i, si->zeromap);
+ 
+-	if (offset < si->lowest_bit)
+-		si->lowest_bit = offset;
+-	if (end > si->highest_bit) {
+-		bool was_full = !si->highest_bit;
+-
+-		WRITE_ONCE(si->highest_bit, end);
+-		if (was_full && (si->flags & SWP_WRITEOK))
+-			add_to_avail_list(si);
+-	}
++	if (si->inuse_pages == si->pages)
++		add_to_avail_list(si);
+ 	if (si->flags & SWP_BLKDEV)
+ 		swap_slot_free_notify =
+ 			si->bdev->bd_disk->fops->swap_slot_free_notify;
+@@ -1051,15 +1036,12 @@ int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order)
+ 		plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
+ 		spin_unlock(&swap_avail_lock);
+ 		spin_lock(&si->lock);
+-		if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) {
++		if ((si->inuse_pages == si->pages) || !(si->flags & SWP_WRITEOK)) {
+ 			spin_lock(&swap_avail_lock);
+ 			if (plist_node_empty(&si->avail_lists[node])) {
+ 				spin_unlock(&si->lock);
+ 				goto nextsi;
+ 			}
+-			WARN(!si->highest_bit,
+-			     "swap_info %d in list but !highest_bit\n",
+-			     si->type);
+ 			WARN(!(si->flags & SWP_WRITEOK),
+ 			     "swap_info %d in list but !SWP_WRITEOK\n",
+ 			     si->type);
+@@ -2441,8 +2423,8 @@ static void _enable_swap_info(struct swap_info_struct *si)
+ 	 */
+ 	plist_add(&si->list, &swap_active_head);
+ 
+-	/* add to available list iff swap device is not full */
+-	if (si->highest_bit)
++	/* add to available list if swap device is not full */
++	if (si->inuse_pages < si->pages)
+ 		add_to_avail_list(si);
+ }
+ 
+@@ -2606,7 +2588,6 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
+ 	drain_mmlist();
+ 
+ 	/* wait for anyone still in scan_swap_map_slots */
+-	p->highest_bit = 0;		/* cuts scans short */
+ 	while (p->flags >= SWP_SCANNING) {
+ 		spin_unlock(&p->lock);
+ 		spin_unlock(&swap_lock);
+@@ -2941,8 +2922,6 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
+ 		return 0;
+ 	}
+ 
+-	si->lowest_bit  = 1;
+-
+ 	maxpages = swapfile_maximum_size;
+ 	last_page = swap_header->info.last_page;
+ 	if (!last_page) {
+@@ -2959,7 +2938,6 @@ static unsigned long read_swap_header(struct swap_info_struct *si,
+ 		if ((unsigned int)maxpages == 0)
+ 			maxpages = UINT_MAX;
+ 	}
+-	si->highest_bit = maxpages - 1;
+ 
+ 	if (!maxpages)
+ 		return 0;
+-- 
+2.39.5
+

@@ -1,0 +1,95 @@
+From: Suren Baghdasaryan <surenb@google.com>
+Date: Thu, 26 Dec 2024 09:07:03 -0800
+Subject: [PATCH] refcount: introduce __refcount_{add|inc}_not_zero_limited
+
+Introduce functions to increase refcount but with a top limit above which
+they will fail to increase.  Setting the limit to 0 indicates no limit.
+
+Link: https://lkml.kernel.org/r/20241226170710.1159679-12-surenb@google.com
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: David Howells <dhowells@redhat.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Hillf Danton <hdanton@sina.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: kernel test robot <oliver.sang@intel.com>
+Cc: Klara Modin <klarasmodin@gmail.com>
+Cc: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Cc: Lokesh Gidra <lokeshgidra@google.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Mel Gorman <mgorman@techsingularity.net>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Minchan Kim <minchan@google.com>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Paul E. McKenney <paulmck@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Sourav Panda <souravpanda@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/refcount.h | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/refcount.h b/include/linux/refcount.h
+index 35f039ecb272..e51a49179307 100644
+--- a/include/linux/refcount.h
++++ b/include/linux/refcount.h
+@@ -137,13 +137,19 @@ static inline unsigned int refcount_read(const refcount_t *r)
+ }
+ 
+ static inline __must_check __signed_wrap
+-bool __refcount_add_not_zero(int i, refcount_t *r, int *oldp)
++bool __refcount_add_not_zero_limited(int i, refcount_t *r, int *oldp,
++				     int limit)
+ {
+ 	int old = refcount_read(r);
+ 
+ 	do {
+ 		if (!old)
+ 			break;
++		if (limit && old + i > limit) {
++			if (oldp)
++				*oldp = old;
++			return false;
++		}
+ 	} while (!atomic_try_cmpxchg_relaxed(&r->refs, &old, old + i));
+ 
+ 	if (oldp)
+@@ -155,6 +161,12 @@ bool __refcount_add_not_zero(int i, refcount_t *r, int *oldp)
+ 	return old;
+ }
+ 
++static inline __must_check __signed_wrap
++bool __refcount_add_not_zero(int i, refcount_t *r, int *oldp)
++{
++	return __refcount_add_not_zero_limited(i, r, oldp, 0);
++}
++
+ /**
+  * refcount_add_not_zero - add a value to a refcount unless it is 0
+  * @i: the value to add to the refcount
+@@ -213,6 +225,12 @@ static inline void refcount_add(int i, refcount_t *r)
+ 	__refcount_add(i, r, NULL);
+ }
+ 
++static inline __must_check bool __refcount_inc_not_zero_limited(refcount_t *r,
++								int *oldp, int limit)
++{
++	return __refcount_add_not_zero_limited(1, r, oldp, limit);
++}
++
+ static inline __must_check bool __refcount_inc_not_zero(refcount_t *r, int *oldp)
+ {
+ 	return __refcount_add_not_zero(1, r, oldp);
+-- 
+2.39.5
+
