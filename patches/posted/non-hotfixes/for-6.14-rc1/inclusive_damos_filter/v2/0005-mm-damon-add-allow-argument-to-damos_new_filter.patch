@@ -1,0 +1,134 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 8 Jan 2025 09:59:28 -0800
+Subject: [PATCH v2 05/10] mm/damon: add 'allow' argument to damos_new_filter()
+
+DAMON API users should set damos_filter->allow manually to use a DAMOS
+allow-filter, since damos_new_filter() unsets the field always.  It is
+cumbersome and easy to mistake.  Add an arugment for setting the field
+to damos_new_filter().
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h       | 2 +-
+ mm/damon/core.c             | 7 ++++---
+ mm/damon/paddr.c            | 3 ++-
+ mm/damon/reclaim.c          | 2 +-
+ mm/damon/sysfs-schemes.c    | 2 +-
+ mm/damon/tests/core-kunit.h | 4 ++--
+ 6 files changed, 11 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 8a2d104df5a3..0834d7ffcb84 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -801,7 +801,7 @@ void damon_update_region_access_rate(struct damon_region *r, bool accessed,
+ 		struct damon_attrs *attrs);
+ 
+ struct damos_filter *damos_new_filter(enum damos_filter_type type,
+-		bool matching);
++		bool matching, bool allow);
+ void damos_add_filter(struct damos *s, struct damos_filter *f);
+ void damos_destroy_filter(struct damos_filter *f);
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 76707b0635d6..55a435bdd89d 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -266,7 +266,7 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ }
+ 
+ struct damos_filter *damos_new_filter(enum damos_filter_type type,
+-		bool matching)
++		bool matching, bool allow)
+ {
+ 	struct damos_filter *filter;
+ 
+@@ -275,7 +275,7 @@ struct damos_filter *damos_new_filter(enum damos_filter_type type,
+ 		return NULL;
+ 	filter->type = type;
+ 	filter->matching = matching;
+-	filter->allow = false;
++	filter->allow = allow;
+ 	INIT_LIST_HEAD(&filter->list);
+ 	return filter;
+ }
+@@ -806,7 +806,8 @@ static int damos_commit_filters(struct damos *dst, struct damos *src)
+ 			continue;
+ 
+ 		new_filter = damos_new_filter(
+-				src_filter->type, src_filter->matching);
++				src_filter->type, src_filter->matching,
++				src_filter->allow);
+ 		if (!new_filter)
+ 			return -ENOMEM;
+ 		damos_commit_filter_arg(new_filter, src_filter);
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 817acfd4f8a2..6b4397de4199 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -259,7 +259,8 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s,
+ 		}
+ 	}
+ 	if (install_young_filter) {
+-		filter = damos_new_filter(DAMOS_FILTER_TYPE_YOUNG, true);
++		filter = damos_new_filter(
++				DAMOS_FILTER_TYPE_YOUNG, true, false);
+ 		if (!filter)
+ 			return 0;
+ 		damos_add_filter(s, filter);
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index 9e0077a9404e..a675150965e0 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -221,7 +221,7 @@ static int damon_reclaim_apply_parameters(void)
+ 	}
+ 
+ 	if (skip_anon) {
+-		filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true);
++		filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, false);
+ 		if (!filter)
+ 			goto out;
+ 		damos_add_filter(scheme, filter);
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index deeaf23c1fcf..9a883e8aea1c 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1901,7 +1901,7 @@ static int damon_sysfs_add_scheme_filters(struct damos *scheme,
+ 			sysfs_filters->filters_arr[i];
+ 		struct damos_filter *filter =
+ 			damos_new_filter(sysfs_filter->type,
+-					sysfs_filter->matching);
++					sysfs_filter->matching, false);
+ 		int err;
+ 
+ 		if (!filter)
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 8f58d3424c21..532c6a6f21f9 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -411,7 +411,7 @@ static void damos_test_new_filter(struct kunit *test)
+ {
+ 	struct damos_filter *filter;
+ 
+-	filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true);
++	filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, false);
+ 	KUNIT_EXPECT_EQ(test, filter->type, DAMOS_FILTER_TYPE_ANON);
+ 	KUNIT_EXPECT_EQ(test, filter->matching, true);
+ 	KUNIT_EXPECT_PTR_EQ(test, filter->list.prev, &filter->list);
+@@ -425,7 +425,7 @@ static void damos_test_filter_out(struct kunit *test)
+ 	struct damon_region *r, *r2;
+ 	struct damos_filter *f;
+ 
+-	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true);
++	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
+ 	f->addr_range = (struct damon_addr_range){
+ 		.start = DAMON_MIN_REGION * 2, .end = DAMON_MIN_REGION * 6};
+ 
+-- 
+2.39.5
