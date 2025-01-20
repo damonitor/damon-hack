@@ -1,0 +1,63 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 20 Jan 2025 14:26:34 -0800
+Subject: [PATCH] mm/damon/core: update ctx->attrs.access_samples
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 8550917d2b37..430c41dd3a41 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1298,6 +1298,7 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 
+ 		damon_for_each_region(r, t) {
+ 			trace_damon_aggregated(ti, r, damon_nr_regions(t));
++			c->attrs.access_samples += r->nr_accesses;
+ 			r->last_nr_accesses = r->nr_accesses;
+ 			r->nr_accesses = 0;
+ 		}
+@@ -1305,6 +1306,14 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 	}
+ }
+ 
++static void kdamond_tune_intervals(struct damon_ctx *c)
++{
++	if (!c->attrs.target_access_samples_bp)
++		return;
++
++	c->attrs.access_samples = 0;
++}
++
+ static void damon_split_region_at(struct damon_target *t,
+ 				  struct damon_region *r, unsigned long sz_r);
+ 
+@@ -2240,6 +2249,8 @@ static void kdamond_init_intervals_sis(struct damon_ctx *ctx)
+ 	ctx->next_aggregation_sis = ctx->attrs.aggr_interval / sample_interval;
+ 	ctx->next_ops_update_sis = ctx->attrs.ops_update_interval /
+ 		sample_interval;
++	ctx->next_intervals_tune_sis = ctx->attrs.intervals_tune_interval /
++		sample_interval;
+ 
+ 	/* todo: ensure apply_interval_us > sample_interval */
+ 	damon_for_each_scheme(scheme, ctx) {
+@@ -2327,6 +2338,14 @@ static int kdamond_fn(void *data)
+ 				ctx->attrs.aggr_interval / sample_interval;
+ 
+ 			kdamond_reset_aggregated(ctx);
++			if (ctx->passed_sample_intervals >=
++					ctx->next_intervals_tune_sis) {
++				ctx->next_intervals_tune_sis =
++					ctx->next_intervals_tune_sis +
++					ctx->attrs.intervals_tune_interval /
++					sample_interval;
++				kdamond_tune_intervals(ctx);
++			}
+ 			kdamond_split_regions(ctx);
+ 			if (ctx->ops.reset_aggregated)
+ 				ctx->ops.reset_aggregated(ctx);
+-- 
+2.39.5
+
