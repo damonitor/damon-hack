@@ -1,5 +1,8 @@
 #!/bin/bash
 
+echo "use hkml patch commit_cv instead"
+exit 1
+
 # Read damon_meta_changes/README for details.
 
 if [ $# -ne 1 ]
