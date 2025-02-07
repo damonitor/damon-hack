@@ -10,10 +10,10 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  3 files changed, 285 insertions(+), 155 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index eed52dc0875d..c3e9431c3e4c 100644
+index 40cecf7c8886..1e181eec5b77 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -669,20 +669,47 @@ struct damon_call_control {
+@@ -631,20 +631,47 @@ struct damon_call_control {
  	bool canceled;
  };
  
@@ -65,7 +65,7 @@ index eed52dc0875d..c3e9431c3e4c 100644
   *
   * For each @sample_interval, DAMON checks whether each region is accessed or
   * not during the last @sample_interval.  If such access is found, DAMON
-@@ -693,33 +720,14 @@ struct damon_call_control {
+@@ -655,33 +682,14 @@ struct damon_call_control {
   * and applies the changes for each @ops_update_interval.  All time intervals
   * are in micro-seconds.  Please refer to &struct damon_operations and &struct
   * damon_callback for more detail.
@@ -101,10 +101,10 @@ index eed52dc0875d..c3e9431c3e4c 100644
  
  /**
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 9a2c3e4209cb..bd341aa464a5 100644
+index c4e4da65b9f5..5247596e6b17 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -644,6 +644,27 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
+@@ -614,6 +614,27 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
  					r, old_attrs, new_attrs);
  }
  
@@ -132,7 +132,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  /**
   * damon_set_attrs() - Set attributes for the monitoring.
   * @ctx:		monitoring context
-@@ -664,6 +685,9 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+@@ -634,6 +655,9 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
  		attrs->sample_interval : 1;
  	struct damos *s;
  
@@ -142,7 +142,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  	if (attrs->min_nr_regions < 3)
  		return -EINVAL;
  	if (attrs->min_nr_regions > attrs->max_nr_regions)
-@@ -1312,9 +1336,7 @@ static unsigned long damon_get_intervals_adaptation_bp(struct damon_ctx *c)
+@@ -1282,9 +1306,7 @@ static unsigned long damon_get_intervals_adaptation_bp(struct damon_ctx *c)
  {
  	struct damon_target *t;
  	struct damon_region *r;
@@ -153,7 +153,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  	unsigned long adaptation_bp;
  
  	damon_for_each_target(t, c) {
-@@ -1322,15 +1344,12 @@ static unsigned long damon_get_intervals_adaptation_bp(struct damon_ctx *c)
+@@ -1292,15 +1314,12 @@ static unsigned long damon_get_intervals_adaptation_bp(struct damon_ctx *c)
  		damon_for_each_region(r, t)
  			access_samples += r->nr_accesses;
  	}
@@ -172,7 +172,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  	return adaptation_bp;
  }
  
-@@ -1338,25 +1357,22 @@ static void kdamond_tune_intervals(struct damon_ctx *c)
+@@ -1308,25 +1327,22 @@ static void kdamond_tune_intervals(struct damon_ctx *c)
  {
  	unsigned long adaptation_bp, sample_to_aggr_bp;
  	struct damon_attrs new_attrs;
@@ -208,16 +208,16 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  	pr_info("tune intervals to %lu %lu\n\n",
  			new_attrs.sample_interval, new_attrs.aggr_interval);
  	damon_set_attrs(c, &new_attrs);
-@@ -2299,7 +2315,7 @@ static void kdamond_init_intervals_sis(struct damon_ctx *ctx)
+@@ -2234,7 +2250,7 @@ static void kdamond_init_intervals_sis(struct damon_ctx *ctx)
  	ctx->next_ops_update_sis = ctx->attrs.ops_update_interval /
  		sample_interval;
  	ctx->next_intervals_tune_sis = ctx->next_aggregation_sis *
 -		ctx->attrs.tune_interval_aggrs;
 +		ctx->attrs.intervals_goal.aggrs;
  
- 	/* todo: ensure apply_interval_us > sample_interval */
  	damon_for_each_scheme(scheme, ctx) {
-@@ -2325,9 +2341,6 @@ static int kdamond_fn(void *data)
+ 		apply_interval = scheme->apply_interval_us ?
+@@ -2259,9 +2275,6 @@ static int kdamond_fn(void *data)
  	complete(&ctx->kdamond_started);
  	kdamond_init_intervals_sis(ctx);
  
@@ -227,7 +227,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  	if (ctx->ops.init)
  		ctx->ops.init(ctx);
  	ctx->regions_score_histogram = kmalloc_array(DAMOS_MAX_SCORE + 1,
-@@ -2388,12 +2401,12 @@ static int kdamond_fn(void *data)
+@@ -2322,12 +2335,12 @@ static int kdamond_fn(void *data)
  		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
  			ctx->next_aggregation_sis = next_aggregation_sis +
  				ctx->attrs.aggr_interval / sample_interval;
@@ -245,7 +245,7 @@ index 9a2c3e4209cb..bd341aa464a5 100644
  			}
  
 diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
-index 8bc5e3e40893..98ddc50797cd 100644
+index 347d9614c787..dfb8a7dd768a 100644
 --- a/mm/damon/sysfs.c
 +++ b/mm/damon/sysfs.c
 @@ -409,150 +409,259 @@ static const struct kobj_type damon_sysfs_targets_ktype = {
