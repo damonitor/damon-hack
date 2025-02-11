@@ -1,0 +1,73 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 7 Feb 2025 15:21:27 -0800
+Subject: [PATCH] mm/damon/core: implement intervals goal commitment
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 22 ++++++++++++++++++++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 6c477f57ebe3..70acf255fe67 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -662,6 +662,7 @@ struct damon_intervals_goal {
+  * @sample_interval:		The time between access samplings.
+  * @aggr_interval:		The time between monitor results aggregations.
+  * @ops_update_interval:	The time between monitoring operations updates.
++ * @intervals_goal:		Intervals auto-tuning goal.
+  * @min_nr_regions:		The minimum number of adaptive monitoring
+  *				regions.
+  * @max_nr_regions:		The maximum number of adaptive monitoring
+@@ -681,6 +682,7 @@ struct damon_attrs {
+ 	unsigned long sample_interval;
+ 	unsigned long aggr_interval;
+ 	unsigned long ops_update_interval;
++	struct damon_intervals_goal intervals_goal;
+ 	unsigned long min_nr_regions;
+ 	unsigned long max_nr_regions;
+ };
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 21c337c60c63..2221ba0a8394 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -614,6 +614,25 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
+ 					r, old_attrs, new_attrs);
+ }
+ 
++/*
++ * damon_valid_intervals_goal() - return if the intervals goal of @attrs is
++ * valid.
++ */
++static bool damon_valid_intervals_goal(struct damon_attrs *attrs)
++{
++	struct damon_intervals_goal *goal = &attrs->intervals_goal;
++
++	/* tuning is disabled */
++	if (!goal->aggrs)
++		return true;
++	if (goal->min_sample_us > goal->max_sample_us)
++		return false;
++	if (attrs->sample_interval < goal->min_sample_us ||
++			goal->max_sample_us < attrs->sample_interval)
++		return false;
++	return true;
++}
++
+ /**
+  * damon_set_attrs() - Set attributes for the monitoring.
+  * @ctx:		monitoring context
+@@ -634,6 +653,9 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+ 		attrs->sample_interval : 1;
+ 	struct damos *s;
+ 
++	if (!damon_valid_intervals_goal(attrs))
++		return -EINVAL;
++
+ 	if (attrs->min_nr_regions < 3)
+ 		return -EINVAL;
+ 	if (attrs->min_nr_regions > attrs->max_nr_regions)
+-- 
+2.39.5
+

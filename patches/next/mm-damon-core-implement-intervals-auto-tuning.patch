@@ -1,53 +1,52 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Fri, 7 Feb 2025 15:00:33 -0800
-Subject: [PATCH] mm/damon/core: implement monitoring intervals auto-tuning
+Date: Fri, 7 Feb 2025 15:21:39 -0800
+Subject: [PATCH] mm/damon/core: implement intervals auto-tuning
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 105 +++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 104 insertions(+), 1 deletion(-)
+ include/linux/damon.h | 16 ++++++++++
+ mm/damon/core.c       | 68 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 84 insertions(+)
 
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 70acf255fe67..1d1506420fff 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -685,6 +685,17 @@ struct damon_attrs {
+ 	struct damon_intervals_goal intervals_goal;
+ 	unsigned long min_nr_regions;
+ 	unsigned long max_nr_regions;
++/* private: internal use only */
++	/*
++	 * @aggr_interval to @sample_interval ratio.
++	 * Core-external components call damon_set_attrs() with &damon_attrs
++	 * that this field is unset.  In the case, damon_set_attrs() sets this
++	 * field of resulting &damon_attrs.  Core-internal components such as
++	 * kdamond_tune_intervals() calls damon_set_attrs() with &damon_attrs
++	 * that this field is set.  In the case, damon_set_attrs() just keep
++	 * it.
++	 */
++	unsigned long aggr_samples;
+ };
+ 
+ /**
+@@ -733,6 +744,11 @@ struct damon_ctx {
+ 	 * update
+ 	 */
+ 	unsigned long next_ops_update_sis;
++	/*
++	 * number of sample intervals that should be passed before next
++	 * intervals tuning
++	 */
++	unsigned long next_intervals_tune_sis;
+ 	/* for waiting until the execution of the kdamond_fn is started */
+ 	struct completion kdamond_started;
+ 	/* for scheme quotas prioritization */
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 83b101bd2fd3..b0c34189c177 100644
+index 2221ba0a8394..6e7ff36cf5de 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -614,6 +614,25 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
- 					r, old_attrs, new_attrs);
- }
- 
-+/*
-+ * damon_valid_intervals_goal() - return if the intervals goal of @attrs is
-+ * valid.
-+ */
-+static bool damon_valid_intervals_goal(struct damon_attrs *attrs)
-+{
-+	struct damon_intervals_goal *goal = &attrs->intervals_goal;
-+
-+	/* tuning is disabled */
-+	if (!goal->aggrs)
-+		return true;
-+	if (goal->min_sample_us > goal->max_sample_us)
-+		return false;
-+	if (attrs->sample_interval < goal->min_sample_us ||
-+			goal->max_sample_us < attrs->sample_interval)
-+		return false;
-+	return true;
-+}
-+
- /**
-  * damon_set_attrs() - Set attributes for the monitoring.
-  * @ctx:		monitoring context
-@@ -634,6 +653,9 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
- 		attrs->sample_interval : 1;
- 	struct damos *s;
- 
-+	if (!damon_valid_intervals_goal(attrs))
-+		return -EINVAL;
-+
- 	if (attrs->min_nr_regions < 3)
- 		return -EINVAL;
- 	if (attrs->min_nr_regions > attrs->max_nr_regions)
-@@ -641,6 +663,10 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+@@ -663,6 +663,10 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
  	if (attrs->sample_interval > attrs->aggr_interval)
  		return -EINVAL;
  
@@ -58,7 +57,7 @@ index 83b101bd2fd3..b0c34189c177 100644
  	ctx->next_aggregation_sis = ctx->passed_sample_intervals +
  		attrs->aggr_interval / sample_interval;
  	ctx->next_ops_update_sis = ctx->passed_sample_intervals +
-@@ -1275,6 +1301,66 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+@@ -1297,6 +1301,60 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
  	}
  }
  
@@ -86,14 +85,11 @@ index 83b101bd2fd3..b0c34189c177 100644
 +		10000;
 +	/*
 +	 * adaptaion_bp ranges from 1 to 20,000.  Avoid too rapid reduction of
-+	 * the intervals by rescaling [1,9999] to [5000, 9999].
++	 * the intervals by rescaling [1,10,000] to [5000, 10,000].
 +	 */
-+	if (adaptation_bp < 10000)
++	if (adaptation_bp <= 10000)
 +		adaptation_bp = 5000 + adaptation_bp / 2;
 +
-+	pr_info("access_samples %lu/%lu, score_bp %lu, adaptation bp %lu\n",
-+			access_samples, target_samples, score_bp,
-+			adaptation_bp);
 +	return adaptation_bp;
 +}
 +
@@ -116,16 +112,13 @@ index 83b101bd2fd3..b0c34189c177 100644
 +			goal->min_sample_us);
 +	new_attrs.aggr_interval = new_attrs.sample_interval *
 +		c->attrs.aggr_samples;
-+
-+	pr_info("tune intervals to %lu %lu\n\n",
-+			new_attrs.sample_interval, new_attrs.aggr_interval);
 +	damon_set_attrs(c, &new_attrs);
 +}
 +
  static void damon_split_region_at(struct damon_target *t,
  				  struct damon_region *r, unsigned long sz_r);
  
-@@ -2176,6 +2262,8 @@ static void kdamond_init_intervals_sis(struct damon_ctx *ctx)
+@@ -2201,6 +2259,8 @@ static void kdamond_init_intervals_sis(struct damon_ctx *ctx)
  	ctx->next_aggregation_sis = ctx->attrs.aggr_interval / sample_interval;
  	ctx->next_ops_update_sis = ctx->attrs.ops_update_interval /
  		sample_interval;
@@ -134,7 +127,7 @@ index 83b101bd2fd3..b0c34189c177 100644
  
  	damon_for_each_scheme(scheme, ctx) {
  		apply_interval = scheme->apply_interval_us ?
-@@ -2260,6 +2348,14 @@ static int kdamond_fn(void *data)
+@@ -2285,6 +2345,14 @@ static int kdamond_fn(void *data)
  		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
  			ctx->next_aggregation_sis = next_aggregation_sis +
  				ctx->attrs.aggr_interval / sample_interval;
@@ -149,22 +142,6 @@ index 83b101bd2fd3..b0c34189c177 100644
  
  			kdamond_reset_aggregated(ctx);
  			kdamond_split_regions(ctx);
-@@ -2415,7 +2511,14 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
- static unsigned int damon_moving_sum(unsigned int mvsum, unsigned int nomvsum,
- 		unsigned int len_window, unsigned int new_value)
- {
--	return mvsum - nomvsum / len_window + new_value;
-+	unsigned int ret = mvsum - nomvsum / len_window + new_value;
-+
-+	if (ret > 100 * 10000) {
-+		pr_info("current %u last %u window %u new input %u -> %u\n",
-+				mvsum, nomvsum, len_window, new_value, ret);
-+		BUG();
-+	}
-+	return ret;
- }
- 
- /**
 -- 
 2.39.5
 

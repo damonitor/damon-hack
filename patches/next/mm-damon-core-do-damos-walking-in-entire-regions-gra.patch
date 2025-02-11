@@ -2,21 +2,25 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sun, 12 Jan 2025 12:16:52 -0800
 Subject: [PATCH] mm/damon/core: do damos walking in entire regions granularity
 
-DAMOS walking can be started from the middle of the regions.  This makes
-some of its usage, namely DAMOS tried regions update not very useful and
-reliable.  Increase the critical section to do walking in entire regions
+damos_walk_control can be installed while DAMOS is walking the regions.
+This means the walk callback function invocations can be started from a
+region at the middle of the regions list.  This makes it hard to be used
+reliably.  Particularly, DAMOS tried regions update for collecting
+monitoring results gets problematic results.  Increase the
+walk_control_lock critical section to do walking in entire regions
 granularity.
 
+Fixes: bf0eaba0ff9c ("mm/damon/core: implement damos_walk()")
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  mm/damon/core.c | 9 +++------
  1 file changed, 3 insertions(+), 6 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 9d8e1a50066f..7b7d74dbde31 100644
+index 4b865b2558d9..c3d9b96b786a 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -1571,11 +1571,10 @@ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1456,11 +1456,10 @@ static void damos_walk_call_walk(struct damon_ctx *ctx, struct damon_target *t,
  	if (s->walk_completed)
  		return;
  
@@ -29,7 +33,7 @@ index 9d8e1a50066f..7b7d74dbde31 100644
  	control->walk_fn(control->data, ctx, t, r, s, sz_filter_passed);
  }
  
-@@ -1595,9 +1594,7 @@ static void damos_walk_complete(struct damon_ctx *ctx, struct damos *s)
+@@ -1480,9 +1479,7 @@ static void damos_walk_complete(struct damon_ctx *ctx, struct damos *s)
  	struct damos *siter;
  	struct damos_walk_control *control;
  
@@ -39,7 +43,7 @@ index 9d8e1a50066f..7b7d74dbde31 100644
  	if (!control)
  		return;
  
-@@ -1611,9 +1608,7 @@ static void damos_walk_complete(struct damon_ctx *ctx, struct damos *s)
+@@ -1496,9 +1493,7 @@ static void damos_walk_complete(struct damon_ctx *ctx, struct damos *s)
  		siter->walk_completed = false;
  
  	complete(&control->completion);
@@ -49,7 +53,7 @@ index 9d8e1a50066f..7b7d74dbde31 100644
  }
  
  /*
-@@ -1972,6 +1967,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -1845,6 +1840,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  	if (!has_schemes_to_apply)
  		return;
  
@@ -57,7 +61,7 @@ index 9d8e1a50066f..7b7d74dbde31 100644
  	damon_for_each_target(t, c) {
  		damon_for_each_region_safe(r, next_r, t)
  			damon_do_apply_schemes(c, t, r);
-@@ -1986,6 +1982,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -1859,6 +1855,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  			 c->attrs.aggr_interval) / sample_interval;
  		s->last_applied = NULL;
  	}
