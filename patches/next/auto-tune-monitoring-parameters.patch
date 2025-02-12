@@ -4,53 +4,82 @@ Subject: [PATCH] ==== auto-tune monitoring parameters ====
 
 mm/damon: auto-tune monitoring intervals aiming an amount of accesses
 
-Roughly speaking, DAMON checks if each memory element (damon_region) is
-accessed or not for every user-specified time interval called 'sampling
-interval'.  It aggregates the check intervals on the per-element counter
-called 'nr_accesses'.  DAMON users can read the counters to get the
-monitoring results.  The counters are reset for every another
-user-specified time interval called 'aggregation interval'.
+DAMON requires time-consuming and repetitive aggregation interval tuning
+for each worklaods and systems.  Introduce a feature for automate the
+tuning based on observed amount of access events.
 
-In other words, DAMON generates monitoring results snapshot every
-'aggregation interval'.  Hence the aggregation interval need to be
-carefully decided.  If it is too short, each snapshot will show only
-small amount of access.  If it is too long, snapshot is generated too
-slowly, so no timely proactive access-aware operation can be made.
-Adaptive regions adjustment mechanism also gets affected by
-inappropriate length of aggregation interval.
+Background: Access Frequency Monitoring and Aggregation Interval
+================================================================
 
-The optimum length of the aggregation interval is not static, though.
-It depends on how intensively the system and workloads are making
-accesses.  Hence, users are required to do experiments based tuning of
-the interval.  We recently added a guide for such tuning.  The guide is
-that increase the interval if only insufficient amount of accesses are
-shown in current snapshot, and vice versa.  Sampling interval to
-aggregation interval ratio is better to be kept to avoid unnecessarily
-increasing monitoring overhead.  Having the guide can help, but still
-the tuning is time consuming work, and unreliable for workloads that
-dynamically change the access intensiveness.
+DAMON checks if each memory element (damon_region) is accessed or not
+for every user-specified time interval called 'sampling interval'.  It
+aggregates the check intervals on per-element counter called
+'nr_accesses'.  DAMON users can read the counters to get the access
+temperature of a given element.  The counters are reset for every
+another user-specified time interval called 'aggregation interval'.
 
-The tuning is challenging mainly because it is asking users to specify
-how the mechanism should work, not what the mechanism should pursue.
-The parameters system is asking users to know how DAMON should work to
-achieve what they want (sufficient amount of accesses in each snapshot).
-It requires users to fully understand DAMON's mechanism, and even the
-characteristics of their workloads and systems.  Users shouldn't be
-asked to understand and tune the mechanism but just specify what they
-want.  Understanding the characteristics of the workloads and system is
-what DAMON is supposed to do, not what users are supposed to.
+This can illustrated as DAMON generates monitoring results snapshot with
+access eventss that happened within each 'aggregation interval'.  This
+implies the aggregation interval is important for the quality of the
+snapshots.  If it is too short, the amount of access events that
+happened within the time interval is small, so each snapshot will show
+no many interesting things but just a cold and dark world.  If it is too
+long, the snapshot might have many interesting things, but important
+events are already happened when the snapshot is ready to be shown.  As
+a result, proactive access-aware operation or monitoring
+self-optimizations such as adaptive regions adjustment cannot be made in
+a timely manner.
 
-Similar issue existed for DAMOS quotas, and it has mitigated by
-introducing the aim-oriented feedback-driven auto-tuning of DAMOS
-quotas.  Introduce a similar aim-oriented feedback-driven aggregation
-and sampling intervals auto-tuning feature.  It defines the ratio of
-positive access check sampling operations as the target metric.  Users
-can set the target.  It should be easier to set the optimum value.  For
-example, based on the Pareto principle, about 20% ratio could be used.
-If the user aims to find more hot pages, the value can be higher, and
-vice versa.  Then the auto-tuning feature periodically measures the
-metric value and use a simple proportional feedback loop to find the
-optimum value for the target.
+Problem: Time Consuming and Repetitive Tuning
+=============================================
+
+The appropriate length of the aggregation interval depends on how
+frequently the system and workloads are making access events that DAMON
+can observe.  Hence, users have to tune the interval with excessive
+amount of tests with the target system and workloads.  If the system and
+workloads are changed, the tuning should be done again.  If the
+characteristic of the workloads is dynamic, it becomes more challenging.
+It is therefore time-consuming and repetitive.
+
+The tuning challenge mainly stems from the wrong question.  It is asking
+users how the mechanism should work to achieve good quality monitoring
+results, which is what users want.  To make the right answer, users need
+to fully understand DAMON's mechanism, and even the characteristics of
+their workloads and systems.  Users shouldn't be asked to understand and
+tune the mechanism but just specify what they want.  Understanding the
+characteristics of the workloads and system is what DAMON is supposed to
+do, not what users are supposed to.
+
+Design: Aim-oriented Feedback-driven Auto-Tuning
+================================================
+
+Fortunately, the optimum length of the aggregation interval can be
+inferred based on given workloads.  If the current snapshots are showing
+no much intresting information, in other words, if it shows only rare
+accesses, increasing the aggregation interval helps, and vice versa.  We
+tested this theory on a few real-world workloads, and documented one of
+the experience with an official DAMON monitoring intervals tuning
+guideline.
+
+Based on the guideline's theory, we design an automation of aggregation
+tuning.  It defines the amount of interesting information as the ratio
+of positive access check samples within the aggregation interval, or the
+amount of blinking pixels on each snapshot.  Users are now asked to
+answer the aimed value of the ratio.
+
+The automation periodically measure the positive access samples ratio
+and increase or decrease the aggregation if it is lower or higher than
+the target value.  The amount of the change is proportion to the
+distance between current value and the target value.
+
+Discussion
+==========
+
+The modified question (aimed amount of heats in each snapshot) is easy
+to answer by both the users and the kernel.  If users are interested in
+finding more cold regions, the value should be lower, and vice versa.
+If users have no idea, kernel can suggest about 20% positive access
+samples ratio as a fair default value based on the Pareto principle.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
