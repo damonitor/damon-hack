@@ -2,11 +2,12 @@ From: SeongJae Park <sj@kernel.org>
 Date: Mon, 20 Jan 2025 13:43:38 -0800
 Subject: [PATCH] ==== auto-tune monitoring parameters ====
 
-mm/damon: auto-tune monitoring intervals aiming an amount of accesses
+mm/damon: auto-tune aggregation interval
 
-DAMON requires time-consuming and repetitive aggregation interval tuning
-for each worklaods and systems.  Introduce a feature for automate the
-tuning based on observed amount of access events.
+DAMON requires time-consuming and repetitive aggregation interval
+tuning.  Introduce a feature for automating it using a feedback loop
+that aims an amount of observed access events, like auto-exposing
+cameras.
 
 Background: Access Frequency Monitoring and Aggregation Interval
 ================================================================
@@ -18,17 +19,16 @@ aggregates the check intervals on per-element counter called
 temperature of a given element.  The counters are reset for every
 another user-specified time interval called 'aggregation interval'.
 
-This can illustrated as DAMON generates monitoring results snapshot with
-access eventss that happened within each 'aggregation interval'.  This
-implies the aggregation interval is important for the quality of the
-snapshots.  If it is too short, the amount of access events that
-happened within the time interval is small, so each snapshot will show
-no many interesting things but just a cold and dark world.  If it is too
-long, the snapshot might have many interesting things, but important
-events are already happened when the snapshot is ready to be shown.  As
-a result, proactive access-aware operation or monitoring
-self-optimizations such as adaptive regions adjustment cannot be made in
-a timely manner.
+This can be illustrated as DAMON continuously capturing a snapshot of
+access events that happen and captured within the last aggregation
+interval.  This implies the aggregation interval plays a key role for
+the quality of the snapshots, like the camera exposure time.  If it is
+too short, the amount of access events that happened and captured for
+each snapshot is small, so each snapshot will show no many interesting
+things but just a cold and dark world with hopefuly one pale blue dot or
+two.  If it is too long, too many events are aggregated in a single
+shot, so each snapshot will look like world of flames, or Muspellheim.
+It will be difficult to find practical insights in both cases.
 
 Problem: Time Consuming and Repetitive Tuning
 =============================================
@@ -41,36 +41,46 @@ workloads are changed, the tuning should be done again.  If the
 characteristic of the workloads is dynamic, it becomes more challenging.
 It is therefore time-consuming and repetitive.
 
-The tuning challenge mainly stems from the wrong question.  It is asking
-users how the mechanism should work to achieve good quality monitoring
-results, which is what users want.  To make the right answer, users need
-to fully understand DAMON's mechanism, and even the characteristics of
-their workloads and systems.  Users shouldn't be asked to understand and
-tune the mechanism but just specify what they want.  Understanding the
-characteristics of the workloads and system is what DAMON is supposed to
-do, not what users are supposed to.
+The tuning challenge mainly stems from the wrong question.  It is not
+asking users what quality of monitoring results they want, but how DAMON
+should operate for their hidden goal.  To make the right answer, users
+need to fully understand DAMON's mechanisms and the characteristics of
+their workloads.  Users shouldn't be asked to understand the underlying
+mechanism.  Understanding the characteristics of the workloads shouldn't
+be the role of users but DAMON.
 
-Design: Aim-oriented Feedback-driven Auto-Tuning
-================================================
+Aim-oriented Feedback-driven Auto-Tuning
+=========================================
 
-Fortunately, the optimum length of the aggregation interval can be
-inferred based on given workloads.  If the current snapshots are showing
-no much intresting information, in other words, if it shows only rare
-accesses, increasing the aggregation interval helps, and vice versa.  We
-tested this theory on a few real-world workloads, and documented one of
-the experience with an official DAMON monitoring intervals tuning
-guideline.
+Fortunately, the appropriate length of the aggregation interval can be
+inferred using a feedback loop.  If the current snapshots are showing no
+much intresting information, in other words, if it shows only rare
+access events, increasing the aggregation interval helps, and vice
+versa.  We tested this theory on a few real-world workloads, and
+documented one of the experience with an official DAMON monitoring
+intervals tuning guideline.  Since it is a simple theory that requires
+repeatable tries, it can be a good job for machines.
 
 Based on the guideline's theory, we design an automation of aggregation
-tuning.  It defines the amount of interesting information as the ratio
-of positive access check samples within the aggregation interval, or the
-amount of blinking pixels on each snapshot.  Users are now asked to
-answer the aimed value of the ratio.
+interval tuning, in a way similar to that of camera auto-exposure
+feature.  It defines the amount of interesting information as the ratio
+of captured access events to total capturing attemps of single snapshot,
+or more technically speaking, the ratio of positive access check samples
+to total samples within the aggregation interval.  It allows the users
+to set the target value of the ratio.  Once the target is set, the
+automation periodically measures the current value of the ratio and
+increase or decrease the aggregation interval if the ratio value is
+lower or higher than the target.  The amount of the change is proportion
+to the distance between current value and the target value.
 
-The automation periodically measure the positive access samples ratio
-and increase or decrease the aggregation if it is lower or higher than
-the target value.  The amount of the change is proportion to the
-distance between current value and the target value.
+To avoid auto-tuning goes too long way, let users set minimum and
+maximum aggregation interval time.  Changing only aggregation interval
+while sampling interval is kept make the maximum level of access
+frequency in each snapshot, or discernment of regions inconsistent.
+Also, unnecessarily short sampling interval causes meaningless
+monitoring overhed.  The automation therefore adjusts the sampling
+interval together with aggregation interval, while keeping the ratio
+between the two intervals.  Users can set the ratio, or the discernment.
 
 Discussion
 ==========
@@ -80,6 +90,27 @@ to answer by both the users and the kernel.  If users are interested in
 finding more cold regions, the value should be lower, and vice versa.
 If users have no idea, kernel can suggest about 20% positive access
 samples ratio as a fair default value based on the Pareto principle.
+
+Sampling to aggregation intervals ratio and min/max aggregation
+intervals are also arguably easy to answer.  What users want is
+discernment of regions for efficient system operation, for examples, X
+amount of colder regions or Y amount of warmer regions, not exactly how
+many times each cache line is accessed in nanoseconds degree.  The
+appropriate min/max aggregation interval can relatively naively set, and
+may better to set for aimed monitoring overhead.  Since sampling
+interval is directly related with the overhead, setting it based on the
+sampling interval can be easy.  With my experiences, I'd argue the
+intervals ratio 0.05, and 5 milliseconds to 20 seconds sampling interval
+range (100 milliseconds to 400 seconds aggregation interval) can be a
+good default suggestions.
+
+Evaluation
+==========
+
+We confirmed the tuning works as expected with only a few simple
+workloads including kernel builds, and that's why this is an RFC.  We
+will conduct more evaluations with more massive and realistic workloads
+and share the results by the time that we drop the RFC tag.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
