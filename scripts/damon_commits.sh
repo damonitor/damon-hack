@@ -81,7 +81,7 @@ then
 	for commit in $(git log --pretty=%H --reverse $revision_range \
 		-- $damon_files)
 	do
-		if ! git cherry-pick $commit
+		if ! git cherry-pick -x $commit
 		then
 			echo "cherry picking $commit failed"
 			exit 1
