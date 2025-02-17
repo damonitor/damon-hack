@@ -1,0 +1,69 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 17 Feb 2025 12:48:16 -0800
+Subject: [PATCH] mm/damon/core: set damos_filter default allowance behavior
+ based on installed filters
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b05b788ba9d7..d7d85a03a986 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -890,6 +890,29 @@ static int damos_commit_ops_filters(struct damos *dst, struct damos *src)
+ 	return 0;
+ }
+ 
++/**
++ * damos_filters_default_reject() - decide whether to reject memory that didn't
++ *				    match with any given filter.
++ * @filters:	Given DAMOS filters of a group.
++ */
++static bool damos_filters_default_reject(struct list_head *filters)
++{
++	struct damos_filter *last_filter;
++
++	if (list_empty(filters))
++		return false;
++	last_filter = list_last_entry(filters, struct damos_filter, list);
++	return last_filter->allow;
++}
++
++static void damos_set_filters_default_reject(struct damos *s)
++{
++	s->core_filters_default_reject =
++		damos_filters_default_reject(&s->filters);
++	s->ops_filters_default_reject =
++		damos_filters_default_reject(&s->ops_filters);
++}
++
+ static int damos_commit_filters(struct damos *dst, struct damos *src)
+ {
+ 	int err;
+@@ -897,7 +920,11 @@ static int damos_commit_filters(struct damos *dst, struct damos *src)
+ 	err = damos_commit_core_filters(dst, src);
+ 	if (err)
+ 		return err;
+-	return damos_commit_ops_filters(dst, src);
++	err = damos_commit_ops_filters(dst, src);
++	if (err)
++		return err;
++	damos_set_filters_default_reject(dst);
++	return 0;
+ }
+ 
+ static struct damos *damon_nth_scheme(int n, struct damon_ctx *ctx)
+@@ -1570,7 +1597,7 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+ 		if (damos_filter_match(ctx, t, r, filter))
+ 			return !filter->allow;
+ 	}
+-	return false;
++	return s->core_filters_default_reject;
+ }
+ 
+ /*
+-- 
+2.39.5
+
