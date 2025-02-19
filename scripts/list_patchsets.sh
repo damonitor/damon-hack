@@ -21,6 +21,7 @@ versions=(
 	v6.11
 	v6.12
 	v6.13
+	v6.14
 	akpm.korg.mm/mm-unstable
 )
 
