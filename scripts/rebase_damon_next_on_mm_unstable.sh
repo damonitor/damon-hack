@@ -14,6 +14,13 @@ then
 	exit 1
 fi
 
+bindir=$(dirname "$0")
+if ! "$bindir/patches_uptodate.sh"
+then
+	echo "Patches queue is not up to date."
+	exit 1
+fi
+
 if [ $# -eq 1 ]
 then
 	old_mm_unstable=$1
@@ -37,8 +44,6 @@ else
 fi
 
 new_mm_unstable=akpm.korg.mm/mm-unstable
-
-bindir=$(dirname "$0")
 
 git fetch akpm.korg.mm
 
