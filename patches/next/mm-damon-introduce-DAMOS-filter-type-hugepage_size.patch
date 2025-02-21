@@ -1,0 +1,132 @@
+From: Usama Arif <usamaarif642@gmail.com>
+Date: Tue, 11 Feb 2025 12:43:40 +0000
+Subject: [PATCH] mm/damon: introduce DAMOS filter type hugepage_size
+
+Patch series "mm/damon: add support for hugepage_size DAMOS filter", v5.
+
+hugepage_size DAMOS filter can be used to gather statistics to check if
+memory regions of specific access tempratures are backed by hugepages of a
+size in a specific range.  This filter can help to observe and prove the
+effectivenes of different schemes for shrinking/collapsing hugepages.
+
+
+This patch (of 4):
+
+This is to gather statistics to check if memory regions of specific access
+tempratures are backed by pages of a size in a specific range.  This
+filter can help to observe and prove the effectivenes of different schemes
+for shrinking/collapsing hugepages.
+
+Link: https://lkml.kernel.org/r/20250211124437.278873-1-usamaarif642@gmail.com
+Link: https://lkml.kernel.org/r/20250211124437.278873-2-usamaarif642@gmail.com
+Signed-off-by: Usama Arif <usamaarif642@gmail.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h    | 13 +++++++++++++
+ mm/damon/core.c          |  3 +++
+ mm/damon/paddr.c         |  6 ++++++
+ mm/damon/sysfs-schemes.c |  1 +
+ 4 files changed, 23 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index a390af84cf0f..0adfc2f4ca75 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -35,6 +35,16 @@ struct damon_addr_range {
+ 	unsigned long end;
+ };
+ 
++/**
++ * struct damon_size_range - Represents size for filter to operate on [@min, @max].
++ * @min:	Min size (inclusive).
++ * @max:	Max size (inclusive).
++ */
++struct damon_size_range {
++	unsigned long min;
++	unsigned long max;
++};
++
+ /**
+  * struct damon_region - Represents a monitoring target region.
+  * @ar:			The address range of the region.
+@@ -326,6 +336,7 @@ struct damos_stat {
+  * @DAMOS_FILTER_TYPE_ANON:	Anonymous pages.
+  * @DAMOS_FILTER_TYPE_MEMCG:	Specific memcg's pages.
+  * @DAMOS_FILTER_TYPE_YOUNG:	Recently accessed pages.
++ * @DAMOS_FILTER_TYPE_HUGEPAGE_SIZE:	Page is part of a hugepage.
+  * @DAMOS_FILTER_TYPE_ADDR:	Address range.
+  * @DAMOS_FILTER_TYPE_TARGET:	Data Access Monitoring target.
+  * @NR_DAMOS_FILTER_TYPES:	Number of filter types.
+@@ -345,6 +356,7 @@ enum damos_filter_type {
+ 	DAMOS_FILTER_TYPE_ANON,
+ 	DAMOS_FILTER_TYPE_MEMCG,
+ 	DAMOS_FILTER_TYPE_YOUNG,
++	DAMOS_FILTER_TYPE_HUGEPAGE_SIZE,
+ 	DAMOS_FILTER_TYPE_ADDR,
+ 	DAMOS_FILTER_TYPE_TARGET,
+ 	NR_DAMOS_FILTER_TYPES,
+@@ -376,6 +388,7 @@ struct damos_filter {
+ 		unsigned short memcg_id;
+ 		struct damon_addr_range addr_range;
+ 		int target_idx;
++		struct damon_size_range sz_range;
+ 	};
+ 	struct list_head list;
+ };
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index c3d9b96b786a..38f545fea585 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -776,6 +776,9 @@ static void damos_commit_filter_arg(
+ 	case DAMOS_FILTER_TYPE_TARGET:
+ 		dst->target_idx = src->target_idx;
+ 		break;
++	case DAMOS_FILTER_TYPE_HUGEPAGE_SIZE:
++		dst->sz_range = src->sz_range;
++		break;
+ 	default:
+ 		break;
+ 	}
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index c33b91c75960..9f03e1980b8d 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -211,6 +211,7 @@ static bool damos_pa_filter_match(struct damos_filter *filter,
+ {
+ 	bool matched = false;
+ 	struct mem_cgroup *memcg;
++	size_t folio_sz;
+ 
+ 	switch (filter->type) {
+ 	case DAMOS_FILTER_TYPE_ANON:
+@@ -230,6 +231,11 @@ static bool damos_pa_filter_match(struct damos_filter *filter,
+ 		if (matched)
+ 			damon_folio_mkold(folio);
+ 		break;
++	case DAMOS_FILTER_TYPE_HUGEPAGE_SIZE:
++		folio_sz = folio_size(folio);
++		matched = filter->sz_range.min <= folio_sz &&
++			  folio_sz <= filter->sz_range.max;
++		break;
+ 	default:
+ 		break;
+ 	}
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 98f93ae9f59e..9020bc9befac 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -329,6 +329,7 @@ static const char * const damon_sysfs_scheme_filter_type_strs[] = {
+ 	"anon",
+ 	"memcg",
+ 	"young",
++	"hugepage_size",
+ 	"addr",
+ 	"target",
+ };
+-- 
+2.39.5
+

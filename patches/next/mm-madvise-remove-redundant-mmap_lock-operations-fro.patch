@@ -1,0 +1,76 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 5 Feb 2025 22:15:17 -0800
+Subject: [PATCH] mm/madvise: remove redundant mmap_lock operations from
+ process_madvise()
+
+Optimize redundant mmap lock operations from process_madvise() by directly
+doing the mmap locking first, and then the remaining works for all ranges
+in the loop.
+
+Link: https://lkml.kernel.org/r/20250206061517.2958-5-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Reviewed-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Liam R. Howlett <howlett@gmail.com>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/madvise.c | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 6e31e3202d71..b48da55bea22 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -1778,9 +1778,26 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
+ 
+ 	total_len = iov_iter_count(iter);
+ 
++	ret = madvise_lock(mm, behavior);
++	if (ret)
++		return ret;
++
+ 	while (iov_iter_count(iter)) {
+-		ret = do_madvise(mm, (unsigned long)iter_iov_addr(iter),
+-				 iter_iov_len(iter), behavior);
++		unsigned long start = (unsigned long)iter_iov_addr(iter);
++		size_t len_in = iter_iov_len(iter);
++		size_t len;
++
++		if (!is_valid_madvise(start, len_in, behavior)) {
++			ret = -EINVAL;
++			break;
++		}
++
++		len = PAGE_ALIGN(len_in);
++		if (start + len == start)
++			ret = 0;
++		else
++			ret = madvise_do_behavior(mm, start, len_in, len,
++					behavior);
+ 		/*
+ 		 * An madvise operation is attempting to restart the syscall,
+ 		 * but we cannot proceed as it would not be correct to repeat
+@@ -1796,12 +1813,17 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
+ 				ret = -EINTR;
+ 				break;
+ 			}
++
++			/* Drop and reacquire lock to unwind race. */
++			madvise_unlock(mm, behavior);
++			madvise_lock(mm, behavior);
+ 			continue;
+ 		}
+ 		if (ret < 0)
+ 			break;
+ 		iov_iter_advance(iter, iter_iov_len(iter));
+ 	}
++	madvise_unlock(mm, behavior);
+ 
+ 	ret = (total_len - iov_iter_count(iter)) ? : ret;
+ 
+-- 
+2.39.5
+

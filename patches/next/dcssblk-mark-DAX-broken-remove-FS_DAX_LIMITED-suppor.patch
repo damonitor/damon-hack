@@ -1,0 +1,170 @@
+From: Dan Williams <dan.j.williams@intel.com>
+Date: Tue, 18 Feb 2025 14:55:34 +1100
+Subject: [PATCH] dcssblk: mark DAX broken, remove FS_DAX_LIMITED support
+
+The dcssblk driver has long needed special case supoprt to enable limited
+dax operation, so called CONFIG_FS_DAX_LIMITED.  This mode works around
+the incomplete support for ZONE_DEVICE on s390 by forgoing the ability of
+dax-mapped pages to support GUP.
+
+Now, pending cleanups to fsdax that fix its reference counting [1] depend
+on the ability of all dax drivers to supply ZONE_DEVICE pages.
+
+To allow that work to move forward, dax support needs to be paused for
+dcssblk until ZONE_DEVICE support arrives.  That work has been known for a
+few years [2], and the removal of "pte_devmap" requirements [3] makes the
+conversion easier.
+
+For now, place the support behind CONFIG_BROKEN, and remove PFN_SPECIAL
+(dcssblk was the only user).
+
+Link: http://lore.kernel.org/cover.9f0e45d52f5cff58807831b6b867084d0b14b61c.1725941415.git-series.apopple@nvidia.com [1]
+Link: http://lore.kernel.org/20210820210318.187742e8@thinkpad/ [2]
+Link: http://lore.kernel.org/4511465a4f8429f45e2ac70d2e65dc5e1df1eb47.1725941415.git-series.apopple@nvidia.com [3]
+Link: https://lkml.kernel.org/r/f6a6adc9628745c5545378dcbd64fe68ea8e5ae2.1739850794.git-series.apopple@nvidia.com
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Reviewed-by: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Tested-by: Alexander Gordeev <agordeev@linux.ibm.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Tested-by: Alison Schofield <alison.schofield@intel.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Asahi Lina <lina@asahilina.net>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Chunyan Zhang <zhang.lyra@gmail.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ira Weiny <ira.weiny@intel.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Logan Gunthorpe <logang@deltatee.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Ted Ts'o <tytso@mit.edu>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/filesystems/dax.rst |  1 -
+ drivers/s390/block/Kconfig        | 12 ++++++++++--
+ drivers/s390/block/dcssblk.c      | 27 +++++++++++++++++----------
+ 3 files changed, 27 insertions(+), 13 deletions(-)
+
+diff --git a/Documentation/filesystems/dax.rst b/Documentation/filesystems/dax.rst
+index 719e90f1988e..08dd5e254cc5 100644
+--- a/Documentation/filesystems/dax.rst
++++ b/Documentation/filesystems/dax.rst
+@@ -207,7 +207,6 @@ implement direct_access.
+ 
+ These block devices may be used for inspiration:
+ - brd: RAM backed block device driver
+-- dcssblk: s390 dcss block device driver
+ - pmem: NVDIMM persistent memory driver
+ 
+ 
+diff --git a/drivers/s390/block/Kconfig b/drivers/s390/block/Kconfig
+index e3710a762aba..4bfe469c04aa 100644
+--- a/drivers/s390/block/Kconfig
++++ b/drivers/s390/block/Kconfig
+@@ -4,13 +4,21 @@ comment "S/390 block device drivers"
+ 
+ config DCSSBLK
+ 	def_tristate m
+-	select FS_DAX_LIMITED
+-	select DAX
+ 	prompt "DCSSBLK support"
+ 	depends on S390 && BLOCK
+ 	help
+ 	  Support for dcss block device
+ 
++config DCSSBLK_DAX
++	def_bool y
++	depends on DCSSBLK
++	# requires S390 ZONE_DEVICE support
++	depends on BROKEN
++	select DAX
++	prompt "DCSSBLK DAX support"
++	help
++	  Enable DAX operation for the dcss block device
++
+ config DASD
+ 	def_tristate y
+ 	prompt "Support for DASD devices"
+diff --git a/drivers/s390/block/dcssblk.c b/drivers/s390/block/dcssblk.c
+index 0f14d279d30b..7248e547fefb 100644
+--- a/drivers/s390/block/dcssblk.c
++++ b/drivers/s390/block/dcssblk.c
+@@ -534,6 +534,21 @@ static const struct attribute_group *dcssblk_dev_attr_groups[] = {
+ 	NULL,
+ };
+ 
++static int dcssblk_setup_dax(struct dcssblk_dev_info *dev_info)
++{
++	struct dax_device *dax_dev;
++
++	if (!IS_ENABLED(CONFIG_DCSSBLK_DAX))
++		return 0;
++
++	dax_dev = alloc_dax(dev_info, &dcssblk_dax_ops);
++	if (IS_ERR(dax_dev))
++		return PTR_ERR(dax_dev);
++	set_dax_synchronous(dax_dev);
++	dev_info->dax_dev = dax_dev;
++	return dax_add_host(dev_info->dax_dev, dev_info->gd);
++}
++
+ /*
+  * device attribute for adding devices
+  */
+@@ -547,7 +562,6 @@ dcssblk_add_store(struct device *dev, struct device_attribute *attr, const char
+ 	int rc, i, j, num_of_segments;
+ 	struct dcssblk_dev_info *dev_info;
+ 	struct segment_info *seg_info, *temp;
+-	struct dax_device *dax_dev;
+ 	char *local_buf;
+ 	unsigned long seg_byte_size;
+ 
+@@ -674,14 +688,7 @@ dcssblk_add_store(struct device *dev, struct device_attribute *attr, const char
+ 	if (rc)
+ 		goto put_dev;
+ 
+-	dax_dev = alloc_dax(dev_info, &dcssblk_dax_ops);
+-	if (IS_ERR(dax_dev)) {
+-		rc = PTR_ERR(dax_dev);
+-		goto put_dev;
+-	}
+-	set_dax_synchronous(dax_dev);
+-	dev_info->dax_dev = dax_dev;
+-	rc = dax_add_host(dev_info->dax_dev, dev_info->gd);
++	rc = dcssblk_setup_dax(dev_info);
+ 	if (rc)
+ 		goto out_dax;
+ 
+@@ -917,7 +924,7 @@ __dcssblk_direct_access(struct dcssblk_dev_info *dev_info, pgoff_t pgoff,
+ 		*kaddr = __va(dev_info->start + offset);
+ 	if (pfn)
+ 		*pfn = __pfn_to_pfn_t(PFN_DOWN(dev_info->start + offset),
+-				PFN_DEV|PFN_SPECIAL);
++				      PFN_DEV);
+ 
+ 	return (dev_sz - offset) / PAGE_SIZE;
+ }
+-- 
+2.39.5
+

@@ -1,0 +1,83 @@
+From: Chen Ridong <chenridong@huawei.com>
+Date: Fri, 24 Jan 2025 07:35:13 +0000
+Subject: [PATCH] memcg: factor out the replace_stock_objcg function
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Factor out the 'replace_stock_objcg' function to make the code more
+cohesive.
+
+Link: https://lkml.kernel.org/r/20250124073514.2375622-4-chenridong@huaweicloud.com
+Signed-off-by: Chen Ridong <chenridong@huawei.com>
+Reviewed-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Finkel <davidf@vimeo.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wang Weiyang <wangweiyang2@huawei.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 26 ++++++++++++++++----------
+ 1 file changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 1ece6c0ede9b..8239d3a79784 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2691,6 +2691,20 @@ void __memcg_kmem_uncharge_page(struct page *page, int order)
+ 	obj_cgroup_put(objcg);
+ }
+ 
++/* Replace the stock objcg with objcg, return the old objcg */
++static struct obj_cgroup *replace_stock_objcg(struct memcg_stock_pcp *stock,
++					     struct obj_cgroup *objcg)
++{
++	struct obj_cgroup *old = NULL;
++
++	old = drain_obj_stock(stock);
++	obj_cgroup_get(objcg);
++	stock->nr_bytes = atomic_read(&objcg->nr_charged_bytes)
++			? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
++	WRITE_ONCE(stock->cached_objcg, objcg);
++	return old;
++}
++
+ static void mod_objcg_state(struct obj_cgroup *objcg, struct pglist_data *pgdat,
+ 		     enum node_stat_item idx, int nr)
+ {
+@@ -2708,11 +2722,7 @@ static void mod_objcg_state(struct obj_cgroup *objcg, struct pglist_data *pgdat,
+ 	 * changes.
+ 	 */
+ 	if (READ_ONCE(stock->cached_objcg) != objcg) {
+-		old = drain_obj_stock(stock);
+-		obj_cgroup_get(objcg);
+-		stock->nr_bytes = atomic_read(&objcg->nr_charged_bytes)
+-				? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
+-		WRITE_ONCE(stock->cached_objcg, objcg);
++		old = replace_stock_objcg(stock, objcg);
+ 		stock->cached_pgdat = pgdat;
+ 	} else if (stock->cached_pgdat != pgdat) {
+ 		/* Flush the existing cached vmstat data */
+@@ -2866,11 +2876,7 @@ static void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 
+ 	stock = this_cpu_ptr(&memcg_stock);
+ 	if (READ_ONCE(stock->cached_objcg) != objcg) { /* reset if necessary */
+-		old = drain_obj_stock(stock);
+-		obj_cgroup_get(objcg);
+-		WRITE_ONCE(stock->cached_objcg, objcg);
+-		stock->nr_bytes = atomic_read(&objcg->nr_charged_bytes)
+-				? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
++		old = replace_stock_objcg(stock, objcg);
+ 		allow_uncharge = true;	/* Allow uncharge when objcg changes */
+ 	}
+ 	stock->nr_bytes += nr_bytes;
+-- 
+2.39.5
+

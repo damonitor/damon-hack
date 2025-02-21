@@ -1,0 +1,95 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Thu, 23 Jan 2025 23:38:58 -0500
+Subject: [PATCH] mm: memcontrol: unshare v2-only charge API bits again
+
+6b611388b626 ("memcg-v1: remove charge move code") removed the remaining
+v1 callers.
+
+Link: https://lkml.kernel.org/r/20250124043859.18808-1-hannes@cmpxchg.org
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol-v1.h | 15 ---------------
+ mm/memcontrol.c    | 17 +++++++++++++----
+ 2 files changed, 13 insertions(+), 19 deletions(-)
+
+diff --git a/mm/memcontrol-v1.h b/mm/memcontrol-v1.h
+index ecff454373e2..ffd2ac839185 100644
+--- a/mm/memcontrol-v1.h
++++ b/mm/memcontrol-v1.h
+@@ -7,21 +7,6 @@
+ 
+ /* Cgroup v1 and v2 common declarations */
+ 
+-int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+-		     unsigned int nr_pages);
+-
+-static inline int try_charge(struct mem_cgroup *memcg, gfp_t gfp_mask,
+-			     unsigned int nr_pages)
+-{
+-	if (mem_cgroup_is_root(memcg))
+-		return 0;
+-
+-	return try_charge_memcg(memcg, gfp_mask, nr_pages);
+-}
+-
+-void mem_cgroup_id_get_many(struct mem_cgroup *memcg, unsigned int n);
+-void mem_cgroup_id_put_many(struct mem_cgroup *memcg, unsigned int n);
+-
+ /*
+  * Iteration constructs for visiting all cgroups (under a tree).  If
+  * loops are exited prematurely (break), mem_cgroup_iter_break() must
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 68fb1162f13f..a4b30dd99491 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2204,8 +2204,8 @@ void mem_cgroup_handle_over_high(gfp_t gfp_mask)
+ 	css_put(&memcg->css);
+ }
+ 
+-int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+-		     unsigned int nr_pages)
++static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
++			    unsigned int nr_pages)
+ {
+ 	unsigned int batch = max(MEMCG_CHARGE_BATCH, nr_pages);
+ 	int nr_retries = MAX_RECLAIM_RETRIES;
+@@ -2394,6 +2394,15 @@ int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 	return 0;
+ }
+ 
++static inline int try_charge(struct mem_cgroup *memcg, gfp_t gfp_mask,
++			     unsigned int nr_pages)
++{
++	if (mem_cgroup_is_root(memcg))
++		return 0;
++
++	return try_charge_memcg(memcg, gfp_mask, nr_pages);
++}
++
+ static void commit_charge(struct folio *folio, struct mem_cgroup *memcg)
+ {
+ 	VM_BUG_ON_FOLIO(folio_memcg_charged(folio), folio);
+@@ -3380,13 +3389,13 @@ static void mem_cgroup_id_remove(struct mem_cgroup *memcg)
+ 	}
+ }
+ 
+-void __maybe_unused mem_cgroup_id_get_many(struct mem_cgroup *memcg,
++static void __maybe_unused mem_cgroup_id_get_many(struct mem_cgroup *memcg,
+ 					   unsigned int n)
+ {
+ 	refcount_add(n, &memcg->id.ref);
+ }
+ 
+-void mem_cgroup_id_put_many(struct mem_cgroup *memcg, unsigned int n)
++static void mem_cgroup_id_put_many(struct mem_cgroup *memcg, unsigned int n)
+ {
+ 	if (refcount_sub_and_test(n, &memcg->id.ref)) {
+ 		mem_cgroup_id_remove(memcg);
+-- 
+2.39.5
+

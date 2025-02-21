@@ -1,0 +1,90 @@
+From: Chen Ridong <chenridong@huawei.com>
+Date: Fri, 24 Jan 2025 07:35:12 +0000
+Subject: [PATCH] memcg: call the free function when allocation of pn fails
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The 'free_mem_cgroup_per_node_info' function is used to free the
+'mem_cgroup_per_node' struct.  Using 'pn' as the input for the
+free_mem_cgroup_per_node_info function will be much clearer.  Call
+'free_mem_cgroup_per_node_info' when 'alloc_mem_cgroup_per_node_info'
+fails, to free 'pn' as a whole, which makes the code more cohesive.
+
+Link: https://lkml.kernel.org/r/20250124073514.2375622-3-chenridong@huaweicloud.com
+Signed-off-by: Chen Ridong <chenridong@huawei.com>
+Reviewed-by: Michal Koutný <mkoutny@suse.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: David Finkel <davidf@vimeo.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wang Weiyang <wangweiyang2@huawei.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 27 ++++++++++++---------------
+ 1 file changed, 12 insertions(+), 15 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 5bd2ffc1fcc8..1ece6c0ede9b 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3424,6 +3424,16 @@ struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
+ }
+ #endif
+ 
++static void free_mem_cgroup_per_node_info(struct mem_cgroup_per_node *pn)
++{
++	if (!pn)
++		return;
++
++	free_percpu(pn->lruvec_stats_percpu);
++	kfree(pn->lruvec_stats);
++	kfree(pn);
++}
++
+ static bool alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
+ {
+ 	struct mem_cgroup_per_node *pn;
+@@ -3448,23 +3458,10 @@ static bool alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
+ 	memcg->nodeinfo[node] = pn;
+ 	return true;
+ fail:
+-	kfree(pn->lruvec_stats);
+-	kfree(pn);
++	free_mem_cgroup_per_node_info(pn);
+ 	return false;
+ }
+ 
+-static void free_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
+-{
+-	struct mem_cgroup_per_node *pn = memcg->nodeinfo[node];
+-
+-	if (!pn)
+-		return;
+-
+-	free_percpu(pn->lruvec_stats_percpu);
+-	kfree(pn->lruvec_stats);
+-	kfree(pn);
+-}
+-
+ static void __mem_cgroup_free(struct mem_cgroup *memcg)
+ {
+ 	int node;
+@@ -3472,7 +3469,7 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
+ 	obj_cgroup_put(memcg->orig_objcg);
+ 
+ 	for_each_node(node)
+-		free_mem_cgroup_per_node_info(memcg, node);
++		free_mem_cgroup_per_node_info(memcg->nodeinfo[node]);
+ 	memcg1_free_events(memcg);
+ 	kfree(memcg->vmstats);
+ 	free_percpu(memcg->vmstats_percpu);
+-- 
+2.39.5
+

@@ -1,0 +1,79 @@
+From: Liu Shixin <liushixin2@huawei.com>
+Date: Wed, 22 Jan 2025 14:11:51 +0800
+Subject: [PATCH] mm: page_isolation: avoid calling folio_hstate() without
+ hugetlb_lock
+
+I found a NULL pointer dereference as followed:
+
+ BUG: kernel NULL pointer dereference, address: 0000000000000028
+ #PF: supervisor read access in kernel mode
+ #PF: error_code(0x0000) - not-present page
+ PGD 0 P4D 0
+ Oops: Oops: 0000 [#1] SMP PTI
+ CPU: 5 UID: 0 PID: 5964 Comm: sh Kdump: loaded Not tainted 6.13.0-dirty #20
+ Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.13.0-1ubuntu1.
+ RIP: 0010:has_unmovable_pages+0x184/0x360
+ ...
+ Call Trace:
+  <TASK>
+  set_migratetype_isolate+0xd1/0x180
+  start_isolate_page_range+0xd2/0x170
+  alloc_contig_range_noprof+0x101/0x660
+  alloc_contig_pages_noprof+0x238/0x290
+  alloc_gigantic_folio.isra.0+0xb6/0x1f0
+  only_alloc_fresh_hugetlb_folio.isra.0+0xf/0x60
+  alloc_pool_huge_folio+0x80/0xf0
+  set_max_huge_pages+0x211/0x490
+  __nr_hugepages_store_common+0x5f/0xe0
+  nr_hugepages_store+0x77/0x80
+  kernfs_fop_write_iter+0x118/0x200
+  vfs_write+0x23c/0x3f0
+  ksys_write+0x62/0xe0
+  do_syscall_64+0x5b/0x170
+  entry_SYSCALL_64_after_hwframe+0x76/0x7e
+
+As has_unmovable_pages() call folio_hstate() without hugetlb_lock, there
+is a race to free the HugeTLB page between PageHuge() and folio_hstate().
+There is no need to add hugetlb_lock here as the HugeTLB page can be freed
+in lot of places.  So it's enough to unfold folio_hstate() and add a check
+to avoid NULL pointer dereference for hugepage_migration_supported().
+
+Link: https://lkml.kernel.org/r/20250122061151.578768-1-liushixin2@huawei.com
+Fixes: 464c7ffbcb16 ("mm/hugetlb: filter out hugetlb pages if HUGEPAGE migration is not supported.")
+Signed-off-by: Liu Shixin <liushixin2@huawei.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Kirill A. Shuemov <kirill.shutemov@linux.intel.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_isolation.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page_isolation.c b/mm/page_isolation.c
+index a051a29e95ad..b2fc5266e3d2 100644
+--- a/mm/page_isolation.c
++++ b/mm/page_isolation.c
+@@ -83,7 +83,14 @@ static struct page *has_unmovable_pages(unsigned long start_pfn, unsigned long e
+ 			unsigned int skip_pages;
+ 
+ 			if (PageHuge(page)) {
+-				if (!hugepage_migration_supported(folio_hstate(folio)))
++				struct hstate *h;
++
++				/*
++				 * The huge page may be freed so can not
++				 * use folio_hstate() directly.
++				 */
++				h = size_to_hstate(folio_size(folio));
++				if (h && !hugepage_migration_supported(h))
+ 					return page;
+ 			} else if (!folio_test_lru(folio) && !__folio_test_movable(folio)) {
+ 				return page;
+-- 
+2.39.5
+

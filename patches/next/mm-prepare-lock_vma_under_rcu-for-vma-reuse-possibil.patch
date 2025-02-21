@@ -1,0 +1,123 @@
+From: Suren Baghdasaryan <surenb@google.com>
+Date: Thu, 13 Feb 2025 14:46:53 -0800
+Subject: [PATCH] mm: prepare lock_vma_under_rcu() for vma reuse possibility
+
+Once we make vma cache SLAB_TYPESAFE_BY_RCU, it will be possible for a vma
+to be reused and attached to another mm after lock_vma_under_rcu() locks
+the vma.  lock_vma_under_rcu() should ensure that vma_start_read() is
+using the original mm and after locking the vma it should ensure that
+vma->vm_mm has not changed from under us.
+
+Link: https://lkml.kernel.org/r/20250213224655.1680278-17-surenb@google.com
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Tested-by: Shivank Garg <shivankg@amd.com>
+  Link: https://lkml.kernel.org/r/5e19ec93-8307-47c2-bb13-3ddf7150624e@amd.com
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: David Howells <dhowells@redhat.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Hillf Danton <hdanton@sina.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Klara Modin <klarasmodin@gmail.com>
+Cc: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Cc: Lokesh Gidra <lokeshgidra@google.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Mel Gorman <mgorman@techsingularity.net>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Minchan Kim <minchan@google.com>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: "Paul E . McKenney" <paulmck@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra (Intel) <peterz@infradead.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Sourav Panda <souravpanda@google.com>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h | 12 ++++++++----
+ mm/memory.c        |  7 ++++---
+ 2 files changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 7377ecf5606c..f3b738562e50 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -739,10 +739,13 @@ static inline void vma_refcount_put(struct vm_area_struct *vma)
+  * Try to read-lock a vma. The function is allowed to occasionally yield false
+  * locked result to avoid performance overhead, in which case we fall back to
+  * using mmap_lock. The function should never yield false unlocked result.
++ * False locked result is possible if mm_lock_seq overflows or if vma gets
++ * reused and attached to a different mm before we lock it.
+  * Returns the vma on success, NULL on failure to lock and EAGAIN if vma got
+  * detached.
+  */
+-static inline struct vm_area_struct *vma_start_read(struct vm_area_struct *vma)
++static inline struct vm_area_struct *vma_start_read(struct mm_struct *mm,
++						    struct vm_area_struct *vma)
+ {
+ 	int oldcnt;
+ 
+@@ -753,7 +756,7 @@ static inline struct vm_area_struct *vma_start_read(struct vm_area_struct *vma)
+ 	 * we don't rely on for anything - the mm_lock_seq read against which we
+ 	 * need ordering is below.
+ 	 */
+-	if (READ_ONCE(vma->vm_lock_seq) == READ_ONCE(vma->vm_mm->mm_lock_seq.sequence))
++	if (READ_ONCE(vma->vm_lock_seq) == READ_ONCE(mm->mm_lock_seq.sequence))
+ 		return NULL;
+ 
+ 	/*
+@@ -780,7 +783,7 @@ static inline struct vm_area_struct *vma_start_read(struct vm_area_struct *vma)
+ 	 * after it has been unlocked.
+ 	 * This pairs with RELEASE semantics in vma_end_write_all().
+ 	 */
+-	if (unlikely(vma->vm_lock_seq == raw_read_seqcount(&vma->vm_mm->mm_lock_seq))) {
++	if (unlikely(vma->vm_lock_seq == raw_read_seqcount(&mm->mm_lock_seq))) {
+ 		vma_refcount_put(vma);
+ 		return NULL;
+ 	}
+@@ -914,7 +917,8 @@ struct vm_area_struct *lock_vma_under_rcu(struct mm_struct *mm,
+ #else /* CONFIG_PER_VMA_LOCK */
+ 
+ static inline void vma_lock_init(struct vm_area_struct *vma, bool reset_refcnt) {}
+-static inline struct vm_area_struct *vma_start_read(struct vm_area_struct *vma)
++static inline struct vm_area_struct *vma_start_read(struct mm_struct *mm,
++						    struct vm_area_struct *vma)
+ 		{ return NULL; }
+ static inline void vma_end_read(struct vm_area_struct *vma) {}
+ static inline void vma_start_write(struct vm_area_struct *vma) {}
+diff --git a/mm/memory.c b/mm/memory.c
+index 911732bcb187..d337eabd6933 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -6447,7 +6447,7 @@ struct vm_area_struct *lock_vma_under_rcu(struct mm_struct *mm,
+ 	if (!vma)
+ 		goto inval;
+ 
+-	vma = vma_start_read(vma);
++	vma = vma_start_read(mm, vma);
+ 	if (IS_ERR_OR_NULL(vma)) {
+ 		/* Check if the VMA got isolated after we found it */
+ 		if (PTR_ERR(vma) == -EAGAIN) {
+@@ -6467,8 +6467,9 @@ struct vm_area_struct *lock_vma_under_rcu(struct mm_struct *mm,
+ 	 * fields are accessible for RCU readers.
+ 	 */
+ 
+-	/* Check since vm_start/vm_end might change before we lock the VMA */
+-	if (unlikely(address < vma->vm_start || address >= vma->vm_end))
++	/* Check if the vma we locked is the right one. */
++	if (unlikely(vma->vm_mm != mm ||
++		     address < vma->vm_start || address >= vma->vm_end))
+ 		goto inval_end_read;
+ 
+ 	rcu_read_unlock();
+-- 
+2.39.5
+

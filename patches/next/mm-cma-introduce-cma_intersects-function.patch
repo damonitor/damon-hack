@@ -1,0 +1,114 @@
+From: Frank van der Linden <fvdl@google.com>
+Date: Tue, 18 Feb 2025 18:16:31 +0000
+Subject: [PATCH] mm/cma: introduce cma_intersects function
+
+Now that CMA areas can have multiple physical ranges, code can't assume a
+CMA struct represents a base_pfn plus a size, as returned from
+cma_get_base.
+
+Most cases are ok though, since they all explicitly refer to CMA areas
+that were created using existing interfaces (cma_declare_contiguous_nid or
+cma_init_reserved_mem), which guarantees they have just one physical
+range.
+
+An exception is the s390 code, which walks all CMA ranges to see if they
+intersect with a range of memory that is about to be hotremoved.  So, in
+the future, it might run in to multi-range areas.  To keep this check
+working, define a cma_intersects function.  This just checks if a physaddr
+range intersects any of the ranges.  Use it in the s390 check.
+
+Link: https://lkml.kernel.org/r/20250218181656.207178-4-fvdl@google.com
+Signed-off-by: Frank van der Linden <fvdl@google.com>
+Acked-by: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Dan Carpenter <dan.carpenter@linaro.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Roman Gushchin (Cruise) <roman.gushchin@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/s390/mm/init.c | 13 +++++--------
+ include/linux/cma.h |  1 +
+ mm/cma.c            | 21 +++++++++++++++++++++
+ 3 files changed, 27 insertions(+), 8 deletions(-)
+
+diff --git a/arch/s390/mm/init.c b/arch/s390/mm/init.c
+index f2298f7a3f21..d88cb1c13f7d 100644
+--- a/arch/s390/mm/init.c
++++ b/arch/s390/mm/init.c
+@@ -239,16 +239,13 @@ struct s390_cma_mem_data {
+ static int s390_cma_check_range(struct cma *cma, void *data)
+ {
+ 	struct s390_cma_mem_data *mem_data;
+-	unsigned long start, end;
+ 
+ 	mem_data = data;
+-	start = cma_get_base(cma);
+-	end = start + cma_get_size(cma);
+-	if (end < mem_data->start)
+-		return 0;
+-	if (start >= mem_data->end)
+-		return 0;
+-	return -EBUSY;
++
++	if (cma_intersects(cma, mem_data->start, mem_data->end))
++		return -EBUSY;
++
++	return 0;
+ }
+ 
+ static int s390_cma_mem_notifier(struct notifier_block *nb,
+diff --git a/include/linux/cma.h b/include/linux/cma.h
+index 863427c27dc2..03d85c100dcc 100644
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -53,6 +53,7 @@ extern bool cma_pages_valid(struct cma *cma, const struct page *pages, unsigned
+ extern bool cma_release(struct cma *cma, const struct page *pages, unsigned long count);
+ 
+ extern int cma_for_each_area(int (*it)(struct cma *cma, void *data), void *data);
++extern bool cma_intersects(struct cma *cma, unsigned long start, unsigned long end);
+ 
+ extern void cma_reserve_pages_on_error(struct cma *cma);
+ 
+diff --git a/mm/cma.c b/mm/cma.c
+index 6ac9173d3a7d..c7116a5819c5 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -978,3 +978,24 @@ int cma_for_each_area(int (*it)(struct cma *cma, void *data), void *data)
+ 
+ 	return 0;
+ }
++
++bool cma_intersects(struct cma *cma, unsigned long start, unsigned long end)
++{
++	int r;
++	struct cma_memrange *cmr;
++	unsigned long rstart, rend;
++
++	for (r = 0; r < cma->nranges; r++) {
++		cmr = &cma->ranges[r];
++
++		rstart = PFN_PHYS(cmr->base_pfn);
++		rend = PFN_PHYS(cmr->base_pfn + cmr->count);
++		if (end < rstart)
++			continue;
++		if (start >= rend)
++			continue;
++		return true;
++	}
++
++	return false;
++}
+-- 
+2.39.5
+

@@ -1,0 +1,81 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Tue, 11 Feb 2025 10:44:26 +0000
+Subject: [PATCH] mm/madvise: fix madvise_[un]lock() issue
+
+We are asymmetric in our locking/unlocking in the case of memory failure
+madvise() behaviour options, correct this and abstract the memory failure
+check.
+
+Link: https://lkml.kernel.org/r/2f448f7b-1da7-4099-aa9e-0179d47fde40@lucifer.local
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reported-by: "Lai, Yi" <yi1.lai@linux.intel.com>
+Closes: https://lore.kernel.org/Z6rgiVp7221r4JZ5@ly-workstation
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Tested-by: SeongJae Park <sj@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Liam R. Howlett <howlett@gmail.com>
+Cc: Naresh Kamboju <naresh.kamboju@linaro.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/madvise.c | 29 +++++++++++++++++++++++------
+ 1 file changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index c8d4a4978920..6dd906828001 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -1575,14 +1575,29 @@ int madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
+ }
+ #endif /* CONFIG_ANON_VMA_NAME */
+ 
+-static int madvise_lock(struct mm_struct *mm, int behavior)
+-{
+-
+ #ifdef CONFIG_MEMORY_FAILURE
+-	if (behavior == MADV_HWPOISON || behavior == MADV_SOFT_OFFLINE)
+-		return 0;
++static bool is_memory_failure(int behavior)
++{
++	switch (behavior) {
++	case MADV_HWPOISON:
++	case MADV_SOFT_OFFLINE:
++		return true;
++	default:
++		return false;
++	}
++}
++#else
++static bool is_memory_failure(int behavior)
++{
++	return false;
++}
+ #endif
+ 
++static int madvise_lock(struct mm_struct *mm, int behavior)
++{
++	if (is_memory_failure(behavior))
++	    return 0;
++
+ 	if (madvise_need_mmap_write(behavior)) {
+ 		if (mmap_write_lock_killable(mm))
+ 			return -EINTR;
+@@ -1590,11 +1605,13 @@ static int madvise_lock(struct mm_struct *mm, int behavior)
+ 		mmap_read_lock(mm);
+ 	}
+ 	return 0;
+-
+ }
+ 
+ static void madvise_unlock(struct mm_struct *mm, int behavior)
+ {
++	if (is_memory_failure(behavior))
++	    return;
++
+ 	if (madvise_need_mmap_write(behavior))
+ 		mmap_write_unlock(mm);
+ 	else
+-- 
+2.39.5
+

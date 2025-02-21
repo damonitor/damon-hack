@@ -1,0 +1,299 @@
+From: Frank van der Linden <fvdl@google.com>
+Date: Tue, 18 Feb 2025 18:16:29 +0000
+Subject: [PATCH] mm/cma: export total and free number of pages for CMA areas
+
+Patch series "hugetlb/CMA improvements for large systems", v4.
+
+On large systems, we observed some issues with hugetlb and CMA:
+
+1) When specifying a large number of hugetlb boot pages (hugepages= on
+   the commandline), the kernel may run out of memory before it even gets
+   to HVO.  For example, if you have a 3072G system, and want to use 3024
+   1G hugetlb pages for VMs, that should leave you plenty of space for the
+   hypervisor, provided you have the hugetlb vmemmap optimization (HVO)
+   enabled.  However, since the vmemmap pages are always allocated first,
+   and then later in boot freed, you will actually run yourself out of
+   memory before you can do HVO.  This means not getting all the hugetlb
+   pages you want, and worse, failure to boot if there is an allocation
+   failure in the system from which it can't recover.
+
+2) There is a system setup where you might want to use hugetlb_cma with
+   a large value (say, again, 3024 out of 3072G like above), and then
+   lower that if system usage allows it, to make room for non-hugetlb
+   processes.  For this, a variation of the problem above applies: the
+   kernel runs out of unmovable space to allocate from before you finish
+   boot, since your CMA area takes up all the space.
+
+3) CMA wants to use one big contiguous area for allocations.  Which
+   fails if you have the aforementioned 3T system with a gap in the middle
+   of physical memory (like the < 40bits BIOS DMA area seen on some AMD
+   systems).  You then won't be able to set up a CMA area for one of the
+   NUMA nodes, leading to loss of half of your hugetlb CMA area.
+
+4) Under the scenario mentioned in 2), when trying to grow the number
+   of hugetlb pages after dropping it for a while, new CMA allocations may
+   fail occasionally.  This is not unexpected, some transient references
+   on pages may prevent cma_alloc from succeeding under memory pressure.
+   However, the hugetlb code then falls back to a normal contiguous alloc,
+   which may end up succeeding.  This is not always desired behavior.  If
+   you have a large CMA area, then the kernel has a restricted amount of
+   memory it can do unmovable allocations from (a well known issue).  A
+   normal contiguous alloc may eat further in to this space.
+
+
+To resolve these issues, do the following:
+
+* Add hooks to the section init code to do custom initialization of
+   memmap pages.  Hugetlb bootmem (memblock) allocated pages can then be
+   pre-HVOed.  This avoids allocating a large number of vmemmap pages
+   early in boot, only to have them be freed again later, and also avoids
+   running out of memory as described under 1).  Using these hooks for
+   hugetlb is optional.  It requires moving hugetlb bootmem allocation to
+   an earlier spot by the architecture.  This has been enabled on x86.
+* hugetlb_cma doesn't care about the CMA area it uses being one large
+   contiguous range.  Multiple smaller ranges are fine.  The only
+   requirements are that the areas should be on one NUMA node, and
+   individual gigantic pages should be allocatable from them.  So,
+   implement multi-range support for CMA, avoiding issue 3).
+* Introduce a hugetlb_cma_only option on the commandline.  This only
+   allows allocations from CMA for gigantic pages, if hugetlb_cma= is also
+   specified.
+* With hugetlb_cma_only active, it also makes sense to be able to
+   pre-allocate gigantic hugetlb pages at boot time from the CMA area(s).
+   Add a rudimentary early CMA allocation interface, that just grabs a
+   piece of memblock-allocated space from the CMA area, which gets marked
+   as allocated in the CMA bitmap when the CMA area is initialized.  With
+   this, hugepages= can be supported with hugetlb_cma=, making scenario 2)
+   work.
+
+Additionally, fix some minor bugs, with one worth mentioning: since
+hugetlb gigantic bootmem pages are allocated by memblock, they may span
+multiple zones, as memblock doesn't (and mostly can't) know about zones.
+This can cause problems.  A hugetlb page spanning multiple zones is bad,
+and it's worse with HVO, when the de-HVO step effectively sneakily
+re-assigns pages to a different zone than originally configured, since the
+tail pages all inherit the zone from the first 60 tail pages.  This
+condition is not common, but can be easily reproduced using ZONE_MOVABLE.
+To fix this, add checks to see if gigantic bootmem pages intersect with
+multiple zones, and do not use them if they do, giving them back to the
+page allocator instead.
+
+The first patch is kind of along for the ride, except that maintaining an
+available_count for a CMA area is convenient for the multiple range
+support.
+
+
+This patch (of 27):
+
+In addition to the number of allocations and releases, system management
+software may like to be aware of the size of CMA areas, and how many pages
+are available in it.  This information is currently not available, so
+export it in total_page and available_pages, respectively.
+
+The name 'available_pages' was picked over 'free_pages' because 'free'
+implies that the pages are unused.  But they might not be, they just
+haven't been used by cma_alloc
+
+The number of available pages is tracked regardless of CONFIG_CMA_SYSFS,
+allowing for a few minor shortcuts in the code, avoiding bitmap
+operations.
+
+Link: https://lkml.kernel.org/r/20250218181656.207178-1-fvdl@google.com
+Link: https://lkml.kernel.org/r/20250218181656.207178-2-fvdl@google.com
+Signed-off-by: Frank van der Linden <fvdl@google.com>
+Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin (Cruise) <roman.gushchin@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Dan Carpenter <dan.carpenter@linaro.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/ABI/testing/sysfs-kernel-mm-cma | 13 +++++++++++
+ mm/cma.c                                      | 22 ++++++++++++++-----
+ mm/cma.h                                      |  1 +
+ mm/cma_debug.c                                |  5 +----
+ mm/cma_sysfs.c                                | 20 +++++++++++++++++
+ 5 files changed, 51 insertions(+), 10 deletions(-)
+
+diff --git a/Documentation/ABI/testing/sysfs-kernel-mm-cma b/Documentation/ABI/testing/sysfs-kernel-mm-cma
+index dfd755201142..aaf2a5d8b13b 100644
+--- a/Documentation/ABI/testing/sysfs-kernel-mm-cma
++++ b/Documentation/ABI/testing/sysfs-kernel-mm-cma
+@@ -29,3 +29,16 @@ Date:		Feb 2024
+ Contact:	Anshuman Khandual <anshuman.khandual@arm.com>
+ Description:
+ 		the number of pages CMA API succeeded to release
++
++What:		/sys/kernel/mm/cma/<cma-heap-name>/total_pages
++Date:		Jun 2024
++Contact:	Frank van der Linden <fvdl@google.com>
++Description:
++		The size of the CMA area in pages.
++
++What:		/sys/kernel/mm/cma/<cma-heap-name>/available_pages
++Date:		Jun 2024
++Contact:	Frank van der Linden <fvdl@google.com>
++Description:
++		The number of pages in the CMA area that are still
++		available for CMA allocation.
+diff --git a/mm/cma.c b/mm/cma.c
+index de5bc0c81fc2..95a8788e54d3 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -86,6 +86,7 @@ static void cma_clear_bitmap(struct cma *cma, unsigned long pfn,
+ 
+ 	spin_lock_irqsave(&cma->lock, flags);
+ 	bitmap_clear(cma->bitmap, bitmap_no, bitmap_count);
++	cma->available_count += count;
+ 	spin_unlock_irqrestore(&cma->lock, flags);
+ }
+ 
+@@ -133,7 +134,7 @@ static void __init cma_activate_area(struct cma *cma)
+ 			free_reserved_page(pfn_to_page(pfn));
+ 	}
+ 	totalcma_pages -= cma->count;
+-	cma->count = 0;
++	cma->available_count = cma->count = 0;
+ 	pr_err("CMA area %s could not be activated\n", cma->name);
+ }
+ 
+@@ -206,7 +207,7 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
+ 		snprintf(cma->name, CMA_MAX_NAME,  "cma%d\n", cma_area_count);
+ 
+ 	cma->base_pfn = PFN_DOWN(base);
+-	cma->count = size >> PAGE_SHIFT;
++	cma->available_count = cma->count = size >> PAGE_SHIFT;
+ 	cma->order_per_bit = order_per_bit;
+ 	*res_cma = cma;
+ 	cma_area_count++;
+@@ -390,7 +391,7 @@ static void cma_debug_show_areas(struct cma *cma)
+ {
+ 	unsigned long next_zero_bit, next_set_bit, nr_zero;
+ 	unsigned long start = 0;
+-	unsigned long nr_part, nr_total = 0;
++	unsigned long nr_part;
+ 	unsigned long nbits = cma_bitmap_maxno(cma);
+ 
+ 	spin_lock_irq(&cma->lock);
+@@ -402,12 +403,12 @@ static void cma_debug_show_areas(struct cma *cma)
+ 		next_set_bit = find_next_bit(cma->bitmap, nbits, next_zero_bit);
+ 		nr_zero = next_set_bit - next_zero_bit;
+ 		nr_part = nr_zero << cma->order_per_bit;
+-		pr_cont("%s%lu@%lu", nr_total ? "+" : "", nr_part,
++		pr_cont("%s%lu@%lu", start ? "+" : "", nr_part,
+ 			next_zero_bit);
+-		nr_total += nr_part;
+ 		start = next_zero_bit + nr_zero;
+ 	}
+-	pr_cont("=> %lu free of %lu total pages\n", nr_total, cma->count);
++	pr_cont("=> %lu free of %lu total pages\n", cma->available_count,
++			cma->count);
+ 	spin_unlock_irq(&cma->lock);
+ }
+ 
+@@ -444,6 +445,14 @@ static struct page *__cma_alloc(struct cma *cma, unsigned long count,
+ 
+ 	for (;;) {
+ 		spin_lock_irq(&cma->lock);
++		/*
++		 * If the request is larger than the available number
++		 * of pages, stop right away.
++		 */
++		if (count > cma->available_count) {
++			spin_unlock_irq(&cma->lock);
++			break;
++		}
+ 		bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
+ 				bitmap_maxno, start, bitmap_count, mask,
+ 				offset);
+@@ -452,6 +461,7 @@ static struct page *__cma_alloc(struct cma *cma, unsigned long count,
+ 			break;
+ 		}
+ 		bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
++		cma->available_count -= count;
+ 		/*
+ 		 * It's safe to drop the lock here. We've marked this region for
+ 		 * our exclusive use. If the migration fails we will take the
+diff --git a/mm/cma.h b/mm/cma.h
+index 8485ef893e99..3dd3376ae980 100644
+--- a/mm/cma.h
++++ b/mm/cma.h
+@@ -13,6 +13,7 @@ struct cma_kobject {
+ struct cma {
+ 	unsigned long   base_pfn;
+ 	unsigned long   count;
++	unsigned long	available_count;
+ 	unsigned long   *bitmap;
+ 	unsigned int order_per_bit; /* Order of pages represented by one bit */
+ 	spinlock_t	lock;
+diff --git a/mm/cma_debug.c b/mm/cma_debug.c
+index 602fff89b15f..89236f22230a 100644
+--- a/mm/cma_debug.c
++++ b/mm/cma_debug.c
+@@ -34,13 +34,10 @@ DEFINE_DEBUGFS_ATTRIBUTE(cma_debugfs_fops, cma_debugfs_get, NULL, "%llu\n");
+ static int cma_used_get(void *data, u64 *val)
+ {
+ 	struct cma *cma = data;
+-	unsigned long used;
+ 
+ 	spin_lock_irq(&cma->lock);
+-	/* pages counter is smaller than sizeof(int) */
+-	used = bitmap_weight(cma->bitmap, (int)cma_bitmap_maxno(cma));
++	*val = cma->count - cma->available_count;
+ 	spin_unlock_irq(&cma->lock);
+-	*val = (u64)used << cma->order_per_bit;
+ 
+ 	return 0;
+ }
+diff --git a/mm/cma_sysfs.c b/mm/cma_sysfs.c
+index f50db3973171..97acd3e5a6a5 100644
+--- a/mm/cma_sysfs.c
++++ b/mm/cma_sysfs.c
+@@ -62,6 +62,24 @@ static ssize_t release_pages_success_show(struct kobject *kobj,
+ }
+ CMA_ATTR_RO(release_pages_success);
+ 
++static ssize_t total_pages_show(struct kobject *kobj,
++					  struct kobj_attribute *attr, char *buf)
++{
++	struct cma *cma = cma_from_kobj(kobj);
++
++	return sysfs_emit(buf, "%lu\n", cma->count);
++}
++CMA_ATTR_RO(total_pages);
++
++static ssize_t available_pages_show(struct kobject *kobj,
++					  struct kobj_attribute *attr, char *buf)
++{
++	struct cma *cma = cma_from_kobj(kobj);
++
++	return sysfs_emit(buf, "%lu\n", cma->available_count);
++}
++CMA_ATTR_RO(available_pages);
++
+ static void cma_kobj_release(struct kobject *kobj)
+ {
+ 	struct cma *cma = cma_from_kobj(kobj);
+@@ -75,6 +93,8 @@ static struct attribute *cma_attrs[] = {
+ 	&alloc_pages_success_attr.attr,
+ 	&alloc_pages_fail_attr.attr,
+ 	&release_pages_success_attr.attr,
++	&total_pages_attr.attr,
++	&available_pages_attr.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(cma);
+-- 
+2.39.5
+

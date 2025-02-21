@@ -1,0 +1,95 @@
+From: Frank van der Linden <fvdl@google.com>
+Date: Tue, 18 Feb 2025 18:16:43 +0000
+Subject: [PATCH] mm/hugetlb: deal with multiple calls to hugetlb_bootmem_alloc
+
+Architectures that want pre-HVO of hugetlb vmemmap pages will need to call
+hugetlb_bootmem_alloc from an earlier spot in boot (before sparse_init).
+To facilitate some architectures doing this, protect hugetlb_bootmem_alloc
+against multiple calls.
+
+Also provide a helper function to check if it's been called, so that the
+early HVO code, to be added later, can see if there is anything to do.
+
+Link: https://lkml.kernel.org/r/20250218181656.207178-16-fvdl@google.com
+Signed-off-by: Frank van der Linden <fvdl@google.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Dan Carpenter <dan.carpenter@linaro.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Roman Gushchin (Cruise) <roman.gushchin@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/hugetlb.h |  6 ++++++
+ mm/hugetlb.c            | 12 ++++++++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index a1b484f61552..43c39e608424 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -175,6 +175,7 @@ extern int sysctl_hugetlb_shm_group;
+ extern struct list_head huge_boot_pages[MAX_NUMNODES];
+ 
+ void hugetlb_bootmem_alloc(void);
++bool hugetlb_bootmem_allocated(void);
+ 
+ /* arch callbacks */
+ 
+@@ -1261,6 +1262,11 @@ static inline bool hugetlbfs_pagecache_present(
+ static inline void hugetlb_bootmem_alloc(void)
+ {
+ }
++
++static inline bool hugetlb_bootmem_allocated(void)
++{
++	return false;
++}
+ #endif	/* CONFIG_HUGETLB_PAGE */
+ 
+ static inline spinlock_t *huge_pte_lock(struct hstate *h,
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index d7c28b27d3a9..15ad227bd505 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -4914,16 +4914,28 @@ static int __init default_hugepagesz_setup(char *s)
+ }
+ hugetlb_early_param("default_hugepagesz", default_hugepagesz_setup);
+ 
++static bool __hugetlb_bootmem_allocated __initdata;
++
++bool __init hugetlb_bootmem_allocated(void)
++{
++	return __hugetlb_bootmem_allocated;
++}
++
+ void __init hugetlb_bootmem_alloc(void)
+ {
+ 	struct hstate *h;
+ 
++	if (__hugetlb_bootmem_allocated)
++		return;
++
+ 	hugetlb_parse_params();
+ 
+ 	for_each_hstate(h) {
+ 		if (hstate_is_gigantic(h))
+ 			hugetlb_hstate_alloc_pages(h);
+ 	}
++
++	__hugetlb_bootmem_allocated = true;
+ }
+ 
+ static unsigned int allowed_mems_nr(struct hstate *h)
+-- 
+2.39.5
+

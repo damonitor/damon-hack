@@ -1,0 +1,50 @@
+From: Balbir Singh <balbirs@nvidia.com>
+Date: Thu, 20 Feb 2025 10:13:37 +1100
+Subject: [PATCH] mm/migrate_device: do not access pgmap for non zone device
+ pages
+
+page_pgmap() is referenced before checking if the page is a zone device
+page and this triggers the warning in page_pgmap().  Refactor the code to
+use the helper function after relevant checks.
+
+Link: https://lkml.kernel.org/r/20250219231337.364133-1-balbirs@nvidia.com
+Signed-off-by: Balbir Singh <balbirs@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate_device.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index 6771893d4601..e0bf771edb6f 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -153,14 +153,17 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
+ 				goto next;
+ 			}
+ 			page = vm_normal_page(migrate->vma, addr, pte);
+-			pgmap = page_pgmap(page);
+ 			if (page && !is_zone_device_page(page) &&
+ 			    !(migrate->flags & MIGRATE_VMA_SELECT_SYSTEM))
+ 				goto next;
+-			else if (page && is_device_coherent_page(page) &&
+-			    (!(migrate->flags & MIGRATE_VMA_SELECT_DEVICE_COHERENT) ||
+-			     pgmap->owner != migrate->pgmap_owner))
+-				goto next;
++			else if (page && is_device_coherent_page(page)) {
++				pgmap = page_pgmap(page);
++
++				if (!(migrate->flags &
++					MIGRATE_VMA_SELECT_DEVICE_COHERENT) ||
++					pgmap->owner != migrate->pgmap_owner)
++					goto next;
++			}
+ 			mpfn = migrate_pfn(pfn) | MIGRATE_PFN_MIGRATE;
+ 			mpfn |= pte_write(pte) ? MIGRATE_PFN_WRITE : 0;
+ 		}
+-- 
+2.39.5
+

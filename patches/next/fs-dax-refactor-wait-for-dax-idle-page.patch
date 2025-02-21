@@ -1,0 +1,122 @@
+From: Alistair Popple <apopple@nvidia.com>
+Date: Tue, 18 Feb 2025 14:55:20 +1100
+Subject: [PATCH] fs/dax: refactor wait for dax idle page
+
+A FS DAX page is considered idle when its refcount drops to one.  This is
+currently open-coded in all file systems supporting FS DAX.  Move the idle
+detection to a common function to make future changes easier.
+
+Link: https://lkml.kernel.org/r/c2c9d269110b90224eeb1dc661ffbc1d82aa20c9.1739850794.git-series.apopple@nvidia.com
+Signed-off-by: Alistair Popple <apopple@nvidia.com>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Reviewed-by: Dan Williams <dan.j.williams@intel.com>
+Acked-by: Theodore Ts'o <tytso@mit.edu>
+Tested-by: Alison Schofield <alison.schofield@intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Asahi Lina <lina@asahilina.net>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Chunyan Zhang <zhang.lyra@gmail.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ira Weiny <ira.weiny@intel.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Logan Gunthorpe <logang@deltatee.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ext4/inode.c     | 5 +----
+ fs/fuse/dax.c       | 4 +---
+ fs/xfs/xfs_inode.c  | 4 +---
+ include/linux/dax.h | 8 ++++++++
+ 4 files changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/fs/ext4/inode.c b/fs/ext4/inode.c
+index 7c54ae5fcbd4..cc1acb1fdec6 100644
+--- a/fs/ext4/inode.c
++++ b/fs/ext4/inode.c
+@@ -3922,10 +3922,7 @@ int ext4_break_layouts(struct inode *inode)
+ 		if (!page)
+ 			return 0;
+ 
+-		error = ___wait_var_event(&page->_refcount,
+-				atomic_read(&page->_refcount) == 1,
+-				TASK_INTERRUPTIBLE, 0, 0,
+-				ext4_wait_dax_page(inode));
++		error = dax_wait_page_idle(page, ext4_wait_dax_page, inode);
+ 	} while (error == 0);
+ 
+ 	return error;
+diff --git a/fs/fuse/dax.c b/fs/fuse/dax.c
+index b7f805d2a14f..bf6faa3536a4 100644
+--- a/fs/fuse/dax.c
++++ b/fs/fuse/dax.c
+@@ -677,9 +677,7 @@ static int __fuse_dax_break_layouts(struct inode *inode, bool *retry,
+ 		return 0;
+ 
+ 	*retry = true;
+-	return ___wait_var_event(&page->_refcount,
+-			atomic_read(&page->_refcount) == 1, TASK_INTERRUPTIBLE,
+-			0, 0, fuse_wait_dax_page(inode));
++	return dax_wait_page_idle(page, fuse_wait_dax_page, inode);
+ }
+ 
+ int fuse_dax_break_layouts(struct inode *inode, u64 dmap_start,
+diff --git a/fs/xfs/xfs_inode.c b/fs/xfs/xfs_inode.c
+index b1f9f156ec88..1b5613dfed7f 100644
+--- a/fs/xfs/xfs_inode.c
++++ b/fs/xfs/xfs_inode.c
+@@ -3020,9 +3020,7 @@ xfs_break_dax_layouts(
+ 		return 0;
+ 
+ 	*retry = true;
+-	return ___wait_var_event(&page->_refcount,
+-			atomic_read(&page->_refcount) == 1, TASK_INTERRUPTIBLE,
+-			0, 0, xfs_wait_dax_page(inode));
++	return dax_wait_page_idle(page, xfs_wait_dax_page, inode);
+ }
+ 
+ int
+diff --git a/include/linux/dax.h b/include/linux/dax.h
+index df41a0017b31..9b1ce984d410 100644
+--- a/include/linux/dax.h
++++ b/include/linux/dax.h
+@@ -207,6 +207,14 @@ int dax_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
+ int dax_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
+ 		const struct iomap_ops *ops);
+ 
++static inline int dax_wait_page_idle(struct page *page,
++				void (cb)(struct inode *),
++				struct inode *inode)
++{
++	return ___wait_var_event(page, page_ref_count(page) == 1,
++				TASK_INTERRUPTIBLE, 0, 0, cb(inode));
++}
++
+ #if IS_ENABLED(CONFIG_DAX)
+ int dax_read_lock(void);
+ void dax_read_unlock(int id);
+-- 
+2.39.5
+

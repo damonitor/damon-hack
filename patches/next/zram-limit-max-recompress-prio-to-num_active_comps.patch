@@ -1,0 +1,80 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Fri, 14 Feb 2025 13:50:19 +0900
+Subject: [PATCH] zram: limit max recompress prio to num_active_comps
+
+Use the actual number of algorithms zram was configure with instead of
+theoretical limit of ZRAM_MAX_COMPS.
+
+Also make sure that min prio is not above max prio.
+
+Link: https://lkml.kernel.org/r/20250214045208.1388854-8-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Hillf Danton <hdanton@sina.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Cc: Yosry Ahmed <yosry.ahmed@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index c28e1b97bf92..c11ed2dc23aa 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2068,16 +2068,19 @@ static ssize_t recompress_store(struct device *dev,
+ 				struct device_attribute *attr,
+ 				const char *buf, size_t len)
+ {
+-	u32 prio = ZRAM_SECONDARY_COMP, prio_max = ZRAM_MAX_COMPS;
+ 	struct zram *zram = dev_to_zram(dev);
+ 	char *args, *param, *val, *algo = NULL;
+ 	u64 num_recomp_pages = ULLONG_MAX;
+ 	struct zram_pp_ctl *ctl = NULL;
+ 	struct zram_pp_slot *pps;
+ 	u32 mode = 0, threshold = 0;
++	u32 prio, prio_max;
+ 	struct page *page;
+ 	ssize_t ret;
+ 
++	prio = ZRAM_SECONDARY_COMP;
++	prio_max = zram->num_active_comps;
++
+ 	args = skip_spaces(buf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+@@ -2130,7 +2133,7 @@ static ssize_t recompress_store(struct device *dev,
+ 			if (prio == ZRAM_PRIMARY_COMP)
+ 				prio = ZRAM_SECONDARY_COMP;
+ 
+-			prio_max = min(prio + 1, ZRAM_MAX_COMPS);
++			prio_max = prio + 1;
+ 			continue;
+ 		}
+ 	}
+@@ -2158,7 +2161,7 @@ static ssize_t recompress_store(struct device *dev,
+ 				continue;
+ 
+ 			if (!strcmp(zram->comp_algs[prio], algo)) {
+-				prio_max = min(prio + 1, ZRAM_MAX_COMPS);
++				prio_max = prio + 1;
+ 				found = true;
+ 				break;
+ 			}
+@@ -2170,6 +2173,12 @@ static ssize_t recompress_store(struct device *dev,
+ 		}
+ 	}
+ 
++	prio_max = min(prio_max, (u32)zram->num_active_comps);
++	if (prio >= prio_max) {
++		ret = -EINVAL;
++		goto release_init_lock;
++	}
++
+ 	page = alloc_page(GFP_KERNEL);
+ 	if (!page) {
+ 		ret = -ENOMEM;
+-- 
+2.39.5
+

@@ -1,0 +1,140 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Tue, 18 Feb 2025 18:50:10 -0500
+Subject: [PATCH] mm/huge_memory: add folio_split() to debugfs testing
+ interface
+
+This allows to test folio_split() by specifying an additional in folio
+page offset parameter to split_huge_page debugfs interface.
+
+Link: https://lkml.kernel.org/r/20250218235012.1542225-7-ziy@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Kirill A. Shuemov <kirill.shutemov@linux.intel.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 47 ++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 34 insertions(+), 13 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 8651531d86b0..bdca6dc1a92b 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -4313,7 +4313,8 @@ static inline bool vma_not_suitable_for_thp_split(struct vm_area_struct *vma)
+ }
+ 
+ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
+-				unsigned long vaddr_end, unsigned int new_order)
++				unsigned long vaddr_end, unsigned int new_order,
++				long in_folio_offset)
+ {
+ 	int ret = 0;
+ 	struct task_struct *task;
+@@ -4397,8 +4398,16 @@ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
+ 		if (!folio_test_anon(folio) && folio->mapping != mapping)
+ 			goto unlock;
+ 
+-		if (!split_folio_to_order(folio, target_order))
+-			split++;
++		if (in_folio_offset < 0 ||
++		    in_folio_offset >= folio_nr_pages(folio)) {
++			if (!split_folio_to_order(folio, target_order))
++				split++;
++		} else {
++			struct page *split_at = folio_page(folio,
++							   in_folio_offset);
++			if (!folio_split(folio, target_order, split_at, NULL))
++				split++;
++		}
+ 
+ unlock:
+ 
+@@ -4421,7 +4430,8 @@ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
+ }
+ 
+ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
+-				pgoff_t off_end, unsigned int new_order)
++				pgoff_t off_end, unsigned int new_order,
++				long in_folio_offset)
+ {
+ 	struct filename *file;
+ 	struct file *candidate;
+@@ -4470,8 +4480,15 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
+ 		if (folio->mapping != mapping)
+ 			goto unlock;
+ 
+-		if (!split_folio_to_order(folio, target_order))
+-			split++;
++		if (in_folio_offset < 0 || in_folio_offset >= nr_pages) {
++			if (!split_folio_to_order(folio, target_order))
++				split++;
++		} else {
++			struct page *split_at = folio_page(folio,
++							   in_folio_offset);
++			if (!folio_split(folio, target_order, split_at, NULL))
++				split++;
++		}
+ 
+ unlock:
+ 		folio_unlock(folio);
+@@ -4504,6 +4521,7 @@ static ssize_t split_huge_pages_write(struct file *file, const char __user *buf,
+ 	int pid;
+ 	unsigned long vaddr_start, vaddr_end;
+ 	unsigned int new_order = 0;
++	long in_folio_offset = -1;
+ 
+ 	ret = mutex_lock_interruptible(&split_debug_mutex);
+ 	if (ret)
+@@ -4532,30 +4550,33 @@ static ssize_t split_huge_pages_write(struct file *file, const char __user *buf,
+ 			goto out;
+ 		}
+ 
+-		ret = sscanf(tok_buf, "0x%lx,0x%lx,%d", &off_start,
+-			    &off_end, &new_order);
+-		if (ret != 2 && ret != 3) {
++		ret = sscanf(tok_buf, "0x%lx,0x%lx,%d,%ld", &off_start, &off_end,
++				&new_order, &in_folio_offset);
++		if (ret != 2 && ret != 3 && ret != 4) {
+ 			ret = -EINVAL;
+ 			goto out;
+ 		}
+-		ret = split_huge_pages_in_file(file_path, off_start, off_end, new_order);
++		ret = split_huge_pages_in_file(file_path, off_start, off_end,
++				new_order, in_folio_offset);
+ 		if (!ret)
+ 			ret = input_len;
+ 
+ 		goto out;
+ 	}
+ 
+-	ret = sscanf(input_buf, "%d,0x%lx,0x%lx,%d", &pid, &vaddr_start, &vaddr_end, &new_order);
++	ret = sscanf(input_buf, "%d,0x%lx,0x%lx,%d,%ld", &pid, &vaddr_start,
++			&vaddr_end, &new_order, &in_folio_offset);
+ 	if (ret == 1 && pid == 1) {
+ 		split_huge_pages_all();
+ 		ret = strlen(input_buf);
+ 		goto out;
+-	} else if (ret != 3 && ret != 4) {
++	} else if (ret != 3 && ret != 4 && ret != 5) {
+ 		ret = -EINVAL;
+ 		goto out;
+ 	}
+ 
+-	ret = split_huge_pages_pid(pid, vaddr_start, vaddr_end, new_order);
++	ret = split_huge_pages_pid(pid, vaddr_start, vaddr_end, new_order,
++			in_folio_offset);
+ 	if (!ret)
+ 		ret = strlen(input_buf);
+ out:
+-- 
+2.39.5
+

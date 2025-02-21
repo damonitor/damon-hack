@@ -1,0 +1,150 @@
+From: Alistair Popple <apopple@nvidia.com>
+Date: Tue, 18 Feb 2025 14:55:36 +1100
+Subject: [PATCH] device/dax: properly refcount device dax pages when mapping
+
+Device DAX pages are currently not reference counted when mapped, instead
+relying on the devmap PTE bit to ensure mapping code will not get/put
+references.  This requires special handling in various page table walkers,
+particularly GUP, to manage references on the underlying pgmap to ensure
+the pages remain valid.
+
+However there is no reason these pages can't be refcounted properly at map
+time.  Doning so eliminates the need for the devmap PTE bit, freeing up a
+precious PTE bit.  It also simplifies GUP as it no longer needs to manage
+the special pgmap references and can instead just treat the pages normally
+as defined by vm_normal_page().
+
+Link: https://lkml.kernel.org/r/9d9d33b418dd1aab9323203488305085389f62c1.1739850794.git-series.apopple@nvidia.com
+Signed-off-by: Alistair Popple <apopple@nvidia.com>
+Tested-by: Alison Schofield <alison.schofield@intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Asahi Lina <lina@asahilina.net>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chunyan Zhang <zhang.lyra@gmail.com>
+Cc: Dan Wiliams <dan.j.williams@intel.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ira Weiny <ira.weiny@intel.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Logan Gunthorpe <logang@deltatee.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/dax/device.c | 15 +++++++++------
+ mm/memremap.c        | 13 ++++++-------
+ 2 files changed, 15 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/dax/device.c b/drivers/dax/device.c
+index bc871a34b9cd..328231cfb028 100644
+--- a/drivers/dax/device.c
++++ b/drivers/dax/device.c
+@@ -125,11 +125,12 @@ static vm_fault_t __dev_dax_pte_fault(struct dev_dax *dev_dax,
+ 		return VM_FAULT_SIGBUS;
+ 	}
+ 
+-	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
++	pfn = phys_to_pfn_t(phys, 0);
+ 
+ 	dax_set_mapping(vmf, pfn, fault_size);
+ 
+-	return vmf_insert_mixed(vmf->vma, vmf->address, pfn);
++	return vmf_insert_page_mkwrite(vmf, pfn_t_to_page(pfn),
++					vmf->flags & FAULT_FLAG_WRITE);
+ }
+ 
+ static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
+@@ -168,11 +169,12 @@ static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
+ 		return VM_FAULT_SIGBUS;
+ 	}
+ 
+-	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
++	pfn = phys_to_pfn_t(phys, 0);
+ 
+ 	dax_set_mapping(vmf, pfn, fault_size);
+ 
+-	return vmf_insert_pfn_pmd(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
++	return vmf_insert_folio_pmd(vmf, page_folio(pfn_t_to_page(pfn)),
++				vmf->flags & FAULT_FLAG_WRITE);
+ }
+ 
+ #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+@@ -213,11 +215,12 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
+ 		return VM_FAULT_SIGBUS;
+ 	}
+ 
+-	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
++	pfn = phys_to_pfn_t(phys, 0);
+ 
+ 	dax_set_mapping(vmf, pfn, fault_size);
+ 
+-	return vmf_insert_pfn_pud(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
++	return vmf_insert_folio_pud(vmf, page_folio(pfn_t_to_page(pfn)),
++				vmf->flags & FAULT_FLAG_WRITE);
+ }
+ #else
+ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
+diff --git a/mm/memremap.c b/mm/memremap.c
+index 9a8879bf1ae4..532a52ad40d1 100644
+--- a/mm/memremap.c
++++ b/mm/memremap.c
+@@ -460,11 +460,10 @@ void free_zone_device_folio(struct folio *folio)
+ {
+ 	struct dev_pagemap *pgmap = folio->pgmap;
+ 
+-	if (WARN_ON_ONCE(!pgmap->ops))
+-		return;
+-
+-	if (WARN_ON_ONCE(pgmap->type != MEMORY_DEVICE_FS_DAX &&
+-			 !pgmap->ops->page_free))
++	if (WARN_ON_ONCE((!pgmap->ops &&
++			  pgmap->type != MEMORY_DEVICE_GENERIC) ||
++			 (pgmap->ops && !pgmap->ops->page_free &&
++			  pgmap->type != MEMORY_DEVICE_FS_DAX)))
+ 		return;
+ 
+ 	mem_cgroup_uncharge(folio);
+@@ -494,7 +493,8 @@ void free_zone_device_folio(struct folio *folio)
+ 	 * zero which indicating the page has been removed from the file
+ 	 * system mapping.
+ 	 */
+-	if (pgmap->type != MEMORY_DEVICE_FS_DAX)
++	if (pgmap->type != MEMORY_DEVICE_FS_DAX &&
++	    pgmap->type != MEMORY_DEVICE_GENERIC)
+ 		folio->mapping = NULL;
+ 
+ 	switch (pgmap->type) {
+@@ -509,7 +509,6 @@ void free_zone_device_folio(struct folio *folio)
+ 		 * Reset the refcount to 1 to prepare for handing out the page
+ 		 * again.
+ 		 */
+-		pgmap->ops->page_free(folio_page(folio, 0));
+ 		folio_set_count(folio, 1);
+ 		break;
+ 
+-- 
+2.39.5
+

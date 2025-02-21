@@ -1,0 +1,96 @@
+From: Michal Clapinski <mclapinski@google.com>
+Date: Mon, 27 Jan 2025 22:50:20 +0100
+Subject: [PATCH] mm/compaction: make proactive compaction high watermark
+ configurable via sysctl
+
+Currently, the difference between the high and low watermarks for
+proactive compaction is hardcoded to 10.  This hardcoded difference is too
+large for free page reporting to work well.
+
+Add a new sysctl, `compaction_proactiveness_leeway`, to control the
+difference between the high and low watermarks.
+
+Link: https://lkml.kernel.org/r/20250127215020.4023545-3-mclapinski@google.com
+Signed-off-by: Michal Clapinski <mclapinski@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/sysctl/vm.rst | 17 +++++++++++++++++
+ mm/compaction.c                         | 12 +++++++++++-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/admin-guide/sysctl/vm.rst b/Documentation/admin-guide/sysctl/vm.rst
+index f48eaa98d22d..ec6343ee4248 100644
+--- a/Documentation/admin-guide/sysctl/vm.rst
++++ b/Documentation/admin-guide/sysctl/vm.rst
+@@ -27,6 +27,7 @@ Currently, these files are in /proc/sys/vm:
+ - admin_reserve_kbytes
+ - compact_memory
+ - compaction_proactiveness
++- compaction_proactiveness_leeway
+ - compact_unevictable_allowed
+ - dirty_background_bytes
+ - dirty_background_ratio
+@@ -133,6 +134,22 @@ proactive compaction is not being effective.
+ Be careful when setting it to extreme values like 100, as that may
+ cause excessive background compaction activity.
+ 
++compaction_proactiveness_leeway
++===============================
++
++This tunable controls the difference between high and low watermarks for
++proactive compaction. This tunable takes a value in the range [0, 100] with
++a default value of 10. Higher values will result in proactive compaction
++triggering less often but doing more work when it does trigger.
++
++Proactive compaction triggers when fragmentation score (lower is better) gets
++larger than high watermark. Compaction stops when the score gets smaller or
++equal to low watermark (or when no progress is being made).
++The watermarks are calculated as follows:
++
++low_wmark = 100 - compaction_proactiveness;
++high_wmark = low_wmark + compaction_proactiveness_leeway;
++
+ compact_unevictable_allowed
+ ===========================
+ 
+diff --git a/mm/compaction.c b/mm/compaction.c
+index 27de397ac95d..e5744f354ede 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -1924,6 +1924,7 @@ static int sysctl_compact_unevictable_allowed __read_mostly = CONFIG_COMPACT_UNE
+  * background. It takes values in the range [0, 100].
+  */
+ static unsigned int __read_mostly sysctl_compaction_proactiveness = 20;
++static unsigned int __read_mostly sysctl_compaction_proactiveness_leeway = 10;
+ static int sysctl_extfrag_threshold = 500;
+ static int __read_mostly sysctl_compact_memory;
+ 
+@@ -2257,7 +2258,7 @@ static unsigned int fragmentation_score_wmark(bool low)
+ 	 * close to 100 (maximum).
+ 	 */
+ 	wmark_low = 100U - sysctl_compaction_proactiveness;
+-	return low ? wmark_low : min(wmark_low + 10, 100U);
++	return low ? wmark_low : min(wmark_low + sysctl_compaction_proactiveness_leeway, 100U);
+ }
+ 
+ static bool should_proactive_compact_node(pg_data_t *pgdat)
+@@ -3310,6 +3311,15 @@ static const struct ctl_table vm_compaction[] = {
+ 		.extra1		= SYSCTL_ZERO,
+ 		.extra2		= SYSCTL_ONE_HUNDRED,
+ 	},
++	{
++		.procname	= "compaction_proactiveness_leeway",
++		.data		= &sysctl_compaction_proactiveness_leeway,
++		.maxlen		= sizeof(sysctl_compaction_proactiveness_leeway),
++		.mode		= 0644,
++		.proc_handler	= compaction_proactiveness_sysctl_handler,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE_HUNDRED,
++	},
+ 	{
+ 		.procname	= "extfrag_threshold",
+ 		.data		= &sysctl_extfrag_threshold,
+-- 
+2.39.5
+

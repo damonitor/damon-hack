@@ -1,0 +1,265 @@
+From: Frank van der Linden <fvdl@google.com>
+Date: Tue, 18 Feb 2025 18:16:52 +0000
+Subject: [PATCH] mm/cma: introduce interface for early reservations
+
+It can be desirable to reserve memory in a CMA area before it is
+activated, early in boot.  Such reservations would effectively be memblock
+allocations, but they can be returned to the CMA area later.  This
+functionality can be used to allow hugetlb bootmem allocations from a
+hugetlb CMA area.
+
+A new interface, cma_reserve_early is introduced.  This allows for
+pageblock-aligned reservations.  These reservations are skipped during the
+initial handoff of pages in a CMA area to the buddy allocator.  The caller
+is responsible for making sure that the page structures are set up, and
+that the migrate type is set correctly, as with other memblock allocations
+that stick around.  If the CMA area fails to activate (because it
+intersects with multiple zones), the reserved memory is not given to the
+buddy allocator, the caller needs to take care of that.
+
+Link: https://lkml.kernel.org/r/20250218181656.207178-25-fvdl@google.com
+Signed-off-by: Frank van der Linden <fvdl@google.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Dan Carpenter <dan.carpenter@linaro.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Roman Gushchin (Cruise) <roman.gushchin@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/cma.c      | 83 ++++++++++++++++++++++++++++++++++++++++++++++-----
+ mm/cma.h      |  8 +++++
+ mm/internal.h | 16 ++++++++++
+ mm/mm_init.c  |  9 ++++++
+ 4 files changed, 109 insertions(+), 7 deletions(-)
+
+diff --git a/mm/cma.c b/mm/cma.c
+index 4388d941d381..34a4df29af72 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -144,9 +144,10 @@ bool cma_validate_zones(struct cma *cma)
+ 
+ static void __init cma_activate_area(struct cma *cma)
+ {
+-	unsigned long pfn, base_pfn;
++	unsigned long pfn, end_pfn;
+ 	int allocrange, r;
+ 	struct cma_memrange *cmr;
++	unsigned long bitmap_count, count;
+ 
+ 	for (allocrange = 0; allocrange < cma->nranges; allocrange++) {
+ 		cmr = &cma->ranges[allocrange];
+@@ -161,8 +162,13 @@ static void __init cma_activate_area(struct cma *cma)
+ 
+ 	for (r = 0; r < cma->nranges; r++) {
+ 		cmr = &cma->ranges[r];
+-		base_pfn = cmr->base_pfn;
+-		for (pfn = base_pfn; pfn < base_pfn + cmr->count;
++		if (cmr->early_pfn != cmr->base_pfn) {
++			count = cmr->early_pfn - cmr->base_pfn;
++			bitmap_count = cma_bitmap_pages_to_bits(cma, count);
++			bitmap_set(cmr->bitmap, 0, bitmap_count);
++		}
++
++		for (pfn = cmr->early_pfn; pfn < cmr->base_pfn + cmr->count;
+ 		     pfn += pageblock_nr_pages)
+ 			init_cma_reserved_pageblock(pfn_to_page(pfn));
+ 	}
+@@ -173,6 +179,7 @@ static void __init cma_activate_area(struct cma *cma)
+ 	INIT_HLIST_HEAD(&cma->mem_head);
+ 	spin_lock_init(&cma->mem_head_lock);
+ #endif
++	set_bit(CMA_ACTIVATED, &cma->flags);
+ 
+ 	return;
+ 
+@@ -184,9 +191,8 @@ static void __init cma_activate_area(struct cma *cma)
+ 	if (!test_bit(CMA_RESERVE_PAGES_ON_ERROR, &cma->flags)) {
+ 		for (r = 0; r < allocrange; r++) {
+ 			cmr = &cma->ranges[r];
+-			for (pfn = cmr->base_pfn;
+-			     pfn < cmr->base_pfn + cmr->count;
+-			     pfn++)
++			end_pfn = cmr->base_pfn + cmr->count;
++			for (pfn = cmr->early_pfn; pfn < end_pfn; pfn++)
+ 				free_reserved_page(pfn_to_page(pfn));
+ 		}
+ 	}
+@@ -290,6 +296,7 @@ int __init cma_init_reserved_mem(phys_addr_t base, phys_addr_t size,
+ 		return ret;
+ 
+ 	cma->ranges[0].base_pfn = PFN_DOWN(base);
++	cma->ranges[0].early_pfn = PFN_DOWN(base);
+ 	cma->ranges[0].count = cma->count;
+ 	cma->nranges = 1;
+ 	cma->nid = NUMA_NO_NODE;
+@@ -509,6 +516,7 @@ int __init cma_declare_contiguous_multi(phys_addr_t total_size,
+ 		    nr, (u64)mlp->base, (u64)mlp->base + size);
+ 		cmrp = &cma->ranges[nr++];
+ 		cmrp->base_pfn = PHYS_PFN(mlp->base);
++		cmrp->early_pfn = cmrp->base_pfn;
+ 		cmrp->count = size >> PAGE_SHIFT;
+ 
+ 		sizeleft -= size;
+@@ -540,7 +548,6 @@ int __init cma_declare_contiguous_multi(phys_addr_t total_size,
+ 		pr_info("Reserved %lu MiB in %d range%s\n",
+ 			(unsigned long)total_size / SZ_1M, nr,
+ 			nr > 1 ? "s" : "");
+-
+ 	return ret;
+ }
+ 
+@@ -1034,3 +1041,65 @@ bool cma_intersects(struct cma *cma, unsigned long start, unsigned long end)
+ 
+ 	return false;
+ }
++
++/*
++ * Very basic function to reserve memory from a CMA area that has not
++ * yet been activated. This is expected to be called early, when the
++ * system is single-threaded, so there is no locking. The alignment
++ * checking is restrictive - only pageblock-aligned areas
++ * (CMA_MIN_ALIGNMENT_BYTES) may be reserved through this function.
++ * This keeps things simple, and is enough for the current use case.
++ *
++ * The CMA bitmaps have not yet been allocated, so just start
++ * reserving from the bottom up, using a PFN to keep track
++ * of what has been reserved. Unreserving is not possible.
++ *
++ * The caller is responsible for initializing the page structures
++ * in the area properly, since this just points to memblock-allocated
++ * memory. The caller should subsequently use init_cma_pageblock to
++ * set the migrate type and CMA stats  the pageblocks that were reserved.
++ *
++ * If the CMA area fails to activate later, memory obtained through
++ * this interface is not handed to the page allocator, this is
++ * the responsibility of the caller (e.g. like normal memblock-allocated
++ * memory).
++ */
++void __init *cma_reserve_early(struct cma *cma, unsigned long size)
++{
++	int r;
++	struct cma_memrange *cmr;
++	unsigned long available;
++	void *ret = NULL;
++
++	if (!cma || !cma->count)
++		return NULL;
++	/*
++	 * Can only be called early in init.
++	 */
++	if (test_bit(CMA_ACTIVATED, &cma->flags))
++		return NULL;
++
++	if (!IS_ALIGNED(size, CMA_MIN_ALIGNMENT_BYTES))
++		return NULL;
++
++	if (!IS_ALIGNED(size, (PAGE_SIZE << cma->order_per_bit)))
++		return NULL;
++
++	size >>= PAGE_SHIFT;
++
++	if (size > cma->available_count)
++		return NULL;
++
++	for (r = 0; r < cma->nranges; r++) {
++		cmr = &cma->ranges[r];
++		available = cmr->count - (cmr->early_pfn - cmr->base_pfn);
++		if (size <= available) {
++			ret = phys_to_virt(PFN_PHYS(cmr->early_pfn));
++			cmr->early_pfn += size;
++			cma->available_count -= size;
++			return ret;
++		}
++	}
++
++	return ret;
++}
+diff --git a/mm/cma.h b/mm/cma.h
+index bddc84b3cd96..df7fc623b7a6 100644
+--- a/mm/cma.h
++++ b/mm/cma.h
+@@ -16,9 +16,16 @@ struct cma_kobject {
+  * and the total amount of memory requested, while smaller than the total
+  * amount of memory available, is large enough that it doesn't fit in a
+  * single physical memory range because of memory holes.
++ *
++ * Fields:
++ *   @base_pfn: physical address of range
++ *   @early_pfn: first PFN not reserved through cma_reserve_early
++ *   @count: size of range
++ *   @bitmap: bitmap of allocated (1 << order_per_bit)-sized chunks.
+  */
+ struct cma_memrange {
+ 	unsigned long base_pfn;
++	unsigned long early_pfn;
+ 	unsigned long count;
+ 	unsigned long *bitmap;
+ #ifdef CONFIG_CMA_DEBUGFS
+@@ -58,6 +65,7 @@ enum cma_flags {
+ 	CMA_RESERVE_PAGES_ON_ERROR,
+ 	CMA_ZONES_VALID,
+ 	CMA_ZONES_INVALID,
++	CMA_ACTIVATED,
+ };
+ 
+ extern struct cma cma_areas[MAX_CMA_AREAS];
+diff --git a/mm/internal.h b/mm/internal.h
+index ab3d8bc118ee..b07550db2bfd 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -846,6 +846,22 @@ void init_cma_reserved_pageblock(struct page *page);
+ 
+ #endif /* CONFIG_COMPACTION || CONFIG_CMA */
+ 
++struct cma;
++
++#ifdef CONFIG_CMA
++void *cma_reserve_early(struct cma *cma, unsigned long size);
++void init_cma_pageblock(struct page *page);
++#else
++static inline void *cma_reserve_early(struct cma *cma, unsigned long size)
++{
++	return NULL;
++}
++static inline void init_cma_pageblock(struct page *page)
++{
++}
++#endif
++
++
+ int find_suitable_fallback(struct free_area *area, unsigned int order,
+ 			int migratetype, bool only_stealable, bool *can_steal);
+ 
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 23631422fa27..133640a93d1d 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -2276,6 +2276,15 @@ void __init init_cma_reserved_pageblock(struct page *page)
+ 	adjust_managed_page_count(page, pageblock_nr_pages);
+ 	page_zone(page)->cma_pages += pageblock_nr_pages;
+ }
++/*
++ * Similar to above, but only set the migrate type and stats.
++ */
++void __init init_cma_pageblock(struct page *page)
++{
++	set_pageblock_migratetype(page, MIGRATE_CMA);
++	adjust_managed_page_count(page, pageblock_nr_pages);
++	page_zone(page)->cma_pages += pageblock_nr_pages;
++}
+ #endif
+ 
+ void set_zone_contiguous(struct zone *zone)
+-- 
+2.39.5
+

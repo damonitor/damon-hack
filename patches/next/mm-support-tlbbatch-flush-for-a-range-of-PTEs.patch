@@ -1,0 +1,235 @@
+From: Barry Song <v-songbaohua@oppo.com>
+Date: Fri, 14 Feb 2025 22:30:13 +1300
+Subject: [PATCH] mm: support tlbbatch flush for a range of PTEs
+
+This patch lays the groundwork for supporting batch PTE unmapping in
+try_to_unmap_one().  It introduces range handling for TLB batch flushing,
+with the range currently set to the size of PAGE_SIZE.
+
+The function __flush_tlb_range_nosync() is architecture-specific and is
+only used within arch/arm64.  This function requires the mm structure
+instead of the vma structure.  To allow its reuse by
+arch_tlbbatch_add_pending(), which operates with mm but not vma, this
+patch modifies the argument of __flush_tlb_range_nosync() to take mm as
+its parameter.
+
+Link: https://lkml.kernel.org/r/20250214093015.51024-3-21cnbao@gmail.com
+Signed-off-by: Barry Song <v-songbaohua@oppo.com>
+Acked-by: Will Deacon <will@kernel.org>
+Reviewed-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shaoqin Huang <shahuang@redhat.com>
+Cc: Gavin Shan <gshan@redhat.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Lance Yang <ioworker0@gmail.com>
+Cc: "Kirill A. Shutemov" <kirill.shutemov@linux.intel.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Yicong Yang <yangyicong@hisilicon.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Chis Li <chrisl@kernel.org>
+Cc: "Huang, Ying" <ying.huang@intel.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mauricio Faria de Oliveira <mfo@canonical.com>
+Cc: Tangquan Zheng <zhengtangquan@oppo.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/tlbflush.h | 23 +++++++++++------------
+ arch/arm64/mm/contpte.c           |  2 +-
+ arch/riscv/include/asm/tlbflush.h |  3 +--
+ arch/riscv/mm/tlbflush.c          |  3 +--
+ arch/x86/include/asm/tlbflush.h   |  3 +--
+ mm/rmap.c                         | 10 +++++-----
+ 6 files changed, 20 insertions(+), 24 deletions(-)
+
+diff --git a/arch/arm64/include/asm/tlbflush.h b/arch/arm64/include/asm/tlbflush.h
+index bc94e036a26b..b7e1920570bd 100644
+--- a/arch/arm64/include/asm/tlbflush.h
++++ b/arch/arm64/include/asm/tlbflush.h
+@@ -322,13 +322,6 @@ static inline bool arch_tlbbatch_should_defer(struct mm_struct *mm)
+ 	return true;
+ }
+ 
+-static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+-					     struct mm_struct *mm,
+-					     unsigned long uaddr)
+-{
+-	__flush_tlb_page_nosync(mm, uaddr);
+-}
+-
+ /*
+  * If mprotect/munmap/etc occurs during TLB batched flushing, we need to
+  * synchronise all the TLBI issued with a DSB to avoid the race mentioned in
+@@ -448,7 +441,7 @@ static inline bool __flush_tlb_range_limit_excess(unsigned long start,
+ 	return false;
+ }
+ 
+-static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
++static inline void __flush_tlb_range_nosync(struct mm_struct *mm,
+ 				     unsigned long start, unsigned long end,
+ 				     unsigned long stride, bool last_level,
+ 				     int tlb_level)
+@@ -460,12 +453,12 @@ static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
+ 	pages = (end - start) >> PAGE_SHIFT;
+ 
+ 	if (__flush_tlb_range_limit_excess(start, end, pages, stride)) {
+-		flush_tlb_mm(vma->vm_mm);
++		flush_tlb_mm(mm);
+ 		return;
+ 	}
+ 
+ 	dsb(ishst);
+-	asid = ASID(vma->vm_mm);
++	asid = ASID(mm);
+ 
+ 	if (last_level)
+ 		__flush_tlb_range_op(vale1is, start, pages, stride, asid,
+@@ -474,7 +467,7 @@ static inline void __flush_tlb_range_nosync(struct vm_area_struct *vma,
+ 		__flush_tlb_range_op(vae1is, start, pages, stride, asid,
+ 				     tlb_level, true, lpa2_is_enabled());
+ 
+-	mmu_notifier_arch_invalidate_secondary_tlbs(vma->vm_mm, start, end);
++	mmu_notifier_arch_invalidate_secondary_tlbs(mm, start, end);
+ }
+ 
+ static inline void __flush_tlb_range(struct vm_area_struct *vma,
+@@ -482,7 +475,7 @@ static inline void __flush_tlb_range(struct vm_area_struct *vma,
+ 				     unsigned long stride, bool last_level,
+ 				     int tlb_level)
+ {
+-	__flush_tlb_range_nosync(vma, start, end, stride,
++	__flush_tlb_range_nosync(vma->vm_mm, start, end, stride,
+ 				 last_level, tlb_level);
+ 	dsb(ish);
+ }
+@@ -533,6 +526,12 @@ static inline void __flush_tlb_kernel_pgtable(unsigned long kaddr)
+ 	dsb(ish);
+ 	isb();
+ }
++
++static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
++		struct mm_struct *mm, unsigned long start, unsigned long end)
++{
++	__flush_tlb_range_nosync(mm, start, end, PAGE_SIZE, true, 3);
++}
+ #endif
+ 
+ #endif
+diff --git a/arch/arm64/mm/contpte.c b/arch/arm64/mm/contpte.c
+index 55107d27d3f8..bcac4f55f9c1 100644
+--- a/arch/arm64/mm/contpte.c
++++ b/arch/arm64/mm/contpte.c
+@@ -335,7 +335,7 @@ int contpte_ptep_clear_flush_young(struct vm_area_struct *vma,
+ 		 * eliding the trailing DSB applies here.
+ 		 */
+ 		addr = ALIGN_DOWN(addr, CONT_PTE_SIZE);
+-		__flush_tlb_range_nosync(vma, addr, addr + CONT_PTE_SIZE,
++		__flush_tlb_range_nosync(vma->vm_mm, addr, addr + CONT_PTE_SIZE,
+ 					 PAGE_SIZE, true, 3);
+ 	}
+ 
+diff --git a/arch/riscv/include/asm/tlbflush.h b/arch/riscv/include/asm/tlbflush.h
+index 72e559934952..ce0dd0fed764 100644
+--- a/arch/riscv/include/asm/tlbflush.h
++++ b/arch/riscv/include/asm/tlbflush.h
+@@ -60,8 +60,7 @@ void flush_pmd_tlb_range(struct vm_area_struct *vma, unsigned long start,
+ 
+ bool arch_tlbbatch_should_defer(struct mm_struct *mm);
+ void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+-			       struct mm_struct *mm,
+-			       unsigned long uaddr);
++		struct mm_struct *mm, unsigned long start, unsigned long end);
+ void arch_flush_tlb_batched_pending(struct mm_struct *mm);
+ void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch);
+ 
+diff --git a/arch/riscv/mm/tlbflush.c b/arch/riscv/mm/tlbflush.c
+index 9b6e86ce3867..74dd9307fbf1 100644
+--- a/arch/riscv/mm/tlbflush.c
++++ b/arch/riscv/mm/tlbflush.c
+@@ -186,8 +186,7 @@ bool arch_tlbbatch_should_defer(struct mm_struct *mm)
+ }
+ 
+ void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+-			       struct mm_struct *mm,
+-			       unsigned long uaddr)
++		struct mm_struct *mm, unsigned long start, unsigned long end)
+ {
+ 	cpumask_or(&batch->cpumask, &batch->cpumask, mm_cpumask(mm));
+ }
+diff --git a/arch/x86/include/asm/tlbflush.h b/arch/x86/include/asm/tlbflush.h
+index 02fc2aa06e9e..29373da7b00a 100644
+--- a/arch/x86/include/asm/tlbflush.h
++++ b/arch/x86/include/asm/tlbflush.h
+@@ -279,8 +279,7 @@ static inline u64 inc_mm_tlb_gen(struct mm_struct *mm)
+ }
+ 
+ static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+-					     struct mm_struct *mm,
+-					     unsigned long uaddr)
++		struct mm_struct *mm, unsigned long start, unsigned long end)
+ {
+ 	inc_mm_tlb_gen(mm);
+ 	cpumask_or(&batch->cpumask, &batch->cpumask, mm_cpumask(mm));
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 5c208e1c8266..765e541ac9be 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -672,7 +672,7 @@ void try_to_unmap_flush_dirty(void)
+ 	(TLB_FLUSH_BATCH_PENDING_MASK / 2)
+ 
+ static void set_tlb_ubc_flush_pending(struct mm_struct *mm, pte_t pteval,
+-				      unsigned long uaddr)
++		unsigned long start, unsigned long end)
+ {
+ 	struct tlbflush_unmap_batch *tlb_ubc = &current->tlb_ubc;
+ 	int batch;
+@@ -681,7 +681,7 @@ static void set_tlb_ubc_flush_pending(struct mm_struct *mm, pte_t pteval,
+ 	if (!pte_accessible(mm, pteval))
+ 		return;
+ 
+-	arch_tlbbatch_add_pending(&tlb_ubc->arch, mm, uaddr);
++	arch_tlbbatch_add_pending(&tlb_ubc->arch, mm, start, end);
+ 	tlb_ubc->flush_required = true;
+ 
+ 	/*
+@@ -757,7 +757,7 @@ void flush_tlb_batched_pending(struct mm_struct *mm)
+ }
+ #else
+ static void set_tlb_ubc_flush_pending(struct mm_struct *mm, pte_t pteval,
+-				      unsigned long uaddr)
++		unsigned long start, unsigned long end)
+ {
+ }
+ 
+@@ -1887,7 +1887,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 				 */
+ 				pteval = ptep_get_and_clear(mm, address, pvmw.pte);
+ 
+-				set_tlb_ubc_flush_pending(mm, pteval, address);
++				set_tlb_ubc_flush_pending(mm, pteval, address, address + PAGE_SIZE);
+ 			} else {
+ 				pteval = ptep_clear_flush(vma, address, pvmw.pte);
+ 			}
+@@ -2270,7 +2270,7 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
+ 				 */
+ 				pteval = ptep_get_and_clear(mm, address, pvmw.pte);
+ 
+-				set_tlb_ubc_flush_pending(mm, pteval, address);
++				set_tlb_ubc_flush_pending(mm, pteval, address, address + PAGE_SIZE);
+ 			} else {
+ 				pteval = ptep_clear_flush(vma, address, pvmw.pte);
+ 			}
+-- 
+2.39.5
+

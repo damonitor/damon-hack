@@ -1,0 +1,107 @@
+From: Alistair Popple <apopple@nvidia.com>
+Date: Tue, 18 Feb 2025 14:55:29 +1100
+Subject: [PATCH] mm/memory: add vmf_insert_page_mkwrite()
+
+Currently to map a DAX page the DAX driver calls vmf_insert_pfn.  This
+creates a special devmap PTE entry for the pfn but does not take a
+reference on the underlying struct page for the mapping.  This is because
+DAX page refcounts are treated specially, as indicated by the presence of
+a devmap entry.
+
+To allow DAX page refcounts to be managed the same as normal page
+refcounts introduce vmf_insert_page_mkwrite().  This will take a reference
+on the underlying page much the same as vmf_insert_page, except it also
+permits upgrading an existing mapping to be writable if
+requested/possible.
+
+Link: https://lkml.kernel.org/r/c936e2c5e569844a5f1e26968cd89fa348a31b09.1739850794.git-series.apopple@nvidia.com
+Signed-off-by: Alistair Popple <apopple@nvidia.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Tested-by: Alison Schofield <alison.schofield@intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Asahi Lina <lina@asahilina.net>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Bjorn Helgaas <bhelgaas@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chunyan Zhang <zhang.lyra@gmail.com>
+Cc: Dan Wiliams <dan.j.williams@intel.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ira Weiny <ira.weiny@intel.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Logan Gunthorpe <logang@deltatee.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h |  2 ++
+ mm/memory.c        | 20 ++++++++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index fabd537904fc..d1f260d671ae 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -3638,6 +3638,8 @@ int vm_map_pages(struct vm_area_struct *vma, struct page **pages,
+ 				unsigned long num);
+ int vm_map_pages_zero(struct vm_area_struct *vma, struct page **pages,
+ 				unsigned long num);
++vm_fault_t vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page,
++			bool write);
+ vm_fault_t vmf_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
+ 			unsigned long pfn);
+ vm_fault_t vmf_insert_pfn_prot(struct vm_area_struct *vma, unsigned long addr,
+diff --git a/mm/memory.c b/mm/memory.c
+index becfaf434c65..a978b77837bf 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -2624,6 +2624,26 @@ static vm_fault_t __vm_insert_mixed(struct vm_area_struct *vma,
+ 	return VM_FAULT_NOPAGE;
+ }
+ 
++vm_fault_t vmf_insert_page_mkwrite(struct vm_fault *vmf, struct page *page,
++			bool write)
++{
++	pgprot_t pgprot = vmf->vma->vm_page_prot;
++	unsigned long addr = vmf->address;
++	int err;
++
++	if (addr < vmf->vma->vm_start || addr >= vmf->vma->vm_end)
++		return VM_FAULT_SIGBUS;
++
++	err = insert_page(vmf->vma, addr, page, pgprot, write);
++	if (err == -ENOMEM)
++		return VM_FAULT_OOM;
++	if (err < 0 && err != -EBUSY)
++		return VM_FAULT_SIGBUS;
++
++	return VM_FAULT_NOPAGE;
++}
++EXPORT_SYMBOL_GPL(vmf_insert_page_mkwrite);
++
+ vm_fault_t vmf_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
+ 		pfn_t pfn)
+ {
+-- 
+2.39.5
+
