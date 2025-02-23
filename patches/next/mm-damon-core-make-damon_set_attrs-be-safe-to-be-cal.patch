@@ -1,0 +1,118 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 23 Feb 2025 12:52:30 -0800
+Subject: [PATCH] mm/damon/core: make damon_set_attrs() be safe to be called
+ from damon_call()
+
+damon_set_attrs() cannot be called from damon_call(), since it can be
+executed in the middle of the aggregation.  Specifically, two problems
+can occur in the case.  First, converting the not yet completely
+aggregated nr_accesses for new intervals can arguably degrade or at
+least confuse accuracy.  Second, kdamond_reset_aggregated() will not be
+called after the monitoring results update, so next aggregation starts
+from unclean state.  This can particularly make the pseudo moving-sum
+mechanism (nr_accesses_bp) be confused.
+
+When aggregation interval is long, this fact makes online paramters
+update cannot be done in a timely manner.
+
+Make it safe in following ways.  Catch if this is the case from
+damon_set_attrs() and pass the information to nr_accesses conversion
+logic.  The logic works as before if this is not the case (called after
+the current aggregation is completed).  If not, it drops the nr_accesses
+information that so far aggregated, and make the status same to the
+beginning of this aggregation, but as if the last aggregation was ran
+with the updated sampling/aggregation intervals.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 38 +++++++++++++++++++++++++++-----------
+ 1 file changed, 27 insertions(+), 11 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 215ce186b6ae..aa2590ebfc68 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -631,11 +631,25 @@ static unsigned int damon_nr_accesses_for_new_attrs(unsigned int nr_accesses,
+ }
+ 
+ static void damon_update_monitoring_result(struct damon_region *r,
+-		struct damon_attrs *old_attrs, struct damon_attrs *new_attrs)
++		struct damon_attrs *old_attrs, struct damon_attrs *new_attrs,
++		bool aggregating)
+ {
+-	r->nr_accesses = damon_nr_accesses_for_new_attrs(r->nr_accesses,
+-			old_attrs, new_attrs);
+-	r->nr_accesses_bp = r->nr_accesses * 10000;
++	if (!aggregating) {
++		r->nr_accesses = damon_nr_accesses_for_new_attrs(
++				r->nr_accesses, old_attrs, new_attrs);
++		r->nr_accesses_bp = r->nr_accesses * 10000;
++	} else {
++		/*
++		 * if this is called in the middle of the aggregation, reset
++		 * the aggregations we made so far for this aggregation
++		 * interval.  In other words, make the status like
++		 * kdamond_reset_aggregated() is called.
++		 */
++		r->last_nr_accesses = damon_nr_accesses_for_new_attrs(
++				r->last_nr_accesses, old_attrs, new_attrs);
++		r->nr_accesses_bp = r->last_nr_accesses * 10000;
++		r->nr_accesses = 0;
++	}
+ 	r->age = damon_age_for_new_attrs(r->age, old_attrs, new_attrs);
+ }
+ 
+@@ -648,7 +662,7 @@ static void damon_update_monitoring_result(struct damon_region *r,
+  * ->nr_accesses and ->age of given damon_ctx's regions for new damon_attrs.
+  */
+ static void damon_update_monitoring_results(struct damon_ctx *ctx,
+-		struct damon_attrs *new_attrs)
++		struct damon_attrs *new_attrs, bool aggrregating)
+ {
+ 	struct damon_attrs *old_attrs = &ctx->attrs;
+ 	struct damon_target *t;
+@@ -663,7 +677,7 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
+ 	damon_for_each_target(t, ctx)
+ 		damon_for_each_region(r, t)
+ 			damon_update_monitoring_result(
+-					r, old_attrs, new_attrs);
++					r, old_attrs, new_attrs, aggregating);
+ }
+ 
+ /*
+@@ -690,10 +704,10 @@ static bool damon_valid_intervals_goal(struct damon_attrs *attrs)
+  * @ctx:		monitoring context
+  * @attrs:		monitoring attributes
+  *
+- * This function should be called while the kdamond is not running, or an
+- * access check results aggregation is not ongoing (e.g., from
+- * &struct damon_callback->after_aggregation or
+- * &struct damon_callback->after_wmarks_check callbacks).
++ * This function should be called while the kdamond is not running, an access
++ * check results aggregation is not ongoing (e.g., from &struct
++ * damon_callback->after_aggregation or &struct
++ * damon_callback->after_wmarks_check callbacks), or from damon_call().
+  *
+  * Every time interval is in micro-seconds.
+  *
+@@ -704,6 +718,8 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+ 	unsigned long sample_interval = attrs->sample_interval ?
+ 		attrs->sample_interval : 1;
+ 	struct damos *s;
++	bool aggregating = ctx->passed_sample_intervals <
++		ctx->next_aggregation_sis;
+ 
+ 	if (!damon_valid_intervals_goal(attrs))
+ 		return -EINVAL;
+@@ -724,7 +740,7 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+ 	ctx->next_ops_update_sis = ctx->passed_sample_intervals +
+ 		attrs->ops_update_interval / sample_interval;
+ 
+-	damon_update_monitoring_results(ctx, attrs);
++	damon_update_monitoring_results(ctx, attrs, aggregating);
+ 	ctx->attrs = *attrs;
+ 
+ 	damon_for_each_scheme(s, ctx)
+-- 
+2.39.5
+
