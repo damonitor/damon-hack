@@ -1,0 +1,53 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 25 Feb 2025 10:00:58 -0800
+Subject: [PATCH] mm/damon/core: call kdamond_tune_intervals() after schemes
+ are applied
+
+If a scheme's apply interval is zero and therefore aggregation interval
+is used for that, tuning is turned on for each aggregation interval, and
+if it tries to only increase the interval, update_schemes_tried_regions
+will inifinitely hang.  Fix it by giving the schemes to be applied
+before the tuning.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 2ebeb09b85b6..f017f7623cf4 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2500,14 +2500,6 @@ static int kdamond_fn(void *data)
+ 			kdamond_merge_regions(ctx,
+ 					max_nr_accesses / 10,
+ 					sz_limit);
+-			if (ctx->attrs.intervals_goal.aggrs &&
+-					ctx->passed_sample_intervals >=
+-					ctx->next_intervals_tune_sis) {
+-				ctx->next_intervals_tune_sis +=
+-					ctx->attrs.aggr_samples *
+-					ctx->attrs.intervals_goal.aggrs;
+-				kdamond_tune_intervals(ctx);
+-			}
+ 			if (ctx->callback.after_aggregation &&
+ 					ctx->callback.after_aggregation(ctx))
+ 				break;
+@@ -2526,6 +2518,14 @@ static int kdamond_fn(void *data)
+ 		sample_interval = ctx->attrs.sample_interval ?
+ 			ctx->attrs.sample_interval : 1;
+ 		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
++			if (ctx->attrs.intervals_goal.aggrs &&
++					ctx->passed_sample_intervals >=
++					ctx->next_intervals_tune_sis) {
++				ctx->next_intervals_tune_sis +=
++					ctx->attrs.aggr_samples *
++					ctx->attrs.intervals_goal.aggrs;
++				kdamond_tune_intervals(ctx);
++			}
+ 			ctx->next_aggregation_sis = next_aggregation_sis +
+ 				ctx->attrs.aggr_interval / sample_interval;
+ 
+-- 
+2.39.5
+
