@@ -3,19 +3,29 @@ Date: Sun, 23 Feb 2025 12:52:30 -0800
 Subject: [PATCH] mm/damon/core: make damon_set_attrs() be safe to be called
  from damon_call()
 
-damon_set_attrs() cannot be called from damon_call(), since it can be
-executed in the middle of the aggregation.  Specifically, two problems
-can occur in the case.  First, converting the not yet completely
-aggregated nr_accesses for new intervals can arguably degrade or at
-least confuse accuracy.  Second, kdamond_reset_aggregated() will not be
-called after the monitoring results update, so next aggregation starts
-from unclean state.  This can particularly make the pseudo moving-sum
-mechanism (nr_accesses_bp) be confused.
+Currently all DAMON kernel API callers do online DAMON parameters commit
+from damon_callback->after_aggregation because only those are safe place
+to call the DAMON monitoring attributes update function, namely
+damon_set_attrs().
 
-When aggregation interval is long, this fact makes online paramters
-update cannot be done in a timely manner.
+Because damon_callback hooks provides no synchronization, the callers
+works in asynchronous ways or implement their own inefficient and
+complicated synchronization mechanisms.  It also means online DAMON
+parameters commit can take up to one aggregation interval.  On large
+systems having long aggregation intervals, that can be too slow.  The
+synchronization can be done in more efficient and simple way while
+removing the latency constraint if it can be done using damon_call().
 
-Make it safe in following ways.  Catch if this is the case from
+The fact that damon_call() can be executed in the middle of the
+aggregation makes damon_set_attrs() unsafe to be called from it, though.
+Two real problems can occur in the case.  First, converting the not yet
+completely aggregated nr_accesses for new user-set intervals can
+arguably degrade the accuracy or at least make the logic complicated.
+Second, kdamond_reset_aggregated() will not be called after the
+monitoring results update, so next aggregation starts from unclean
+state.  This can result in inconsistent and unexpected nr_accesses.
+
+Make it safe as follows.  Catch the middle-of-the-aggregation case from
 damon_set_attrs() and pass the information to nr_accesses conversion
 logic.  The logic works as before if this is not the case (called after
 the current aggregation is completed).  If not, it drops the nr_accesses
