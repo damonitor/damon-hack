@@ -1,0 +1,80 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 23 Feb 2025 13:32:57 -0800
+Subject: [RFC PATCH 05/13] mm/damon/sysfs: remove damon_sysfs_cmd_request code
+         from damon_sysfs_handle_cmd()
+
+damon_sysfs_handle_cmd() handles user requests that it can directly
+handle on its own.  For requests that need to be handled from
+damon_callback hooks, it uses DAMON sysfs interface's own synchronous
+damon_callback hooks management mechanism, namely
+damon_sysfs_cmd_request.  Now all user requests are handled without
+damon_callback hooks, so damon_sysfs_cmd_request use code in
+damon_sysfs_andle_cmd() does nothing in real.  Remove the unnecessary
+code.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 32 --------------------------------
+ 1 file changed, 32 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index c55a2cee4b74..166161f12c26 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1715,8 +1715,6 @@ static int damon_sysfs_update_schemes_tried_regions(
+ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+ 		struct damon_sysfs_kdamond *kdamond)
+ {
+-	bool need_wait = true;
+-
+ 	switch (cmd) {
+ 	case DAMON_SYSFS_CMD_ON:
+ 		return damon_sysfs_turn_damon_on(kdamond);
+@@ -1747,38 +1745,8 @@ static int damon_sysfs_handle_cmd(enum damon_sysfs_cmd cmd,
+ 		return damon_sysfs_damon_call(
+ 				damon_sysfs_upd_tuned_intervals, kdamond);
+ 	default:
+-		break;
+-	}
+-
+-	/* Pass the command to DAMON callback for safe DAMON context access */
+-	if (damon_sysfs_cmd_request.kdamond)
+-		return -EBUSY;
+-	if (!damon_sysfs_kdamond_running(kdamond))
+ 		return -EINVAL;
+-	damon_sysfs_cmd_request.cmd = cmd;
+-	damon_sysfs_cmd_request.kdamond = kdamond;
+-
+-	/*
+-	 * wait until damon_sysfs_cmd_request_callback() handles the request
+-	 * from kdamond context
+-	 */
+-	mutex_unlock(&damon_sysfs_lock);
+-	while (need_wait) {
+-		schedule_timeout_idle(msecs_to_jiffies(100));
+-		if (!mutex_trylock(&damon_sysfs_lock))
+-			continue;
+-		if (!damon_sysfs_cmd_request.kdamond) {
+-			/* damon_sysfs_cmd_request_callback() handled */
+-			need_wait = false;
+-		} else if (!damon_sysfs_kdamond_running(kdamond)) {
+-			/* kdamond has already finished */
+-			need_wait = false;
+-			damon_sysfs_cmd_request.kdamond = NULL;
+-		}
+-		mutex_unlock(&damon_sysfs_lock);
+ 	}
+-	mutex_lock(&damon_sysfs_lock);
+-	return 0;
+ }
+ 
+ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
+-- 
+2.39.5
