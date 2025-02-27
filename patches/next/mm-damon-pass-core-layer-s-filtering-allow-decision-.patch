@@ -1,0 +1,74 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 26 Feb 2025 21:21:56 -0800
+Subject: [PATCH] mm/damon: pass core layer's filtering-allow decision to ops
+ layer
+
+Filtering decisions made on core layer should also be respected by ops
+layer.  In case of reject filters, it is respected, since core
+layer-rejected regions are not passed to ops layer at all.  But in case
+of allow filters, whether the region has passed to ops layer because it
+was allowed by core filters or just because it didn't match to any core
+layer is unclear.  Store the information in damos, and make paddr
+respect it.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 12 +++++++++++-
+ mm/damon/paddr.c      |  3 +++
+ 3 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index b7a4d12ce532..8d8621d8b58d 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -528,6 +528,7 @@ struct damos {
+ 	unsigned long next_apply_sis;
+ 	/* informs if ongoing DAMOS walk for this scheme is finished */
+ 	bool walk_completed;
++	bool skip_ops_filters;
+ 	/* whether to reject core/ops filters umatched regions */
+ 	bool core_filters_default_reject;
+ 	bool ops_filters_default_reject;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 783cc05a9fcc..a2e4bdbb6b19 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1662,9 +1662,19 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+ {
+ 	struct damos_filter *filter;
+ 
++	s->skip_ops_filters = false;
+ 	damos_for_each_filter(filter, s) {
+-		if (damos_filter_match(ctx, t, r, filter))
++		if (damos_filter_match(ctx, t, r, filter)) {
++			/*
++			 * ops layer filters should also respect the decision.
++			 * Store the information in s->skip_ops_filters.
++			 * If the decision is reject, the region will not be
++			 * passed to ops layer, so no need to set the flag.
++			 */
++			if (filter->allow)
++				s->skip_ops_filters = true;
+ 			return !filter->allow;
++		}
+ 	}
+ 	return s->core_filters_default_reject;
+ }
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 4a170086852a..8568b5a34888 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -393,6 +393,9 @@ static bool damos_pa_filter_out(struct damos *scheme, struct folio *folio)
+ {
+ 	struct damos_filter *filter;
+ 
++	if (scheme->skip_ops_filters)
++		return false;
++
+ 	damos_for_each_ops_filter(filter, scheme) {
+ 		if (damos_pa_filter_match(filter, folio))
+ 			return !filter->allow;
+-- 
+2.39.5
+
