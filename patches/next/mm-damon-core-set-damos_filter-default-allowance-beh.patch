@@ -4,23 +4,27 @@ Subject: [PATCH] mm/damon/core: set damos_filter default allowance behavior
  based on installed filters
 
 Decide whether to allow or reject by default on core and opertions layer
-handled filters evaluation stages, based on the last-installed filter's
-behavior.  It is the opposite of the last installed filter's behavior.
-If there is any operations layer handled filters, core layer handled
-filters stage keeps allowing as the default behavior, since the last
-filter of core layer handled filters in the case is not really the last
-filter of the entire filtering stage.
+handled filters evaluation stages.  It is decided as the opposite of the
+last installed filter's behavior.  If there is no filter at all, allow
+by default.  If there is any operations layer handled filters, core
+layer's filtering stage sets allowing as the default behavior regardless
+of the last filter of core layer-handling ones, since the last filter of
+core layer handled filters in the case is not really the last filter of
+the entire filtering stage.
+
+Also, make the core layer's DAMOS filters handling stage uses the newly
+set behavior field.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 31 +++++++++++++++++++++++++++++--
- 1 file changed, 29 insertions(+), 2 deletions(-)
+ mm/damon/core.c | 34 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 78126a5145fd..9744ab9ca5c5 100644
+index 78126a5145fd..8661f64ab1b4 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -864,6 +864,29 @@ static int damos_commit_ops_filters(struct damos *dst, struct damos *src)
+@@ -864,6 +864,32 @@ static int damos_commit_ops_filters(struct damos *dst, struct damos *src)
  	return 0;
  }
  
@@ -41,8 +45,11 @@ index 78126a5145fd..9744ab9ca5c5 100644
 +
 +static void damos_set_filters_default_reject(struct damos *s)
 +{
-+	s->core_filters_default_reject =
-+		damos_filters_default_reject(&s->filters);
++	if (!list_empty(&s->ops_filters))
++		s->core_filters_default_reject = false;
++	else
++		s->core_filters_default_reject =
++			damos_filters_default_reject(&s->filters);
 +	s->ops_filters_default_reject =
 +		damos_filters_default_reject(&s->ops_filters);
 +}
@@ -50,7 +57,7 @@ index 78126a5145fd..9744ab9ca5c5 100644
  static int damos_commit_filters(struct damos *dst, struct damos *src)
  {
  	int err;
-@@ -871,7 +894,11 @@ static int damos_commit_filters(struct damos *dst, struct damos *src)
+@@ -871,7 +897,11 @@ static int damos_commit_filters(struct damos *dst, struct damos *src)
  	err = damos_commit_core_filters(dst, src);
  	if (err)
  		return err;
@@ -63,7 +70,7 @@ index 78126a5145fd..9744ab9ca5c5 100644
  }
  
  static struct damos *damon_nth_scheme(int n, struct damon_ctx *ctx)
-@@ -1490,7 +1517,7 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1490,7 +1520,7 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
  		if (damos_filter_match(ctx, t, r, filter))
  			return !filter->allow;
  	}
