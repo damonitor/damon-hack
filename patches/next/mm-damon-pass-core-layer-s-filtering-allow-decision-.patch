@@ -1,72 +1,78 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Wed, 26 Feb 2025 21:21:56 -0800
+Date: Thu, 27 Feb 2025 20:54:57 -0800
 Subject: [PATCH] mm/damon: pass core layer's filtering-allow decision to ops
  layer
 
-Filtering decisions made on core layer should also be respected by ops
-layer.  In case of reject filters, it is respected, since core
-layer-rejected regions are not passed to ops layer at all.  But in case
-of allow filters, whether the region has passed to ops layer because it
-was allowed by core filters or just because it didn't match to any core
-layer is unclear.  Store the information in damos, and make paddr
-respect it.
+Filtering decisions are made in installed order.  Once a decision is
+made by a filter, filters installed behind should just respect it.  This
+is the intended and documented behavior.  Since core layer-handled
+filters are evaluated before operations layer-handled filters, decisions
+made on core layer should respected by ops layer.
 
+In case of reject filters, it is respected, since core layer-rejected
+regions are not passed to ops layer at all.  But in case of allow
+filters, whether the region has passed to ops layer because it was
+allowed by core filters or just because it didn't match to any core
+layer is unclear.  Store the information in 'struct damos', and make
+paddr, the only operations set that supports filters at the moment,
+respects it.
+
+Fixes: 491fee286e56 ("mm/damon/core: support damos_filter->allow")
+Cc: <stable@vger.kernel.org> # 6.14.x
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h |  1 +
- mm/damon/core.c       | 12 +++++++++++-
- mm/damon/paddr.c      |  3 +++
- 3 files changed, 15 insertions(+), 1 deletion(-)
+ include/linux/damon.h | 5 +++++
+ mm/damon/core.c       | 6 +++++-
+ mm/damon/paddr.c      | 3 +++
+ 3 files changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index b7a4d12ce532..8d8621d8b58d 100644
+index 795ca09b1107..242910b190c9 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -528,6 +528,7 @@ struct damos {
+@@ -496,6 +496,11 @@ struct damos {
  	unsigned long next_apply_sis;
  	/* informs if ongoing DAMOS walk for this scheme is finished */
  	bool walk_completed;
-+	bool skip_ops_filters;
- 	/* whether to reject core/ops filters umatched regions */
- 	bool core_filters_default_reject;
- 	bool ops_filters_default_reject;
++	/*
++	 * If the current region in the filtering stage is allowed by core
++	 * layer-handled filters.  If true, operations layer allows it, too.
++	 */
++	bool core_filters_allowed;
+ /* public: */
+ 	struct damos_quota quota;
+ 	struct damos_watermarks wmarks;
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 2714e8bb00c3..0118c9eb1aa7 100644
+index cfa105ee9610..b1ce072b56f2 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -1663,9 +1663,19 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1433,9 +1433,13 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
  {
  	struct damos_filter *filter;
  
-+	s->skip_ops_filters = false;
++	s->core_filters_allowed = false;
  	damos_for_each_filter(filter, s) {
 -		if (damos_filter_match(ctx, t, r, filter))
 +		if (damos_filter_match(ctx, t, r, filter)) {
-+			/*
-+			 * ops layer filters should also respect the decision.
-+			 * Store the information in s->skip_ops_filters.
-+			 * If the decision is reject, the region will not be
-+			 * passed to ops layer, so no need to set the flag.
-+			 */
 +			if (filter->allow)
-+				s->skip_ops_filters = true;
++				s->core_filters_allowed = true;
  			return !filter->allow;
 +		}
  	}
- 	return s->core_filters_default_reject;
+ 	return false;
  }
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index 4a170086852a..8568b5a34888 100644
+index 25090230da17..d5db313ca717 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -393,6 +393,9 @@ static bool damos_pa_filter_out(struct damos *scheme, struct folio *folio)
+@@ -253,6 +253,9 @@ static bool damos_pa_filter_out(struct damos *scheme, struct folio *folio)
  {
  	struct damos_filter *filter;
  
-+	if (scheme->skip_ops_filters)
++	if (scheme->core_filters_allowed)
 +		return false;
 +
- 	damos_for_each_ops_filter(filter, scheme) {
+ 	damos_for_each_filter(filter, scheme) {
  		if (damos_pa_filter_match(filter, folio))
  			return !filter->allow;
 -- 
