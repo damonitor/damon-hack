@@ -1,0 +1,118 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 7 Feb 2025 15:00:33 -0800
+Subject: [PATCH 1/8] mm/damon: add data structure for monitoring intervals
+         auto-tuning
+
+Add data structures for DAMON sampling and aggregation intervals
+automatic tuning that aims specific amount of DAMON-observed access
+events per snapshot.  In more detail, define the data structure for the
+tuning goal, link it to the monitoring attributes data structure so that
+DAMON kernel API callers can make the request, and update parameters
+setup DAMON function to respect the new parameter.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 27 +++++++++++++++++++++++++++
+ mm/damon/core.c       | 22 ++++++++++++++++++++++
+ 2 files changed, 49 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 242910b190c9..5f2609f24761 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -659,12 +659,38 @@ struct damon_call_control {
+ 	bool canceled;
+ };
+ 
++/**
++ * struct damon_intervals_goal - Monitoring intervals auto-tuning goal.
++ *
++ * @access_bp:		Access events observation ratio to achieve in bp.
++ * @aggrs:		Number of aggregations to acheive @access_bp within.
++ * @min_sample_us:	Minimum resulting sampling interval in microseconds.
++ * @max_sample_us:	Maximum resulting sampling interval in microseconds.
++ *
++ * DAMON automatically tunes &damon_attrs->sample_interval and
++ * &damon_attrs->aggr_interval aiming the ratio in bp (1/10,000) of
++ * DAMON-observed access events to theoretical maximum amount within @aggrs
++ * aggregations be same to @access_bp.  The logic increases
++ * &damon_attrs->aggr_interval and &damon_attrs->sampling_interval in same
++ * ratio if the current access events observation ratio is lower than the
++ * target for each @aggrs aggregations, and vice versa.
++ *
++ * If @aggrs is zero, the tuning is disabled and hence this struct is ignored.
++ */
++struct damon_intervals_goal {
++	unsigned long access_bp;
++	unsigned long aggrs;
++	unsigned long min_sample_us;
++	unsigned long max_sample_us;
++};
++
+ /**
+  * struct damon_attrs - Monitoring attributes for accuracy/overhead control.
+  *
+  * @sample_interval:		The time between access samplings.
+  * @aggr_interval:		The time between monitor results aggregations.
+  * @ops_update_interval:	The time between monitoring operations updates.
++ * @intervals_goal:		Intervals auto-tuning goal.
+  * @min_nr_regions:		The minimum number of adaptive monitoring
+  *				regions.
+  * @max_nr_regions:		The maximum number of adaptive monitoring
+@@ -684,6 +710,7 @@ struct damon_attrs {
+ 	unsigned long sample_interval;
+ 	unsigned long aggr_interval;
+ 	unsigned long ops_update_interval;
++	struct damon_intervals_goal intervals_goal;
+ 	unsigned long min_nr_regions;
+ 	unsigned long max_nr_regions;
+ };
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b1ce072b56f2..ad3b5c065cb8 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -615,6 +615,25 @@ static void damon_update_monitoring_results(struct damon_ctx *ctx,
+ 					r, old_attrs, new_attrs);
+ }
+ 
++/*
++ * damon_valid_intervals_goal() - return if the intervals goal of @attrs is
++ * valid.
++ */
++static bool damon_valid_intervals_goal(struct damon_attrs *attrs)
++{
++	struct damon_intervals_goal *goal = &attrs->intervals_goal;
++
++	/* tuning is disabled */
++	if (!goal->aggrs)
++		return true;
++	if (goal->min_sample_us > goal->max_sample_us)
++		return false;
++	if (attrs->sample_interval < goal->min_sample_us ||
++			goal->max_sample_us < attrs->sample_interval)
++		return false;
++	return true;
++}
++
+ /**
+  * damon_set_attrs() - Set attributes for the monitoring.
+  * @ctx:		monitoring context
+@@ -635,6 +654,9 @@ int damon_set_attrs(struct damon_ctx *ctx, struct damon_attrs *attrs)
+ 		attrs->sample_interval : 1;
+ 	struct damos *s;
+ 
++	if (!damon_valid_intervals_goal(attrs))
++		return -EINVAL;
++
+ 	if (attrs->min_nr_regions < 3)
+ 		return -EINVAL;
+ 	if (attrs->min_nr_regions > attrs->max_nr_regions)
+-- 
+2.39.5
