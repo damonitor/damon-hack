@@ -120,14 +120,178 @@ good default suggestion.
 Evaluation
 ==========
 
-We confirmed the tuning works as expected with a few simple workloads
-including kernel builds and an in-memory caching representative
-benchmark[1].  We will conduct more evaluations with more workloads and
-share the results with more details by the time that we drop the RFC
-tag.
+On a machine running a real world server workload, I ran DAMON to
+monitor its physical address space for about 23 hours, with this feature
+turned on.  We set it to tune sampling interval in a range from 5
+milliseconds to 10 seconds, aiming 4 % DAMON-observed access ratio per
+three aggregation intervals.  The exact command I used is as below.
+
+    damo start --monitoring_intervals_goal 4% 3 5ms 10s --damos_action stat
+
+During the test run, DAMON continuously updated sampling and aggregation
+intervals as designed, within the given range.  For all the time, DAMON
+was able to find the intervals that meets the target access events ratio
+in the given intervals range (sampling interval between 5 milliseconds
+and 10 seconds).
+
+For most of the time, tuned sampling interval was converged in 300-400
+milliseconds.  It made only small amount of changes within the range.
+The average of the tuned sampling interval during the test was about 380
+milliseconds.
+
+The workload periodically gets less load and decreases its CPU usage.
+Presumably this also caused it making less memory access events.
+Reactively to such event,s DAMON also increased the intervals as
+expected.  It was still able to find the optimum interval that
+satisfying the target access ratio within the given intervals range.
+Usually it was converged to about 5 seconds.  Once the workload gets
+normal amount of load again, DAMON reactively reduced the intervals to
+the normal range.
+
+I collected and visualized DAMON's monitoring results on the server a
+few times.  Every time the visualized access pattern looked not biased
+to only cold or hot pages but diverse and balanced.  Let me show some of
+the snapshots that I collected at the nearly end of the test (after
+about 23 hours have passed since starting DAMON on the server).
+
+The recency histogram looks as below.  Please note that this
+visualization shows only a very coarse grained information.  For more
+details about the visualization format, please refer to DAMON user-space
+tool documentation[1].
+
+    # ./damo report access --style recency-sz-hist --tried_regions_of 0 0 0 --access_rate 0 0
+    <last accessed time (us)> <total size>
+    [-19 h 7 m 45.514 s, -17 h 12 m 58.963 s)  6.198 GiB  |****                |
+    [-17 h 12 m 58.963 s, -15 h 18 m 12.412 s) 0 B        |                    |
+    [-15 h 18 m 12.412 s, -13 h 23 m 25.860 s) 0 B        |                    |
+    [-13 h 23 m 25.860 s, -11 h 28 m 39.309 s) 0 B        |                    |
+    [-11 h 28 m 39.309 s, -9 h 33 m 52.757 s)  0 B        |                    |
+    [-9 h 33 m 52.757 s, -7 h 39 m 6.206 s)    0 B        |                    |
+    [-7 h 39 m 6.206 s, -5 h 44 m 19.654 s)    0 B        |                    |
+    [-5 h 44 m 19.654 s, -3 h 49 m 33.103 s)   0 B        |                    |
+    [-3 h 49 m 33.103 s, -1 h 54 m 46.551 s)   0 B        |                    |
+    [-1 h 54 m 46.551 s, -0 ns)                16.967 GiB |*********           |
+    [-0 ns, --6886551440000 ns)                38.835 GiB |********************|
+    memory bw estimate: 9.425 GiB per second
+    total size: 62.000 GiB
+
+It shows about 38 GiB of memory was accessed at least once within last
+aggregation interval (given ~300 milliseconds tuned sampling interval,
+this is about six seconds).  This is about 61 % of the total memory.  In
+other words, DAMON found warmest 61 % memory of the system.  The number
+is particularly interesting given our Pareto principle based theory for
+the tuning goal value.  We set it as 20 % of 20 % (4 %), thinking it
+would capture 80 % of 80 % (64 %) real access events.  And it foudn 61 %
+hot memory, or working set.  Nevertheless, to make the theory clearer,
+much more discussion and tests would be needed.  At the moment,
+nonetheless, we can say making the target value higher helps finding
+more hot memory regions.
+
+The histogram also shows an amount of cold memory.  About 17 GiB memory
+of the system has not accessed at least for last aggregation interval
+(about six seconds), and at most for about last two hours.  The real
+longest unaccessed time of the 17 GiB memory was about 19 minutes,
+though.  This is a limitation of this visualization format.
+
+It further found very cold 6 GiB memory.  It has not accessed at least for last
+17 hours and at most 19 hours.
+
+What about hot memory distribution?  To see this, I capture and
+visualize the snapshot in access temperature histogram.  Again, please
+refer to the DAMON user-space tool documentation[1] for the format and
+what access temperature mean.   Both the visualization and metric shows
+only very coarse grained and limited information.  The resulting
+histogram look like below.
+
+    # ./damo report access --style temperature-sz-hist --tried_regions_of 0 0 0
+    <temperature> <total size>
+    [-6,840,763,776,000, -5,501,580,939,800) 6.198 GiB  |***                 |
+    [-5,501,580,939,800, -4,162,398,103,600) 0 B        |                    |
+    [-4,162,398,103,600, -2,823,215,267,400) 0 B        |                    |
+    [-2,823,215,267,400, -1,484,032,431,200) 0 B        |                    |
+    [-1,484,032,431,200, -144,849,595,000)   0 B        |                    |
+    [-144,849,595,000, 1,194,333,241,200)    55.802 GiB |********************|
+    [1,194,333,241,200, 2,533,516,077,400)   4.000 KiB  |*                   |
+    [2,533,516,077,400, 3,872,698,913,600)   4.000 KiB  |*                   |
+    [3,872,698,913,600, 5,211,881,749,800)   8.000 KiB  |*                   |
+    [5,211,881,749,800, 6,551,064,586,000)   12.000 KiB |*                   |
+    [6,551,064,586,000, 7,890,247,422,200)   4.000 KiB  |*                   |
+    memory bw estimate: 5.178 GiB per second
+    total size: 62.000 GiB
+
+We can see most of the memory is in similar access temperature range,
+and definitely some pages are extremely hot.
+
+To see the picture in more detail, let's capture and visualize the
+snapshot per DAMON-region, sorted by their access temperature.  The
+total number of the regions was about 300.  Due to the limited space,
+I'm showing only a few parts of the output here.
+
+    # ./damo report access --style hot --tried_regions_of 0 0 0
+    heatmap: 00000000888888889999999888888888888888888888888888888888888888888888888888888888
+    # min/max temperatures: -6,827,258,184,000, 17,589,052,500, column size: 793.600 MiB
+     |999999999999999999999999999999999999999| 4.000 KiB   access 100 % 18 h 9 m 43.918 s
+     |999999999999999999999999999999999999999| 8.000 KiB   access 100 % 17 h 56 m 5.351 s
+     |999999999999999999999999999999999999999| 4.000 KiB   access 100 % 15 h 24 m 19.634 s
+     |999999999999999999999999999999999999999| 4.000 KiB   access 100 % 14 h 10 m 55.606 s
+     |999999999999999999999999999999999999999| 4.000 KiB   access 100 % 11 h 34 m 18.993 s
+    [...]
+               |99999999999999999999999999999| 8.000 KiB   access 100 % 1 m 27.945 s
+               |11111111111111111111111111111| 80.000 KiB  access 15 %  1 m 21.180 s
+               |00000000000000000000000000000| 24.000 KiB  access 5 %   1 m 21.180 s
+               |00000000000000000000000000000| 5.919 GiB   access 10 %  1 m 14.415 s
+               |99999999999999999999999999999| 12.000 KiB  access 100 % 1 m 7.650 s
+    [...]
+                                           |0| 4.000 KiB   access 5 %   0 ns
+                                           |0| 12.000 KiB  access 5 %   0 ns
+                                           |0| 188.000 KiB access 0 %   0 ns
+                                           |0| 24.000 KiB  access 0 %   0 ns
+                                           |0| 48.000 KiB  access 0 %   0 ns
+    [...]
+             |0000000000000000000000000000000| 8.000 KiB   access 0 %   6 m 45.901 s
+            |00000000000000000000000000000000| 36.000 KiB  access 0 %   7 m 26.491 s
+            |00000000000000000000000000000000| 4.000 KiB   access 0 %   12 m 37.682 s
+           |000000000000000000000000000000000| 8.000 KiB   access 0 %   18 m 9.168 s
+           |000000000000000000000000000000000| 16.000 KiB  access 0 %   19 m 3.288 s
+    |0000000000000000000000000000000000000000| 6.198 GiB   access 0 %   18 h 57 m 52.582 s
+    memory bw estimate: 8.798 GiB per second
+    total size: 62.000 GiB
+
+We can see DAMON found small and extremely hot regions that accessed for all
+access check sampling (once per about 300 milliseconds) for more than  10
+hours.  The access temperature rapidly decreases.  DAMON was also able to find
+small and big regions that not accessed for up to about 19 minutes.  It even
+found an outlier cold region of 6 GiB that not accessed for about 19 hours.
+What the outlier region is is unclear as of this writing.
+
+For the testing, DAMON was consuming about 0.1% of single CPU time.
+This is again expected results, since DAMON was using about 370
+milliseconds sampling interval in most case.
+
+    # ps -p $kdamond_pid -o %cpu
+    %CPU
+     0.1
+
+I also ran similar tests against kernel build workload and an in-memory
+cache workload benchmark[2].  Detialed results including tuned intervals
+and captured access pattern were of course different sicne those depend
+on the workloads.  But the auto-tuning feature was always working as
+expected like the above results for the real world workload.
+
+To wrap up, with intervals auto-tuning feature, DAMON was able to
+capture access pattern snapshots of a quality on a real world server
+workload.  The auto-tuning feature was able to adaptively react to the
+dynamic access patterns of the workload and reliably provide consistent
+monitoring results without manual human interventions.  Also, the
+auto-tuning made DAMON consumes only necessary amount of resource for
+the required quality.
 
 Changelog
 =========
+
+Changes from RFC v2
+(https://lore.kernel.org/20250228220328.49438-1-sj@kernel.org)
+- Add detailed evaluation results on cover letter
 
 Changes from RFC v1
 (https://lore.kernel.org/20250213014438.145611-1-sj@kernel.org)
@@ -136,7 +300,11 @@ Changes from RFC v1
 - Fix wrong max events accounting bug
 - Fix double-increase of next_aggregation_sis
 
-[1] https://github.com/facebookresearch/DCPerf/blob/main/packages/tao_bench/README.md
+References
+==========
+
+[1] https://github.com/damonitor/damo/blob/next/USAGE.md#access-report-styles
+[2] https://github.com/facebookresearch/DCPerf/blob/main/packages/tao_bench/README.md
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
