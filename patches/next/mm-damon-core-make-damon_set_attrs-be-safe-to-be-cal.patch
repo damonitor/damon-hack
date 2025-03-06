@@ -9,7 +9,7 @@ to call the DAMON monitoring attributes update function, namely
 damon_set_attrs().
 
 Because damon_callback hooks provides no synchronization, the callers
-works in asynchronous ways or implement their own inefficient and
+work in asynchronous ways or implement their own inefficient and
 complicated synchronization mechanisms.  It also means online DAMON
 parameters commit can take up to one aggregation interval.  On large
 systems having long aggregation intervals, that can be too slow.  The
@@ -33,14 +33,28 @@ information that so far aggregated, and make the status same to the
 beginning of this aggregation, but as if the last aggregation was ran
 with the updated sampling/aggregation intervals.
 
+The middle-of-aggregastion check introduce yet another edge case,
+though.  This happens because kdamond_tune_intervals() can also call
+damon_set_attrs() with the middle-of-aggregation check.  If damon_call()
+for parameters commit and kdamond_tune_intervals() are called in same
+iteration of kdamond main loop, first damon_set_attrs() call from
+kdamond_call() understands it is the end of the aggregation and
+correctly handle it.  But, the updated next_aggregation_sis from the
+damon_set_attrs() execution makes followup damon_set_attrs() invocation
+from kdamond_tune_interval() believes it is called in the middle of the
+aggregation.  The second call hence reset aggregated information so far.
+Then kdamond_reset_interval() is again called and double-reset the
+aggregated interval.  Avoid this case, too, by setting the
+next_aggregation_sis before calling kdamond_tune_intervals().
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c             | 38 ++++++++++++++++++++++++++-----------
- mm/damon/tests/core-kunit.h |  6 +++---
- 2 files changed, 30 insertions(+), 14 deletions(-)
+ mm/damon/core.c             | 56 +++++++++++++++++++++++++++++--------
+ mm/damon/tests/core-kunit.h |  6 ++--
+ 2 files changed, 48 insertions(+), 14 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 0f359b4ebf1a..df69a43bdb37 100644
+index 0f359b4ebf1a..de30b788e13a 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -603,11 +603,25 @@ static unsigned int damon_nr_accesses_for_new_attrs(unsigned int nr_accesses,
@@ -124,6 +138,31 @@ index 0f359b4ebf1a..df69a43bdb37 100644
  	ctx->attrs = *attrs;
  
  	damon_for_each_scheme(s, ctx)
+@@ -2452,6 +2468,24 @@ static int kdamond_fn(void *data)
+ 			if (ctx->attrs.intervals_goal.aggrs &&
+ 					ctx->passed_sample_intervals >=
+ 					ctx->next_intervals_tune_sis) {
++				/*
++				 * ctx->next_aggregation_sis might be updated
++				 * from kdamond_call().  In the case,
++				 * damon_set_attrs() which will be called from
++				 * kdamond_tune_interval() may wrongly think
++				 * this is in the middle of the current
++				 * aggregation, and make aggregation
++				 * information reset for all regions.  Then,
++				 * following kdamond_reset_aggregated() call
++				 * will make the region information invalid,
++				 * particularly for ->nr_accesses_bp.
++				 *
++				 * Reset ->next_aggregation_sis to avoid that.
++				 * It will anyway correctly updated after this
++				 * if caluse.
++				 */
++				ctx->next_aggregation_sis =
++					next_aggregation_sis;
+ 				ctx->next_intervals_tune_sis +=
+ 					ctx->attrs.aggr_samples *
+ 					ctx->attrs.intervals_goal.aggrs;
 diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
 index 532c6a6f21f9..be0fea9ee5fc 100644
 --- a/mm/damon/tests/core-kunit.h
