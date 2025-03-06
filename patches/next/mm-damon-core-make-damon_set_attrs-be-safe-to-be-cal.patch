@@ -8,7 +8,7 @@ from damon_callback->after_aggregation because only those are safe place
 to call the DAMON monitoring attributes update function, namely
 damon_set_attrs().
 
-Because damon_callback hooks provides no synchronization, the callers
+Because damon_callback hooks provide no synchronization, the callers
 work in asynchronous ways or implement their own inefficient and
 complicated synchronization mechanisms.  It also means online DAMON
 parameters commit can take up to one aggregation interval.  On large
@@ -23,29 +23,34 @@ completely aggregated nr_accesses for new user-set intervals can
 arguably degrade the accuracy or at least make the logic complicated.
 Second, kdamond_reset_aggregated() will not be called after the
 monitoring results update, so next aggregation starts from unclean
-state.  This can result in inconsistent and unexpected nr_accesses.
+state.  This can result in inconsistent and unexpected nr_accesses_bp.
 
 Make it safe as follows.  Catch the middle-of-the-aggregation case from
-damon_set_attrs() and pass the information to nr_accesses conversion
-logic.  The logic works as before if this is not the case (called after
-the current aggregation is completed).  If not, it drops the nr_accesses
-information that so far aggregated, and make the status same to the
-beginning of this aggregation, but as if the last aggregation was ran
-with the updated sampling/aggregation intervals.
+damon_set_attrs() by checking the passed_sample_intervals and
+next_aggregationsis of the context.  And pass the information to
+nr_accesses conversion logic.  The logic works as before if it is not
+the case (called after the current aggregation is completed).  If it is
+the case (committing parameters in the middle of the aggregation), it
+drops the nr_accesses information that so far aggregated, and make the
+status same to the beginning of this aggregation, but as if the last
+aggregation was started with the updated sampling/aggregation intervals.
 
 The middle-of-aggregastion check introduce yet another edge case,
 though.  This happens because kdamond_tune_intervals() can also call
-damon_set_attrs() with the middle-of-aggregation check.  If damon_call()
-for parameters commit and kdamond_tune_intervals() are called in same
-iteration of kdamond main loop, first damon_set_attrs() call from
+damon_set_attrs() with the middle-of-aggregation check.  Consider
+damon_call() for parameters commit and kdamond_tune_intervals() are
+called in same iteration of kdamond main loop.  Because
+kdamond_tune_interval() is called for aggregation intervals, it should
+be the end of the aggregation.  The first damon_set_attrs() call from
 kdamond_call() understands it is the end of the aggregation and
-correctly handle it.  But, the updated next_aggregation_sis from the
-damon_set_attrs() execution makes followup damon_set_attrs() invocation
-from kdamond_tune_interval() believes it is called in the middle of the
-aggregation.  The second call hence reset aggregated information so far.
-Then kdamond_reset_interval() is again called and double-reset the
-aggregated interval.  Avoid this case, too, by setting the
-next_aggregation_sis before calling kdamond_tune_intervals().
+correctly handle it.  But, because the damon_set_attrs() updated
+next_aggregation_sis of the context.  Hence, the second
+damon_set_attrs() invocation from kdamond_tune_interval() believes it is
+called in the middle of the aggregation.  It therefore resets aggregated
+information so far.  After that, kdamond_reset_interval() is called and
+double-reset the aggregated information.  Avoid this case, too, by
+setting the next_aggregation_sis before kdamond_tune_intervals() is
+invoked.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
