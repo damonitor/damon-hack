@@ -2,18 +2,125 @@ From: SeongJae Park <sj@kernel.org>
 Date: Wed, 5 Mar 2025 20:19:08 -0800
 Subject: [PATCH] ==== memory tiering ====
 
-mm/damon: add DAMOS quota goal metrics for auto-tuned memory tiering
+mm/damon: let DAMON-based memory tiering self-tuned and just works
 
-DAMON is being used for memory tiering.  The currently available
-solution does static access pattern-based control.  It requires tuning
-on different workloads and systems.  Add DAMOS quota goal metrics for
-making it auto-tuned for upper tier's headroom space.  Evaluation shows
-12.6 percent improvement over NUMA balancing based tiering on a setup.
+Utilizing DAMON for memory tiering usually requires manual user
+interventions.  Let it works with self-tuning of hotness and coldness
+thresholds aiming high utilization ratio of higher tier node.  Further
+make it just works by introducing a DAMON kernel module that sets up and
+runs the DAMON-based memory tiering instead of users.
 
 Backgrounds
 ===========
 
-Memory Tiering Idea
+Some systems equip tiered memory systems that exposes the tiers as NUMA
+nodes.  A straightforward pages placement strategy for such systems is
+placing access-hot and cold pages on upper and lower tiers,
+reespectively.  For that, Linux kernel provides several features.
+
+Page Faults and LRU
+-------------------
+
+One widely known and used way is using NUMA balancing in tiering mode
+and reclaim-based demotion features.  NUMA balancing in tiering mode
+finds hot pages using access check-purpose (a.k.a prot_none) page
+faults, while reclaim-based demotion finds cold pages using the LRU
+based reclaim logic.
+
+DAMON
+-----
+
+Yet another way is utilizing DAMON for finding hot and cold pages from
+DAMON's access pattern monitoring results.  Users can implement hot/cold
+pages selection and promotion/demotion on user-space using
+migrate_pages() like system calls.  Or, they can also offload nearly
+everything to kernel using DAMOS with DAMOS action migrate_hot and
+migrate_cold.  SK hynix has developed and contributed the DAMOS actions
+for their memory tiering solution called HMSDK.
+
+SK hynix implemented their memory tiering solution called HMSDK in such
+a way.  However, to make the solution simple to use and efficient, they
+implemented it as a DAMOS scheme.
+
+Evaluation
+==========
+
+In short, we found DAMON-based memory tiering improvement performance by
+4.42 % and 12.73 % over default Linux kernel and page faults/reclaim based
+memory tiering on specific setup.
+
+Setup
+-----
+
+For the evaluation hardware, we use a machine equipping 255 GiB DRAM and
+50 GiB CXL memory.
+
+For the evaluation workload, we use a modified version of Taobench
+benchmark, which represents an in-memory caching workload.  We set its
+'memsize' parameter as 340, to ensure it uses more than DRAM memory.
+Also set its 'warmup_time' and 'test_time' as 2,500 seconds and 1,440
+seconds, because it reaches full memory usage after about 2,000 seconds.
+
+We use a modified version of the workload because the benchmark has a
+static access pattern.  It accesses only a part of its data frequently
+from the beginning to the end.  Hot pages therefore continue being hot,
+and cold pages continue being cold.  As a result, promotion mechanism
+makes no benefit.  We therefore make the kernel to move hot pages in
+DRAM node to CXL node once per minute, up to 10 GiB, and same for moving
+cold pages from CXL node to DRAM node.  We use DAMOS to make this kernel
+level change.  The intention is to simulate periodic access pattern
+changes, and see if the memory tiering solution quickly places pages
+correctly so that the workload gets benefit until next access pattern
+change occurs.
+
+Taobench exposes its resulting performance as a metric called score.
+Higher score means better results.  We measure the score five times for
+below configurations.
+
+ones.
+performance improvement
+
+To make a simple and efficient implementation of such approach, SK hynix
+developed DAMOS actions called 'migrate_hot' and 'migrate_cold'
+it easy to use and efficient
+cold pages information using DAMON and make user-space control for
+promoting and demoting those using migrate_pages() like system calls.
+SK hynix developed DAMOS actions
+for the purposes, namely 'migrate_hot' and 'migrate_cold',
+finding hot and cold pages from the beginning.  From Linux v6.11,
+kkkkkkkk  Users
+can do promotion and demotion via migrate_page()h
+
+DAMON can also find hot and cold pages, and hence was being used for
+memory tiering by researcheres
+
+    Config         Score   Stdev   (%)     Normalized
+    Baseline       1.6165  0.0319  1.9764  1.0000
+    Numab_tiering  1.4976  0.0452  3.0209  0.9264
+    DAMON_tiering  1.6881  0.0249  1.4767  1.0443
+
+When number '2' is written
+
+Page faults and LRU
+-------------------
+
+The first way is
+
+On some system configurations such as ones using CXL.mem protocol,
+so-called tiered memory system can be configure.
+
+Systems can be configured with multiple characterisctics of memory
+deivces
+
+On some NUMA systems,  memory of different NUMA nodes can have very different
+characteristicshaving systems running with memory devices having
+different characteristics is available today.  One example is CXL-based
+memory system.
+
+Heteroneneous memory systems including CXL-based ones
+are available today.
+
+Promotion and Demotion
 -------------------
 
 NUMA Balancing-based Memory Tiering
