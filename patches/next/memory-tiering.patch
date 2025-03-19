@@ -4,11 +4,13 @@ Subject: [PATCH] ==== memory tiering ====
 
 mm/damon: let DAMON-based memory tiering self-tuned and just works
 
-Utilizing DAMON for memory tiering usually requires manual user
-interventions.  Let it works with self-tuning of hotness and coldness
-thresholds aiming high utilization ratio of higher tier node.  Further
-make it just works by introducing a DAMON kernel module that sets up and
-runs the DAMON-based memory tiering instead of users.
+Utilizing DAMON for memory tiering usually requires manual tuning and
+tedious controls.  Let it be able to self-tune hotness and coldness
+thresholds for promotion and demotion, aiming specific utilization ratio
+of upper tier node.  Further make it just works with minimum user
+control such as boot time kernel commandline update or single command on
+runtime, by introducing a DAMON kernel module that sets up and runs the
+DAMON-based memory tiering instead of users.
 
 Backgrounds
 ===========
@@ -21,26 +23,87 @@ reespectively.  For that, Linux kernel provides several features.
 Page Faults and LRU
 -------------------
 
-One widely known and used way is using NUMA balancing in tiering mode
-and reclaim-based demotion features.  NUMA balancing in tiering mode
-finds hot pages using access check-purpose (a.k.a prot_none) page
-faults, while reclaim-based demotion finds cold pages using the LRU
-based reclaim logic.
+One widely known way is using NUMA balancing in tiering mode and
+reclaim-based demotion features.  NUMA balancing in tiering mode finds
+hot pages using access check-purpose (a.k.a prot_none) page faults and
+do promotion.  Reclaim-based demotion finds cold pages using the LRU
+based reclaim logic and do demotion instead of discarding.
 
 DAMON
 -----
 
-Yet another way is utilizing DAMON for finding hot and cold pages from
-DAMON's access pattern monitoring results.  Users can implement hot/cold
-pages selection and promotion/demotion on user-space using
-migrate_pages() like system calls.  Or, they can also offload nearly
-everything to kernel using DAMOS with DAMOS action migrate_hot and
-migrate_cold.  SK hynix has developed and contributed the DAMOS actions
-for their memory tiering solution called HMSDK.
+Yet another available solution is using DAMOS.  Users can ask DAMOS to
+run two schemes that finds hot pages and cold pages based on DAMON's
+monitoring results, and do promotion and demotion using migrate_hot and
+migrate_cold DAMOS action.  The migrate_hot and migrate_cold DAMOS
+actions prioritize hotter pages and colder pages on their own.  But,
+users still need to specify how much hottest pages and coldest pages
+should be promoted and demoted, and the minimum hotness and coldness
+criteria.  The optimum values of those depend on characteristics of the
+underlying hardware and the workload.  Hence it is often required to do
+manual tuning of the DAMOS schemes on given workloads and systems.  When
+the characteristics can dynamically changed, keeping DAMON-based memory
+tiering always optimum becomes more challenging.  Worse yet, the schemes
+may need to be designed again from the beginning for different tiers
+hierarchies.  For example, schemes for systems having two memory tiers
+should be different from those for systems having three memory tiers.
 
-SK hynix implemented their memory tiering solution called HMSDK in such
-a way.  However, to make the solution simple to use and efficient, they
-implemented it as a DAMOS scheme.
+Self-Tuned DAMON-based Memory Tiering
+=====================================
+
+To solve such manual tuning problems, DAMOS provides feedback-driven
+quotas auto-tuning.  Using the feature, we design DAMON-based memory
+tiering for general multi-tiers memory system.
+
+For each memory tier node, if it has a lower tier, run a DAMOS scheme
+that demotes cold pages of the node, auto-tuning the aggressiveness
+aiming a small amount of free space ratio (about 0.5 % could be
+recommended by default) of the node.
+
+For each memory tier node, if it has a upper tier, run a DAMOS scheme
+that promotes hot pages of the node, auto-tuning the aggressiveness
+aiming a high utilization ratio of the node.  The target ratio should be
+set as slightly overlap with the demotion target free space ratio.  For
+example, 99.7 % could be recommended by default.
+
+Discussions
+===========
+
+Expected Behavior
+-----------------
+
+The system will let upper tier memory node accommodates as many hot data
+as possible.  If total amount of the memory is less than the top tier
+memory's promotion target utilization, entire data will be placed on the
+top tier.  The nodes will always keep at least a headroom for future
+promotions from lower tier.  Also, since the promotion and demotion
+schemes for a single node has small overlaps, promotion of demotion will
+not stop, and hence keep all data is placed on access hotness.
+
+Ease of Use
+-----------
+
+Users still need to set the target utilization and free space ratio, but
+it will be easier to set.  We argue 99.7 % utilization and 0.5 % free
+space ratios are good starting point to try.  Users are also still
+required to answer the minimum coldness and hotness thresholds.
+Together with monitoring intervals auto-tuning, DAMON will always show
+meaningful amount of hot and cold memory.  And DAMOS quota's
+prioritization mechanism will make good decision as long as the source
+information is that colorful.  Hence, users can very naively set the
+minimum criterias.  We believe any access observation and no access
+observation within last one aggregation interval is enough for minimum
+hot and cold regions criterias.
+
+The design can be applied to any number of tiers having any performance
+characteristics.  Applying the system to different tiered memory system
+will be straightforward.  Note that this assumes only single CPU NUMA
+node case.  Because DAMON of today has no ability to get source of
+access information, applying this on systems having multiple CPU NUMA
+nodes can be complicated.  That's a future work.
+
+Comparison To Page Faults and LRU-based Approaches
+--------------------------------------------------
 
 Evaluation
 ==========
@@ -93,6 +156,9 @@ can do promotion and demotion via migrate_page()h
 
 DAMON can also find hot and cold pages, and hence was being used for
 memory tiering by researcheres
+
+Results
+-------
 
     Config         Score   Stdev   (%)     Normalized
     Baseline       1.6165  0.0319  1.9764  1.0000
