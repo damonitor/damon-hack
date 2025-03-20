@@ -1,14 +1,19 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Tue, 18 Mar 2025 14:03:00 -0700
-Subject: [PATCH] samples/damon: implement a DAMON module module for memory
- tiering
+Subject: [PATCH] samples/damon: implement a DAMON module for memory tiering
+
+Implement a sample DAMON module that shows how self-tuned DAMON-based
+memory tiering can be written.  It is a sample since the purpose is to
+gives an idea about how it can be implemented, rather than be used as
+is.  Especially, the production purpose module would need to find memory
+tiers and set the scheme target address ranges automatically.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  samples/damon/Kconfig  |  13 ++++
  samples/damon/Makefile |   1 +
- samples/damon/mtier.c  | 171 +++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 185 insertions(+)
+ samples/damon/mtier.c  | 167 +++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 181 insertions(+)
  create mode 100644 samples/damon/mtier.c
 
 diff --git a/samples/damon/Kconfig b/samples/damon/Kconfig
@@ -44,10 +49,10 @@ index 7f155143f237..72f68cbf422a 100644
 +obj-$(CONFIG_SAMPLE_DAMON_MTIER) += mtier.o
 diff --git a/samples/damon/mtier.c b/samples/damon/mtier.c
 new file mode 100644
-index 000000000000..820f8c13ba90
+index 000000000000..3390b7d30c26
 --- /dev/null
 +++ b/samples/damon/mtier.c
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,167 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * memory tiering: migrate cold pages in node 0 and hot pages in node 1 to node
@@ -95,8 +100,7 @@ index 000000000000..820f8c13ba90
 +	struct damon_region *region;
 +	struct damos *scheme;
 +	struct damos_quota_goal *quota_goal;
-+
-+	pr_info("start\n");
++	struct damos_filter *filter;
 +
 +	ctx = damon_new_ctx();
 +	if (!ctx)
@@ -109,24 +113,18 @@ index 000000000000..820f8c13ba90
 +		.access_bp = 400, .aggrs = 3,
 +		.min_sample_us = 5000, .max_sample_us = 10000000,
 +	};
-+	if (damon_select_ops(ctx, DAMON_OPS_PADDR)) {
-+		damon_destroy_ctx(ctx);
-+		return NULL;
-+	}
++	if (damon_select_ops(ctx, DAMON_OPS_PADDR))
++		goto free_out;
 +
 +	target = damon_new_target();
-+	if (!target) {
-+		damon_destroy_ctx(ctx);
-+		return NULL;
-+	}
++	if (!target)
++		goto free_out;
 +	damon_add_target(ctx, target);
 +	region = damon_new_region(
 +			promote ? node1_start_addr : node0_start_addr,
 +			promote ? node1_end_addr : node0_end_addr);
-+	if (!region) {
-+		damon_destroy_ctx(ctx);
-+		return NULL;
-+	}
++	if (!region)
++		goto free_out;
 +	damon_add_region(region, target);
 +
 +	scheme = damon_new_scheme(
@@ -152,22 +150,25 @@ index 000000000000..820f8c13ba90
 +			},
 +			&(struct damos_watermarks){},
 +			promote ? 0 : 1);	/* migrate target node id */
-+	if (!scheme) {
-+		damon_destroy_ctx(ctx);
-+		return NULL;
-+	}
++	if (!scheme)
++		goto free_out;
 +	damon_set_schemes(ctx, &scheme, 1);
 +	quota_goal = damos_new_quota_goal(
 +			promote ? DAMOS_QUOTA_NODE_MEM_USED_BP :
 +			DAMOS_QUOTA_NODE_MEM_FREE_BP,
 +			promote ? 9970 : 50);
-+	if (!quota_goal) {
-+		damon_destroy_ctx(ctx);
-+		return NULL;
-+	}
++	if (!quota_goal)
++		goto free_out;
 +	quota_goal->nid = 0;
 +	damos_add_quota_goal(&scheme->quota, quota_goal);
++	filter = damos_new_filter(DAMOS_FILTER_TYPE_YOUNG, true, promote);
++	if (!filter)
++		goto free_out;
++	damos_add_filter(scheme, filter);
 +	return ctx;
++free_out:
++	damon_destroy_ctx(ctx);
++	return NULL;
 +}
 +
 +static int damon_sample_mtier_start(void)

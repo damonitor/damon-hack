@@ -6,65 +6,78 @@ mm/damon: let DAMON-based memory tiering self-tuned and just works
 
 Utilizing DAMON for memory tiering usually requires manual tuning and
 tedious controls.  Let it be able to self-tune hotness and coldness
-thresholds for promotion and demotion, aiming specific utilization ratio
-of upper tier node.  Further make it just works with minimum user
-control such as boot time kernel commandline update or single command on
-runtime, by introducing a DAMON kernel module that sets up and runs the
-DAMON-based memory tiering instead of users.
+thresholds for promotion and demotion itself aiming high utilization of
+high memory tiers, by introducing new DAMOS quota goal metrics
+representing the utilization and free space ratios of specific NUMA
+nodes.  Further make it just works with minimum user controls such as
+adding a single boot time kernel commandline parameter or single command
+on runtime, by introducing a DAMON kernel module that runs the
+DAMON-based memory tiering.
+
+This is a partial implementation of previously shared RFC idea[1].
 
 Backgrounds
 ===========
 
-Some systems equip tiered memory systems that exposes the tiers as NUMA
-nodes.  A straightforward pages placement strategy for such systems is
-placing access-hot and cold pages on upper and lower tiers,
-reespectively.  For that, Linux kernel provides several features.
+Some systems equip tiered memory systems that exposes the memory tiers
+as NUMA nodes.  A straightforward pages placement strategy for such
+systems is placing access-hot and cold pages on upper and lower tiers,
+reespectively, pursuing higher utilization of upper tiers.  Since access
+temperature can be dynamic, periodically finding and migrating hot pages
+and cold pages to peroper tiers (promoting and demoting) is also
+required.  Linux kernel provides several features for such dynamic and
+transparent pages placement.
 
 Page Faults and LRU
 -------------------
 
-One widely known way is using NUMA balancing in tiering mode and
-reclaim-based demotion features.  NUMA balancing in tiering mode finds
-hot pages using access check-purpose (a.k.a prot_none) page faults and
-do promotion.  Reclaim-based demotion finds cold pages using the LRU
-based reclaim logic and do demotion instead of discarding.
+One widely known way is using NUMA balancing in tiering mode (a.k.a
+NUMAB-2) and reclaim-based demotion features.  NUMAB-2 finds hot pages
+using access check-purpose page faults (a.k.a prot_none) and do
+promotion inside each process' context.  In the combination, promotions
+fill up upper tier until memory pressure happens, and demote LRU based
+reclaim-candidates to lower tiers in asynchronous (kswapd) and/or
+synchronous ways (direct reclaim).
 
 DAMON
 -----
 
-Yet another available solution is using DAMOS.  Users can ask DAMOS to
-run two schemes that finds hot pages and cold pages based on DAMON's
-monitoring results, and do promotion and demotion using migrate_hot and
-migrate_cold DAMOS action.  The migrate_hot and migrate_cold DAMOS
-actions prioritize hotter pages and colder pages on their own.  But,
-users still need to specify how much hottest pages and coldest pages
-should be promoted and demoted, and the minimum hotness and coldness
-criteria.  The optimum values of those depend on characteristics of the
-underlying hardware and the workload.  Hence it is often required to do
-manual tuning of the DAMOS schemes on given workloads and systems.  When
-the characteristics can dynamically changed, keeping DAMON-based memory
-tiering always optimum becomes more challenging.  Worse yet, the schemes
-may need to be designed again from the beginning for different tiers
-hierarchies.  For example, schemes for systems having two memory tiers
-should be different from those for systems having three memory tiers.
+Yet another available solution is using DAMOS with migrate_hot and
+migrate_cold DAMOS actions for promotions and demotions, respectively.
+To make it optimum, users need to specify aggressiveness and access
+temperature thresholds for promotions and demotions in a good balance
+that result in high utilization of upper tiers.  The number of
+parameters is not small, and optimum values of those depend on
+characteristics of the underlying hardware and the workload.  Hence it
+is often required to do manual and time consuming tuning of the DAMOS
+schemes repetitively for given workloads and systems combinations.
 
-Self-Tuned DAMON-based Memory Tiering
+Self-tuned DAMON-based Memory Tiering
 =====================================
 
-To solve such manual tuning problems, DAMOS provides feedback-driven
-quotas auto-tuning.  Using the feature, we design DAMON-based memory
-tiering for general multi-tiers memory system.
+To solve such manual tuning problems, DAMOS provides aim-oriented
+feedback-driven quotas self-tuning.  Using the feature, we design
+Self-tuned DAMON-based memory tiering for general multi-tiers memory
+systems.
 
 For each memory tier node, if it has a lower tier, run a DAMOS scheme
 that demotes cold pages of the node, auto-tuning the aggressiveness
-aiming a small amount of free space ratio (about 0.5 % could be
-recommended by default) of the node.
+aiming a small amount of free space ratio of the node.  The free space
+is for keeping the space to avoid memory pressure while promoting hot
+pages from the lower tier to the tier.  About 0.5% could be recommended
+by default.
 
 For each memory tier node, if it has a upper tier, run a DAMOS scheme
 that promotes hot pages of the node, auto-tuning the aggressiveness
-aiming a high utilization ratio of the node.  The target ratio should be
-set as slightly overlap with the demotion target free space ratio.  For
-example, 99.7 % could be recommended by default.
+aiming a high utilization ratio of the node.  The target ratio is to
+ensure higher tiers are utilized as much as possible.  It should match
+with the headroom for demotion scheme, but as slightly overlap with it,
+to ensure hot and pages exchange is not stopped.  For example, 99.7 %
+could be recommended by default.
+
+To make implementation of the tiering solution, DAMOS need new quota
+goal metrics for utilization and free space ratio of specific NUMA node.
+This patch series introduces the two new quota goal metrics.
 
 Discussions
 ===========
@@ -74,158 +87,240 @@ Expected Behavior
 
 The system will let upper tier memory node accommodates as many hot data
 as possible.  If total amount of the memory is less than the top tier
-memory's promotion target utilization, entire data will be placed on the
-top tier.  The nodes will always keep at least a headroom for future
-promotions from lower tier.  Also, since the promotion and demotion
-schemes for a single node has small overlaps, promotion of demotion will
-not stop, and hence keep all data is placed on access hotness.
+memory's promotion/demotion target utilization, entire data will be
+just placed on the top tier.  Promotion scheme will do nothing since
+there is no data to promote.  Demotion scheme will also do nothing since
+the free space ratio of the top tier is higher than the goal.
+
+If the amount of data is larger than the top tier's utilization ratio,
+demotion scheme will demote cold pages and ensure the headroom free
+space.  Since the promotion and demotion schemes for a single node has
+small overlap at their target utilization and free space goals,
+promotions and demotions will continue working with a moderate
+aggressiveness level.  IT will keep all data is placed on access
+hotness, while minimizing migration overhead.
+
+In any case, each node will keep headroom free space and as many upper
+tiers are utilized as possible.
 
 Ease of Use
 -----------
 
 Users still need to set the target utilization and free space ratio, but
 it will be easier to set.  We argue 99.7 % utilization and 0.5 % free
-space ratios are good starting point to try.  Users are also still
-required to answer the minimum coldness and hotness thresholds.
-Together with monitoring intervals auto-tuning, DAMON will always show
-meaningful amount of hot and cold memory.  And DAMOS quota's
-prioritization mechanism will make good decision as long as the source
-information is that colorful.  Hence, users can very naively set the
-minimum criterias.  We believe any access observation and no access
-observation within last one aggregation interval is enough for minimum
-hot and cold regions criterias.
+space ratios are good default values.  Users are also still required to
+answer the minimum coldness and hotness thresholds.  Together with
+monitoring intervals auto-tuning[2], DAMON will always show meaningful
+amount of hot and cold memory.  And DAMOS quota's prioritization
+mechanism will make good decision as long as the source information is
+that colorful.  Hence, users can very naively set the minimum criterias.
+We believe any access observation and no access observation within last
+one aggregation interval is enough for minimum hot and cold regions
+criterias.
 
 The design can be applied to any number of tiers having any performance
-characteristics.  Applying the system to different tiered memory system
-will be straightforward.  Note that this assumes only single CPU NUMA
-node case.  Because DAMON of today has no ability to get source of
-access information, applying this on systems having multiple CPU NUMA
-nodes can be complicated.  That's a future work.
+characteristics, as long as they can be hierarchical.  Hence, applying
+the system to different tiered memory system will be straightforward.
+Note that this assumes only single CPU NUMA node case.  Because DAMON of
+today has no ability to get source of access information, applying this
+on systems having multiple CPU NUMA nodes can be complicated.  In
+future, DAMON might gain the access source information, but that's out
+of the scope of this patch series.
+
+How To Use
+----------
+
+Users can implement the auto-tuned DAMON-based memory tiering using
+DAMON sysfs interface.  It can be easily done using DAMON user-space
+tool like user-space tool.  For wider and simpler deployment, having a
+kernel module that sets up and run the DAMOS schemes, using DAMON kerenl
+API can be useful.  The module can enable the memory tiering at boot
+time via kernel command line parameter or at run time with single
+command.  This patch series implements a sample kernel module that shows
+how such module can be implemented.
 
 Comparison To Page Faults and LRU-based Approaches
 --------------------------------------------------
 
+The existing page faults based promotion (NUMAB-2) does hot pages
+detection and migration in the process context.  When there are many
+pages to promote, it can block the progress of the application's real
+works.  DAMOS works in asynchronous worker thread, so it doesn't block
+the real works.
+
+NUMAB-2 doesn't provide a way to control aggressiveness of promotion
+other than the maximum amount of pages to promote per given time widnow.
+If hot pages are found, promotions can happen in the upper-bound speed,
+regardless of current upper tier memory utilization.  If the maximum
+speed is not well set for the given workload, it can result in slow
+promotion or unnecessary memory pressure.  Self-tuned DAMON-based memory
+tiering alleviates the problem by adjusting the speed based on current
+utilization of the upper tier.
+
+LRU-based demotion can triggered in both asynchronous (kswapd) and
+synchronous (direct reclaim) ways.  Other than the way of finding cold
+pages, asynchronous LRU-based demotion and DAMON-based demotion has no
+big difference.  DAMON-based demotion can make a better balancing with
+DAMON-based promotion, with the adaptive aggressiveness, though.  The
+synchronous LRU-based demotion can do better than DAMON-based demotion
+when the tier is having significant memory pressure.  It would be wise
+to use DAMON-based demotion as a proactive and primary one, but
+utilizing LRU-based demotions together as a fast backup solution.
+
 Evaluation
 ==========
 
-In short, we found DAMON-based memory tiering improvement performance by
-4.42 % and 12.73 % over default Linux kernel and page faults/reclaim based
-memory tiering on specific setup.
+In short, under a setup that requires fast and frequent promotions,
+self-tuning DAMON-based memory tiering's hot pages promotion improves
+performance about 4.42 %.  We believe this shows self-tuned DAMON-based
+promotion's effectiveness and a practical level of DAMON monitoring
+results accuracy.  Meanwhile, NUMAB-2's hot pages promotion degrades the
+performance about 7.34 %.  We suspect the degradation is mostly due to
+NUMAB-2's synchronous nature that can block the application's progress,
+which highlights advantage of DAMON-based solution's asynchronous
+nature.  More detailed investigation and evaluation of DAMON-based
+demotion solution are assigned as future works.
 
 Setup
 -----
 
-For the evaluation hardware, we use a machine equipping 255 GiB DRAM and
-50 GiB CXL memory.
+Hardware.  Use a machine that equips 250 GiB DRAM memory tier and 50 GiB
+CXL memory tier.  The tiers are exposed as NUMA nodes 0 and 1,
+respectively.
 
-For the evaluation workload, we use a modified version of Taobench
-benchmark, which represents an in-memory caching workload.  We set its
-'memsize' parameter as 340, to ensure it uses more than DRAM memory.
-Also set its 'warmup_time' and 'test_time' as 2,500 seconds and 1,440
-seconds, because it reaches full memory usage after about 2,000 seconds.
+Kernel.  Use Linux kernel v6.13 that modified as following.  Add all
+DAMON patches that available on mm tree of 2025-03-15, and this patch
+series.  Also modify it to ignore mempolicy() system calls, to avoid bad
+effects from application's traditional NUMA systems assumed
+optimizations.
 
-We use a modified version of the workload because the benchmark has a
-static access pattern.  It accesses only a part of its data frequently
-from the beginning to the end.  Hot pages therefore continue being hot,
-and cold pages continue being cold.  As a result, promotion mechanism
-makes no benefit.  We therefore make the kernel to move hot pages in
-DRAM node to CXL node once per minute, up to 10 GiB, and same for moving
-cold pages from CXL node to DRAM node.  We use DAMOS to make this kernel
-level change.  The intention is to simulate periodic access pattern
-changes, and see if the memory tiering solution quickly places pages
-correctly so that the workload gets benefit until next access pattern
-change occurs.
+Workload.  Use a modified version of Taobench benchmark that available
+on DCPerf benchmark suite.  It represents an in-memory caching workload.
+We set its 'memsize', 'warmup_time', and 'test_time' parameter as
+340 GiB, 2,500 seconds and 1,440 seconds.  The parameters are chosen to
+ensure the workload uses more than DRAM memory tier.  Its RSS under the
+parameter grows to 270 GiB within the warmup time.
 
-Taobench exposes its resulting performance as a metric called score.
-Higher score means better results.  We measure the score five times for
-below configurations.
+It turned out the workload has a very static access pattrn.  Only about
+13 % of the RSS is frequently accessed from the beginning to end.  Hence
+promotion shows no meaningful performance difference regardless of
+different design and implementations.  We therefore modify the kernel to
+periodically demote up to 10 GiB hot pages and promote up to 10 GiB cold
+pages once per minute.  The intention is to simulate periodic access
+pattern changes.  This is why we call the workload as "modified".  It is
+implemented as two DAMOS schemes.
 
-ones.
-performance improvement
+System configurations.  Use below variant system configurations.
 
-To make a simple and efficient implementation of such approach, SK hynix
-developed DAMOS actions called 'migrate_hot' and 'migrate_cold'
-it easy to use and efficient
-cold pages information using DAMON and make user-space control for
-promoting and demoting those using migrate_pages() like system calls.
-SK hynix developed DAMOS actions
-for the purposes, namely 'migrate_hot' and 'migrate_cold',
-finding hot and cold pages from the beginning.  From Linux v6.11,
-kkkkkkkk  Users
-can do promotion and demotion via migrate_page()h
+- Baseline.  No memory tiering features are turned on.
+- Numab_tiering.  On the baseline, enable NUMAB-2 and relcaim-based
+  demotion.  In detail, following command is executed:
+  echo 2 > /proc/sys/kernel/numa_balancing;
+  echo 1 > /sys/kernel/mm/numa/demotion_enabled;
+  echo 7 > /proc/sys/vm/zone_reclaim_mode
+- DAMON_tiering.  On the baseline, utilize self-tuned DAMON-based memory
+  tiering implementation via DAMON user-space tool.  It utilizes two
+  kernel threads, namely promotion thread and demotion thread.  Demotion
+  thread monitors access pattern of DRAM node using DAMON with
+  auto-tuned monitoring intervals aiming 4% DAMON-observed access ratio,
+  and demote coldest pages up to 200 MiB per second aiming 0.5% free
+  space of DRAM node.  Promotion thread monitors CXL node using same
+  intervals auto-tuning, and promote hot pages in same way but aiming
+  for 99.7% utilization of DRAM node.  Because DAMON provides only
+  best-effort accuracy, add young page DAMOS filters to allow only and
+  reject all young pages at promoting and demoting, respectively.
 
-DAMON can also find hot and cold pages, and hence was being used for
-memory tiering by researcheres
+Measurment Results
+------------------
 
-Results
--------
+On each system configuration, run the modified version of Taobench and
+collect 'score'.  'score' is a metric that calculated and provided by
+Taobench to represents the performance of the run on the  system.  To
+handle the measurement errors, repeat the measurement five times.  The
+results are as below.
 
     Config         Score   Stdev   (%)     Normalized
     Baseline       1.6165  0.0319  1.9764  1.0000
     Numab_tiering  1.4976  0.0452  3.0209  0.9264
     DAMON_tiering  1.6881  0.0249  1.4767  1.0443
 
-When number '2' is written
+'Config' column shows the system config of the measurement.  'Score'
+column shows the 'score' measurement in average of the five runs on the
+system config.  'Stdev' column shows the standsard deviation of the five
+measurements of the scores.  '(%)' column shows the 'Stdev' to 'Score'
+ratio in percentage.  Finally, 'Normalized' column shows the averaged
+score values of the configs that normalized to that of 'Baseline'.
 
-Page faults and LRU
--------------------
+The periodic hot pages demotion and cold pages promotion that was
+conducted to simulate dynamic access pattern was started from the
+beginning of the workload.  It resulted in the DRAM tier utilization
+always under the watermark, and hence no real demotion was happened for
+all test runs.  This means the above results show no difference between
+LRU-based and DAMON-based demotions.  Only difference between NUMAB-2
+and DAMON-based promotions are represented on the results.
 
-The first way is
+Numab_tiering config degraded the performance about 7.36 %.  We suspect
+this is because NUMAB-2's synchronous promotion was blocking the
+Taobench's real work progress.
 
-On some system configurations such as ones using CXL.mem protocol,
-so-called tiered memory system can be configure.
+DAMON_tiering config improved the performance about 4.43 %.  We believe
+this shows effectiveness of DAMON-based promotion that didn't block
+Taobench's real work progress due to its asynchronous nature.  Also this
+means DAMON's monitoring results are accurate enough to provide visible
+amount of improvement.
 
-Systems can be configured with multiple characterisctics of memory
-deivces
+Evaluation Limitations
+----------------------
 
-On some NUMA systems,  memory of different NUMA nodes can have very different
-characteristicshaving systems running with memory devices having
-different characteristics is available today.  One example is CXL-based
-memory system.
+As mentioned above, this evaluation shows only comparison of promotion
+mechanisms.  DAMON-based tiering is recommended to used together with
+reclaim-based demotion as a faster backup under significant memory
+pressure, though.
 
-Heteroneneous memory systems including CXL-based ones
-are available today.
+From some perspective, the modified version of Taobench may seems making
+the picture distorted too much.  It would be better to evaluate with
+more realistic workload, or more fairly set micro benchmarks.
 
-Promotion and Demotion
--------------------
+Request For Comments and Upstream Plan
+======================================
 
-NUMA Balancing-based Memory Tiering
------------------------------------
+This patch series is for getting comments, and hence having [RFC] tag.
+We're looking for comments about topics including but not limited to
+- misunderstood backgrounds,
+- confusing explanations,
+- better evaluation setup suggestion,
+- request of details such as evaluation reproduction steps, and
+- whether this makes sense at all.
 
-Pros: easy to use
-Cons: page faults overhead, synchrnous migration overhead, statically
-set thresholds
+Hopefully we will share this patch series as WIP future plan at DAMON
+updates and plans session at LSFMMBPF next week and get more comments.
 
-DAMON-based Manually-Tuned Memory Tiering
------------------------------------------
+Unless serious concerns are found, we will upstream the new DAMOS quota
+goal metrics part of this patch series first.  That's because the
+changes are small but can be useful user-space driven memory tiering and
+even other NUMA-based DAMOS schemes.
 
-Pros: minimum overhead, asynchronous migration
-Cons: statically set thresholds
+Upstreaming of the memory tiering module part of this RFC patch series
+will be done more later.  The part is for showing how the module can be
+implemented, and far from its complete form.  Especially, it is assuming
+only two tiers and asking users to set the address range of the nodes.
+Those should be automated in the final version for upstreaming.
 
-DAMOS Quota Goal Metrics for Auot-tuned Memory Tiering
-======================================================
+Patch Sequence
+==============
 
-Evaluation
+The first patch (patch 1) implements the two new quota goal metrics on
+core layer and expose it to DAMON core kernel API.  The second and third
+ones (patches 2 and 3) further link it to DAMON sysfs interface.  The
+final and fourth one (patch 4) implements a specific self-tuned
+DAMON-based memory tiering solution in an incomplete but easy to
+understand form as a kernel module under samples/damon/ directory.
+
+References
 ==========
 
-Future Plans
-============
-
-Background
-
-Patch series "DAMON based tiered memory management for CXL memory"
-starting with commit a00ce85af2a1 ("mm: make alloc_demote_folio
-externally invokable for migration") added migrate_{hot,cold} DAMOS
-actions.
-
-Patch sereis "mm/damon: let DAMOS feeds and tame/auto-tune itself"
-starting with commit 78f2f60377ee ("mm/damon/core: set damos_quota->esz
-as public field and document") allowed self-tuning DAMOS.
-
-RFC idea for DAMOS-based tiered memory management:
-https://lore.kernel.org/all/20231112195602.61525-1-sj@kernel.org/
-
-Evaluation
+[1] https://lore.kernel.org/20231112195602.61525-1-sj@kernel.org/
+[2] https://lore.kernel.org/20250303221726.484227-1-sj@kernel.org
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
