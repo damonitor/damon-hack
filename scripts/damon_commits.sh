@@ -79,7 +79,7 @@ damon_files=$("$bindir/damon_source_files.py")
 if [ "$cherry_pick" = "true" ]
 then
 	for commit in $(git log --pretty=%H --reverse $revision_range \
-		-- $damon_files)
+		--no-merges -- $damon_files)
 	do
 		if ! git cherry-pick -x $commit
 		then
