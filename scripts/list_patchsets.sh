@@ -22,6 +22,7 @@ versions=(
 	v6.12
 	v6.13
 	v6.14
+	akpm.korg.mm/mm-stable
 	akpm.korg.mm/mm-unstable
 )
 
@@ -33,8 +34,14 @@ do
 
 	if [ "$to" = "akpm.korg.mm/mm-unstable-rc1" ]
 	then
-		from+="-rc1"
+		from="akpm.korg.mm/mm-stable"
 		to="akpm.korg.mm/mm-unstable"
+	fi
+
+	if [ "$to" = "akpm.korg.mm/mm-stable-rc1" ]
+	then
+		from+="-rc1"
+		to="akpm.korg.mm/mm-stable"
 	fi
 
 	git log "$from..$to" --author sj@kernel.org --author sjpark@amazon.de | grep "Patch series"
