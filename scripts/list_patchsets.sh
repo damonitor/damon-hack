@@ -31,7 +31,6 @@ for (( i=0; i<$(( "${#versions[@]}" - 1 )); i++ ))
 do
 	from="${versions[$i]}"
 	to="${versions[$((i + 1))]}-rc1"
-	echo "$to"
 
 	if [ "$to" = "akpm.korg.mm/mm-new-rc1" ]
 	then
@@ -51,5 +50,6 @@ do
 		to="akpm.korg.mm/mm-stable"
 	fi
 
+	echo "$to"
 	git log "$from..$to" --author sj@kernel.org --author sjpark@amazon.de | grep "Patch series"
 done
