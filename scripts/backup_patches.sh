@@ -1,17 +1,19 @@
 #!/bin/bash
 
+damon_next_baseline="mm-unstable"
+
 if [ $# -ne 1 ]
 then
 	echo "Usage: $0 <commit message>"
 	echo
-	echo "e.g., $0 \"rebase on latest mm-unstable\""
+	echo "e.g., $0 \"rebase on latest $damon_next_baseline\""
 	exit 1
 fi
 
 commit_msg=$1
 bindir=$(dirname $0)
 dest_dir=$(realpath "$bindir/../patches/next")
-commits="akpm.korg.mm/mm-unstable..damon/next"
+commits="akpm.korg.mm/$damon_next_baseline..damon/next"
 
 commit_msg="$commit_msg
 
