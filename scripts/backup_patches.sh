@@ -1,6 +1,6 @@
 #!/bin/bash
 
-damon_next_baseline="mm-unstable"
+damon_next_baseline="mm-new"
 
 if [ $# -ne 1 ]
 then
