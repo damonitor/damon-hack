@@ -1,0 +1,73 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 12 Apr 2025 13:13:48 -0700
+Subject: [PATCH] mm/damon/paddr: support target->addr_unit for DAMOS_PAGEOUT
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 25 +++++++++++++++----------
+ 1 file changed, 15 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 01ce6061c95d..493db57b4668 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -485,14 +485,16 @@ static unsigned long damon_pa_pageout(struct damon_region *r,
+ }
+ 
+ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
+-		struct damon_region *r, struct damos *s, bool mark_accessed,
++		struct damon_region *r, struct damon_target *t,
++		struct damos *s, bool mark_accessed,
+ 		unsigned long *sz_filter_passed)
+ {
+-	unsigned long addr, applied = 0;
++	phys_addr_t addr;
++	unsigned long applied = 0;
+ 	struct folio *folio;
+ 
+-	addr = r->ar.start;
+-	while (addr < r->ar.end) {
++	addr = damon_pa_real_addr(r->ar.start, t);
++	while (addr < damon_pa_real_addr(r->ar.end, t)) {
+ 		folio = damon_get_folio(PHYS_PFN(addr));
+ 		if (damon_pa_invalid_damos_folio(folio, s)) {
+ 			addr += PAGE_SIZE;
+@@ -518,16 +520,18 @@ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
+ }
+ 
+ static unsigned long damon_pa_mark_accessed(struct damon_region *r,
+-	struct damos *s, unsigned long *sz_filter_passed)
++		struct damon_target *t, struct damos *s,
++		unsigned long *sz_filter_passed)
+ {
+-	return damon_pa_mark_accessed_or_deactivate(r, s, true,
++	return damon_pa_mark_accessed_or_deactivate(r, t, s, true,
+ 			sz_filter_passed);
+ }
+ 
+ static unsigned long damon_pa_deactivate_pages(struct damon_region *r,
+-	struct damos *s, unsigned long *sz_filter_passed)
++		struct damon_target *t, struct damos *s,
++		unsigned long *sz_filter_passed)
+ {
+-	return damon_pa_mark_accessed_or_deactivate(r, s, false,
++	return damon_pa_mark_accessed_or_deactivate(r, t, s, false,
+ 			sz_filter_passed);
+ }
+ 
+@@ -816,9 +820,10 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 	case DAMOS_PAGEOUT:
+ 		return damon_pa_pageout(r, t, scheme, sz_filter_passed);
+ 	case DAMOS_LRU_PRIO:
+-		return damon_pa_mark_accessed(r, scheme, sz_filter_passed);
++		return damon_pa_mark_accessed(r, t, scheme, sz_filter_passed);
+ 	case DAMOS_LRU_DEPRIO:
+-		return damon_pa_deactivate_pages(r, scheme, sz_filter_passed);
++		return damon_pa_deactivate_pages(
++				r, t, scheme, sz_filter_passed);
+ 	case DAMOS_MIGRATE_HOT:
+ 	case DAMOS_MIGRATE_COLD:
+ 		return damon_pa_migrate(r, scheme, sz_filter_passed);
+-- 
+2.39.5
+
