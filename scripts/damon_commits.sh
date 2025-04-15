@@ -7,7 +7,7 @@ pr_usage()
 	echo "OPTION"
 	echo "  --reverse	Print in reverse"
 	echo "  --stable	Print stable commits only"
-	echo "	--cherry-pick	Cherry-pick the commits"
+	echo "  --cherry-pick	Cherry-pick the commits"
 	echo "  --hash-only	Print hash only"
 	echo "  --title-only	Print title only"
 	echo "  -h, --help	Show this usage"
