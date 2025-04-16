@@ -1,0 +1,65 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Ze Zuo <zuoze1@huawei.com>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 14 Apr 2025 20:53:39 -0700
+Subject: [RFC PATCH 03/10] mm/damon/paddr: support addr_unit for DAMOS_PAGEOUT
+
+Add support of addr_unit for DAMOS_PAGEOUT action handling from the
+DAMOS operation implementation for the physical address space.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index bc188aa2f01b..169ba81d4182 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -287,10 +287,12 @@ static bool damon_pa_invalid_damos_folio(struct folio *folio, struct damos *s)
+ 	return false;
+ }
+ 
+-static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s,
++static unsigned long damon_pa_pageout(struct damon_region *r,
++		unsigned long addr_unit, struct damos *s,
+ 		unsigned long *sz_filter_passed)
+ {
+-	unsigned long addr, applied;
++	phys_addr_t addr;
++	unsigned long applied;
+ 	LIST_HEAD(folio_list);
+ 	bool install_young_filter = true;
+ 	struct damos_filter *filter;
+@@ -311,8 +313,8 @@ static unsigned long damon_pa_pageout(struct damon_region *r, struct damos *s,
+ 		damos_add_filter(s, filter);
+ 	}
+ 
+-	addr = r->ar.start;
+-	while (addr < r->ar.end) {
++	addr = damon_pa_phys_addr(r->ar.start, addr_unit);
++	while (addr < damon_pa_phys_addr(r->ar.end, addr_unit)) {
+ 		folio = damon_get_folio(PHYS_PFN(addr));
+ 		if (damon_pa_invalid_damos_folio(folio, s)) {
+ 			addr += PAGE_SIZE;
+@@ -672,9 +674,11 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 		struct damon_target *t, struct damon_region *r,
+ 		struct damos *scheme, unsigned long *sz_filter_passed)
+ {
++	unsigned long aunit = ctx->addr_unit;
++
+ 	switch (scheme->action) {
+ 	case DAMOS_PAGEOUT:
+-		return damon_pa_pageout(r, scheme, sz_filter_passed);
++		return damon_pa_pageout(r, aunit, scheme, sz_filter_passed);
+ 	case DAMOS_LRU_PRIO:
+ 		return damon_pa_mark_accessed(r, scheme, sz_filter_passed);
+ 	case DAMOS_LRU_DEPRIO:
+-- 
+2.39.5
