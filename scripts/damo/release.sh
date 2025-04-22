@@ -51,7 +51,8 @@ then
 	exit 1
 fi
 
-git commit -as -m "Update the version"
+git add "$damo_version_py"
+git commit -s -m "Update the version"
 
 bindir=$(dirname "$0")
 if ! "$bindir/../ensure_gpg_password.sh"
