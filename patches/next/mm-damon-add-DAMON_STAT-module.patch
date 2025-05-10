@@ -1,0 +1,147 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 10 May 2025 13:11:30 -0700
+Subject: [PATCH] mm/damon: add DAMON_STAT module
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/Kconfig  |  8 ++++
+ mm/damon/Makefile |  1 +
+ mm/damon/stat.c   | 97 +++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 106 insertions(+)
+ create mode 100644 mm/damon/stat.c
+
+diff --git a/mm/damon/Kconfig b/mm/damon/Kconfig
+index 9659a053e5fe..66a158fdd1e3 100644
+--- a/mm/damon/Kconfig
++++ b/mm/damon/Kconfig
+@@ -91,6 +91,14 @@ config DAMON_LRU_SORT
+ 	  protect frequently accessed (hot) pages while rarely accessed (cold)
+ 	  pages reclaimed first under memory pressure.
+ 
++config DAMON_STAT
++	bool "Build data access monitoring stat (DAMON_STAT)"
++	depends on DAMON_PADDR
++	help
++	  This builds the DAMON-based access monitoring statistics subsystem.
++	  It runs DAMON and expose access monitoring results in simple stat
++	  metrics.
++
+ config DAMON_ACMA
+ 	bool "Build Access/Contiguity-aware Memory Auto-scaling (DAMON_ACMA)"
+ 	depends on DAMON_PADDR
+diff --git a/mm/damon/Makefile b/mm/damon/Makefile
+index fbfd4ddefa65..1e9a9560246b 100644
+--- a/mm/damon/Makefile
++++ b/mm/damon/Makefile
+@@ -6,4 +6,5 @@ obj-$(CONFIG_DAMON_PADDR)	+= ops-common.o paddr.o
+ obj-$(CONFIG_DAMON_SYSFS)	+= sysfs-common.o sysfs-schemes.o sysfs.o
+ obj-$(CONFIG_DAMON_RECLAIM)	+= modules-common.o reclaim.o
+ obj-$(CONFIG_DAMON_LRU_SORT)	+= modules-common.o lru_sort.o
++obj-$(CONFIG_DAMON_STAT)	+= modules-common.o stat.o
+ obj-$(CONFIG_DAMON_ACMA)	+= modules-common.o acma.o
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+new file mode 100644
+index 000000000000..4a856e3d7b78
+--- /dev/null
++++ b/mm/damon/stat.c
+@@ -0,0 +1,97 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Shows data access monitoring resutls in simple metrics.
++ */
++
++#define pr_fmt(fmt) "damon_stat: " fmt
++
++#include <linux/damon.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++
++static int damon_stat_enable_store(
++		const char *val, const struct kernel_param *kp);
++
++static const struct kernel_param_ops enable_param_ops = {
++	.set = damon_stat_enable_store,
++	.get = param_get_bool,
++};
++
++static bool enable __read_mostly;
++module_param_cb(enable, &enable_param_ops, &enable, 0600);
++MODULE_PARM_DESC(enable, "Enable of disable DAMON_STAT");
++
++static struct damon_ctx *damon_stat_context;
++
++static struct damon_ctx *damon_stat_build_ctx(void)
++{
++	struct damon_ctx *ctx;
++	struct damon_target *target;
++	unsigned long start = 0, end = 0;
++
++	ctx = damon_new_ctx();
++	if (!ctx)
++		return NULL;
++	/*
++	 * auto-tune sampling and aggregation interval aiming 4% DAMON-observed
++	 * accesses ratio, keeping sampling interval in [5ms, 10s] range.
++	 */
++	ctx->attrs.intervals_goal = (struct damon_intervals_goal) {
++		.access_bp = 400, .aggrs = 3,
++		.min_sample_us = 5000, .max_sample_us = 10000000,
++	};
++	if (damon_select_ops(ctx, DAMON_OPS_PADDR))
++		goto free_out;
++
++	target = damon_new_target();
++	if (!target)
++		goto free_out;
++	damon_add_target(ctx, target);
++	if (damon_set_region_biggest_system_ram_default(target, &start, &end))
++		goto free_out;
++	return ctx;
++free_out:
++	damon_destroy_ctx(ctx);
++	return NULL;
++}
++
++static int damon_stat_start(void)
++{
++	damon_stat_context = damon_stat_build_ctx();
++	if (!damon_stat_context)
++		return -ENOMEM;
++	return damon_start(&damon_stat_context, 1, true);
++}
++
++static void damon_stat_stop(void)
++{
++	damon_stop(&damon_stat_context, 1);
++	damon_destroy_ctx(damon_stat_context);
++}
++
++static int damon_stat_enable_store(
++		const char *val, const struct kernel_param *kp)
++{
++	bool enabled = enable;
++	int err;
++
++	err = kstrtobool(val, &enable);
++	if (err)
++		return err;
++
++	if (enable == enabled)
++		return 0;
++
++	if (enable)
++		return damon_stat_start();
++	damon_stat_stop();
++	return 0;
++}
++
++static int __init damon_stat_init(void)
++{
++	return 0;
++}
++
++module_init(damon_stat_init);
+-- 
+2.39.5
+
