@@ -1,0 +1,213 @@
+From: Alexander Graf <graf@amazon.com>
+Date: Thu, 1 May 2025 15:54:15 -0700
+Subject: [PATCH] kexec: add KHO support to kexec file loads
+
+Kexec has 2 modes: A user space driven mode and a kernel driven mode.  For
+the kernel driven mode, kernel code determines the physical addresses of
+all target buffers that the payload gets copied into.
+
+With KHO, we can only safely copy payloads into the "scratch area".  Teach
+the kexec file loader about it, so it only allocates for that area.  In
+addition, enlighten it with support to ask the KHO subsystem for its
+respective payloads to copy into target memory.  Also teach the KHO
+subsystem how to fill the images for file loads.
+
+Link: https://lkml.kernel.org/r/20250501225425.635167-9-changyuanl@google.com
+Signed-off-by: Alexander Graf <graf@amazon.com>
+Co-developed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Co-developed-by: Changyuan Lyu <changyuanl@google.com>
+Signed-off-by: Changyuan Lyu <changyuanl@google.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Anthony Yznaga <anthony.yznaga@oracle.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Ashish Kalra <ashish.kalra@amd.com>
+Cc: Ben Herrenschmidt <benh@kernel.crashing.org>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: Eric Biederman <ebiederm@xmission.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Gowans <jgowans@amazon.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Krzysztof Kozlowski <krzk@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Pratyush Yadav <ptyadav@amazon.de>
+Cc: Rob Herring <robh@kernel.org>
+Cc: Saravana Kannan <saravanak@google.com>
+Cc: Stanislav Kinsburskii <skinsburskii@linux.microsoft.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Thomas Lendacky <thomas.lendacky@amd.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/kexec.h   |  5 +++
+ kernel/kexec_file.c     | 13 ++++++++
+ kernel/kexec_handover.c | 67 +++++++++++++++++++++++++++++++++++++++++
+ kernel/kexec_internal.h | 16 ++++++++++
+ 4 files changed, 101 insertions(+)
+
+diff --git a/include/linux/kexec.h b/include/linux/kexec.h
+index c8971861521a..075255de8154 100644
+--- a/include/linux/kexec.h
++++ b/include/linux/kexec.h
+@@ -371,6 +371,11 @@ struct kimage {
+ 	size_t ima_buffer_size;
+ #endif
+ 
++	struct {
++		struct kexec_segment *scratch;
++		phys_addr_t fdt;
++	} kho;
++
+ 	/* Core ELF header buffer */
+ 	void *elf_headers;
+ 	unsigned long elf_headers_sz;
+diff --git a/kernel/kexec_file.c b/kernel/kexec_file.c
+index fba686487e3b..77758c533122 100644
+--- a/kernel/kexec_file.c
++++ b/kernel/kexec_file.c
+@@ -253,6 +253,11 @@ kimage_file_prepare_segments(struct kimage *image, int kernel_fd, int initrd_fd,
+ 	/* IMA needs to pass the measurement list to the next kernel. */
+ 	ima_add_kexec_buffer(image);
+ 
++	/* If KHO is active, add its images to the list */
++	ret = kho_fill_kimage(image);
++	if (ret)
++		goto out;
++
+ 	/* Call image load handler */
+ 	ldata = kexec_image_load_default(image);
+ 
+@@ -648,6 +653,14 @@ int kexec_locate_mem_hole(struct kexec_buf *kbuf)
+ 	if (kbuf->mem != KEXEC_BUF_MEM_UNKNOWN)
+ 		return 0;
+ 
++	/*
++	 * If KHO is active, only use KHO scratch memory. All other memory
++	 * could potentially be handed over.
++	 */
++	ret = kho_locate_mem_hole(kbuf, locate_mem_hole_callback);
++	if (ret <= 0)
++		return ret;
++
+ 	if (!IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
+ 		ret = kexec_walk_resources(kbuf, locate_mem_hole_callback);
+ 	else
+diff --git a/kernel/kexec_handover.c b/kernel/kexec_handover.c
+index 3bf74b4960f8..ef21db6c59d5 100644
+--- a/kernel/kexec_handover.c
++++ b/kernel/kexec_handover.c
+@@ -26,6 +26,7 @@
+  * internal APIs.
+  */
+ #include "../mm/internal.h"
++#include "kexec_internal.h"
+ 
+ #define KHO_FDT_COMPATIBLE "kho-v1"
+ #define PROP_PRESERVED_MEMORY_MAP "preserved-memory-map"
+@@ -1192,3 +1193,69 @@ void __init kho_populate(phys_addr_t fdt_phys, u64 fdt_len,
+ 	if (err)
+ 		pr_warn("disabling KHO revival: %d\n", err);
+ }
++
++/* Helper functions for kexec_file_load */
++
++int kho_fill_kimage(struct kimage *image)
++{
++	ssize_t scratch_size;
++	int err = 0;
++	struct kexec_buf scratch;
++
++	if (!kho_enable)
++		return 0;
++
++	image->kho.fdt = page_to_phys(kho_out.ser.fdt);
++
++	scratch_size = sizeof(*kho_scratch) * kho_scratch_cnt;
++	scratch = (struct kexec_buf){
++		.image = image,
++		.buffer = kho_scratch,
++		.bufsz = scratch_size,
++		.mem = KEXEC_BUF_MEM_UNKNOWN,
++		.memsz = scratch_size,
++		.buf_align = SZ_64K, /* Makes it easier to map */
++		.buf_max = ULONG_MAX,
++		.top_down = true,
++	};
++	err = kexec_add_buffer(&scratch);
++	if (err)
++		return err;
++	image->kho.scratch = &image->segment[image->nr_segments - 1];
++
++	return 0;
++}
++
++static int kho_walk_scratch(struct kexec_buf *kbuf,
++			    int (*func)(struct resource *, void *))
++{
++	int ret = 0;
++	int i;
++
++	for (i = 0; i < kho_scratch_cnt; i++) {
++		struct resource res = {
++			.start = kho_scratch[i].addr,
++			.end = kho_scratch[i].addr + kho_scratch[i].size - 1,
++		};
++
++		/* Try to fit the kimage into our KHO scratch region */
++		ret = func(&res, kbuf);
++		if (ret)
++			break;
++	}
++
++	return ret;
++}
++
++int kho_locate_mem_hole(struct kexec_buf *kbuf,
++			int (*func)(struct resource *, void *))
++{
++	int ret;
++
++	if (!kho_enable || kbuf->image->type == KEXEC_TYPE_CRASH)
++		return 1;
++
++	ret = kho_walk_scratch(kbuf, func);
++
++	return ret == 1 ? 0 : -EADDRNOTAVAIL;
++}
+diff --git a/kernel/kexec_internal.h b/kernel/kexec_internal.h
+index d35d9792402d..30a733a55a67 100644
+--- a/kernel/kexec_internal.h
++++ b/kernel/kexec_internal.h
+@@ -39,4 +39,20 @@ extern size_t kexec_purgatory_size;
+ #else /* CONFIG_KEXEC_FILE */
+ static inline void kimage_file_post_load_cleanup(struct kimage *image) { }
+ #endif /* CONFIG_KEXEC_FILE */
++
++struct kexec_buf;
++
++#ifdef CONFIG_KEXEC_HANDOVER
++int kho_locate_mem_hole(struct kexec_buf *kbuf,
++			int (*func)(struct resource *, void *));
++int kho_fill_kimage(struct kimage *image);
++#else
++static inline int kho_locate_mem_hole(struct kexec_buf *kbuf,
++				      int (*func)(struct resource *, void *))
++{
++	return 1;
++}
++
++static inline int kho_fill_kimage(struct kimage *image) { return 0; }
++#endif /* CONFIG_KEXEC_HANDOVER */
+ #endif /* LINUX_KEXEC_INTERNAL_H */
+-- 
+2.39.5
+

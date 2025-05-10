@@ -1,0 +1,74 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Thu, 1 May 2025 02:10:47 +0800
+Subject: [PATCH] fuse: drop usage of folio_index
+
+Patch series "mm, swap: clean up swap cache mapping helper", v3.
+
+This series removes usage of folio_index usage in fs/, and remove swap
+cache checking in folio_contains.
+
+Currently, the swap cache is already no longer directly exposed to fs, and
+swap cache will be more different from page cache.  Clean up the helpers
+first to simplify the code and eliminate the helpers used for resolving
+circular header dependency issue between filemap and swap headers, and
+prepare for further changes.
+
+
+This patch (of 6):
+
+folio_index is only needed for mixed usage of page cache and swap cache,
+for pure page cache usage, the caller can just use folio->index instead.
+
+It can't be a swap cache folio here.  Swap mapping may only call into fs
+through `swap_rw` but fuse does not use that method for SWAP.
+
+Link: https://lkml.kernel.org/r/20250430181052.55698-1-ryncsn@gmail.com
+Link: https://lkml.kernel.org/r/20250430181052.55698-2-ryncsn@gmail.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Reviewed-by: David Hildenbrand <david@redhat.com>
+Cc: Miklos Szeredi <miklos@szeredi.hu>
+Cc: Joanne Koong <joannelkoong@gmail.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Chao Yu <chao@kernel.org>
+Cc: Chris Mason <clm@fb.com>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Jaegeuk Kim <jaegeuk@kernel.org>
+Cc: Qu Wenruo <wqu@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/fuse/file.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+index 754378dd9f71..6f19a4daa559 100644
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -487,7 +487,7 @@ static inline bool fuse_folio_is_writeback(struct inode *inode,
+ 					   struct folio *folio)
+ {
+ 	pgoff_t last = folio_next_index(folio) - 1;
+-	return fuse_range_is_writeback(inode, folio_index(folio), last);
++	return fuse_range_is_writeback(inode, folio->index, last);
+ }
+ 
+ static void fuse_wait_on_folio_writeback(struct inode *inode,
+@@ -2349,7 +2349,7 @@ static bool fuse_writepage_need_send(struct fuse_conn *fc, struct folio *folio,
+ 		return true;
+ 
+ 	/* Discontinuity */
+-	if (data->orig_folios[ap->num_folios - 1]->index + 1 != folio_index(folio))
++	if (data->orig_folios[ap->num_folios - 1]->index + 1 != folio->index)
+ 		return true;
+ 
+ 	/* Need to grow the pages array?  If so, did the expansion fail? */
+-- 
+2.39.5
+

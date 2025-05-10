@@ -1,0 +1,95 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Tue, 8 Apr 2025 10:52:15 +0100
+Subject: [PATCH] powerpc: mm: call ctor/dtor for kernel PTEs
+
+The generic implementation of pte_{alloc_one,free}_kernel now calls the
+[cd]tor, without initialising the ptlock needlessly as
+pagetable_pte_ctor() skips it for init_mm.
+
+On powerpc, all functions related to PTE allocation are implemented by
+common helpers, which are passed a boolean to differentiate user from
+kernel pgtables.  This patch aligns the powerpc implementation with the
+generic one by calling pagetable_pte_[cd]tor() unconditionally in those
+helpers.
+
+Link: https://lkml.kernel.org/r/20250408095222.860601-6-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Linus Waleij <linus.walleij@linaro.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: <x86@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/mm/pgtable-frag.c | 30 +++++++++++++-----------------
+ 1 file changed, 13 insertions(+), 17 deletions(-)
+
+diff --git a/arch/powerpc/mm/pgtable-frag.c b/arch/powerpc/mm/pgtable-frag.c
+index 387e9b1fe12c..77e55eac16e4 100644
+--- a/arch/powerpc/mm/pgtable-frag.c
++++ b/arch/powerpc/mm/pgtable-frag.c
+@@ -56,19 +56,17 @@ static pte_t *__alloc_for_ptecache(struct mm_struct *mm, int kernel)
+ {
+ 	void *ret = NULL;
+ 	struct ptdesc *ptdesc;
++	gfp_t gfp = PGALLOC_GFP;
+ 
+-	if (!kernel) {
+-		ptdesc = pagetable_alloc(PGALLOC_GFP | __GFP_ACCOUNT, 0);
+-		if (!ptdesc)
+-			return NULL;
+-		if (!pagetable_pte_ctor(mm, ptdesc)) {
+-			pagetable_free(ptdesc);
+-			return NULL;
+-		}
+-	} else {
+-		ptdesc = pagetable_alloc(PGALLOC_GFP, 0);
+-		if (!ptdesc)
+-			return NULL;
++	if (!kernel)
++		gfp |= __GFP_ACCOUNT;
++
++	ptdesc = pagetable_alloc(gfp, 0);
++	if (!ptdesc)
++		return NULL;
++	if (!pagetable_pte_ctor(mm, ptdesc)) {
++		pagetable_free(ptdesc);
++		return NULL;
+ 	}
+ 
+ 	atomic_set(&ptdesc->pt_frag_refcount, 1);
+@@ -124,12 +122,10 @@ void pte_fragment_free(unsigned long *table, int kernel)
+ 
+ 	BUG_ON(atomic_read(&ptdesc->pt_frag_refcount) <= 0);
+ 	if (atomic_dec_and_test(&ptdesc->pt_frag_refcount)) {
+-		if (kernel)
+-			pagetable_free(ptdesc);
+-		else if (folio_test_clear_active(ptdesc_folio(ptdesc)))
+-			call_rcu(&ptdesc->pt_rcu_head, pte_free_now);
+-		else
++		if (kernel || !folio_test_clear_active(ptdesc_folio(ptdesc)))
+ 			pte_free_now(&ptdesc->pt_rcu_head);
++		else
++			call_rcu(&ptdesc->pt_rcu_head, pte_free_now);
+ 	}
+ }
+ 
+-- 
+2.39.5
+

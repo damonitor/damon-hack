@@ -1,0 +1,82 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 7 May 2025 14:42:24 +0900
+Subject: [PATCH] zsmalloc: don't underflow size calculation in zs_obj_write()
+
+Do not mix class->size and object size during offsets/sizes calculation in
+zs_obj_write().  Size classes can merge into clusters, based on
+objects-per-zspage and pages-per-zspage characteristics, so some size
+classes can store objects smaller than class->size.  This becomes
+problematic when object size is much smaller than class->size.  zsmalloc
+can falsely decide that object spans two physical pages, because a larger
+class->size value is used for that check, while the actual object is much
+smaller and fits the free space of the first physical page, so there is
+nothing to write to the second page and memcpy() size calculation
+underflows.
+
+ Unable to handle kernel paging request at virtual address ffffc00081ff4000
+ pc : __memcpy+0x10/0x24
+ lr : zs_obj_write+0x1b0/0x1d0 [zsmalloc]
+ Call trace:
+  __memcpy+0x10/0x24 (P)
+  zram_write_page+0x150/0x4fc [zram]
+  zram_submit_bio+0x5e0/0x6a4 [zram]
+  __submit_bio+0x168/0x220
+  submit_bio_noacct_nocheck+0x128/0x2c8
+  submit_bio_noacct+0x19c/0x2f8
+
+This is mostly seen on system with larger page-sizes, because size class
+cluters of such systems hold wider size ranges than on 4K PAGE_SIZE
+systems.
+
+Assume a 16K PAGE_SIZE system, a write of 820 bytes object to a 864-bytes
+size class at offset 15560.  15560 + 864 is more than 16384 so zsmalloc
+attempts to memcpy() it to two physical pages.  However, 16384 - 15560 =
+824 which is more than 820, so the object in fact doesn't span two
+physical pages, and there is no data to write to the second physical page.
+
+We always know the exact size in bytes of the object that we are about to
+write (store), so use it instead of class->size.
+
+Link: https://lkml.kernel.org/r/20250507054312.4135983-1-senozhatsky@chromium.org
+Fixes: 44f76413496e ("zsmalloc: introduce new object mapping API")
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Reported-by: Igor Belousov <igor.b@beldev.am>
+Tested-by: Igor Belousov <igor.b@beldev.am>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 961b270f023c..d14a7e317ac8 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -1243,19 +1243,19 @@ void zs_obj_write(struct zs_pool *pool, unsigned long handle,
+ 	class = zspage_class(pool, zspage);
+ 	off = offset_in_page(class->size * obj_idx);
+ 
+-	if (off + class->size <= PAGE_SIZE) {
++	if (!ZsHugePage(zspage))
++		off += ZS_HANDLE_SIZE;
++
++	if (off + mem_len <= PAGE_SIZE) {
+ 		/* this object is contained entirely within a page */
+ 		void *dst = kmap_local_zpdesc(zpdesc);
+ 
+-		if (!ZsHugePage(zspage))
+-			off += ZS_HANDLE_SIZE;
+ 		memcpy(dst + off, handle_mem, mem_len);
+ 		kunmap_local(dst);
+ 	} else {
+ 		/* this object spans two pages */
+ 		size_t sizes[2];
+ 
+-		off += ZS_HANDLE_SIZE;
+ 		sizes[0] = PAGE_SIZE - off;
+ 		sizes[1] = mem_len - sizes[0];
+ 
+-- 
+2.39.5
+

@@ -1,0 +1,42 @@
+From: Alexander Potapenko <glider@google.com>
+Date: Wed, 7 May 2025 18:00:11 +0200
+Subject: [PATCH] kmsan: enter the runtime around
+ kmsan_internal_memmove_metadata() call
+
+kmsan_internal_memmove_metadata() transitively calls stack_depot_save()
+(via kmsan_internal_chain_origin() and kmsan_save_stack_with_flags()),
+which may allocate memory.  Guard it with kmsan_enter_runtime() and
+kmsan_leave_runtime() to avoid recursion.
+
+This bug was spotted by CONFIG_WARN_CAPABILITY_ANALYSIS=y
+
+Link: https://lkml.kernel.org/r/20250507160012.3311104-4-glider@google.com
+Signed-off-by: Alexander Potapenko <glider@google.com>
+Acked-by: Marco Elver <elver@google.com>
+Cc: Bart Van Assche <bvanassche@acm.org>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Dmitriy Vyukov <dvyukov@google.com>
+Cc: Ilya Leoshkevich <iii@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kmsan/hooks.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/kmsan/hooks.c b/mm/kmsan/hooks.c
+index 05f2faa54054..97de3d6194f0 100644
+--- a/mm/kmsan/hooks.c
++++ b/mm/kmsan/hooks.c
+@@ -275,8 +275,10 @@ void kmsan_copy_to_user(void __user *to, const void *from, size_t to_copy,
+ 		 * Don't check anything, just copy the shadow of the copied
+ 		 * bytes.
+ 		 */
++		kmsan_enter_runtime();
+ 		kmsan_internal_memmove_metadata((void *)to, (void *)from,
+ 						to_copy - left);
++		kmsan_leave_runtime();
+ 	}
+ 	user_access_restore(ua_flags);
+ }
+-- 
+2.39.5
+

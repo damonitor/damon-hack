@@ -1,0 +1,155 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Thu, 1 May 2025 15:54:10 -0700
+Subject: [PATCH] memblock: introduce memmap_init_kho_scratch()
+
+With deferred initialization of struct page it will be necessary to
+initialize memory map for KHO scratch regions early.
+
+Add memmap_init_kho_scratch() method that will allow such initialization
+in upcoming patches.
+
+Link: https://lkml.kernel.org/r/20250501225425.635167-4-changyuanl@google.com
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Changyuan Lyu <changyuanl@google.com>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Anthony Yznaga <anthony.yznaga@oracle.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Ashish Kalra <ashish.kalra@amd.com>
+Cc: Ben Herrenschmidt <benh@kernel.crashing.org>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: Eric Biederman <ebiederm@xmission.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Gowans <jgowans@amazon.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Krzysztof Kozlowski <krzk@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Pratyush Yadav <ptyadav@amazon.de>
+Cc: Rob Herring <robh@kernel.org>
+Cc: Saravana Kannan <saravanak@google.com>
+Cc: Stanislav Kinsburskii <skinsburskii@linux.microsoft.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Thomas Lendacky <thomas.lendacky@amd.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memblock.h |  2 ++
+ mm/internal.h            |  2 ++
+ mm/memblock.c            | 22 ++++++++++++++++++++++
+ mm/mm_init.c             | 11 ++++++++---
+ 4 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/memblock.h b/include/linux/memblock.h
+index 993937a6b962..bb19a2534224 100644
+--- a/include/linux/memblock.h
++++ b/include/linux/memblock.h
+@@ -635,9 +635,11 @@ static inline void memtest_report_meminfo(struct seq_file *m) { }
+ #ifdef CONFIG_MEMBLOCK_KHO_SCRATCH
+ void memblock_set_kho_scratch_only(void);
+ void memblock_clear_kho_scratch_only(void);
++void memmap_init_kho_scratch_pages(void);
+ #else
+ static inline void memblock_set_kho_scratch_only(void) { }
+ static inline void memblock_clear_kho_scratch_only(void) { }
++static inline void memmap_init_kho_scratch_pages(void) {}
+ #endif
+ 
+ #endif /* _LINUX_MEMBLOCK_H */
+diff --git a/mm/internal.h b/mm/internal.h
+index 780481a8be0e..cf7c0e9ef7ec 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1119,6 +1119,8 @@ DECLARE_STATIC_KEY_TRUE(deferred_pages);
+ bool __init deferred_grow_zone(struct zone *zone, unsigned int order);
+ #endif /* CONFIG_DEFERRED_STRUCT_PAGE_INIT */
+ 
++void init_deferred_page(unsigned long pfn, int nid);
++
+ enum mminit_level {
+ 	MMINIT_WARNING,
+ 	MMINIT_VERIFY,
+diff --git a/mm/memblock.c b/mm/memblock.c
+index 4b6a599a425b..f21ee8371cad 100644
+--- a/mm/memblock.c
++++ b/mm/memblock.c
+@@ -946,6 +946,28 @@ __init void memblock_clear_kho_scratch_only(void)
+ {
+ 	kho_scratch_only = false;
+ }
++
++__init void memmap_init_kho_scratch_pages(void)
++{
++	phys_addr_t start, end;
++	unsigned long pfn;
++	int nid;
++	u64 i;
++
++	if (!IS_ENABLED(CONFIG_DEFERRED_STRUCT_PAGE_INIT))
++		return;
++
++	/*
++	 * Initialize struct pages for free scratch memory.
++	 * The struct pages for reserved scratch memory will be set up in
++	 * reserve_bootmem_region()
++	 */
++	__for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE,
++			     MEMBLOCK_KHO_SCRATCH, &start, &end, &nid) {
++		for (pfn = PFN_UP(start); pfn < PFN_DOWN(end); pfn++)
++			init_deferred_page(pfn, nid);
++	}
++}
+ #endif
+ 
+ /**
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 84f14fa12d0d..1451cb250fd3 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -743,7 +743,7 @@ defer_init(int nid, unsigned long pfn, unsigned long end_pfn)
+ 	return false;
+ }
+ 
+-static void __meminit init_deferred_page(unsigned long pfn, int nid)
++static void __meminit __init_deferred_page(unsigned long pfn, int nid)
+ {
+ 	if (early_page_initialised(pfn, nid))
+ 		return;
+@@ -763,11 +763,16 @@ static inline bool defer_init(int nid, unsigned long pfn, unsigned long end_pfn)
+ 	return false;
+ }
+ 
+-static inline void init_deferred_page(unsigned long pfn, int nid)
++static inline void __init_deferred_page(unsigned long pfn, int nid)
+ {
+ }
+ #endif /* CONFIG_DEFERRED_STRUCT_PAGE_INIT */
+ 
++void __meminit init_deferred_page(unsigned long pfn, int nid)
++{
++	__init_deferred_page(pfn, nid);
++}
++
+ /*
+  * Initialised pages do not have PageReserved set. This function is
+  * called for each range allocated by the bootmem allocator and
+@@ -784,7 +789,7 @@ void __meminit reserve_bootmem_region(phys_addr_t start,
+ 		if (pfn_valid(start_pfn)) {
+ 			struct page *page = pfn_to_page(start_pfn);
+ 
+-			init_deferred_page(start_pfn, nid);
++			__init_deferred_page(start_pfn, nid);
+ 
+ 			/*
+ 			 * no need for atomic set_bit because the struct
+-- 
+2.39.5
+

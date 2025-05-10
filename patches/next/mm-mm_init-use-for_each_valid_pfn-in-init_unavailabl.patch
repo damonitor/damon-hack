@@ -1,0 +1,57 @@
+From: David Woodhouse <dwmw@amazon.co.uk>
+Date: Wed, 23 Apr 2025 14:33:43 +0100
+Subject: [PATCH] mm/mm_init: use for_each_valid_pfn() in
+ init_unavailable_range()
+
+Currently, memmap_init initializes pfn_hole with 0 instead of
+ARCH_PFN_OFFSET. Then init_unavailable_range will start iterating each
+page from the page at address zero to the first available page, but it
+won't do anything for pages below ARCH_PFN_OFFSET because pfn_valid
+won't pass.
+
+If ARCH_PFN_OFFSET is very large (e.g., something like 2^64-2GiB if the
+kernel is used as a library and loaded at a very high address), the
+pointless iteration for pages below ARCH_PFN_OFFSET will take a very long
+time, and the kernel will look stuck at boot time.
+
+Use for_each_valid_pfn() to skip the pointless iterations.
+
+Link: https://lkml.kernel.org/r/20250423133821.789413-8-dwmw2@infradead.org
+Signed-off-by: David Woodhouse <dwmw@amazon.co.uk>
+Reported-by: Ruihan Li <lrh2000@pku.edu.cn>
+Suggested-by: Mike Rapoport <rppt@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Ruihan Li <lrh2000@pku.edu.cn>
+Tested-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Ard Biesheuvel <ardb@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Marc Zyngier <maz@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index b9bc22ef39a3..21d945cca9ab 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -851,11 +851,7 @@ static void __init init_unavailable_range(unsigned long spfn,
+ 	unsigned long pfn;
+ 	u64 pgcnt = 0;
+ 
+-	for (pfn = spfn; pfn < epfn; pfn++) {
+-		if (!pfn_valid(pageblock_start_pfn(pfn))) {
+-			pfn = pageblock_end_pfn(pfn) - 1;
+-			continue;
+-		}
++	for_each_valid_pfn(pfn, spfn, epfn) {
+ 		__init_single_page(pfn_to_page(pfn), pfn, zone, node);
+ 		__SetPageReserved(pfn_to_page(pfn));
+ 		pgcnt++;
+-- 
+2.39.5
+

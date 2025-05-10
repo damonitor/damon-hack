@@ -1,0 +1,79 @@
+From: Libo Chen <libo.chen@oracle.com>
+Date: Wed, 7 May 2025 19:17:15 +0800
+Subject: [PATCH] sched/numa: fix task swap by skipping kernel threads
+
+Patch series "sched/numa: add statistics of numa balance task migration",
+v4.
+
+Introduce task migration and swap statistics in the following places:
+
+/sys/fs/cgroup/{GROUP}/memory.stat
+/proc/{PID}/sched
+/proc/vmstat
+
+These statistics facilitate a rapid evaluation of the performance and
+resource utilization of the target workload.
+
+
+This patch (of 2):
+
+Task swapping is triggered when there are no idle CPUs in task A's
+preferred node.  In this case, the NUMA load balancer chooses a task B on
+A's preferred node and swaps B with A.  This helps improve NUMA locality
+without introducing load imbalance between nodes.
+
+In the current implementation, B's NUMA node preference is not mandatory,
+and it aims not to increase load imbalance.  That is to say, a kernel
+thread might be chosen as B.  However, kernel threads are not supposed to
+be covered by NUMA balancing because NUMA balancing only considers user
+pages via VMAs.
+
+Fix this by not considering kernel threads as swap targets in
+task_numa_compare().  This can be extended beyond kernel threads in the
+future by checking if a swap candidate has a valid NUMA preference through
+checking the candidate's numa_preferred_nid and numa_faults.  For now,
+keep the code simple.
+
+Link: https://lkml.kernel.org/r/cover.1746611892.git.yu.c.chen@intel.com
+Link: https://lkml.kernel.org/r/a541cdf9b97f523f6b8067271847a986db5ba768.1746611892.git.yu.c.chen@intel.com
+Signed-off-by: Libo Chen <libo.chen@oracle.com>
+Signed-off-by: Chen Yu <yu.c.chen@intel.com>
+Suggested-by: Michal Koutny <mkoutny@suse.com>
+Tested-by: Ayush Jain <Ayush.jain3@amd.com>
+Cc: Aubrey Li <aubrey.li@intel.com>
+Cc: "Chen, Tim C" <tim.c.chen@intel.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: K Prateek Nayak <kprateek.nayak@amd.com>
+Cc: Madadi Vineeth Reddy <vineethr@linux.ibm.com>
+Cc: Mel Gorman <mgorman <mgorman@suse.de>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Peter Zijlstra (Intel) <peterz@infradead.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Venkat Rao Bagalkote <venkat88@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/sched/fair.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index cef163c174bd..50c50366ddf4 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -2273,7 +2273,8 @@ static bool task_numa_compare(struct task_numa_env *env,
+ 
+ 	rcu_read_lock();
+ 	cur = rcu_dereference(dst_rq->curr);
+-	if (cur && ((cur->flags & PF_EXITING) || is_idle_task(cur)))
++	if (cur && ((cur->flags & PF_EXITING) || is_idle_task(cur) ||
++		    !cur->mm))
+ 		cur = NULL;
+ 
+ 	/*
+-- 
+2.39.5
+

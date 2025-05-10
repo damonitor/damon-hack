@@ -1,0 +1,94 @@
+From: Yuquan Wang <wangyuquan1236@phytium.com.cn>
+Date: Thu, 8 May 2025 10:27:19 +0800
+Subject: [PATCH] mm: numa_memblks: introduce numa_add_reserved_memblk
+
+acpi_parse_cfmws() currently adds empty CFMWS ranges to numa_meminfo with
+the expectation that numa_cleanup_meminfo moves them to
+numa_reserved_meminfo.  There is no need for that indirection when it is
+known in advance that these unpopulated ranges are meant for
+numa_reserved_meminfo in support of future hotplug / CXL provisioning.
+
+Introduce and use numa_add_reserved_memblk() to add the empty CFMWS ranges
+directly.
+
+Link: https://lkml.kernel.org/r/20250508022719.3941335-1-wangyuquan1236@phytium.com.cn
+Signed-off-by: Yuquan Wang <wangyuquan1236@phytium.com.cn>
+Reviewed-by: Alison Schofield <alison.schofield@intel.com>
+Cc: Bruno Faccini <bfaccini@nvidia.com>
+Cc: Chen Baozi <chenbaozi@phytium.com.cn>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Haibo Xu <haibo1.xu@intel.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Joanthan Cameron <Jonathan.Cameron@huawei.com>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Robert Richter <rrichter@amd.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/acpi/numa/srat.c     |  2 +-
+ include/linux/numa_memblks.h |  1 +
+ mm/numa_memblks.c            | 22 ++++++++++++++++++++++
+ 3 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/acpi/numa/srat.c b/drivers/acpi/numa/srat.c
+index 5d0cbc5c88a0..53816dfab645 100644
+--- a/drivers/acpi/numa/srat.c
++++ b/drivers/acpi/numa/srat.c
+@@ -464,7 +464,7 @@ static int __init acpi_parse_cfmws(union acpi_subtable_headers *header,
+ 		return -EINVAL;
+ 	}
+ 
+-	if (numa_add_memblk(node, start, end) < 0) {
++	if (numa_add_reserved_memblk(node, start, end) < 0) {
+ 		/* CXL driver must handle the NUMA_NO_NODE case */
+ 		pr_warn("ACPI NUMA: Failed to add memblk for CFMWS node %d [mem %#llx-%#llx]\n",
+ 			node, start, end);
+diff --git a/include/linux/numa_memblks.h b/include/linux/numa_memblks.h
+index dd85613cdd86..991076cba7c5 100644
+--- a/include/linux/numa_memblks.h
++++ b/include/linux/numa_memblks.h
+@@ -22,6 +22,7 @@ struct numa_meminfo {
+ };
+ 
+ int __init numa_add_memblk(int nodeid, u64 start, u64 end);
++int __init numa_add_reserved_memblk(int nid, u64 start, u64 end);
+ void __init numa_remove_memblk_from(int idx, struct numa_meminfo *mi);
+ 
+ int __init numa_cleanup_meminfo(struct numa_meminfo *mi);
+diff --git a/mm/numa_memblks.c b/mm/numa_memblks.c
+index ff4054f4334d..541a99c4071a 100644
+--- a/mm/numa_memblks.c
++++ b/mm/numa_memblks.c
+@@ -200,6 +200,28 @@ int __init numa_add_memblk(int nid, u64 start, u64 end)
+ 	return numa_add_memblk_to(nid, start, end, &numa_meminfo);
+ }
+ 
++/**
++ * numa_add_reserved_memblk - Add one numa_memblk to numa_reserved_meminfo
++ * @nid: NUMA node ID of the new memblk
++ * @start: Start address of the new memblk
++ * @end: End address of the new memblk
++ *
++ * Add a new memblk to the numa_reserved_meminfo.
++ *
++ * Usage Case: numa_cleanup_meminfo() reconciles all numa_memblk instances
++ * against memblock_type information and moves any that intersect reserved
++ * ranges to numa_reserved_meminfo. However, when that information is known
++ * ahead of time, we use numa_add_reserved_memblk() to add the numa_memblk
++ * to numa_reserved_meminfo directly.
++ *
++ * RETURNS:
++ * 0 on success, -errno on failure.
++ */
++int __init numa_add_reserved_memblk(int nid, u64 start, u64 end)
++{
++	return numa_add_memblk_to(nid, start, end, &numa_reserved_meminfo);
++}
++
+ /**
+  * numa_cleanup_meminfo - Cleanup a numa_meminfo
+  * @mi: numa_meminfo to clean up
+-- 
+2.39.5
+

@@ -1,0 +1,215 @@
+From: Sidhartha Kumar <sidhartha.kumar@oracle.com>
+Date: Thu, 10 Apr 2025 19:14:41 +0000
+Subject: [PATCH] maple_tree: convert mas_prealloc_calc() to take in a maple
+ write state
+
+Patch series "Track node vacancy to reduce worst case allocation counts", v5.
+
+================ overview ========================
+Currently, the maple tree preallocates the worst case number of nodes for
+given store type by taking into account the whole height of the tree.
+This comes from a worst case scenario of every node in the tree being full
+and having to propagate node allocation upwards until we reach the root of
+the tree.  This can be optimized if there are vacancies in nodes that are
+at a lower depth than the root node.  This series implements tracking the
+level at which there is a vacant node so we only need to allocate until
+this level is reached, rather than always using the full height of the
+tree.  The ma_wr_state struct is modified to add a field which keeps track
+of the vacant height and is updated during walks of the tree.  This value
+is then read in mas_prealloc_calc() when we decide how many nodes to
+allocate.
+
+For rebalancing and spanning stores, we also need to track the lowest
+height at which a node has 1 more entry than the minimum sufficient number
+of entries.  This is because rebalancing can cause a parent node to become
+insufficient which results in further node allocations.  In this case, we
+need to use the sufficient height as the worst case rather than the vacant
+height.
+
+patch 1-2: preparatory patches
+patch 3: implement vacant height tracking + update the tests
+patch 4: support vacant height tracking for rebalancing writes
+patch 5: implement sufficient height tracking
+patch 6: reorder switch case statements
+
+================ results =========================
+Bpftrace was used to profile the allocation path for requesting new maple
+nodes while running stress-ng mmap 120s.  The histograms below represent
+requests to kmem_cache_alloc_bulk() and show the count argument.  This
+represnts how many maple nodes the caller is requesting in
+kmem_cache_alloc_bulk()
+
+command: stress-ng --mmap 4 --timeout 120
+
+mm-unstable
+
+@bulk_alloc_req:
+[3, 4)                 4 |                                                    |
+[4, 5)             54170 |@                                                   |
+[5, 6)                 0 |                                                    |
+[6, 7)            893057 |@@@@@@@@@@@@@@@@@@@@                                |
+[7, 8)                 4 |                                                    |
+[8, 9)           2230287 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+[9, 10)            55811 |@                                                   |
+[10, 11)           77834 |@                                                   |
+[11, 12)               0 |                                                    |
+[12, 13)         1368684 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@                     |
+[13, 14)               0 |                                                    |
+[14, 15)               0 |                                                    |
+[15, 16)          367197 |@@@@@@@@                                            |
+
+
+@maple_node_total: 46,630,160
+@total_vmas: 46184591
+
+mm-unstable + this series
+
+@bulk_alloc_req:
+[2, 3)               198 |                                                    |
+[3, 4)                 4 |                                                    |
+[4, 5)                43 |                                                    |
+[5, 6)                 0 |                                                    |
+[6, 7)           1069503 |@@@@@@@@@@@@@@@@@@@@@                               |
+[7, 8)                 4 |                                                    |
+[8, 9)           2597268 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+[9, 10)           472191 |@@@@@@@@@                                           |
+[10, 11)          191904 |@@@                                                 |
+[11, 12)               0 |                                                    |
+[12, 13)          247316 |@@@@                                                |
+[13, 14)               0 |                                                    |
+[14, 15)               0 |                                                    |
+[15, 16)           98769 |@                                                   |
+
+
+@maple_node_total: 37,813,856
+@total_vmas: 43493287
+
+This represents a ~19% reduction in the number of bulk maple nodes allocated.
+
+For more reproducible results, a historgram of the return value of
+mas_prealloc_calc() is displayed while running the maple_tree_tests whcih
+have a deterministic store pattern
+
+mas_prealloc_calc() return value mm-unstable
+1   :                                                    (12068)
+3   :                                                    (11836)
+5   : *****                                              (271192)
+7   : ************************************************** (2329329)
+9   : ***********                                        (534186)
+10  :                                                    (435)
+11  : ***************                                    (704306)
+13  : ********                                           (409781)
+
+mas_prealloc_calc() return value mm-unstable + this series
+1   :                                                    (12070)
+3   : ************************************************** (3548777)
+5   : ********                                           (633458)
+7   :                                                    (65081)
+9   :                                                    (11224)
+10  :                                                    (341)
+11  :                                                    (2973)
+13  :                                                    (68)
+
+do_mmap latency was also measured for regressions:
+command: stress-ng --mmap 4 --timeout 120
+
+mm-unstable:
+avg = 7162 nsecs, total: 16101821292 nsecs, count: 2248034
+
+mm-unstable + this series:
+avg = 6689 nsecs, total: 15135391764 nsecs, count: 2262726
+
+
+stress-ng --mmap4 --timeout 120
+
+with vacant_height:
+stress-ng: info:  [257]                   21526312 Maple Tree Read                0.176 M/sec
+stress-ng: info:  [257]                  339979348 Maple Tree Write               2.774 M/sec
+
+without vacant_height:
+stress-ng: info:  [8228]                   20968900 Maple Tree Read                0.171 M/sec
+stress-ng: info:  [8228]                  312214648 Maple Tree Write               2.547 M/sec
+
+This represents an increase of ~3% read throughput and ~9% increase in
+write throughput.
+
+
+This patch (of 6):
+
+In a subsequent patch, mas_prealloc_calc() will need to access fields only
+in the ma_wr_state.  Convert the function to take in a ma_wr_state and
+modify all callers.  There is no functional change.
+
+Link: https://lkml.kernel.org/r/20250410191446.2474640-1-sidhartha.kumar@oracle.com
+Link: https://lkml.kernel.org/r/20250410191446.2474640-2-sidhartha.kumar@oracle.com
+Signed-off-by: Sidhartha Kumar <sidhartha.kumar@oracle.com>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/maple_tree.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/lib/maple_tree.c b/lib/maple_tree.c
+index d0bea23fa4bc..f25ee210d495 100644
+--- a/lib/maple_tree.c
++++ b/lib/maple_tree.c
+@@ -4140,13 +4140,14 @@ static inline void mas_wr_prealloc_setup(struct ma_wr_state *wr_mas)
+ /**
+  * mas_prealloc_calc() - Calculate number of nodes needed for a
+  * given store oepration
+- * @mas: The maple state
++ * @wr_mas: The maple write state
+  * @entry: The entry to store into the tree
+  *
+  * Return: Number of nodes required for preallocation.
+  */
+-static inline int mas_prealloc_calc(struct ma_state *mas, void *entry)
++static inline int mas_prealloc_calc(struct ma_wr_state *wr_mas, void *entry)
+ {
++	struct ma_state *mas = wr_mas->mas;
+ 	int ret = mas_mt_height(mas) * 3 + 1;
+ 
+ 	switch (mas->store_type) {
+@@ -4243,16 +4244,15 @@ static inline enum store_type mas_wr_store_type(struct ma_wr_state *wr_mas)
+  */
+ static inline void mas_wr_preallocate(struct ma_wr_state *wr_mas, void *entry)
+ {
+-	struct ma_state *mas = wr_mas->mas;
+ 	int request;
+ 
+ 	mas_wr_prealloc_setup(wr_mas);
+-	mas->store_type = mas_wr_store_type(wr_mas);
+-	request = mas_prealloc_calc(mas, entry);
++	wr_mas->mas->store_type = mas_wr_store_type(wr_mas);
++	request = mas_prealloc_calc(wr_mas, entry);
+ 	if (!request)
+ 		return;
+ 
+-	mas_node_count(mas, request);
++	mas_node_count(wr_mas->mas, request);
+ }
+ 
+ /**
+@@ -5397,7 +5397,7 @@ void *mas_store(struct ma_state *mas, void *entry)
+ 		return wr_mas.content;
+ 	}
+ 
+-	request = mas_prealloc_calc(mas, entry);
++	request = mas_prealloc_calc(&wr_mas, entry);
+ 	if (!request)
+ 		goto store;
+ 
+@@ -5494,7 +5494,7 @@ int mas_preallocate(struct ma_state *mas, void *entry, gfp_t gfp)
+ 
+ 	mas_wr_prealloc_setup(&wr_mas);
+ 	mas->store_type = mas_wr_store_type(&wr_mas);
+-	request = mas_prealloc_calc(mas, entry);
++	request = mas_prealloc_calc(&wr_mas, entry);
+ 	if (!request)
+ 		return ret;
+ 
+-- 
+2.39.5
+

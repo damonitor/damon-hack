@@ -1,0 +1,117 @@
+From: Alice Ryhl <aliceryhl@google.com>
+Date: Tue, 8 Apr 2025 09:22:44 +0000
+Subject: [PATCH] rust: miscdevice: add mmap support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add the ability to write a file_operations->mmap hook in Rust when using
+the miscdevice abstraction.  The `vma` argument to the `mmap` hook uses
+the `VmaNew` type from the previous commit; this type provides the correct
+set of operations for a file_operations->mmap hook.
+
+Link: https://lkml.kernel.org/r/20250408-vma-v16-7-d8b446e885d9@google.com
+Signed-off-by: Alice Ryhl <aliceryhl@google.com>
+Acked-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Acked-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Acked-by: Liam R. Howlett <Liam.Howlett@Oracle.com>
+Reviewed-by: Andreas Hindborg <a.hindborg@kernel.org>
+Reviewed-by: Gary Guo <gary@garyguo.net>
+Cc: Alex Gaynor <alex.gaynor@gmail.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Benno Lossin <benno.lossin@proton.me>
+Cc: Björn Roy Baron <bjorn3_gh@protonmail.com>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miguel Ojeda <ojeda@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Trevor Gross <tmgross@umich.edu>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ rust/kernel/miscdevice.rs | 45 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/rust/kernel/miscdevice.rs b/rust/kernel/miscdevice.rs
+index fa9ecc42602a..9d9771247c38 100644
+--- a/rust/kernel/miscdevice.rs
++++ b/rust/kernel/miscdevice.rs
+@@ -14,6 +14,7 @@
+     error::{to_result, Error, Result, VTABLE_DEFAULT_ERROR},
+     ffi::{c_int, c_long, c_uint, c_ulong},
+     fs::File,
++    mm::virt::VmaNew,
+     prelude::*,
+     seq_file::SeqFile,
+     str::CStr,
+@@ -119,6 +120,22 @@ fn release(device: Self::Ptr, _file: &File) {
+         drop(device);
+     }
+ 
++    /// Handle for mmap.
++    ///
++    /// This function is invoked when a user space process invokes the `mmap` system call on
++    /// `file`. The function is a callback that is part of the VMA initializer. The kernel will do
++    /// initial setup of the VMA before calling this function. The function can then interact with
++    /// the VMA initialization by calling methods of `vma`. If the function does not return an
++    /// error, the kernel will complete initialization of the VMA according to the properties of
++    /// `vma`.
++    fn mmap(
++        _device: <Self::Ptr as ForeignOwnable>::Borrowed<'_>,
++        _file: &File,
++        _vma: &VmaNew,
++    ) -> Result {
++        build_error!(VTABLE_DEFAULT_ERROR)
++    }
++
+     /// Handler for ioctls.
+     ///
+     /// The `cmd` argument is usually manipulated using the utilties in [`kernel::ioctl`].
+@@ -223,6 +240,33 @@ impl<T: MiscDevice> MiscdeviceVTable<T> {
+         0
+     }
+ 
++    /// # Safety
++    ///
++    /// `file` must be a valid file that is associated with a `MiscDeviceRegistration<T>`.
++    /// `vma` must be a vma that is currently being mmap'ed with this file.
++    unsafe extern "C" fn mmap(
++        file: *mut bindings::file,
++        vma: *mut bindings::vm_area_struct,
++    ) -> c_int {
++        // SAFETY: The mmap call of a file can access the private data.
++        let private = unsafe { (*file).private_data };
++        // SAFETY: This is a Rust Miscdevice, so we call `into_foreign` in `open` and
++        // `from_foreign` in `release`, and `fops_mmap` is guaranteed to be called between those
++        // two operations.
++        let device = unsafe { <T::Ptr as ForeignOwnable>::borrow(private) };
++        // SAFETY: The caller provides a vma that is undergoing initial VMA setup.
++        let area = unsafe { VmaNew::from_raw(vma) };
++        // SAFETY:
++        // * The file is valid for the duration of this call.
++        // * There is no active fdget_pos region on the file on this thread.
++        let file = unsafe { File::from_raw_file(file) };
++
++        match T::mmap(device, file, area) {
++            Ok(()) => 0,
++            Err(err) => err.to_errno(),
++        }
++    }
++
+     /// # Safety
+     ///
+     /// `file` must be a valid file that is associated with a `MiscDeviceRegistration<T>`.
+@@ -291,6 +335,7 @@ impl<T: MiscDevice> MiscdeviceVTable<T> {
+     const VTABLE: bindings::file_operations = bindings::file_operations {
+         open: Some(Self::open),
+         release: Some(Self::release),
++        mmap: if T::HAS_MMAP { Some(Self::mmap) } else { None },
+         unlocked_ioctl: if T::HAS_IOCTL {
+             Some(Self::ioctl)
+         } else {
+-- 
+2.39.5
+

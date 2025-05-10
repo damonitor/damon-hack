@@ -1,0 +1,84 @@
+From: Gregory Price <gourry@gourry.net>
+Date: Mon, 27 Jan 2025 10:34:04 -0500
+Subject: [PATCH] x86: probe memory block size advisement value during mm init
+
+Systems with hotplug may provide an advisement value on what the memblock
+size should be.  Probe this value when the rest of the configuration
+values are considered.
+
+The new heuristic is as follows
+
+1) set_memory_block_size_order value if already set (cmdline param)
+2) minimum block size if memory is less than large block limit
+3) if no hotplug advice: Max block size if system is bare-metal,
+   otherwise use end of memory alignment.
+4) if hotplug advice: lesser of advice and end of memory alignment.
+
+Convert to cpu_feature_enabled() while at it.[1]
+
+[1] https://lore.kernel.org/all/20241031103401.GBZyNdGQ-ZyXKyzC_z@fat_crate.local/
+
+Link: https://lkml.kernel.org/r/20250127153405.3379117-3-gourry@gourry.net
+Signed-off-by: Gregory Price <gourry@gourry.net>
+Suggested-by: Borislav Petkov <bp@alien8.de>
+Suggested-by: David Hildenbrand <david@redhat.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Acked-by: Dave Hansen <dave.hansen@linux.intel.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Dan Williams <dan.j.williams@intel.com>
+Tested-by: Fan Ni <fan.ni@samsung.com>
+Reviewed-by: Ira Weiny <ira.weiny@intel.com>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: Alison Schofield <alison.schofield@intel.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Bruno Faccini <bfaccini@nvidia.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Haibo Xu <haibo1.xu@intel.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Joanthan Cameron <Jonathan.Cameron@huawei.com>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rafael J. Wysocki <rafael.j.wysocki@intel.com>
+Cc: Robert Richter <rrichter@amd.com>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/mm/init_64.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/arch/x86/mm/init_64.c b/arch/x86/mm/init_64.c
+index 7c4f6f591f2b..8cea7dcf8fa0 100644
+--- a/arch/x86/mm/init_64.c
++++ b/arch/x86/mm/init_64.c
+@@ -1464,16 +1464,21 @@ static unsigned long probe_memory_block_size(void)
+ 	}
+ 
+ 	/*
+-	 * Use max block size to minimize overhead on bare metal, where
+-	 * alignment for memory hotplug isn't a concern.
++	 * When hotplug alignment is not a concern, maximize blocksize
++	 * to minimize overhead. Otherwise, align to the lesser of advice
++	 * alignment and end of memory alignment.
+ 	 */
+-	if (!boot_cpu_has(X86_FEATURE_HYPERVISOR)) {
++	bz = memory_block_advised_max_size();
++	if (!bz) {
+ 		bz = MAX_BLOCK_SIZE;
+-		goto done;
++		if (!cpu_feature_enabled(X86_FEATURE_HYPERVISOR))
++			goto done;
++	} else {
++		bz = max(min(bz, MAX_BLOCK_SIZE), MIN_MEMORY_BLOCK_SIZE);
+ 	}
+ 
+ 	/* Find the largest allowed block size that aligns to memory end */
+-	for (bz = MAX_BLOCK_SIZE; bz > MIN_MEMORY_BLOCK_SIZE; bz >>= 1) {
++	for (; bz > MIN_MEMORY_BLOCK_SIZE; bz >>= 1) {
+ 		if (IS_ALIGNED(boot_mem_end, bz))
+ 			break;
+ 	}
+-- 
+2.39.5
+

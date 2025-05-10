@@ -1,0 +1,65 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 3 Apr 2025 18:39:09 -0700
+Subject: [PATCH] memcg: no refilling stock from obj_cgroup_release
+
+obj_cgroup_release is called when all the references to the objcg have
+been released i.e.  no more memory objects are pointing to it.  Most
+probably objcg->memcg will be pointing to some ancestor memcg.  In
+obj_cgroup_release(), the kernel calls obj_cgroup_uncharge_pages() which
+refills the local stock.
+
+There is no need to refill the local stock with some ancestor memcg and
+flush the local stock.  Let's decouple obj_cgroup_release() from the local
+stock by uncharging instead of refilling.  One additional benefit of this
+change is that it removes the requirement to only call obj_cgroup_put()
+outside of local_lock.
+
+Link: https://lkml.kernel.org/r/20250404013913.1663035-6-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 03a2be6d4a67..df52084e90f4 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -129,8 +129,7 @@ bool mem_cgroup_kmem_disabled(void)
+ 	return cgroup_memory_nokmem;
+ }
+ 
+-static void obj_cgroup_uncharge_pages(struct obj_cgroup *objcg,
+-				      unsigned int nr_pages);
++static void memcg_uncharge(struct mem_cgroup *memcg, unsigned int nr_pages);
+ 
+ static void obj_cgroup_release(struct percpu_ref *ref)
+ {
+@@ -163,8 +162,16 @@ static void obj_cgroup_release(struct percpu_ref *ref)
+ 	WARN_ON_ONCE(nr_bytes & (PAGE_SIZE - 1));
+ 	nr_pages = nr_bytes >> PAGE_SHIFT;
+ 
+-	if (nr_pages)
+-		obj_cgroup_uncharge_pages(objcg, nr_pages);
++	if (nr_pages) {
++		struct mem_cgroup *memcg;
++
++		memcg = get_mem_cgroup_from_objcg(objcg);
++		mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
++		memcg1_account_kmem(memcg, -nr_pages);
++		if (!mem_cgroup_is_root(memcg))
++			memcg_uncharge(memcg, nr_pages);
++		mem_cgroup_put(memcg);
++	}
+ 
+ 	spin_lock_irqsave(&objcg_lock, flags);
+ 	list_del(&objcg->list);
+-- 
+2.39.5
+

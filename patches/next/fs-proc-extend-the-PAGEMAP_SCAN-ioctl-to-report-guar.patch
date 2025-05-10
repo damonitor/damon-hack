@@ -1,0 +1,103 @@
+From: Andrei Vagin <avagin@gmail.com>
+Date: Mon, 24 Mar 2025 06:53:26 +0000
+Subject: [PATCH] fs/proc: extend the PAGEMAP_SCAN ioctl to report guard
+ regions
+
+Patch series "fs/proc: extend the PAGEMAP_SCAN ioctl to report guard
+regions", v2.
+
+Introduce the PAGE_IS_GUARD flag in the PAGEMAP_SCAN ioctl to expose
+information about guard regions.  This allows userspace tools, such as
+CRIU, to detect and handle guard regions.
+
+Currently, CRIU utilizes PAGEMAP_SCAN as a more efficient alternative to
+parsing /proc/pid/pagemap.  Without this change, guard regions are
+incorrectly reported as swap-anon regions, leading CRIU to attempt dumping
+them and subsequently failing.
+
+The series includes updates to the documentation and selftests to reflect
+the new functionality.
+
+
+This patch (of 3):
+
+Introduce the PAGE_IS_GUARD flag in the PAGEMAP_SCAN ioctl to expose
+information about guard regions.  This allows userspace tools, such as
+CRIU, to detect and handle guard regions.
+
+Link: https://lkml.kernel.org/r/20250324065328.107678-1-avagin@google.com
+Link: https://lkml.kernel.org/r/20250324065328.107678-2-avagin@google.com
+Signed-off-by: Andrei Vagin <avagin@gmail.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/mm/pagemap.rst |  1 +
+ fs/proc/task_mmu.c                       | 17 ++++++++++-------
+ include/uapi/linux/fs.h                  |  1 +
+ 3 files changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/Documentation/admin-guide/mm/pagemap.rst b/Documentation/admin-guide/mm/pagemap.rst
+index afce291649dd..e60e9211fd9b 100644
+--- a/Documentation/admin-guide/mm/pagemap.rst
++++ b/Documentation/admin-guide/mm/pagemap.rst
+@@ -250,6 +250,7 @@ Following flags about pages are currently supported:
+ - ``PAGE_IS_PFNZERO`` - Page has zero PFN
+ - ``PAGE_IS_HUGE`` - Page is PMD-mapped THP or Hugetlb backed
+ - ``PAGE_IS_SOFT_DIRTY`` - Page is soft-dirty
++- ``PAGE_IS_GUARD`` - Page is a part of a guard region
+ 
+ The ``struct pm_scan_arg`` is used as the argument of the IOCTL.
+ 
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 994cde10e3f4..b9e4fbbdf6e6 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -2087,7 +2087,8 @@ static int pagemap_release(struct inode *inode, struct file *file)
+ #define PM_SCAN_CATEGORIES	(PAGE_IS_WPALLOWED | PAGE_IS_WRITTEN |	\
+ 				 PAGE_IS_FILE |	PAGE_IS_PRESENT |	\
+ 				 PAGE_IS_SWAPPED | PAGE_IS_PFNZERO |	\
+-				 PAGE_IS_HUGE | PAGE_IS_SOFT_DIRTY)
++				 PAGE_IS_HUGE | PAGE_IS_SOFT_DIRTY |	\
++				 PAGE_IS_GUARD)
+ #define PM_SCAN_FLAGS		(PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC)
+ 
+ struct pagemap_scan_private {
+@@ -2128,12 +2129,14 @@ static unsigned long pagemap_page_category(struct pagemap_scan_private *p,
+ 		if (!pte_swp_uffd_wp_any(pte))
+ 			categories |= PAGE_IS_WRITTEN;
+ 
+-		if (p->masks_of_interest & PAGE_IS_FILE) {
+-			swp = pte_to_swp_entry(pte);
+-			if (is_pfn_swap_entry(swp) &&
+-			    !folio_test_anon(pfn_swap_entry_folio(swp)))
+-				categories |= PAGE_IS_FILE;
+-		}
++		swp = pte_to_swp_entry(pte);
++		if (is_guard_swp_entry(swp))
++			categories |= PAGE_IS_GUARD;
++		else if ((p->masks_of_interest & PAGE_IS_FILE) &&
++			 is_pfn_swap_entry(swp) &&
++			 !folio_test_anon(pfn_swap_entry_folio(swp)))
++			categories |= PAGE_IS_FILE;
++
+ 		if (pte_swp_soft_dirty(pte))
+ 			categories |= PAGE_IS_SOFT_DIRTY;
+ 	}
+diff --git a/include/uapi/linux/fs.h b/include/uapi/linux/fs.h
+index e762e1af650c..0098b0ce8ccb 100644
+--- a/include/uapi/linux/fs.h
++++ b/include/uapi/linux/fs.h
+@@ -361,6 +361,7 @@ typedef int __bitwise __kernel_rwf_t;
+ #define PAGE_IS_PFNZERO		(1 << 5)
+ #define PAGE_IS_HUGE		(1 << 6)
+ #define PAGE_IS_SOFT_DIRTY	(1 << 7)
++#define PAGE_IS_GUARD		(1 << 8)
+ 
+ /*
+  * struct page_region - Page region with flags
+-- 
+2.39.5
+

@@ -1,0 +1,118 @@
+From: Waiman Long <longman@redhat.com>
+Date: Thu, 1 May 2025 21:04:42 -0400
+Subject: [PATCH] selftests: memcg: allow low event with no memory.low and
+ memory_recursiveprot on
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "memcg: Fix test_memcg_min/low test failures", v8.
+
+The test_memcontrol selftest consistently fails its test_memcg_low
+sub-test (with memory_recursiveprot enabled) and sporadically fails its
+test_memcg_min sub-test.  This patchset fixes the test_memcg_min and
+test_memcg_low failures by adjusting the test_memcontrol selftest to fix
+these test failures.
+
+
+This patch (of 8):
+
+The test_memcontrol selftest consistently fails its test_memcg_low
+sub-test due to the fact that its 3rd test child cgroup which have a
+memmory.low of 0 have low event count.  This happens when
+memory_recursiveprot mount option is enabled which is the default setting
+used by systemd to mount cgroup2 filesystem.
+
+This issue was originally fixed by commit cdc69458a5f3 ("cgroup: account
+for memory_recursiveprot in test_memcg_low()").  It was later reverted by
+commit 1d09069f5313 ("selftests: memcg: expect no low events in
+unprotected sibling") expecting the memory reclaim code would be fixed.
+However, it turns out the unprotected cgroup may still have some residual
+effective memory.low protection depending on the memory.low settings in
+its parent and its siblings.  As a result, low events may still be
+triggered.
+
+One way to fix the test failure is to revert the revert commit.  However,
+Michal suggested that it might be better to ignore the low event count
+with memory_recursiveprot enabled as low event may or may not happen
+depending on the actual test configuration.
+
+Modify the test_memcontrol.c to ignore low event in the 3rd child cgroup
+with memory_recursiveprot on.
+
+The 4th child cgroup has no memory usage and so has an effective low of 0.
+It has no low event count because the mem_cgroup_below_low() check in
+shrink_node_memcgs() is skipped as mem_cgroup_below_min() returns true.
+If we ever change mem_cgroup_below_min() in such a way that it no longer
+skips the no usage case, we will have to add code to explicitly skip it.
+
+With this patch applied, the test_memcg_low sub-test finishes successfully
+without failure in most cases.  Though both test_memcg_low and
+test_memcg_min sub-tests may still fail occasionally if the memory.current
+values fall outside of the expected ranges.
+
+Link: https://lkml.kernel.org/r/20250502010443.106022-1-longman@redhat.com
+Link: https://lkml.kernel.org/r/20250502010443.106022-2-longman@redhat.com
+Signed-off-by: Waiman Long <longman@redhat.com>
+Suggested-by: Michal Koutný <mkoutny@suse.com>
+Acked-by: Michal Koutný <mkoutny@suse.com>
+Acked-by: Tejun Heo <tj@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Waiman Long <longman@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../testing/selftests/cgroup/test_memcontrol.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/tools/testing/selftests/cgroup/test_memcontrol.c b/tools/testing/selftests/cgroup/test_memcontrol.c
+index 16f5d74ae762..58602c1831f1 100644
+--- a/tools/testing/selftests/cgroup/test_memcontrol.c
++++ b/tools/testing/selftests/cgroup/test_memcontrol.c
+@@ -380,10 +380,11 @@ static bool reclaim_until(const char *memcg, long goal);
+  *
+  * Then it checks actual memory usages and expects that:
+  * A/B    memory.current ~= 50M
+- * A/B/C  memory.current ~= 29M
+- * A/B/D  memory.current ~= 21M
+- * A/B/E  memory.current ~= 0
+- * A/B/F  memory.current  = 0
++ * A/B/C  memory.current ~= 29M [memory.events:low > 0]
++ * A/B/D  memory.current ~= 21M [memory.events:low > 0]
++ * A/B/E  memory.current ~= 0   [memory.events:low == 0 if !memory_recursiveprot,
++ *				 undefined otherwise]
++ * A/B/F  memory.current  = 0   [memory.events:low == 0]
+  * (for origin of the numbers, see model in memcg_protection.m.)
+  *
+  * After that it tries to allocate more than there is
+@@ -525,7 +526,14 @@ static int test_memcg_protection(const char *root, bool min)
+ 		goto cleanup;
+ 	}
+ 
++	/*
++	 * Child 2 has memory.low=0, but some low protection may still be
++	 * distributed down from its parent with memory.low=50M if cgroup2
++	 * memory_recursiveprot mount option is enabled. Ignore the low
++	 * event count in this case.
++	 */
+ 	for (i = 0; i < ARRAY_SIZE(children); i++) {
++		int ignore_low_events_index = has_recursiveprot ? 2 : -1;
+ 		int no_low_events_index = 1;
+ 		long low, oom;
+ 
+@@ -534,6 +542,8 @@ static int test_memcg_protection(const char *root, bool min)
+ 
+ 		if (oom)
+ 			goto cleanup;
++		if (i == ignore_low_events_index)
++			continue;
+ 		if (i <= no_low_events_index && low <= 0)
+ 			goto cleanup;
+ 		if (i > no_low_events_index && low)
+-- 
+2.39.5
+

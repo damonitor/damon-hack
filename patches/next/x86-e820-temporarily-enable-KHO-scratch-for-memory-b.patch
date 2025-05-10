@@ -1,0 +1,99 @@
+From: Alexander Graf <graf@amazon.com>
+Date: Thu, 1 May 2025 15:54:20 -0700
+Subject: [PATCH] x86/e820: temporarily enable KHO scratch for memory below 1M
+
+KHO kernels are special and use only scratch memory for memblock
+allocations, but memory below 1M is ignored by kernel after early boot and
+cannot be naturally marked as scratch.
+
+To allow allocation of the real-mode trampoline and a few (if any) other
+very early allocations from below 1M forcibly mark the memory below 1M as
+scratch.
+
+After real mode trampoline is allocated, clear that scratch marking.
+
+Link: https://lkml.kernel.org/r/20250501225425.635167-14-changyuanl@google.com
+Signed-off-by: Alexander Graf <graf@amazon.com>
+Co-developed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Co-developed-by: Changyuan Lyu <changyuanl@google.com>
+Signed-off-by: Changyuan Lyu <changyuanl@google.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Anthony Yznaga <anthony.yznaga@oracle.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Ashish Kalra <ashish.kalra@amd.com>
+Cc: Ben Herrenschmidt <benh@kernel.crashing.org>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: Eric Biederman <ebiederm@xmission.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Gowans <jgowans@amazon.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Krzysztof Kozlowski <krzk@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Pratyush Yadav <ptyadav@amazon.de>
+Cc: Rob Herring <robh@kernel.org>
+Cc: Saravana Kannan <saravanak@google.com>
+Cc: Stanislav Kinsburskii <skinsburskii@linux.microsoft.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Thomas Lendacky <thomas.lendacky@amd.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/kernel/e820.c   | 18 ++++++++++++++++++
+ arch/x86/realmode/init.c |  2 ++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/arch/x86/kernel/e820.c b/arch/x86/kernel/e820.c
+index 9920122018a0..ad1eda3967ed 100644
+--- a/arch/x86/kernel/e820.c
++++ b/arch/x86/kernel/e820.c
+@@ -1272,6 +1272,24 @@ void __init e820__memblock_setup(void)
+ 	 */
+ 	memblock_set_current_limit(ISA_END_ADDRESS);
+ 
++	/*
++	 * At this point memblock is only allowed to allocate from memory
++	 * below 1M (aka ISA_END_ADDRESS) up until direct map is completely set
++	 * up in init_mem_mapping().
++	 *
++	 * KHO kernels are special and use only scratch memory for memblock
++	 * allocations, but memory below 1M is ignored by kernel after early
++	 * boot and cannot be naturally marked as scratch.
++	 *
++	 * To allow allocation of the real-mode trampoline and a few (if any)
++	 * other very early allocations from below 1M forcibly mark the memory
++	 * below 1M as scratch.
++	 *
++	 * After real mode trampoline is allocated, we clear that scratch
++	 * marking.
++	 */
++	memblock_mark_kho_scratch(0, SZ_1M);
++
+ 	/*
+ 	 * The bootstrap memblock region count maximum is 128 entries
+ 	 * (INIT_MEMBLOCK_REGIONS), but EFI might pass us more E820 entries
+diff --git a/arch/x86/realmode/init.c b/arch/x86/realmode/init.c
+index f9bc444a3064..9b9f4534086d 100644
+--- a/arch/x86/realmode/init.c
++++ b/arch/x86/realmode/init.c
+@@ -65,6 +65,8 @@ void __init reserve_real_mode(void)
+ 	 * setup_arch().
+ 	 */
+ 	memblock_reserve(0, SZ_1M);
++
++	memblock_clear_kho_scratch(0, SZ_1M);
+ }
+ 
+ static void __init sme_sev_setup_real_mode(struct trampoline_header *th)
+-- 
+2.39.5
+

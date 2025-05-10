@@ -1,0 +1,123 @@
+From: Alexander Graf <graf@amazon.com>
+Date: Thu, 1 May 2025 15:54:21 -0700
+Subject: [PATCH] x86/boot: make sure KASLR does not step over KHO preserved
+ memory
+
+KHO uses "scratch regions" to bootstrap a kexec'ed kernel.  These regions
+are guaranteed to not have any memory that KHO would preserve.
+
+Teach KASLR in decompression code to only consider these scratch regions
+when KHO is enabled to make sure preserved memory won't get overwritten.
+
+Link: https://lkml.kernel.org/r/20250501225425.635167-15-changyuanl@google.com
+Signed-off-by: Alexander Graf <graf@amazon.com>
+Co-developed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Co-developed-by: Changyuan Lyu <changyuanl@google.com>
+Signed-off-by: Changyuan Lyu <changyuanl@google.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Anthony Yznaga <anthony.yznaga@oracle.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Ashish Kalra <ashish.kalra@amd.com>
+Cc: Ben Herrenschmidt <benh@kernel.crashing.org>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: Eric Biederman <ebiederm@xmission.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Gowans <jgowans@amazon.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Krzysztof Kozlowski <krzk@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Pratyush Yadav <ptyadav@amazon.de>
+Cc: Rob Herring <robh@kernel.org>
+Cc: Saravana Kannan <saravanak@google.com>
+Cc: Stanislav Kinsburskii <skinsburskii@linux.microsoft.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Thomas Lendacky <thomas.lendacky@amd.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/boot/compressed/kaslr.c | 52 +++++++++++++++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/boot/compressed/kaslr.c b/arch/x86/boot/compressed/kaslr.c
+index f03d59ea6e40..25de8c3e17cd 100644
+--- a/arch/x86/boot/compressed/kaslr.c
++++ b/arch/x86/boot/compressed/kaslr.c
+@@ -760,6 +760,55 @@ static void process_e820_entries(unsigned long minimum,
+ 	}
+ }
+ 
++/*
++ * If KHO is active, only process its scratch areas to ensure we are not
++ * stepping onto preserved memory.
++ */
++#ifdef CONFIG_KEXEC_HANDOVER
++static bool process_kho_entries(unsigned long minimum, unsigned long image_size)
++{
++	struct kho_scratch *kho_scratch;
++	struct setup_data *ptr;
++	int i, nr_areas = 0;
++
++	ptr = (struct setup_data *)boot_params_ptr->hdr.setup_data;
++	while (ptr) {
++		if (ptr->type == SETUP_KEXEC_KHO) {
++			struct kho_data *kho = (struct kho_data *)ptr->data;
++
++			kho_scratch = (void *)kho->scratch_addr;
++			nr_areas = kho->scratch_size / sizeof(*kho_scratch);
++
++			break;
++		}
++
++		ptr = (struct setup_data *)ptr->next;
++	}
++
++	if (!nr_areas)
++		return false;
++
++	for (i = 0; i < nr_areas; i++) {
++		struct kho_scratch *area = &kho_scratch[i];
++		struct mem_vector region = {
++			.start = area->addr,
++			.size = area->size,
++		};
++
++		if (process_mem_region(&region, minimum, image_size))
++			break;
++	}
++
++	return true;
++}
++#else
++static inline bool process_kho_entries(unsigned long minimum,
++				       unsigned long image_size)
++{
++	return false;
++}
++#endif
++
+ static unsigned long find_random_phys_addr(unsigned long minimum,
+ 					   unsigned long image_size)
+ {
+@@ -775,7 +824,8 @@ static unsigned long find_random_phys_addr(unsigned long minimum,
+ 		return 0;
+ 	}
+ 
+-	if (!process_efi_entries(minimum, image_size))
++	if (!process_kho_entries(minimum, image_size) &&
++	    !process_efi_entries(minimum, image_size))
+ 		process_e820_entries(minimum, image_size);
+ 
+ 	phys_addr = slots_fetch_random();
+-- 
+2.39.5
+

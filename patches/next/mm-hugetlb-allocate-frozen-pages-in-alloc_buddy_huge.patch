@@ -1,0 +1,60 @@
+From: Oscar Salvador <osalvador@suse.de>
+Date: Fri, 11 Apr 2025 15:23:59 +0200
+Subject: [PATCH] mm,hugetlb: allocate frozen pages in
+ alloc_buddy_hugetlb_folio
+
+alloc_buddy_hugetlb_folio() allocates a rmappable folio, then strips the
+rmappable part and freezes it.  We can simplify all that by allocating
+frozen pages directly.
+
+Link: https://lkml.kernel.org/r/20250411132359.312708-1-osalvador@suse.de
+Signed-off-by: Oscar Salvador <osalvador@suse.de>
+Suggested-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Reviewed-by: David Hildenbrand <david@redhat.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 17 +----------------
+ 1 file changed, 1 insertion(+), 16 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 38738293e6b6..351254ad6ef8 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1950,7 +1950,6 @@ static struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
+ 	int order = huge_page_order(h);
+ 	struct folio *folio;
+ 	bool alloc_try_hard = true;
+-	bool retry = true;
+ 
+ 	/*
+ 	 * By default we always try hard to allocate the folio with
+@@ -1965,22 +1964,8 @@ static struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
+ 		gfp_mask |= __GFP_RETRY_MAYFAIL;
+ 	if (nid == NUMA_NO_NODE)
+ 		nid = numa_mem_id();
+-retry:
+-	folio = __folio_alloc(gfp_mask, order, nid, nmask);
+-	/* Ensure hugetlb folio won't have large_rmappable flag set. */
+-	if (folio)
+-		folio_clear_large_rmappable(folio);
+ 
+-	if (folio && !folio_ref_freeze(folio, 1)) {
+-		folio_put(folio);
+-		if (retry) {	/* retry once */
+-			retry = false;
+-			goto retry;
+-		}
+-		/* WOW!  twice in a row. */
+-		pr_warn("HugeTLB unexpected inflated folio ref count\n");
+-		folio = NULL;
+-	}
++	folio = (struct folio *)__alloc_frozen_pages(gfp_mask, order, nid, nmask);
+ 
+ 	/*
+ 	 * If we did not specify __GFP_RETRY_MAYFAIL, but still got a
+-- 
+2.39.5
+

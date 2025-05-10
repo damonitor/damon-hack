@@ -1,0 +1,100 @@
+From: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Date: Wed, 2 Apr 2025 19:17:01 +0100
+Subject: [PATCH] mm: add folio_mk_pte()
+
+Remove a cast from folio to page in four callers of mk_pte().
+
+Link: https://lkml.kernel.org/r/20250402181709.2386022-8-willy@infradead.org
+Signed-off-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Acked-by: David Hildenbrand <david@redhat.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: "David S. Miller" <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: <x86@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h | 15 +++++++++++++++
+ mm/memory.c        |  6 +++---
+ mm/userfaultfd.c   |  2 +-
+ 3 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 8e822fd9109e..927837b5332f 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -2009,6 +2009,21 @@ static inline pte_t mk_pte(struct page *page, pgprot_t pgprot)
+ {
+ 	return pfn_pte(page_to_pfn(page), pgprot);
+ }
++
++/**
++ * folio_mk_pte - Create a PTE for this folio
++ * @folio: The folio to create a PTE for
++ * @pgprot: The page protection bits to use
++ *
++ * Create a page table entry for the first page of this folio.
++ * This is suitable for passing to set_ptes().
++ *
++ * Return: A page table entry suitable for mapping this folio.
++ */
++static inline pte_t folio_mk_pte(struct folio *folio, pgprot_t pgprot)
++{
++	return pfn_pte(folio_pfn(folio), pgprot);
++}
+ #endif
+ 
+ static inline bool folio_has_pincount(const struct folio *folio)
+diff --git a/mm/memory.c b/mm/memory.c
+index da4778fb3a38..a9e631927478 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -929,7 +929,7 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
+ 	rss[MM_ANONPAGES]++;
+ 
+ 	/* All done, just insert the new page copy in the child */
+-	pte = mk_pte(&new_folio->page, dst_vma->vm_page_prot);
++	pte = folio_mk_pte(new_folio, dst_vma->vm_page_prot);
+ 	pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
+ 	if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
+ 		/* Uffd-wp needs to be delivered to dest pte as well */
+@@ -3523,7 +3523,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
+ 			inc_mm_counter(mm, MM_ANONPAGES);
+ 		}
+ 		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+-		entry = mk_pte(&new_folio->page, vma->vm_page_prot);
++		entry = folio_mk_pte(new_folio, vma->vm_page_prot);
+ 		entry = pte_sw_mkyoung(entry);
+ 		if (unlikely(unshare)) {
+ 			if (pte_soft_dirty(vmf->orig_pte))
+@@ -5013,7 +5013,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
+ 	 */
+ 	__folio_mark_uptodate(folio);
+ 
+-	entry = mk_pte(&folio->page, vma->vm_page_prot);
++	entry = folio_mk_pte(folio, vma->vm_page_prot);
+ 	entry = pte_sw_mkyoung(entry);
+ 	if (vma->vm_flags & VM_WRITE)
+ 		entry = pte_mkwrite(pte_mkdirty(entry), vma);
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index e0db855c89b4..bc473ad21202 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1063,7 +1063,7 @@ static int move_present_pte(struct mm_struct *mm,
+ 	folio_move_anon_rmap(src_folio, dst_vma);
+ 	src_folio->index = linear_page_index(dst_vma, dst_addr);
+ 
+-	orig_dst_pte = mk_pte(&src_folio->page, dst_vma->vm_page_prot);
++	orig_dst_pte = folio_mk_pte(src_folio, dst_vma->vm_page_prot);
+ 	/* Set soft dirty bit so userspace can notice the pte was moved */
+ #ifdef CONFIG_MEM_SOFT_DIRTY
+ 	orig_dst_pte = pte_mksoft_dirty(orig_dst_pte);
+-- 
+2.39.5
+

@@ -1,0 +1,151 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Sat, 19 Apr 2025 11:35:45 -0700
+Subject: [PATCH] memcg: introduce non-blocking limit setting option
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Setting the max and high limits can trigger synchronous reclaim and/or
+oom-kill if the usage is higher than the given limit.  This behavior is
+fine for newly created cgroups but it can cause issues for the node
+controller while setting limits for existing cgroups.
+
+In our production multi-tenant and overcommitted environment, we are
+seeing priority inversion when the node controller dynamically adjusts the
+limits of running jobs of different priorities.  Based on the system
+situation, the node controller may reduce the limits of lower priority
+jobs and increase the limits of higher priority jobs.  However we are
+seeing node controller getting stuck for long period of time while
+reclaiming from lower priority jobs while setting their limits and also
+spends a lot of its own CPU.
+
+One of the workaround we are trying is to fork a new process which sets
+the limit of the lower priority job along with setting an alarm to get
+itself killed if it get stuck in the reclaim for lower priority job.
+However we are finding it very unreliable and costly.  Either we need a
+good enough time buffer for the alarm to be delivered after setting limit
+and potentialy spend a lot of CPU in the reclaim or be unreliable in
+setting the limit for much shorter but cheaper (less reclaim) alarms.
+
+Let's introduce new limit setting option which does not trigger reclaim
+and/or oom-kill and let the processes in the target cgroup to trigger
+reclaim and/or throttling and/or oom-kill in their next charge request.
+This will make the node controller on multi-tenant overcommitted
+environment much more reliable.
+
+Explanation from Johannes on side-effects of O_NONBLOCK limit change:
+  It's usually the allocating tasks inside the group bearing the cost of
+  limit enforcement and reclaim. This allows a (privileged) updater from
+  outside the group to keep that cost in there - instead of having to
+  help, from a context that doesn't necessarily make sense.
+
+  I suppose the tradeoff with that - and the reason why this was doing
+  sync reclaim in the first place - is that, if the group is idle and
+  not trying to allocate more, it can take indefinitely for the new
+  limit to actually be met.
+
+  It should be okay in most scenarios in practice. As the capacity is
+  reallocated from group A to B, B will exert pressure on A once it
+  tries to claim it and thereby shrink it down. If A is idle, that
+  shouldn't be hard. If A is running, it's likely to fault/allocate
+  soon-ish and then join the effort.
+
+  It does leave a (malicious) corner case where A is just busy-hitting
+  its memory to interfere with the clawback. This is comparable to
+  reclaiming memory.low overage from the outside, though, which is an
+  acceptable risk. Users of O_NONBLOCK just need to be aware.
+
+Link: https://lkml.kernel.org/r/20250419183545.1982187-1-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Greg Thelen <gthelen@google.com>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Yosry Ahmed <yosry.ahmed@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/cgroup-v2.rst | 14 ++++++++++++++
+ mm/memcontrol.c                         | 10 ++++++++--
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/admin-guide/cgroup-v2.rst b/Documentation/admin-guide/cgroup-v2.rst
+index 1a16ce68a4d7..b34f1dd969e0 100644
+--- a/Documentation/admin-guide/cgroup-v2.rst
++++ b/Documentation/admin-guide/cgroup-v2.rst
+@@ -1299,6 +1299,13 @@ PAGE_SIZE multiple when read back.
+ 	monitors the limited cgroup to alleviate heavy reclaim
+ 	pressure.
+ 
++        If memory.high is opened with O_NONBLOCK then the synchronous
++        reclaim is bypassed. This is useful for admin processes that
++        need to dynamically adjust the job's memory limits without
++        expending their own CPU resources on memory reclamation. The
++        job will trigger the reclaim and/or get throttled on its
++        next charge request.
++
+   memory.max
+ 	A read-write single value file which exists on non-root
+ 	cgroups.  The default is "max".
+@@ -1316,6 +1323,13 @@ PAGE_SIZE multiple when read back.
+ 	Caller could retry them differently, return into userspace
+ 	as -ENOMEM or silently ignore in cases like disk readahead.
+ 
++        If memory.max is opened with O_NONBLOCK, then the synchronous
++        reclaim and oom-kill are bypassed. This is useful for admin
++        processes that need to dynamically adjust the job's memory limits
++        without expending their own CPU resources on memory reclamation.
++        The job will trigger the reclaim and/or oom-kill on its next
++        charge request.
++
+   memory.reclaim
+ 	A write-only nested-keyed file which exists for all cgroups.
+ 
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 8ed265852423..d3b6f50e00d4 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4269,6 +4269,9 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
+ 
+ 	page_counter_set_high(&memcg->memory, high);
+ 
++	if (of->file->f_flags & O_NONBLOCK)
++		goto out;
++
+ 	for (;;) {
+ 		unsigned long nr_pages = page_counter_read(&memcg->memory);
+ 		unsigned long reclaimed;
+@@ -4291,7 +4294,7 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
+ 		if (!reclaimed && !nr_retries--)
+ 			break;
+ 	}
+-
++out:
+ 	memcg_wb_domain_size_changed(memcg);
+ 	return nbytes;
+ }
+@@ -4318,6 +4321,9 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
+ 
+ 	xchg(&memcg->memory.max, max);
+ 
++	if (of->file->f_flags & O_NONBLOCK)
++		goto out;
++
+ 	for (;;) {
+ 		unsigned long nr_pages = page_counter_read(&memcg->memory);
+ 
+@@ -4345,7 +4351,7 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
+ 			break;
+ 		cond_resched();
+ 	}
+-
++out:
+ 	memcg_wb_domain_size_changed(memcg);
+ 	return nbytes;
+ }
+-- 
+2.39.5
+

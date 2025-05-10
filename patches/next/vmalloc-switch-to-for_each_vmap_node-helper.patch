@@ -1,0 +1,110 @@
+From: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Date: Tue, 8 Apr 2025 17:15:48 +0200
+Subject: [PATCH] vmalloc: switch to for_each_vmap_node() helper
+
+There are places which can be updated easily to use the helper to iterate
+over all vmap-nodes.  This is what this patch does.
+
+The aim is to improve readability and simplify the code.
+
+Link: https://lkml.kernel.org/r/20250408151549.77937-2-urezki@gmail.com
+Signed-off-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Christop Hellwig <hch@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 36 +++++++++++++-----------------------
+ 1 file changed, 13 insertions(+), 23 deletions(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 55949360a5cb..a476a00a4835 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -1061,12 +1061,11 @@ find_vmap_area_exceed_addr_lock(unsigned long addr, struct vmap_area **va)
+ {
+ 	unsigned long va_start_lowest;
+ 	struct vmap_node *vn;
+-	int i;
+ 
+ repeat:
+-	for (i = 0, va_start_lowest = 0; i < nr_vmap_nodes; i++) {
+-		vn = &vmap_nodes[i];
++	va_start_lowest = 0;
+ 
++	for_each_vmap_node(vn) {
+ 		spin_lock(&vn->busy.lock);
+ 		*va = __find_vmap_area_exceed_addr(addr, &vn->busy.root);
+ 
+@@ -4963,11 +4962,8 @@ static void show_purge_info(struct seq_file *m)
+ {
+ 	struct vmap_node *vn;
+ 	struct vmap_area *va;
+-	int i;
+-
+-	for (i = 0; i < nr_vmap_nodes; i++) {
+-		vn = &vmap_nodes[i];
+ 
++	for_each_vmap_node(vn) {
+ 		spin_lock(&vn->lazy.lock);
+ 		list_for_each_entry(va, &vn->lazy.head, list) {
+ 			seq_printf(m, "0x%pK-0x%pK %7ld unpurged vm_area\n",
+@@ -4983,11 +4979,8 @@ static int vmalloc_info_show(struct seq_file *m, void *p)
+ 	struct vmap_node *vn;
+ 	struct vmap_area *va;
+ 	struct vm_struct *v;
+-	int i;
+-
+-	for (i = 0; i < nr_vmap_nodes; i++) {
+-		vn = &vmap_nodes[i];
+ 
++	for_each_vmap_node(vn) {
+ 		spin_lock(&vn->busy.lock);
+ 		list_for_each_entry(va, &vn->busy.head, list) {
+ 			if (!va->vm) {
+@@ -5140,8 +5133,7 @@ static void vmap_init_nodes(void)
+ 	}
+ #endif
+ 
+-	for (n = 0; n < nr_vmap_nodes; n++) {
+-		vn = &vmap_nodes[n];
++	for_each_vmap_node(vn) {
+ 		vn->busy.root = RB_ROOT;
+ 		INIT_LIST_HEAD(&vn->busy.head);
+ 		spin_lock_init(&vn->busy.lock);
+@@ -5162,15 +5154,13 @@ static void vmap_init_nodes(void)
+ static unsigned long
+ vmap_node_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
+ {
+-	unsigned long count;
++	unsigned long count = 0;
+ 	struct vmap_node *vn;
+-	int i, j;
+-
+-	for (count = 0, i = 0; i < nr_vmap_nodes; i++) {
+-		vn = &vmap_nodes[i];
++	int i;
+ 
+-		for (j = 0; j < MAX_VA_SIZE_PAGES; j++)
+-			count += READ_ONCE(vn->pool[j].len);
++	for_each_vmap_node(vn) {
++		for (i = 0; i < MAX_VA_SIZE_PAGES; i++)
++			count += READ_ONCE(vn->pool[i].len);
+ 	}
+ 
+ 	return count ? count : SHRINK_EMPTY;
+@@ -5179,10 +5169,10 @@ vmap_node_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
+ static unsigned long
+ vmap_node_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
+ {
+-	int i;
++	struct vmap_node *vn;
+ 
+-	for (i = 0; i < nr_vmap_nodes; i++)
+-		decay_va_pool_node(&vmap_nodes[i], true);
++	for_each_vmap_node(vn)
++		decay_va_pool_node(vn, true);
+ 
+ 	return SHRINK_STOP;
+ }
+-- 
+2.39.5
+

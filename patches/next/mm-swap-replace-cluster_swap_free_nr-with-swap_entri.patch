@@ -1,0 +1,89 @@
+From: Kemeng Shi <shikemeng@huaweicloud.com>
+Date: Wed, 26 Mar 2025 00:25:28 +0800
+Subject: [PATCH] mm: swap: replace cluster_swap_free_nr() with
+ swap_entries_put_[map/cache]()
+
+Replace cluster_swap_free_nr() with swap_entries_put_[map/cache]() to
+remove repeat code and leverage batch-remove for entries with last flag.
+After removing cluster_swap_free_nr, only functions with "_nr" suffix
+could free entries spanning cross clusters.  Add corresponding description
+in comment of swap_entries_put_map_nr() as is first function with "_nr"
+suffix and have a non-suffix variant function swap_entries_put_map().
+
+Link: https://lkml.kernel.org/r/20250325162528.68385-9-shikemeng@huaweicloud.com
+Signed-off-by: Kemeng Shi <shikemeng@huaweicloud.com>
+Reviewed-by: Tim Chen <tim.c.chen@linux.intel.com>
+Reviewed-by: Baoquan He <bhe@redhat.com>
+Cc: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/swapfile.c | 30 +++++++++++-------------------
+ 1 file changed, 11 insertions(+), 19 deletions(-)
+
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 953dcd99006e..b86637cfb17a 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1520,6 +1520,11 @@ static bool swap_entries_put_map(struct swap_info_struct *si,
+ 
+ }
+ 
++/*
++ * Only functions with "_nr" suffix are able to free entries spanning
++ * cross multi clusters, so ensure the range is within a single cluster
++ * when freeing entries with functions without "_nr" suffix.
++ */
+ static bool swap_entries_put_map_nr(struct swap_info_struct *si,
+ 				    swp_entry_t entry, int nr)
+ {
+@@ -1581,21 +1586,6 @@ static void swap_entries_free(struct swap_info_struct *si,
+ 		partial_free_cluster(si, ci);
+ }
+ 
+-static void cluster_swap_free_nr(struct swap_info_struct *si,
+-		unsigned long offset, int nr_pages,
+-		unsigned char usage)
+-{
+-	struct swap_cluster_info *ci;
+-	unsigned long end = offset + nr_pages;
+-
+-	ci = lock_cluster(si, offset);
+-	do {
+-		swap_entry_put_locked(si, ci, swp_entry(si->type, offset),
+-				      usage);
+-	} while (++offset < end);
+-	unlock_cluster(ci);
+-}
+-
+ /*
+  * Caller has made sure that the swap device corresponding to entry
+  * is still around or has not been recycled.
+@@ -1612,7 +1602,7 @@ void swap_free_nr(swp_entry_t entry, int nr_pages)
+ 
+ 	while (nr_pages) {
+ 		nr = min_t(int, nr_pages, SWAPFILE_CLUSTER - offset % SWAPFILE_CLUSTER);
+-		cluster_swap_free_nr(sis, offset, nr, 1);
++		swap_entries_put_map(sis, swp_entry(sis->type, offset), nr);
+ 		offset += nr;
+ 		nr_pages -= nr;
+ 	}
+@@ -3658,11 +3648,13 @@ int swapcache_prepare(swp_entry_t entry, int nr)
+ 	return __swap_duplicate(entry, SWAP_HAS_CACHE, nr);
+ }
+ 
++/*
++ * Caller should ensure entries belong to the same folio so
++ * the entries won't span cross cluster boundary.
++ */
+ void swapcache_clear(struct swap_info_struct *si, swp_entry_t entry, int nr)
+ {
+-	unsigned long offset = swp_offset(entry);
+-
+-	cluster_swap_free_nr(si, offset, nr, SWAP_HAS_CACHE);
++	swap_entries_put_cache(si, entry, nr);
+ }
+ 
+ struct swap_info_struct *swp_swap_info(swp_entry_t entry)
+-- 
+2.39.5
+

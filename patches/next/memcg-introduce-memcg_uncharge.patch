@@ -1,0 +1,91 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 3 Apr 2025 18:39:07 -0700
+Subject: [PATCH] memcg: introduce memcg_uncharge
+
+At multiple places in memcontrol.c, the memory and memsw page counters are
+being uncharged.  This is error-prone.  Let's move the functionality to a
+newly introduced memcg_uncharge and call it from all those places.
+
+Link: https://lkml.kernel.org/r/20250404013913.1663035-4-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 28 ++++++++++++----------------
+ 1 file changed, 12 insertions(+), 16 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 52be78515d70..dfb3f14c1178 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1822,6 +1822,13 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 	return ret;
+ }
+ 
++static void memcg_uncharge(struct mem_cgroup *memcg, unsigned int nr_pages)
++{
++	page_counter_uncharge(&memcg->memory, nr_pages);
++	if (do_memsw_account())
++		page_counter_uncharge(&memcg->memsw, nr_pages);
++}
++
+ /*
+  * Returns stocks cached in percpu and reset cached information.
+  */
+@@ -1834,10 +1841,7 @@ static void drain_stock(struct memcg_stock_pcp *stock)
+ 		return;
+ 
+ 	if (stock_pages) {
+-		page_counter_uncharge(&old->memory, stock_pages);
+-		if (do_memsw_account())
+-			page_counter_uncharge(&old->memsw, stock_pages);
+-
++		memcg_uncharge(old, stock_pages);
+ 		WRITE_ONCE(stock->nr_pages, 0);
+ 	}
+ 
+@@ -1900,9 +1904,7 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 		 * In case of unlikely failure to lock percpu stock_lock
+ 		 * uncharge memcg directly.
+ 		 */
+-		page_counter_uncharge(&memcg->memory, nr_pages);
+-		if (do_memsw_account())
+-			page_counter_uncharge(&memcg->memsw, nr_pages);
++		memcg_uncharge(memcg, nr_pages);
+ 		return;
+ 	}
+ 	__refill_stock(memcg, nr_pages);
+@@ -2876,12 +2878,8 @@ static struct obj_cgroup *drain_obj_stock(struct memcg_stock_pcp *stock)
+ 
+ 			mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
+ 			memcg1_account_kmem(memcg, -nr_pages);
+-			if (!mem_cgroup_is_root(memcg)) {
+-				page_counter_uncharge(&memcg->memory, nr_pages);
+-				if (do_memsw_account())
+-					page_counter_uncharge(&memcg->memsw,
+-							      nr_pages);
+-			}
++			if (!mem_cgroup_is_root(memcg))
++				memcg_uncharge(memcg, nr_pages);
+ 
+ 			css_put(&memcg->css);
+ 		}
+@@ -4702,9 +4700,7 @@ static inline void uncharge_gather_clear(struct uncharge_gather *ug)
+ static void uncharge_batch(const struct uncharge_gather *ug)
+ {
+ 	if (ug->nr_memory) {
+-		page_counter_uncharge(&ug->memcg->memory, ug->nr_memory);
+-		if (do_memsw_account())
+-			page_counter_uncharge(&ug->memcg->memsw, ug->nr_memory);
++		memcg_uncharge(ug->memcg, ug->nr_memory);
+ 		if (ug->nr_kmem) {
+ 			mod_memcg_state(ug->memcg, MEMCG_KMEM, -ug->nr_kmem);
+ 			memcg1_account_kmem(ug->memcg, -ug->nr_kmem);
+-- 
+2.39.5
+

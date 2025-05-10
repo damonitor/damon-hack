@@ -1,0 +1,51 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 3 Apr 2025 18:39:11 -0700
+Subject: [PATCH] memcg: use __mod_memcg_state in drain_obj_stock
+
+For non-PREEMPT_RT kernels, drain_obj_stock() is always called with irq
+disabled, so we can use __mod_memcg_state() instead of mod_memcg_state().
+For PREEMPT_RT, we need to add memcg_stats_[un]lock in
+__mod_memcg_state().
+
+Link: https://lkml.kernel.org/r/20250404013913.1663035-8-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Reviewed-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Vlastimil Babka <vbabka@suse.cz>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 7988a42b29bf..33aeddfff0ba 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -710,10 +710,12 @@ void __mod_memcg_state(struct mem_cgroup *memcg, enum memcg_stat_item idx,
+ 	if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
+ 		return;
+ 
++	memcg_stats_lock();
+ 	__this_cpu_add(memcg->vmstats_percpu->state[i], val);
+ 	val = memcg_state_val_in_pages(idx, val);
+ 	memcg_rstat_updated(memcg, val);
+ 	trace_mod_memcg_state(memcg, idx, val);
++	memcg_stats_unlock();
+ }
+ 
+ #ifdef CONFIG_MEMCG_V1
+@@ -2866,7 +2868,7 @@ static void drain_obj_stock(struct memcg_stock_pcp *stock)
+ 
+ 			memcg = get_mem_cgroup_from_objcg(old);
+ 
+-			mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
++			__mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
+ 			memcg1_account_kmem(memcg, -nr_pages);
+ 			if (!mem_cgroup_is_root(memcg))
+ 				memcg_uncharge(memcg, nr_pages);
+-- 
+2.39.5
+

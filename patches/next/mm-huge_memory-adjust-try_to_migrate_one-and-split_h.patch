@@ -1,0 +1,131 @@
+From: Gavin Guo <gavinguo@igalia.com>
+Date: Fri, 25 Apr 2025 18:38:58 +0800
+Subject: [PATCH] mm/huge_memory: adjust try_to_migrate_one() and
+ split_huge_pmd_locked()
+
+Patch series "Clean up split_huge_pmd_locked() and remove unnecessary
+folio pointers", v2.
+
+The patch series enhances the folio verification by leveraging the
+existing page_vma_mapped_walk() mechanism and removing redundant folio
+pointer passing.
+
+
+This patch (of 2):
+
+split_huge_pmd_locked() currently performs redundant checks for migration
+entries and folio validation that are already handled by the
+page_vma_mapped_walk mechanism in try_to_migrate_one.
+
+Specifically, page_vma_mapped_walk already ensures that:
+- The folio is properly mapped in the given VMA area
+- pmd_trans_huge, pmd_devmap, and migration entry validation are
+  performed
+
+To leverage page_vma_mapped_walk's work, moving TTU_SPLIT_HUGE_PMD
+handling to the while loop checking and removing these duplicate checks
+from split_huge_pmd_locked.
+
+Link: https://lkml.kernel.org/r/20250425103859.825879-1-gavinguo@igalia.com
+Link: https://lkml.kernel.org/r/20250425103859.825879-2-gavinguo@igalia.com
+Link: https://lore.kernel.org/all/98d1d195-7821-4627-b518-83103ade56c0@redhat.com/
+Link: https://lore.kernel.org/all/91599a3c-e69e-4d79-bac5-5013c96203d7@redhat.com/
+Signed-off-by: Gavin Guo <gavinguo@igalia.com>
+Suggested-by: David Hildenbrand <david@redhat.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Florent Revest <revest@google.com>
+Cc: Gavin Shan <gshan@redhat.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 21 ++-------------------
+ mm/rmap.c        | 18 +++++++++---------
+ 2 files changed, 11 insertions(+), 28 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index fdcf0a6049b9..d8a5bb602008 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3082,27 +3082,10 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ void split_huge_pmd_locked(struct vm_area_struct *vma, unsigned long address,
+ 			   pmd_t *pmd, bool freeze, struct folio *folio)
+ {
+-	bool pmd_migration = is_pmd_migration_entry(*pmd);
+-
+-	VM_WARN_ON_ONCE(folio && !folio_test_pmd_mappable(folio));
+ 	VM_WARN_ON_ONCE(!IS_ALIGNED(address, HPAGE_PMD_SIZE));
+-	VM_WARN_ON_ONCE(folio && !folio_test_locked(folio));
+-	VM_BUG_ON(freeze && !folio);
+-
+-	/*
+-	 * When the caller requests to set up a migration entry, we
+-	 * require a folio to check the PMD against. Otherwise, there
+-	 * is a risk of replacing the wrong folio.
+-	 */
+-	if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd) || pmd_migration) {
+-		/*
+-		 * Do not apply pmd_folio() to a migration entry; and folio lock
+-		 * guarantees that it must be of the wrong folio anyway.
+-		 */
+-		if (folio && (pmd_migration || folio != pmd_folio(*pmd)))
+-			return;
++	if (pmd_trans_huge(*pmd) || pmd_devmap(*pmd) ||
++	    is_pmd_migration_entry(*pmd))
+ 		__split_huge_pmd_locked(vma, pmd, address, freeze);
+-	}
+ }
+ 
+ void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 67bb273dfb80..b53a4dcaeaae 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -2291,13 +2291,6 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
+ 	if (flags & TTU_SYNC)
+ 		pvmw.flags = PVMW_SYNC;
+ 
+-	/*
+-	 * unmap_page() in mm/huge_memory.c is the only user of migration with
+-	 * TTU_SPLIT_HUGE_PMD and it wants to freeze.
+-	 */
+-	if (flags & TTU_SPLIT_HUGE_PMD)
+-		split_huge_pmd_address(vma, address, true, folio);
+-
+ 	/*
+ 	 * For THP, we have to assume the worse case ie pmd for invalidation.
+ 	 * For hugetlb, it could be much worse if we need to do pud
+@@ -2323,9 +2316,16 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
+ 	mmu_notifier_invalidate_range_start(&range);
+ 
+ 	while (page_vma_mapped_walk(&pvmw)) {
+-#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+ 		/* PMD-mapped THP migration entry */
+ 		if (!pvmw.pte) {
++			if (flags & TTU_SPLIT_HUGE_PMD) {
++				split_huge_pmd_locked(vma, pvmw.address,
++						      pvmw.pmd, true, NULL);
++				ret = false;
++				page_vma_mapped_walk_done(&pvmw);
++				break;
++			}
++#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+ 			subpage = folio_page(folio,
+ 				pmd_pfn(*pvmw.pmd) - folio_pfn(folio));
+ 			VM_BUG_ON_FOLIO(folio_test_hugetlb(folio) ||
+@@ -2337,8 +2337,8 @@ static bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
+ 				break;
+ 			}
+ 			continue;
+-		}
+ #endif
++		}
+ 
+ 		/* Unexpected PMD-mapped THP? */
+ 		VM_BUG_ON_FOLIO(!pvmw.pte, folio);
+-- 
+2.39.5
+

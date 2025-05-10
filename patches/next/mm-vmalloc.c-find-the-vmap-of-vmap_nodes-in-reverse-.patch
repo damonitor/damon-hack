@@ -1,0 +1,60 @@
+From: Baoquan He <bhe@redhat.com>
+Date: Sat, 19 Apr 2025 06:36:50 +0800
+Subject: [PATCH] mm/vmalloc.c: find the vmap of vmap_nodes in reverse order
+
+When finding VA in vn->busy, if VA spans several zones and the passed addr
+is not the same as va->va_start, we should scan the vn in reverse odrdr
+because the starting address of VA must be smaller than the passed addr if
+it really resides in the VA.
+
+E.g on a system nr_vmap_nodes=100,
+
+     <----va---->
+ -|-----|-----|-----|-----|-----|-----|-----|-----|-----|-
+    ...   n-1   n    n+1   n+2   ...   100     0     1
+
+VA resides in node 'n' whereas it spans 'n', 'n+1' and 'n+2'.  If passed
+addr is within 'n+2', we should try nodes backwards on 'n+1' and 'n', then
+succeed very soon.
+
+Meanwhile we still need loop around because VA could spans node from 'n'
+to node 100, node 0, node 1.
+
+Anyway, changing to find in reverse order can improve efficiency on many
+CPUs system.
+
+Link: https://lkml.kernel.org/r/20250418223653.243436-3-bhe@redhat.com
+Signed-off-by: Baoquan He <bhe@redhat.com>
+Reviewed-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Reviewed-by: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index cd733387b1a0..26d86ab5e59e 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -2435,7 +2435,7 @@ struct vmap_area *find_vmap_area(unsigned long addr)
+ 
+ 		if (va)
+ 			return va;
+-	} while ((i = (i + 1) % nr_vmap_nodes) != j);
++	} while ((i = (i + nr_vmap_nodes - 1) % nr_vmap_nodes) != j);
+ 
+ 	return NULL;
+ }
+@@ -2461,7 +2461,7 @@ static struct vmap_area *find_unlink_vmap_area(unsigned long addr)
+ 
+ 		if (va)
+ 			return va;
+-	} while ((i = (i + 1) % nr_vmap_nodes) != j);
++	} while ((i = (i + nr_vmap_nodes - 1) % nr_vmap_nodes) != j);
+ 
+ 	return NULL;
+ }
+-- 
+2.39.5
+

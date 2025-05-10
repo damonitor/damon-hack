@@ -1,0 +1,62 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Wed, 2 Apr 2025 22:33:26 -0700
+Subject: [PATCH] memcg: vmalloc: simplify MEMCG_VMALLOC updates
+
+The vmalloc region can either be charged to a single memcg or none.  At
+the moment kernel traverses all the pages backing the vmalloc region to
+update the MEMCG_VMALLOC stat.  However there is no need to look at all
+the pages as all those pages will be charged to a single memcg or none.
+Simplify the MEMCG_VMALLOC update by just looking at the first page of the
+vmalloc region.
+
+Link: https://lkml.kernel.org/r/20250403053326.26860-1-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Reviewed-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Reviewed-by: Yosry Ahmed <yosry.ahmed@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 13 +++++--------
+ 1 file changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 2d7511654831..eb0d8bd24793 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3371,12 +3371,12 @@ void vfree(const void *addr)
+ 
+ 	if (unlikely(vm->flags & VM_FLUSH_RESET_PERMS))
+ 		vm_reset_perms(vm);
++	if (vm->nr_pages && !(vm->flags & VM_MAP_PUT_PAGES))
++		mod_memcg_page_state(vm->pages[0], MEMCG_VMALLOC, -vm->nr_pages);
+ 	for (i = 0; i < vm->nr_pages; i++) {
+ 		struct page *page = vm->pages[i];
+ 
+ 		BUG_ON(!page);
+-		if (!(vm->flags & VM_MAP_PUT_PAGES))
+-			mod_memcg_page_state(page, MEMCG_VMALLOC, -1);
+ 		/*
+ 		 * High-order allocs for huge vmallocs are split, so
+ 		 * can be freed as an array of order-0 allocations
+@@ -3672,12 +3672,9 @@ static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
+ 		node, page_order, nr_small_pages, area->pages);
+ 
+ 	atomic_long_add(area->nr_pages, &nr_vmalloc_pages);
+-	if (gfp_mask & __GFP_ACCOUNT) {
+-		int i;
+-
+-		for (i = 0; i < area->nr_pages; i++)
+-			mod_memcg_page_state(area->pages[i], MEMCG_VMALLOC, 1);
+-	}
++	if (gfp_mask & __GFP_ACCOUNT && area->nr_pages)
++		mod_memcg_page_state(area->pages[0], MEMCG_VMALLOC,
++				     area->nr_pages);
+ 
+ 	/*
+ 	 * If not enough pages were obtained to accomplish an
+-- 
+2.39.5
+

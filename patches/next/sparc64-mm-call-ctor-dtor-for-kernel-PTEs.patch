@@ -1,0 +1,98 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Tue, 8 Apr 2025 10:52:16 +0100
+Subject: [PATCH] sparc64: mm: call ctor/dtor for kernel PTEs
+
+The generic implementation of pte_{alloc_one,free}_kernel now calls the
+[cd]tor, without initialising the ptlock needlessly as
+pagetable_pte_ctor() skips it for init_mm.
+
+Align sparc64 with the generic implementation by ensuring
+pagetable_pte_[cd]tor() are called for kernel PTEs.  As a result the
+kernel and user alloc/free functions have the same implementation, and
+since pgtable_t is defined as pte_t *, we can have both call a common
+helper.
+
+Link: https://lkml.kernel.org/r/20250408095222.860601-7-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Linus Waleij <linus.walleij@linaro.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: <x86@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/sparc/mm/init_64.c | 27 +++++++++++++--------------
+ 1 file changed, 13 insertions(+), 14 deletions(-)
+
+diff --git a/arch/sparc/mm/init_64.c b/arch/sparc/mm/init_64.c
+index 5c8eabda1d17..25ae4c897aae 100644
+--- a/arch/sparc/mm/init_64.c
++++ b/arch/sparc/mm/init_64.c
+@@ -2878,18 +2878,7 @@ void __flush_tlb_all(void)
+ 			     : : "r" (pstate));
+ }
+ 
+-pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
+-{
+-	struct page *page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+-	pte_t *pte = NULL;
+-
+-	if (page)
+-		pte = (pte_t *) page_address(page);
+-
+-	return pte;
+-}
+-
+-pgtable_t pte_alloc_one(struct mm_struct *mm)
++static pte_t *__pte_alloc_one(struct mm_struct *mm)
+ {
+ 	struct ptdesc *ptdesc = pagetable_alloc(GFP_KERNEL | __GFP_ZERO, 0);
+ 
+@@ -2902,9 +2891,14 @@ pgtable_t pte_alloc_one(struct mm_struct *mm)
+ 	return ptdesc_address(ptdesc);
+ }
+ 
+-void pte_free_kernel(struct mm_struct *mm, pte_t *pte)
++pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
+ {
+-	free_page((unsigned long)pte);
++	return __pte_alloc_one(mm);
++}
++
++pgtable_t pte_alloc_one(struct mm_struct *mm)
++{
++	return __pte_alloc_one(mm);
+ }
+ 
+ static void __pte_free(pgtable_t pte)
+@@ -2915,6 +2909,11 @@ static void __pte_free(pgtable_t pte)
+ 	pagetable_free(ptdesc);
+ }
+ 
++void pte_free_kernel(struct mm_struct *mm, pte_t *pte)
++{
++	__pte_free(pte);
++}
++
+ void pte_free(struct mm_struct *mm, pgtable_t pte)
+ {
+ 	__pte_free(pte);
+-- 
+2.39.5
+

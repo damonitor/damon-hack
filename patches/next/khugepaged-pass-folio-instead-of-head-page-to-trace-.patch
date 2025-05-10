@@ -1,0 +1,108 @@
+From: Fan Ni <fan.ni@samsung.com>
+Date: Thu, 24 Apr 2025 17:16:51 -0700
+Subject: [PATCH] khugepaged: pass folio instead of head page to trace events
+
+The trace functions trace_mm_collapse_huge_page_isolate() and
+trace_mm_khugepaged_scan_pmd() each have a single user, which always
+passes in the head page of a folio.  Refactor both functions to take a
+folio directly.
+
+Link: https://lkml.kernel.org/r/20250425002425.533698-1-nifan.cxl@gmail.com
+Signed-off-by: Fan Ni <fan.ni@samsung.com>
+Reviewed-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Davidlohr Bueso <dave@stgolabs.net>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Yang Shi <yang@os.amperecomputing.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Adam Manzanares <a.manzanares@samsung.com>
+Cc: Luis Chamberalin <mcgrof@kernel.org>
+Cc: Mariano Pache <npache@redhat.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/huge_memory.h | 12 ++++++------
+ mm/khugepaged.c                    |  6 +++---
+ 2 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/include/trace/events/huge_memory.h b/include/trace/events/huge_memory.h
+index 9d5c00b0285c..2305df6cb485 100644
+--- a/include/trace/events/huge_memory.h
++++ b/include/trace/events/huge_memory.h
+@@ -55,10 +55,10 @@ SCAN_STATUS
+ 
+ TRACE_EVENT(mm_khugepaged_scan_pmd,
+ 
+-	TP_PROTO(struct mm_struct *mm, struct page *page, bool writable,
++	TP_PROTO(struct mm_struct *mm, struct folio *folio, bool writable,
+ 		 int referenced, int none_or_zero, int status, int unmapped),
+ 
+-	TP_ARGS(mm, page, writable, referenced, none_or_zero, status, unmapped),
++	TP_ARGS(mm, folio, writable, referenced, none_or_zero, status, unmapped),
+ 
+ 	TP_STRUCT__entry(
+ 		__field(struct mm_struct *, mm)
+@@ -72,7 +72,7 @@ TRACE_EVENT(mm_khugepaged_scan_pmd,
+ 
+ 	TP_fast_assign(
+ 		__entry->mm = mm;
+-		__entry->pfn = page ? page_to_pfn(page) : -1;
++		__entry->pfn = folio ? folio_pfn(folio) : -1;
+ 		__entry->writable = writable;
+ 		__entry->referenced = referenced;
+ 		__entry->none_or_zero = none_or_zero;
+@@ -116,10 +116,10 @@ TRACE_EVENT(mm_collapse_huge_page,
+ 
+ TRACE_EVENT(mm_collapse_huge_page_isolate,
+ 
+-	TP_PROTO(struct page *page, int none_or_zero,
++	TP_PROTO(struct folio *folio, int none_or_zero,
+ 		 int referenced, bool  writable, int status),
+ 
+-	TP_ARGS(page, none_or_zero, referenced, writable, status),
++	TP_ARGS(folio, none_or_zero, referenced, writable, status),
+ 
+ 	TP_STRUCT__entry(
+ 		__field(unsigned long, pfn)
+@@ -130,7 +130,7 @@ TRACE_EVENT(mm_collapse_huge_page_isolate,
+ 	),
+ 
+ 	TP_fast_assign(
+-		__entry->pfn = page ? page_to_pfn(page) : -1;
++		__entry->pfn = folio ? folio_pfn(folio) : -1;
+ 		__entry->none_or_zero = none_or_zero;
+ 		__entry->referenced = referenced;
+ 		__entry->writable = writable;
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 5cf204ab6af0..b04b6a770afe 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -696,13 +696,13 @@ static int __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 		result = SCAN_LACK_REFERENCED_PAGE;
+ 	} else {
+ 		result = SCAN_SUCCEED;
+-		trace_mm_collapse_huge_page_isolate(&folio->page, none_or_zero,
++		trace_mm_collapse_huge_page_isolate(folio, none_or_zero,
+ 						    referenced, writable, result);
+ 		return result;
+ 	}
+ out:
+ 	release_pte_pages(pte, _pte, compound_pagelist);
+-	trace_mm_collapse_huge_page_isolate(&folio->page, none_or_zero,
++	trace_mm_collapse_huge_page_isolate(folio, none_or_zero,
+ 					    referenced, writable, result);
+ 	return result;
+ }
+@@ -1435,7 +1435,7 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
+ 		*mmap_locked = false;
+ 	}
+ out:
+-	trace_mm_khugepaged_scan_pmd(mm, &folio->page, writable, referenced,
++	trace_mm_khugepaged_scan_pmd(mm, folio, writable, referenced,
+ 				     none_or_zero, result, unmapped);
+ 	return result;
+ }
+-- 
+2.39.5
+

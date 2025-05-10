@@ -1,0 +1,63 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Tue, 8 Apr 2025 10:52:17 +0100
+Subject: [PATCH] mm: skip ptlock_init() for kernel PMDs
+
+Split page table locks are not used for pgtables associated to init_mm, at
+any level.  pte_alloc_kernel() does not call ptlock_init() as a result.
+There is however no separate alloc/free functions for kernel PMDs, and
+pmd_ptlock_init() is called unconditionally.  When ALLOC_SPLIT_PTLOCKS is
+true (e.g.  32-bit architectures or if CONFIG_PREEMPT_RT is selected),
+this results in unnecessary dynamic memory allocation every time a kernel
+PMD is allocated.
+
+Now that pagetable_pmd_ctor() is passed the associated mm, we can easily
+remove this overhead by skipping pmd_ptlock_init() if the pgtable is
+associated to init_mm.  No special-casing is needed on the dtor path, as
+ptlock_free() is already called unconditionally for all levels.
+(ptlock_free() is a no-op unless a ptlock was allocated for the given
+PTP.)
+
+Link: https://lkml.kernel.org/r/20250408095222.860601-8-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Linus Waleij <linus.walleij@linaro.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: <x86@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 01bee0a206d8..324fe6bafd7d 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -3257,7 +3257,7 @@ static inline spinlock_t *pmd_lock(struct mm_struct *mm, pmd_t *pmd)
+ static inline bool pagetable_pmd_ctor(struct mm_struct *mm,
+ 				      struct ptdesc *ptdesc)
+ {
+-	if (!pmd_ptlock_init(ptdesc))
++	if (mm != &init_mm && !pmd_ptlock_init(ptdesc))
+ 		return false;
+ 	ptdesc_pmd_pts_init(ptdesc);
+ 	__pagetable_ctor(ptdesc);
+-- 
+2.39.5
+

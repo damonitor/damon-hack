@@ -1,0 +1,133 @@
+From: Fan Ni <fan.ni@samsung.com>
+Date: Wed, 16 Apr 2025 13:12:15 -0700
+Subject: [PATCH] mm: convert free_page_and_swap_cache() to
+ free_folio_and_swap_cache()
+
+free_page_and_swap_cache() takes a struct page pointer as input parameter,
+but it will immediately convert it to folio and all operations following
+within use folio instead of page.  It makes more sense to pass in folio
+directly.
+
+Convert free_page_and_swap_cache() to free_folio_and_swap_cache() to
+consume folio directly.
+
+Link: https://lkml.kernel.org/r/20250416201720.41678-1-nifan.cxl@gmail.com
+Signed-off-by: Fan Ni <fan.ni@samsung.com>
+Acked-by: Davidlohr Bueso <dave@stgolabs.net>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Adam Manzanares <a.manzanares@samsung.com>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@kernel.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Luis Chamberalin <mcgrof@kernel.org>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/s390/include/asm/tlb.h | 4 ++--
+ include/linux/swap.h        | 8 +++-----
+ mm/huge_memory.c            | 2 +-
+ mm/khugepaged.c             | 2 +-
+ mm/swap_state.c             | 8 +++-----
+ 5 files changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/arch/s390/include/asm/tlb.h b/arch/s390/include/asm/tlb.h
+index f20601995bb0..e5103e8e697d 100644
+--- a/arch/s390/include/asm/tlb.h
++++ b/arch/s390/include/asm/tlb.h
+@@ -40,7 +40,7 @@ static inline bool __tlb_remove_folio_pages(struct mmu_gather *tlb,
+ /*
+  * Release the page cache reference for a pte removed by
+  * tlb_ptep_clear_flush. In both flush modes the tlb for a page cache page
+- * has already been freed, so just do free_page_and_swap_cache.
++ * has already been freed, so just do free_folio_and_swap_cache.
+  *
+  * s390 doesn't delay rmap removal.
+  */
+@@ -49,7 +49,7 @@ static inline bool __tlb_remove_page_size(struct mmu_gather *tlb,
+ {
+ 	VM_WARN_ON_ONCE(delay_rmap);
+ 
+-	free_page_and_swap_cache(page);
++	free_folio_and_swap_cache(page_folio(page));
+ 	return false;
+ }
+ 
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index db46b25a65ae..4e4e27d3ce3d 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -450,7 +450,7 @@ static inline unsigned long total_swapcache_pages(void)
+ }
+ 
+ void free_swap_cache(struct folio *folio);
+-void free_page_and_swap_cache(struct page *);
++void free_folio_and_swap_cache(struct folio *folio);
+ void free_pages_and_swap_cache(struct encoded_page **, int);
+ /* linux/mm/swapfile.c */
+ extern atomic_long_t nr_swap_pages;
+@@ -520,10 +520,8 @@ static inline void put_swap_device(struct swap_info_struct *si)
+ 
+ #define si_swapinfo(val) \
+ 	do { (val)->freeswap = (val)->totalswap = 0; } while (0)
+-/* only sparc can not include linux/pagemap.h in this file
+- * so leave put_page and release_pages undeclared... */
+-#define free_page_and_swap_cache(page) \
+-	put_page(page)
++#define free_folio_and_swap_cache(folio) \
++	folio_put(folio)
+ #define free_pages_and_swap_cache(pages, nr) \
+ 	release_pages((pages), (nr));
+ 
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 5576a08a593d..fdcf0a6049b9 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3653,7 +3653,7 @@ static int __split_unmapped_folio(struct folio *folio, int new_order,
+ 		 * requires taking the lru_lock so we do the put_page
+ 		 * of the tail pages after the split is complete.
+ 		 */
+-		free_page_and_swap_cache(&new_folio->page);
++		free_folio_and_swap_cache(new_folio);
+ 	}
+ 	return ret;
+ }
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index b8838ba8207a..5cf204ab6af0 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -746,7 +746,7 @@ static void __collapse_huge_page_copy_succeeded(pte_t *pte,
+ 			ptep_clear(vma->vm_mm, address, _pte);
+ 			folio_remove_rmap_pte(src, src_page, vma);
+ 			spin_unlock(ptl);
+-			free_page_and_swap_cache(src_page);
++			free_folio_and_swap_cache(src);
+ 		}
+ 	}
+ 
+diff --git a/mm/swap_state.c b/mm/swap_state.c
+index 68fd981b514f..ac4e0994931c 100644
+--- a/mm/swap_state.c
++++ b/mm/swap_state.c
+@@ -232,13 +232,11 @@ void free_swap_cache(struct folio *folio)
+ }
+ 
+ /*
+- * Perform a free_page(), also freeing any swap cache associated with
+- * this page if it is the last user of the page.
++ * Freeing a folio and also freeing any swap cache associated with
++ * this folio if it is the last user.
+  */
+-void free_page_and_swap_cache(struct page *page)
++void free_folio_and_swap_cache(struct folio *folio)
+ {
+-	struct folio *folio = page_folio(page);
+-
+ 	free_swap_cache(folio);
+ 	if (!is_huge_zero_folio(folio))
+ 		folio_put(folio);
+-- 
+2.39.5
+

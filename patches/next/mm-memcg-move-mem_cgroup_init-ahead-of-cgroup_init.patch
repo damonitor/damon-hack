@@ -1,0 +1,221 @@
+From: Huan Yang <link@vivo.com>
+Date: Fri, 25 Apr 2025 11:19:23 +0800
+Subject: [PATCH] mm/memcg: move mem_cgroup_init() ahead of cgroup_init()
+
+Patch series "Use kmem_cache for memcg alloc", v3.
+
+(willy tldr: "you've gone from allocating 8 objects per 32KiB to
+allocating 13 objects per 32KiB, a 62% improvement in memory consumption"
+[1])
+
+
+The mem_cgroup_alloc function creates mem_cgroup struct and it's
+associated structures including mem_cgroup_per_node.  Through detailed
+analysis on our test machine (Arm64, 16GB RAM, 6.6 kernel, 1 NUMA node,
+memcgv2 with nokmem,nosocket,cgroup_disable=pressure), we can observe the
+memory allocation for these structures using the following shell commands:
+
+  # Enable tracing
+  echo 1 > /sys/kernel/tracing/events/kmem/kmalloc/enable
+  echo 1 > /sys/kernel/tracing/tracing_on
+  cat /sys/kernel/tracing/trace_pipe | grep kmalloc | grep mem_cgroup
+
+  # Trigger allocation if cgroup subtree do not enable memcg
+  echo +memory > /sys/fs/cgroup/cgroup.subtree_control
+
+Ftrace Output:
+
+  # mem_cgroup struct allocation
+  sh-6312    [000] ..... 58015.698365: kmalloc:
+    call_site=mem_cgroup_css_alloc+0xd8/0x5b4
+    ptr=000000003e4c3799 bytes_req=2312 bytes_alloc=4096
+    gfp_flags=GFP_KERNEL|__GFP_ZERO node=-1 accounted=false
+
+  # mem_cgroup_per_node allocation
+  sh-6312    [000] ..... 58015.698389: kmalloc:
+    call_site=mem_cgroup_css_alloc+0x1d8/0x5b4
+    ptr=00000000d798700c bytes_req=2896 bytes_alloc=4096
+    gfp_flags=GFP_KERNEL|__GFP_ZERO node=0 accounted=false
+
+Key Observations:
+
+  1. Both structures use kmalloc with requested sizes between 2KB-4KB
+  2. Allocation alignment forces 4KB slab usage due to pre-defined sizes
+     (64B, 128B,..., 2KB, 4KB, 8KB)
+  3. Memory waste per memcg instance:
+      Base struct: 4096 - 2312 = 1784 bytes
+      Per-node struct: 4096 - 2896 = 1200 bytes
+      Total waste: 2984 bytes (1-node system)
+      NUMA scaling: (1200 + 8) * nr_node_ids bytes
+
+So, it's a little waste.
+
+This patchset introduces dedicated kmem_cache:
+  Patch2 - mem_cgroup kmem_cache - memcg_cachep
+  Patch3 - mem_cgroup_per_node kmem_cache - memcg_pn_cachep
+
+The benefits of this change can be observed with the following tracing
+commands:
+
+  # Enable tracing
+  echo 1 > /sys/kernel/tracing/events/kmem/kmem_cache_alloc/enable
+  echo 1 > /sys/kernel/tracing/tracing_on
+  cat /sys/kernel/tracing/trace_pipe | grep kmem_cache_alloc | grep mem_cgroup
+  # In another terminal:
+  echo +memory > /sys/fs/cgroup/cgroup.subtree_control
+
+
+The output might now look like this:
+
+  # mem_cgroup struct allocation
+  sh-9827     [000] .....   289.513598: kmem_cache_alloc:
+    call_site=mem_cgroup_css_alloc+0xbc/0x5d4 ptr=00000000695c1806
+    bytes_req=2312 bytes_alloc=2368 gfp_flags=GFP_KERNEL|__GFP_ZERO node=-1
+    accounted=false
+  # mem_cgroup_per_node allocation
+  sh-9827     [000] .....   289.513602: kmem_cache_alloc:
+    call_site=mem_cgroup_css_alloc+0x1b8/0x5d4 ptr=000000002989e63a
+    bytes_req=2896 bytes_alloc=2944 gfp_flags=GFP_KERNEL|__GFP_ZERO node=0
+    accounted=false
+
+This indicates that the `mem_cgroup` struct now requests 2312 bytes and is
+allocated 2368 bytes, while `mem_cgroup_per_node` requests 2896 bytes and
+is allocated 2944 bytes.  The slight increase in allocated size is due to
+`SLAB_HWCACHE_ALIGN` in the `kmem_cache`.
+
+Without `SLAB_HWCACHE_ALIGN`, the allocation might appear as:
+
+  # mem_cgroup struct allocation
+  sh-9269     [003] .....    80.396366: kmem_cache_alloc:
+    call_site=mem_cgroup_css_alloc+0xbc/0x5d4 ptr=000000005b12b475
+    bytes_req=2312 bytes_alloc=2312 gfp_flags=GFP_KERNEL|__GFP_ZERO node=-1
+    accounted=false
+
+  # mem_cgroup_per_node allocation
+  sh-9269     [003] .....    80.396411: kmem_cache_alloc:
+    call_site=mem_cgroup_css_alloc+0x1b8/0x5d4 ptr=00000000f347adc6
+    bytes_req=2896 bytes_alloc=2896 gfp_flags=GFP_KERNEL|__GFP_ZERO node=0
+    accounted=false
+
+While the `bytes_alloc` now matches the `bytes_req`, this patchset
+defaults to using `SLAB_HWCACHE_ALIGN` as it is generally considered more
+beneficial for performance.  Please let me know if there are any issues or
+if I've misunderstood anything.
+
+This patchset also move mem_cgroup_init ahead of cgroup_init() due to
+cgroup_init() will allocate root_mem_cgroup, but each initcall invoke
+after cgroup_init, so if each kmem_cache do not prepare, we need testing
+NULL before use it.
+
+
+This patch (of 3):
+
+When cgroup_init() creates root_mem_cgroup through css_alloc callback,
+some critical resources might not be fully initialized, forcing later
+operations to perform conditional checks for resource availability.
+
+This patch move mem_cgroup_init() to address the init order, it invoke
+before cgroup_init, so, compare to subsys_initcall, it can use to prepare
+some key resources before root_mem_cgroup alloc.
+
+Link: https://lkml.kernel.org/r/aAsRCj-niMMTtmK8@casper.infradead.org [1]
+Link: https://lkml.kernel.org/r/20250425031935.76411-1-link@vivo.com
+Link: https://lkml.kernel.org/r/20250425031935.76411-2-link@vivo.com
+Signed-off-by: Huan Yang <link@vivo.com>
+Suggested-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Francesco Valla <francesco@valla.it>
+Cc: guoweikang <guoweikang.kernel@gmail.com>
+Cc: Huang Shijie <shijie@os.amperecomputing.com>
+Cc: KP Singh <kpsingh@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: "Paul E . McKenney" <paulmck@kernel.org>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Rasmus Villemoes <linux@rasmusvillemoes.dk>
+Cc: Raul E Rangel <rrangel@chromium.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Matthew Wilcox <willy@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 3 +++
+ init/main.c                | 2 ++
+ mm/memcontrol.c            | 5 ++---
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index ac1b003ee5b8..9ed75f82b858 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -1057,6 +1057,7 @@ static inline u64 cgroup_id_from_mm(struct mm_struct *mm)
+ 	return id;
+ }
+ 
++extern int mem_cgroup_init(void);
+ #else /* CONFIG_MEMCG */
+ 
+ #define MEM_CGROUP_ID_SHIFT	0
+@@ -1472,6 +1473,8 @@ static inline u64 cgroup_id_from_mm(struct mm_struct *mm)
+ {
+ 	return 0;
+ }
++
++static inline int mem_cgroup_init(void) { return 0; }
+ #endif /* CONFIG_MEMCG */
+ 
+ /*
+diff --git a/init/main.c b/init/main.c
+index 7f0a2a3dbd29..782320da2e88 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -50,6 +50,7 @@
+ #include <linux/writeback.h>
+ #include <linux/cpu.h>
+ #include <linux/cpuset.h>
++#include <linux/memcontrol.h>
+ #include <linux/cgroup.h>
+ #include <linux/efi.h>
+ #include <linux/tick.h>
+@@ -1087,6 +1088,7 @@ void start_kernel(void)
+ 	nsfs_init();
+ 	pidfs_init();
+ 	cpuset_init();
++	mem_cgroup_init();
+ 	cgroup_init();
+ 	taskstats_init_early();
+ 	delayacct_init();
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index e17e0a9ceee0..dcb07a52b4ed 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5042,14 +5042,14 @@ static int __init cgroup_memory(char *s)
+ __setup("cgroup.memory=", cgroup_memory);
+ 
+ /*
+- * subsys_initcall() for memory controller.
++ * Memory controller init before cgroup_init() initialize root_mem_cgroup.
+  *
+  * Some parts like memcg_hotplug_cpu_dead() have to be initialized from this
+  * context because of lock dependencies (cgroup_lock -> cpu hotplug) but
+  * basically everything that doesn't depend on a specific mem_cgroup structure
+  * should be initialized from here.
+  */
+-static int __init mem_cgroup_init(void)
++int __init mem_cgroup_init(void)
+ {
+ 	int cpu;
+ 
+@@ -5070,7 +5070,6 @@ static int __init mem_cgroup_init(void)
+ 
+ 	return 0;
+ }
+-subsys_initcall(mem_cgroup_init);
+ 
+ #ifdef CONFIG_SWAP
+ /**
+-- 
+2.39.5
+

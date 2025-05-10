@@ -1,0 +1,72 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Tue, 8 Apr 2025 10:52:20 +0100
+Subject: [PATCH] riscv: mm: clarify ctor mm argument in alloc_{pte,pmd}_late
+
+pagetable_{pte,pmd}_ctor(mm, ptdesc) skip the ptlock initialisation if mm
+is &init_mm.  To avoid unnecessary overhead, it is therefore preferable to
+pass the actual mm associated to the PTE/PMD.
+
+Unfortunately, this proves challenging for alloc_{pte,pmd}_late() as the
+associated mm is not available at the point where they are called - in
+fact not even top-level functions like create_pgd_mapping() are passed the
+mm.  As a result they both call the ctor with NULL as mm; this is safe but
+potentially wasteful.
+
+This is not a new situation, but let's add a couple of comments to clarify
+it.
+
+Link: https://lkml.kernel.org/r/20250408095222.860601-11-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Linus Waleij <linus.walleij@linaro.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: <x86@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/riscv/mm/init.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index e5ef693fc778..59a982f88908 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -442,6 +442,11 @@ static phys_addr_t __meminit alloc_pte_late(uintptr_t va)
+ {
+ 	struct ptdesc *ptdesc = pagetable_alloc(GFP_KERNEL & ~__GFP_HIGHMEM, 0);
+ 
++	/*
++	 * We do not know which mm the PTE page is associated to at this point.
++	 * Passing NULL to the ctor is the safe option, though it may result
++	 * in unnecessary work (e.g. initialising the ptlock for init_mm).
++	 */
+ 	BUG_ON(!ptdesc || !pagetable_pte_ctor(NULL, ptdesc));
+ 	return __pa((pte_t *)ptdesc_address(ptdesc));
+ }
+@@ -522,6 +527,7 @@ static phys_addr_t __meminit alloc_pmd_late(uintptr_t va)
+ {
+ 	struct ptdesc *ptdesc = pagetable_alloc(GFP_KERNEL & ~__GFP_HIGHMEM, 0);
+ 
++	/* See comment in alloc_pte_late() regarding NULL passed the ctor */
+ 	BUG_ON(!ptdesc || !pagetable_pmd_ctor(NULL, ptdesc));
+ 	return __pa((pmd_t *)ptdesc_address(ptdesc));
+ }
+-- 
+2.39.5
+

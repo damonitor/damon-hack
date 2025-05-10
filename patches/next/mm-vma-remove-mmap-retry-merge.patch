@@ -1,0 +1,83 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Wed, 7 May 2025 12:03:36 +0100
+Subject: [PATCH] mm/vma: remove mmap() retry merge
+
+We have now introduced a mechanism that obviates the need for a
+reattempted merge via the mmap_prepare() file hook, so eliminate this
+functionality altogether.
+
+The retry merge logic has been the cause of a great deal of complexity in
+the past and required a great deal of careful manoeuvring of code to
+ensure its continued and correct functionality.
+
+It has also recently been involved in an issue surrounding maple tree
+state, which again points to its problematic nature.
+
+We make it much easier to reason about mmap() logic by eliminating this
+and simply writing a VMA once.  This also opens the doors to future
+optimisation and improvement in the mmap() logic.
+
+For any device or file system which encounters unwanted VMA fragmentation
+as a result of this change (that is, having not implemented .mmap_prepare
+hooks), the issue is easily resolvable by doing so.
+
+Link: https://lkml.kernel.org/r/e18be1070e9fcd7a43cd72ac45f19cf1080e73b5.1746615512.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 14 --------------
+ 1 file changed, 14 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index acd5b98fe087..95696eb44365 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -24,7 +24,6 @@ struct mmap_state {
+ 	void *vm_private_data;
+ 
+ 	unsigned long charged;
+-	bool retry_merge;
+ 
+ 	struct vm_area_struct *prev;
+ 	struct vm_area_struct *next;
+@@ -2417,8 +2416,6 @@ static int __mmap_new_file_vma(struct mmap_state *map,
+ 			!(map->flags & VM_MAYWRITE) &&
+ 			(vma->vm_flags & VM_MAYWRITE));
+ 
+-	/* If the flags change (and are mergeable), let's retry later. */
+-	map->retry_merge = vma->vm_flags != map->flags && !(vma->vm_flags & VM_SPECIAL);
+ 	map->flags = vma->vm_flags;
+ 
+ 	return 0;
+@@ -2624,17 +2621,6 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+ 	if (have_mmap_prepare)
+ 		set_vma_user_defined_fields(vma, &map);
+ 
+-	/* If flags changed, we might be able to merge, so try again. */
+-	if (map.retry_merge) {
+-		struct vm_area_struct *merged;
+-		VMG_MMAP_STATE(vmg, &map, vma);
+-
+-		vma_iter_config(map.vmi, map.addr, map.end);
+-		merged = vma_merge_existing_range(&vmg);
+-		if (merged)
+-			vma = merged;
+-	}
+-
+ 	__mmap_complete(&map, vma);
+ 
+ 	return addr;
+-- 
+2.39.5
+

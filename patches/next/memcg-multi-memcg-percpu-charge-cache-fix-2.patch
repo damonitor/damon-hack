@@ -1,0 +1,81 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 25 Apr 2025 13:10:43 -0700
+Subject: [PATCH] memcg: multi-memcg percpu charge cache - fix 2
+
+Simplify refill_stock by avoiding goto and doing the operations inline and
+make sure the given memcg is not cached multiple times.
+
+Link: https://lkml.kernel.org/r/as5cdsm4lraxupg3t6onep2ixql72za25hvd4x334dsoyo4apr@zyzl4vkuevuv
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Eric Dumaze <edumazet@google.com>
+Cc: Jakub Kacinski <kuba@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Soheil Hassas Yeganeh <soheil@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 27 +++++++++++++++------------
+ 1 file changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index c7f208d61029..249d9773d3c9 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1904,7 +1904,8 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 	struct mem_cgroup *cached;
+ 	uint8_t stock_pages;
+ 	unsigned long flags;
+-	bool evict = true;
++	bool success = false;
++	int empty_slot = -1;
+ 	int i;
+ 
+ 	/*
+@@ -1928,26 +1929,28 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 
+ 	stock = this_cpu_ptr(&memcg_stock);
+ 	for (i = 0; i < NR_MEMCG_STOCK; ++i) {
+-again:
+ 		cached = READ_ONCE(stock->cached[i]);
+-		if (!cached) {
+-			css_get(&memcg->css);
+-			WRITE_ONCE(stock->cached[i], memcg);
+-		}
+-		if (!cached || memcg == READ_ONCE(stock->cached[i])) {
++		if (!cached && empty_slot == -1)
++			empty_slot = i;
++		if (memcg == READ_ONCE(stock->cached[i])) {
+ 			stock_pages = READ_ONCE(stock->nr_pages[i]) + nr_pages;
+ 			WRITE_ONCE(stock->nr_pages[i], stock_pages);
+ 			if (stock_pages > MEMCG_CHARGE_BATCH)
+ 				drain_stock(stock, i);
+-			evict = false;
++			success = true;
+ 			break;
+ 		}
+ 	}
+ 
+-	if (evict) {
+-		i = get_random_u32_below(NR_MEMCG_STOCK);
+-		drain_stock(stock, i);
+-		goto again;
++	if (!success) {
++		i = empty_slot;
++		if (i == -1) {
++			i = get_random_u32_below(NR_MEMCG_STOCK);
++			drain_stock(stock, i);
++		}
++		css_get(&memcg->css);
++		WRITE_ONCE(stock->cached[i], memcg);
++		WRITE_ONCE(stock->nr_pages[i], stock_pages);
+ 	}
+ 
+ 	local_unlock_irqrestore(&memcg_stock.stock_lock, flags);
+-- 
+2.39.5
+
