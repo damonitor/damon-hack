@@ -62,6 +62,7 @@ for dev_commit in $dev_commits
 do
 	dev_subject=$(git show "$dev_commit" --pretty=%s --quiet)
 
+	# todo: handle escaping characters, e.g., [ and ]
 	if echo "$maintainer_subjects" | grep "$dev_subject" --quiet --ignore-case
 	then
 		merged="true"
