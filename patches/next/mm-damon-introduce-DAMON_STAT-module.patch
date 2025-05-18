@@ -1,20 +1,49 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Sat, 10 May 2025 13:11:30 -0700
-Subject: [PATCH] mm/damon: add DAMON_STAT module
+Subject: [PATCH] mm/damon: introduce DAMON_STAT module
+
+To use DAMON for monitoring access pattern of the system, users should
+manually start DAMON via DAMON sysfs ABI with a number of parameters for
+specifying the monitoring target address space, address ranges, and
+monitoring intervals.  After that, users should also wait until desired
+amount of time data is captured into DAMON's monitoring results.  It is
+bothersome and take a long time to be practical for access monitoring on
+large fleet level production environments.
+
+For access-aware system operations use cases like proactive cold memory
+reclamation, similar problem existed and we solved those by introducing
+dedicated static kernel modules such as DAMON_RECLAIM.
+
+Implement such static kernel module for access monitoring, namely
+DAMON_STAT.  It monitors the entire physical address space with
+auto-tuned monitoring intervals.  The auto-tuning is set to capture 4 %
+of observable access events in each snapshot while keeping the sampling
+intervals in a range of 5 milliseconds and 10 seconds.  From production
+environemnts, we confirmed this setup provides high quality monitoring
+results with minimum overheads.  The module therefore receives only one
+user input, whether to enable or disable it.  It can be set on build or
+boot time via build configuration or kernel boot command line.  It can
+also be overriden at runtime.
+
+Note that this commit only implements the DAMON control part of the
+module.  Users could to get the monitoring results via
+damon:damon_aggregated tracepoints, but that's of course not the
+recommended way.  Following commits will implement convenient and
+optimized ways for serving the monitoring results to users.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/Kconfig  |   8 ++
+ mm/damon/Kconfig  |  16 ++++++
  mm/damon/Makefile |   1 +
- mm/damon/stat.c   | 239 ++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 248 insertions(+)
+ mm/damon/stat.c   | 138 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 155 insertions(+)
  create mode 100644 mm/damon/stat.c
 
 diff --git a/mm/damon/Kconfig b/mm/damon/Kconfig
-index 551745df011b..c3858e32df47 100644
+index 551745df011b..9f482e3adc67 100644
 --- a/mm/damon/Kconfig
 +++ b/mm/damon/Kconfig
-@@ -95,4 +95,12 @@ config DAMON_LRU_SORT
+@@ -95,4 +95,20 @@ config DAMON_LRU_SORT
  	  protect frequently accessed (hot) pages while rarely accessed (cold)
  	  pages reclaimed first under memory pressure.
  
@@ -25,6 +54,14 @@ index 551745df011b..c3858e32df47 100644
 +	  This builds the DAMON-based access monitoring statistics subsystem.
 +	  It runs DAMON and expose access monitoring results in simple stat
 +	  metrics.
++
++config DAMON_STAT_ENABLED_DEFAULT
++	bool "Enable DAMON_STAT by default"
++	depends on DAMON_PADDR
++	default DAMON_STAT
++	help
++	  Whether to enable DAMON_STAT by default.  Users can disable it in
++	  boot or runtime using its 'enabled' parameter.
 +
  endmenu
 diff --git a/mm/damon/Makefile b/mm/damon/Makefile
@@ -38,16 +75,16 @@ index 8b49012ba8c3..d8d6bf5f8bff 100644
 +obj-$(CONFIG_DAMON_STAT)	+= modules-common.o stat.o
 diff --git a/mm/damon/stat.c b/mm/damon/stat.c
 new file mode 100644
-index 000000000000..379edf18a142
+index 000000000000..a9f99d9d5051
 --- /dev/null
 +++ b/mm/damon/stat.c
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,138 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Shows data access monitoring resutls in simple metrics.
 + */
 +
-+#define pr_fmt(fmt) "damon_stat: " fmt
++#define pr_fmt(fmt) "damon-stat: " fmt
 +
 +#include <linux/damon.h>
 +#include <linux/init.h>
@@ -60,119 +97,19 @@ index 000000000000..379edf18a142
 +#endif
 +#define MODULE_PARAM_PREFIX "damon_stat."
 +
-+static int damon_stat_enable_store(
++static int damon_stat_enabled_store(
 +		const char *val, const struct kernel_param *kp);
 +
-+static const struct kernel_param_ops enable_param_ops = {
-+	.set = damon_stat_enable_store,
++static const struct kernel_param_ops enabled_param_ops = {
++	.set = damon_stat_enabled_store,
 +	.get = param_get_bool,
 +};
 +
-+static bool enabled __read_mostly;
-+module_param_cb(enabled, &enable_param_ops, &enabled, 0600);
++static bool enabled __read_mostly = CONFIG_DAMON_STAT_ENABLED_DEFAULT;
++module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
 +MODULE_PARM_DESC(enabled, "Enable of disable DAMON_STAT");
 +
-+static unsigned long estimated_memory_bandwidth __read_mostly = 0;
-+module_param(estimated_memory_bandwidth, ulong, 0400);
-+MODULE_PARM_DESC(estimated_memory_bandwidth,
-+		"Show estimated system's memory bandwidth usage");
-+
-+static unsigned long page_idletime_percentiles_ms[101] __read_mostly = {0,};
-+module_param_array(page_idletime_percentiles_ms, ulong, NULL, 0400);
-+MODULE_PARM_DESC(page_idletime_percentiles_ms,
-+		"Show per-page idle time percentiles");
-+
 +static struct damon_ctx *damon_stat_context;
-+
-+static unsigned int damon_stat_idletime(const struct damon_region *r)
-+{
-+	if (r->nr_accesses)
-+		return 0;
-+	return r->age + 1;
-+}
-+
-+static int damon_stat_cmp_regions(const void *a, const void *b)
-+{
-+	const struct damon_region *ra = *(const struct damon_region **)a;
-+	const struct damon_region *rb = *(const struct damon_region **)b;
-+
-+	return damon_stat_idletime(ra) - damon_stat_idletime(rb);
-+}
-+
-+static int damon_stat_sort_regions(struct damon_ctx *c,
-+		struct damon_region ***sorted_ptr, int *nr_regions_ptr,
-+		unsigned long *total_sz_ptr)
-+{
-+	struct damon_target *t;
-+	struct damon_region *r;
-+	struct damon_region **region_pointers;
-+	unsigned int nr_regions = 0;
-+	unsigned long total_sz = 0;
-+
-+	damon_for_each_target(t, c) {
-+		/* there is only one target */
-+		region_pointers = kmalloc_array(damon_nr_regions(t),
-+				sizeof(*region_pointers), GFP_KERNEL);
-+		if (!region_pointers)
-+			return -ENOMEM;
-+		damon_for_each_region(r, t) {
-+			region_pointers[nr_regions++] = r;
-+			total_sz += r->ar.end - r->ar.start;
-+		}
-+	}
-+	sort(region_pointers, nr_regions, sizeof(*region_pointers),
-+			damon_stat_cmp_regions, NULL);
-+	*sorted_ptr = region_pointers;
-+	*nr_regions_ptr = nr_regions;
-+	*total_sz_ptr = total_sz;
-+	return 0;
-+}
-+
-+static void damon_stat_set_idletime_percentiles(struct damon_ctx *c)
-+{
-+	struct damon_region **sorted_regions, *region;
-+	int nr_regions;
-+	unsigned long total_sz, accounted_bytes = 0;
-+	int err, i, next_percentile = 0;
-+
-+	err = damon_stat_sort_regions(c, &sorted_regions, &nr_regions,
-+			&total_sz);
-+	if (err)
-+		return;
-+	for (i = 0; i < nr_regions; i++) {
-+		region = sorted_regions[i];
-+		accounted_bytes += region->ar.end - region->ar.start;
-+		while (next_percentile <= accounted_bytes * 100 / total_sz)
-+			page_idletime_percentiles_ms[next_percentile++] =
-+				damon_stat_idletime(region) *
-+				c->attrs.aggr_interval / USEC_PER_MSEC;
-+	}
-+	kfree(sorted_regions);
-+}
-+
-+static int damon_stat_after_aggregation(struct damon_ctx *c)
-+{
-+	struct damon_target *t;
-+	struct damon_region *r;
-+	unsigned long access_bytes = 0;
-+	static unsigned long last_refresh_jiffies = 0;
-+
-+	/* avoid unnecessarily frequent stat update */
-+	if (time_before_eq(jiffies, last_refresh_jiffies +
-+				msecs_to_jiffies(5 * MSEC_PER_SEC)))
-+		return 0;
-+	last_refresh_jiffies = jiffies;
-+
-+	damon_for_each_target(t, c) {
-+		damon_for_each_region(r, t)
-+			access_bytes += (r->ar.end - r->ar.start) *
-+				r->nr_accesses;
-+	}
-+	estimated_memory_bandwidth = access_bytes * USEC_PER_MSEC *
-+		MSEC_PER_SEC / c->attrs.aggr_interval;
-+	damon_stat_set_idletime_percentiles(c);
-+	return 0;
-+}
 +
 +static struct damon_ctx *damon_stat_build_ctx(void)
 +{
@@ -219,7 +156,6 @@ index 000000000000..379edf18a142
 +	damon_add_target(ctx, target);
 +	if (damon_set_region_biggest_system_ram_default(target, &start, &end))
 +		goto free_out;
-+	ctx->callback.after_aggregation = damon_stat_after_aggregation;
 +	return ctx;
 +free_out:
 +	damon_destroy_ctx(ctx);
@@ -242,7 +178,7 @@ index 000000000000..379edf18a142
 +
 +static bool damon_stat_init_called = false;
 +
-+static int damon_stat_enable_store(
++static int damon_stat_enabled_store(
 +		const char *val, const struct kernel_param *kp)
 +{
 +	bool is_enabled = enabled;
