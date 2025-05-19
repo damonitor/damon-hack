@@ -1,0 +1,90 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 19 May 2025 09:39:05 -0700
+Subject: [RFC PATCH 0/3] mm/damon: introduce DAMON_STAT for access monitoring that just works
+
+DAMON-based access monitoring requires manual DAMON control and results
+parsing.  Introduce a static kernel module for making it simple and
+intuitive.  The module can be enabled without manual setup and provides
+simple but practical access pattern metrics, namely memory idle time
+percentiles and estimatd memory bandwidth.
+
+Background and Problems
+=======================
+
+DAMON can be used for monitoring data access pattern of the system and
+workloads.  For that, users can start DAMON to monitor access events on
+specific address space with fine controls including address ranges to do
+monitor and time intervals between samplings and aggregations.  The
+resulting access information snapshot contains access frequency
+(nr_accesses) and how long the frequency was maintained (age) for each
+byte.
+
+The monitoring usage is not simple and practical enough for production
+usage.  Users should first start DAMON with a number of parameters, and
+wait until DAMON's monitoring results capture reasonable amount of the
+time data (age).  In production, such manual start and wait is
+impractical to capture useful information from a high number of machines
+in a timely manner.
+
+The monitoring result is also too detailed to be used on production
+environments.  The raw results are hard to be aggregated and/or compared
+for production environments having large scale of time, space and
+machines fleet.
+
+Users have to implement and use their own automation of DAMON control
+and results processing.  It is repetitive and challenging since there is
+no good reference or guideline for such automation.
+
+Solution: DAMON_STAT
+====================
+
+Implement a such automation in kernel space as a static kernel module,
+namely DAMON_STAT.  It can be enabled at build, boot, or run time via
+its build configuration or module parameter.  It monitors entire
+physical address space with monitoring intervals that auto-tuned for
+reasonable amount of access observations and minimum overhead.  It
+converts the raw monitoring results into simpler metrics that can easily
+aggregated and compared, namely idle time percentiles and memory
+bandwidth.
+
+Discussions
+===========
+
+The module aims to be useful on production environments constructed with
+large number of machines that runs ling time.  The auto-tuned monitoring
+intervals ensures a reasonable quality of the outputs.  The auto-tuning
+also ensures its overhead be reasonable and low enough to be enabled
+always on the production.  The simplified monitoring results metrics can
+be useful for showing both coldness (idle time percentiles) and hotness
+(memory bandwidth) of the system's access pattern.  We expect the
+information can be useful for assessing system memory utilization and
+inspiring optimizations or investigations on both kernel and user space
+memory management logics for large scale fleets.
+
+We hence expect the module is good enough to be just used in most
+environments.  For special cases that require a custom access monitoring
+automation, users will still get benefit by using DAMON_STAT as a
+reference or a guideline for their automation.
+
+SeongJae Park (3):
+  mm/damon: introduce DAMON_STAT module
+  mm/damon/stat: calculate and expose estimated memory bandwidth
+  mm/damon/stat: calculate and expose idle time percentiles
+
+ mm/damon/Kconfig  |  16 +++
+ mm/damon/Makefile |   1 +
+ mm/damon/stat.c   | 245 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 262 insertions(+)
+ create mode 100644 mm/damon/stat.c
+
+
+base-commit: 251509f2949105d3d0e3cdcd3921670a6aee3a0e
+-- 
+2.39.5
