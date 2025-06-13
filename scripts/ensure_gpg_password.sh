@@ -25,6 +25,7 @@ if [ ! -f $HOME/.gnupg/sshcontrol ]
 then
 	echo "Add keygrip to $HOME/.gnupg/sshcontrol"
 	echo "You may use gpg --list-secret-keys --with-keygrip to get keygrip"
+	echo "Note tht it should be that for authorize ([A])"
 	exit 1
 fi
 
