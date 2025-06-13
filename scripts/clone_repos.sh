@@ -34,7 +34,7 @@ git -C linux remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/s
 git -C linux remote update
 git -C linux checkout sj.korg/damon/next -b damon/next
 # next branch would be generated with initial clone.  Remove.
-git branch -D next
+git -C linux branch -D next
 
 git -C "$bindir" remote add korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/damon-hack
 git -C "$bindir" remote add gh git@github.com:damonitor/damon-hack
