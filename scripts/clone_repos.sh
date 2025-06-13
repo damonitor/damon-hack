@@ -38,3 +38,5 @@ git -C linux branch -D next
 
 git -C "$bindir" remote add korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/damon-hack
 git -C "$bindir" remote add gh git@github.com:damonitor/damon-hack
+# initial cloning may made origin remote.  Remove it.
+git -C "$bindir" remote remove origin
