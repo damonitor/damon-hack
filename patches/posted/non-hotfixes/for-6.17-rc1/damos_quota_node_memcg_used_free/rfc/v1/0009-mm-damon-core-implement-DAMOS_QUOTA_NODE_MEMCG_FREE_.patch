@@ -1,0 +1,58 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 19 Jun 2025 12:58:53 -0700
+Subject: [RFC PATCH 09/11] mm/damon/core: implement
+         DAMOS_QUOTA_NODE_MEMCG_FREE_BP
+
+Implement the core part of DAMOS_QUOTA_NODE_MEMCG_FREE_BP to get the
+real value.  The value is implemented as the entire memory of the given
+NUMA node, except the given cgroup's portion.  So strictly speaking, it
+is not free memory but memory that not used by the cgroup.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1481b43f2710..ee3d6d4b3c9b 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2028,7 +2028,7 @@ static unsigned long damos_get_node_memcg_used_bp(
+ {
+ 	struct mem_cgroup *memcg;
+ 	struct lruvec *lruvec;
+-	unsigned long used_pages;
++	unsigned long used_pages, numerator;
+ 	struct sysinfo i;
+ 
+ 	rcu_read_lock();
+@@ -2042,7 +2042,11 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 	rcu_read_unlock();
+ 
+ 	si_meminfo_node(&i, goal->nid);
+-	return used_pages * PAGE_SIZE * 10000 / i.totalram;
++	if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
++		numerator = used_pages * PAGE_SIZE;
++	else	/* DAMOS_QUOTA_NODE_MEMCG_FREE_BP */
++		numerator = i.totalram - used_pages * PAGE_SIZE;
++	return numerator * 10000 / i.totalram;
+ }
+ #else
+ static __kernel_ulong_t damos_get_node_mem_bp(
+@@ -2092,6 +2096,7 @@ static void damos_set_quota_goal_current_value(struct damos_quota_goal *goal)
+ 		goal->current_value = damos_get_node_mem_bp(goal);
+ 		break;
+ 	case DAMOS_QUOTA_NODE_MEMCG_USED_BP:
++	case DAMOS_QUOTA_NODE_MEMCG_FREE_BP:
+ 		goal->current_value = damos_get_node_memcg_used_bp(goal);
+ 		break;
+ 	case DAMOS_QUOTA_ACTIVE_MEM_BP:
+-- 
+2.39.5
