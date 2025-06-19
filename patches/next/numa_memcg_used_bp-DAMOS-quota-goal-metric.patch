@@ -1,0 +1,79 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 19 Jun 2025 12:13:41 -0700
+Subject: [PATCH] ==== numa_memcg_used_bp DAMOS quota goal metric ====
+
+mm/damon: per-memcg per-node memory usage based DAMOS quota auto-tuning
+
+Below implements system-wide memory tiering.
+
+    # ./damo start \
+        --numa_node 0 --monitoring_intervals_goal 4% 3 5ms 10s \
+            --damos_action migrate_cold 1 --damos_access_rate 0% 0% \
+            --damos_apply_interval 1s \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_mem_free_bp 0.5% 0 \
+            --damos_filter reject young \
+        --numa_node 1 --monitoring_intervals_goal 4% 3 5ms 10s \
+            --damos_action migrate_hot 0 --damos_access_rate 5% max \
+            --damos_apply_interval 1s \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_mem_used_bp 99.7% 0 \
+            --damos_filter allow young \
+            --damos_nr_quota_goals 1 1 --damos_nr_filters 1 1 \
+        --nr_targets 1 1 --nr_schemes 1 1 --nr_ctxs 1 1
+
+Below implements cgroup-aware memory tiering.  Let's assume cgroup A and
+B aims to utilize 30% and 70% of DRAN node, respectively.
+
+    # ./damo start \
+    	\ # kdamond for node 1 (slow)
+        --numa_node 1 --monitoring_intervals_goal 4% 3 5ms 10s \
+	    \ # promotion scheme for cgroup a
+            --damos_action migrate_hot 0 --damos_access_rate 5% max \
+            --damos_apply_interval 1s \
+	    --damos_filter allow memcg /workloads/a \
+            --damos_filter allow young \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_memcg_used_bp 29.7% 0 /workloads/a \
+	    \
+	    \ # promotion scheme for cgroup b
+            --damos_action migrate_hot 0 --damos_access_rate 5% max \
+            --damos_apply_interval 1s \
+	    --damos_filter allow memcg /workloads/b \
+            --damos_filter allow young \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_memcg_used_bp 69.7% 0 workloads/b \
+	    \
+    	\ # kdamond for node 0 (fast)
+        --numa_node 0 --monitoring_intervals_goal 4% 3 5ms 10s \
+            \ # demotion scheme for cgroup a
+            --damos_action migrate_cold 1 --damos_access_rate 0% 0% \
+            --damos_apply_interval 1s \
+	    --damos_filter allow memcg /workloads/a \
+            --damos_filter reject young \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_memcg_free_bp 70.5% 0 \
+	    \
+            \ # demotion scheme for cgroup b
+            --damos_action migrate_cold 1 --damos_access_rate 0% 0% \
+            --damos_apply_interval 1s \
+	    --damos_filter allow memcg /workloads/a \
+            --damos_filter reject young \
+            --damos_quota_interval 1s --damos_quota_space 200MB \
+            --damos_quota_goal node_memcg_free_bp 30.5% 0 \
+	    \
+            --damos_nr_quota_goals 1 1 1 --damos_nr_filters 1 1 1 \
+        --nr_targets 1 1 --nr_schemes 1 1 --nr_ctxs 1 1
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ hkml_cv_bogus/hkml_cv_bogus_tfmg7qtx | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 hkml_cv_bogus/hkml_cv_bogus_tfmg7qtx
+
+diff --git a/hkml_cv_bogus/hkml_cv_bogus_tfmg7qtx b/hkml_cv_bogus/hkml_cv_bogus_tfmg7qtx
+new file mode 100644
+index 000000000000..e69de29bb2d1
+-- 
+2.39.5
+
