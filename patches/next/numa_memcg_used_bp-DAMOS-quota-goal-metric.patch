@@ -4,7 +4,17 @@ Subject: [PATCH] ==== numa_memcg_used_bp DAMOS quota goal metric ====
 
 mm/damon: per-memcg per-node memory usage based DAMOS quota auto-tuning
 
-Below implements system-wide memory tiering.
+This patch series introduce two new DAMOS quota auto-tuning target
+metrics for per-cgroup per-node memory usage.  Those are assumed to be
+useful for various cgroup-aware case including memory tiering on
+cgroup-based multi-tenant systems.
+
+Current status: System-wide DAMOS, memory tiering as an example
+---------------------------------------------------------------
+
+DAMOS can auto-tune aggressiveness of schemes based on various system
+metrics, including per-NUMA memory usage.  One well known and tested
+example usage of that is system-wide memory tiering, like below.
 
     # ./damo start \
         --numa_node 0 --monitoring_intervals_goal 4% 3 5ms 10s \
@@ -22,8 +32,45 @@ Below implements system-wide memory tiering.
             --damos_nr_quota_goals 1 1 --damos_nr_filters 1 1 \
         --nr_targets 1 1 --nr_schemes 1 1 --nr_ctxs 1 1
 
-Below implements cgroup-aware memory tiering.  Let's assume cgroup A and
-B aims to utilize 30% and 70% of DRAN node, respectively.
+The per-node memory usage based auto-tuning can be applied only
+system-wide.  For systems running multiple workloads with different
+cgroups, each cgroup may want to have different portion of DRAM node.
+DAMOS already supports cgroup-aware action via DAMOS filter.  But quota
+auto-tuning system is not aware of cgroups.
+
+New DAMOS Quota Tuning Metrics for per-Cgroups per-Numa
+-------------------------------------------------------
+
+Implement new DAMOS quota auto-tuning goal metrics for the purpose,
+namely DAMOS_QUOTA_MEMCG_{USED,FREE}_BP.
+
+The two metrics specifies per-cgroup, per-node amount of used and unused
+memory in ratio to the total memory of the node.  For example, let's
+assume a system has two NUMA nodes of size 100 GiB and 50 GiB.  And two
+cgroups are using 40 and 60 GiB of node 0, 20 and 10 GiB of node 1,
+respectively.
+
+Then, DAMOS_QUOTA_MEMCG_USED_BP for the cgroups for the first node are,
+40 GiB / 100 GiB = 4000 bp and 60 GiB / 100 GiB = 6000 bp, respectively.
+Those for the second node are, 20 GiB / 50 GiB = 4000 bp and 10 GiB / 50
+GiB = 2000 bp, respectively.
+
+DAMOS_QUOTA_MEMCG_FREE_BP for the four cases are, 60 GiB /100 GiB = 6000
+bp, 40 GiB / 100 GiB = 4000 bp, 30 GiB / 50 GiB = 6000 bp, and 40 GiB /
+50 GiB = 8000 bp, respectively.
+
+Using these, users can specify how much [un]used amount of memory for
+per-cgroup and per-node DAMOS should make as a result of the
+auto-tuning.
+
+Example Usecase: Cgroup-aware Memory Tiering
+--------------------------------------------
+
+For example, let's suppose a system having two NUMA nodes.  The first
+node (node 0) is CPU-attached and fast.  The second node (node
+1) is CPU-unattached and slow.  It runs two cgroups, hoping to use 30
+percent and 70 percent of system memory, respectively.  Then, we can
+implement memory tiering for the system using DAMOS like below.
 
     # ./damo start \
     	\ # kdamond for node 1 (slow)
