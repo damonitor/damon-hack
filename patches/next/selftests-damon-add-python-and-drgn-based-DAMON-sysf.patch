@@ -1,0 +1,73 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 21 Jun 2025 14:03:48 -0700
+Subject: [PATCH] selftests/damon: add python and drgn-based DAMON sysfs test
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/Makefile |  1 +
+ tools/testing/selftests/damon/sysfs.py | 41 ++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+ create mode 100755 tools/testing/selftests/damon/sysfs.py
+
+diff --git a/tools/testing/selftests/damon/Makefile b/tools/testing/selftests/damon/Makefile
+index e888455e3cf8..5b230deb19e8 100644
+--- a/tools/testing/selftests/damon/Makefile
++++ b/tools/testing/selftests/damon/Makefile
+@@ -7,6 +7,7 @@ TEST_FILES = _damon_sysfs.py
+ 
+ # functionality tests
+ TEST_PROGS += sysfs.sh
++TEST_PROGS += sysfs.py
+ TEST_PROGS += sysfs_update_schemes_tried_regions_wss_estimation.py
+ TEST_PROGS += damos_quota.py damos_quota_goal.py damos_apply_interval.py
+ TEST_PROGS += damos_tried_regions.py damon_nr_regions.py
+diff --git a/tools/testing/selftests/damon/sysfs.py b/tools/testing/selftests/damon/sysfs.py
+new file mode 100755
+index 000000000000..add04638be65
+--- /dev/null
++++ b/tools/testing/selftests/damon/sysfs.py
+@@ -0,0 +1,41 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: GPL-2.0
++
++import json
++import os
++import subprocess
++
++import _damon_sysfs
++
++def dump_damon_status_dict(pid):
++    file_dir = os.path.dirname(os.path.abspath(__file__))
++    dump_script = os.path.join(file_dir, 'drgn_dump_damon_status.py')
++    rc = subprocess.call(['drgn', dump_script, pid, 'damon_dump_output'])
++    if rc != 0:
++        return None, 'drgn fail'
++    try:
++        with open('damon_dump_output', 'r') as f:
++            return json.load(f), None
++    except Exception as e:
++        return None, 'json.load fail (%s)' % e
++
++def main():
++    kdamonds = _damon_sysfs.Kdamonds(
++            [_damon_sysfs.Kdamond(contexts=[_damon_sysfs.DamonCtx()])])
++    err = kdamonds.start()
++    if err is not None:
++        print('kdamond start failed: %s' % err)
++        exit(1)
++
++    status, err = dump_damon_status_dict(kdamonds.kdamonds[0].pid)
++    if err is not None:
++        print(err)
++        exit(1)
++
++    if len(status['contexts']) != 1:
++        print('number of contexts: %d' % len(status['contexts']))
++        exit(1)
++    kdamonds.stop()
++
++if __name__ == '__main__':
++    main()
+-- 
+2.39.5
+
