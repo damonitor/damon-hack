@@ -2,32 +2,38 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sun, 27 Apr 2025 14:25:51 -0700
 Subject: [PATCH] selftests/damon: add drgn script for dumping damon status
 
-Will be extended for DAMON sysfs commit testing.
-
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- .../selftests/damon/drgn_dump_damon_status.py | 147 ++++++++++++++++++
- 1 file changed, 147 insertions(+)
+ .../selftests/damon/drgn_dump_damon_status.py | 161 ++++++++++++++++++
+ 1 file changed, 161 insertions(+)
  create mode 100755 tools/testing/selftests/damon/drgn_dump_damon_status.py
 
 diff --git a/tools/testing/selftests/damon/drgn_dump_damon_status.py b/tools/testing/selftests/damon/drgn_dump_damon_status.py
 new file mode 100755
-index 000000000000..ede484d19d79
+index 000000000000..333a0d0c4bff
 --- /dev/null
 +++ b/tools/testing/selftests/damon/drgn_dump_damon_status.py
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,161 @@
 +#!/usr/bin/env drgn
 +# SPDX-License-Identifier: GPL-2.0
 +
 +'''
 +Read DAMON context data and dump as a json string.
 +'''
-+from drgn import FaultError, NULL, Object, alignof, cast, container_of, execscript, implicit_convert, offsetof, reinterpret, sizeof, stack_trace
++import drgn
++from drgn import FaultError, NULL, Object, cast, container_of, execscript, offsetof, reinterpret, sizeof
 +from drgn.helpers.common import *
 +from drgn.helpers.linux import *
 +
 +import json
 +import sys
++
++if "prog" not in globals():
++    try:
++        prog = drgn.get_default_prog()
++    except drgn.NoDefaultProgramError:
++        prog = drgn.program_from_kernel()
++        drgn.set_default_prog(prog)
 +
 +def to_dict(object, attr_name_converter):
 +    d = {}
@@ -150,16 +156,22 @@ index 000000000000..ede484d19d79
 +        ])
 +
 +def main():
-+    if len(sys.argv) < 2:
-+        print('Usage: %s <kdamond pid>' % sys.argv[0])
++    if len(sys.argv) < 3:
++        print('Usage: %s <kdamond pid> <file>' % sys.argv[0])
 +        exit(1)
 +
 +    pid = int(sys.argv[1])
++    file_to_store = sys.argv[2]
 +
-+    kthread_data = cast('struct kthread *', find_task(pid).worker_private).data
++    kthread_data = cast('struct kthread *',
++                        find_task(prog, pid).worker_private).data
 +    ctx = cast('struct damon_ctx *', kthread_data)
-+    print(json.dumps({
-+        'contexts': [damon_ctx_to_dict(ctx)]}, indent=4))
++    status = {'contexts': [damon_ctx_to_dict(ctx)]}
++    if file_to_store == 'stdout':
++        print(json.dumps(status, indent=4))
++    else:
++        with open(file_to_store, 'w') as f:
++            json.dump(status, f, indent=4)
 +
 +if __name__ == '__main__':
 +    main()
