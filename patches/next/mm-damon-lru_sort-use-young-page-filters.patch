@@ -1,0 +1,53 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 22 Jun 2025 11:59:07 -0700
+Subject: [PATCH] mm/damon/lru_sort: use young page filters
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/lru_sort.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/mm/damon/lru_sort.c b/mm/damon/lru_sort.c
+index 7513ebc6aeef..693b8d95b42b 100644
+--- a/mm/damon/lru_sort.c
++++ b/mm/damon/lru_sort.c
+@@ -186,6 +186,25 @@ static struct damos *damon_lru_sort_new_cold_scheme(unsigned int cold_thres)
+ 	return damon_lru_sort_new_scheme(&pattern, DAMOS_LRU_DEPRIO);
+ }
+ 
++static int damon_lru_sort_add_filters(struct damos *hot_scheme,
++		struct damos *cold_scheme)
++{
++	struct damos_filter *filter;
++
++	/* disallow prioritizing not-young pages */
++	filter = damos_new_filter(DAMOS_FILTER_TYPE_YOUNG, false, false);
++	if (!filter)
++		return -ENOMEM;
++	damos_add_filter(hot_scheme, filter);
++
++	/* disabllow de-prioritizing young pages */
++	filter = damos_new_filter(DAMOS_FILTER_TYPE_YOUNG, true, false);
++	if (!filter)
++		return -ENOMEM;
++	damos_add_filter(cold_scheme, filter);
++	return 0;
++}
++
+ static int damon_lru_sort_apply_parameters(void)
+ {
+ 	struct damon_ctx *param_ctx;
+@@ -219,6 +238,10 @@ static int damon_lru_sort_apply_parameters(void)
+ 	damon_set_schemes(param_ctx, &hot_scheme, 1);
+ 	damon_add_scheme(param_ctx, cold_scheme);
+ 
++	err = damon_lru_sort_add_filters(hot_scheme, cold_scheme);
++	if (err)
++		goto out;
++
+ 	err = damon_set_region_biggest_system_ram_default(param_target,
+ 					&monitor_region_start,
+ 					&monitor_region_end);
+-- 
+2.39.5
+
