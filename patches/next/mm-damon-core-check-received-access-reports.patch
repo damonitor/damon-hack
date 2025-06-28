@@ -1,24 +1,29 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Sun, 25 May 2025 14:29:24 -0700
-Subject: [PATCH] mm/damon/core: do check reported accesses
+Subject: [PATCH] mm/damon/core: check received access reports
+
+Use the access reports that made via damon_report_access() on kdamond.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 47 +++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 47 insertions(+)
+ mm/damon/core.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 70dbf638ccdf..ecd9e0596984 100644
+index 70dbf638ccdf..1bef504d4b02 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2468,6 +2468,52 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+@@ -2468,6 +2468,44 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
  	}
  }
  
-+static void kdamond_apply_access_report(struct damon_target *t,
-+		struct damon_access_report *report)
++static void kdamond_apply_access_report(struct damon_access_report *report,
++		struct damon_target *t, struct damon_ctx *ctx)
 +{
 +	struct damon_region *r;
++
++	if (ctx->ops.eligible_report && !ctx->ops.eligible_report(report, t))
++		return;
 +
 +	/* todo: make search faster, e.g., binary search? */
 +	damon_for_each_region(r, t) {
@@ -39,24 +44,13 @@ index 70dbf638ccdf..ecd9e0596984 100644
 +	mutex_lock(&damon_access_reports_lock);
 +	for (i = 0; i < damon_access_reports_len; i++) {
 +		report = &damon_access_reports[i];
-+		/* ignore too old reports */
 +		if (report->report_jiffies < jiffies -
 +				usecs_to_jiffies(ctx->attrs.sample_interval))
 +			continue;
-+		if (report->pid) {
-+			if (!damon_target_has_pid(ctx))
-+				continue;
-+			damon_for_each_target(t, ctx) {
-+				if (t->pid != report->pid)
-+					continue;
-+				kdamond_apply_access_report(t, report);
-+			}
-+		} else {
-+			if (damon_target_has_pid(ctx))
-+				continue;
-+			damon_for_each_target(t, ctx)
-+				kdamond_apply_access_report(t, report);
-+		}
++		if (report->pid && !damon_target_has_pid(ctx))
++			continue;
++		damon_for_each_target(t, ctx)
++			kdamond_apply_access_report(report, t, ctx);
 +	}
 +	mutex_unlock(&damon_access_reports_lock);
 +}
@@ -64,7 +58,7 @@ index 70dbf638ccdf..ecd9e0596984 100644
  /*
   * The monitoring daemon that runs as a kernel thread
   */
-@@ -2514,6 +2560,7 @@ static int kdamond_fn(void *data)
+@@ -2514,6 +2552,7 @@ static int kdamond_fn(void *data)
  		kdamond_usleep(sample_interval);
  		ctx->passed_sample_intervals++;
  
