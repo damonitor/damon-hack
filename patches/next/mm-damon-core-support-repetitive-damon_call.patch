@@ -1,0 +1,99 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 28 Jun 2025 13:44:16 -0700
+Subject: [PATCH] mm/damon/core: support repetitive damon_call()
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 23 +++++++++++++++++++----
+ 2 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 4c52e2e25c71..7ce062f6f556 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -739,6 +739,7 @@ struct damon_callback {
+  *
+  * @fn:			Function to be called back.
+  * @data:		Data that will be passed to @fn.
++ * @repeat:		Repeat invocations.
+  * @return_code:	Return code from @fn invocation.
+  *
+  * Control damon_call(), which requests specific kdamond to invoke a given
+@@ -747,6 +748,7 @@ struct damon_callback {
+ struct damon_call_control {
+ 	int (*fn)(void *data);
+ 	void *data;
++	bool repeat;
+ 	int return_code;
+ /* private: internal use only */
+ 	/* informs if the kdamond finished handling of the request */
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 2be39a80e36c..e49206131b93 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1376,8 +1376,9 @@ bool damon_is_running(struct damon_ctx *ctx)
+  *
+  * Ask DAMON worker thread (kdamond) of @ctx to call a function with an
+  * argument data that respectively passed via &damon_call_control->fn and
+- * &damon_call_control->data of @control, and wait until the kdamond finishes
+- * handling of the request.
++ * &damon_call_control->data of @control.  If &damon_call_control->repeat of
++ * @control is set, further wait until the kdamond finishes handling of the
++ * request.  Otherwise, return as soon as the request is made.
+  *
+  * The kdamond executes the function with the argument in the main loop, just
+  * after a sampling of the iteration is finished.  The function can hence
+@@ -1389,7 +1390,8 @@ bool damon_is_running(struct damon_ctx *ctx)
+  */
+ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ {
+-	init_completion(&control->completion);
++	if (!control->repeat)
++		init_completion(&control->completion);
+ 	control->canceled = false;
+ 	INIT_LIST_HEAD(&control->list);
+ 
+@@ -1398,6 +1400,8 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ 	mutex_unlock(&ctx->call_controls_lock);
+ 	if (!damon_is_running(ctx))
+ 		return -EINVAL;
++	if (control->repeat)
++		return 0;
+ 	wait_for_completion(&control->completion);
+ 	if (control->canceled)
+ 		return -ECANCELED;
+@@ -2542,6 +2546,7 @@ static void kdamond_usleep(unsigned long usecs)
+ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ {
+ 	struct damon_call_control *control;
++	LIST_HEAD(repeat_controls);
+ 	int ret = 0;
+ 
+ 	while (true) {
+@@ -2557,11 +2562,21 @@ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ 			ret = control->fn(control->data);
+ 			control->return_code = ret;
+ 		}
+-		complete(&control->completion);
++		if (!control->repeat)
++			complete(&control->completion);
+ 		mutex_lock(&ctx->call_controls_lock);
+ 		list_del(&control->list);
+ 		mutex_unlock(&ctx->call_controls_lock);
++		if (control->repeat)
++			list_add(&repeat_controls, &control->list);
+ 	}
++	control = list_first_entry_or_null(&repeat_controls,
++			struct damon_call_control, list);
++	if (!control || cancel)
++		return;
++	mutex_lock(&ctx->call_controls_lock);
++	list_add_tail(&ctx->call_controls, &control->list);
++	mutex_unlock(&ctx->call_controls_lock);
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+-- 
+2.39.5
+
