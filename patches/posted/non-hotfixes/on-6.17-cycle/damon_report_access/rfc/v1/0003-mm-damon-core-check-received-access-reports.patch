@@ -1,0 +1,82 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 25 May 2025 14:29:24 -0700
+Subject: [RFC PATCH 3/6] mm/damon/core: check received access reports
+
+Reported access information is only saved in the core layer's internal
+data structure.  Those are not really being used for final monitoring
+results.  Update core layer access information (DAMON regions) using the
+reported access information.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b54ed91f2dce..59567d79af99 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2472,6 +2472,46 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ 	}
+ }
+ 
++static void kdamond_apply_access_report(struct damon_access_report *report,
++		struct damon_target *t, struct damon_ctx *ctx)
++{
++	struct damon_region *r;
++
++	if (ctx->ops.eligible_report && !ctx->ops.eligible_report(report, t))
++		return;
++
++	/* todo: make search faster, e.g., binary search? */
++	damon_for_each_region(r, t) {
++		if (report->addr < r->ar.start)
++			continue;
++		if (r->ar.end < report->addr + report->size)
++			continue;
++		r->nr_accesses += report->nr_accesses;
++	}
++}
++
++static void kdamond_check_reported_accesses(struct damon_ctx *ctx)
++{
++	int i;
++	struct damon_access_report *report;
++	struct damon_target *t;
++
++	mutex_lock(&damon_access_reports_lock);
++	for (i = 0; i < damon_access_reports_len; i++) {
++		report = &damon_access_reports[i];
++		if (time_before(report->report_jiffies,
++					jiffies -
++					usecs_to_jiffies(
++						ctx->attrs.sample_interval)))
++			continue;
++		if (report->pid && !damon_target_has_pid(ctx))
++			continue;
++		damon_for_each_target(t, ctx)
++			kdamond_apply_access_report(report, t, ctx);
++	}
++	mutex_unlock(&damon_access_reports_lock);
++}
++
+ /*
+  * The monitoring daemon that runs as a kernel thread
+  */
+@@ -2518,6 +2558,7 @@ static int kdamond_fn(void *data)
+ 		kdamond_usleep(sample_interval);
+ 		ctx->passed_sample_intervals++;
+ 
++		kdamond_check_reported_accesses(ctx);
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 
+-- 
+2.39.5
