@@ -2,15 +2,23 @@ From: SeongJae Park <sj@kernel.org>
 Date: Tue, 6 May 2025 21:31:34 -0700
 Subject: [PATCH] mm/damon: introduce damon_report_access()
 
+DAMON core layer asks operations set layer about past access
+information, on core layer's schedule.  In other words, core layer
+"pulls" the information from the operations set layer.  This is
+problematic for a case that the operations set layer have no time and
+space to save the information until the core layer queries.
+
 Add a new DAMON API function for reporting identified data accesses to
-DAMON.  The function internally uses mutex, so reporting kernel code
-should be safe to sleep.
+DAMON, on the identifiers' schedule.  In other words, it lets the
+operations set layer to "push" the information to the core layer.  The
+function internally uses mutex, so reporting kernel code should be safe
+to sleep.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h | 21 +++++++++++++++++++++
- mm/damon/core.c       | 31 +++++++++++++++++++++++++++++++
- 2 files changed, 52 insertions(+)
+ mm/damon/core.c       | 35 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 6370cf44486f..4bb37f4b7939 100644
@@ -52,7 +60,7 @@ index 6370cf44486f..4bb37f4b7939 100644
  				unsigned long *start, unsigned long *end);
  
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index ea2a17b2dee7..70dbf638ccdf 100644
+index ea2a17b2dee7..b54ed91f2dce 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -24,6 +24,8 @@
@@ -76,7 +84,7 @@ index ea2a17b2dee7..70dbf638ccdf 100644
  /* Should be called under damon_ops_lock with id smaller than NR_DAMON_OPS */
  static bool __damon_is_registered_ops(enum damon_ops_id id)
  {
-@@ -1403,6 +1410,30 @@ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control)
+@@ -1403,6 +1410,34 @@ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control)
  	return 0;
  }
  
@@ -87,7 +95,11 @@ index ea2a17b2dee7..70dbf638ccdf 100644
 + * Report access events to DAMON.
 + *
 + * Context: May sleep.
-+ * TODO: allow any context?
++ *
++ * NOTE: we may be able to implement this as a lockless queue, and allow any
++ * context.  As the overhead is unknown, and region-based DAMON logics would
++ * guarantee the reports would be not made that frequently, let's start with
++ * this simple implementation, though.
 + */
 +void damon_report_access(struct damon_access_report *report)
 +{

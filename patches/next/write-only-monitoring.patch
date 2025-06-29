@@ -2,32 +2,101 @@ From: SeongJae Park <sj@kernel.org>
 Date: Mon, 20 Jan 2025 13:43:49 -0800
 Subject: [PATCH] ==== write-only monitoring ====
 
-Implement new monitoring primitive sets called vaddr-wo and paddr-wo.
-Those are same to vaddr and paddr, but monitor only write using
-write-protect faults mechanism for access checking.
+mm/damon/core: support multi-source reports-based access monitoring
 
-On '->prepare_access_checks()', set the access sampling page as
-write-protected on the page table entry (pte_wrprotect()).
+TL; DR: Extend DAMON core-operations set layers interface for operations
+set driven report-based monitoring for per-CPU or write-only access
+monitoring.
 
-If the page is written, write-protect page faults handling
-(wp_huge_pud(), wp_huge_pmd(), do_wp_page()) will remove the protection
-bit.
+Background
+----------
 
-On '->check_accesses()', just check if the protection is removed
-(pte_write()), consider it as accessed (written) in the case.
+Existing DAMON operations set implementations, namely paddr, vaddr, and
+fvaddr, use Accessed bits of page tables as the main source of the
+access information.  Accessed bits has some restrictions, though.  For
+example, it cannot tell which CPU or CPU made the access, whether the
+access was read or write, and which part of the mapped entity was really
+accessed.  Also, it cannot capture accesses done without page table
+walks, e.g.,  TLB hit case, or unmapped pages.  Exisiting DAMON
+operations set can capture the accesses to unmapped pages utilizing
+PG_Idle, though.
 
-For possible future DAMON extensions
-------------------------------------
+Depending on the use case, the limitations can be problematic.  Because
+the issue stems from the nature of page table Accessed bit, utilizing
+access information from different sources can mitigate the issue.  Page
+faults, memory access instructions sampling interrupts, system calls, or
+any information from other kernel space friends such as subsystems or
+device drivers of CXL or GPUs could be examples of the different
+sources.
 
-To extend DAMON for NUMA-ware monitoring, we may reuse NUMA hinting
-faults in similar way (using change_prot_numa() and pte_prot_none()).
-We might better to use NUMA hinting for unitifed fault-based DAMON
-extensions.
+DAMON separates its core and operations set layer.  Operations set layer
+handles the low level access information handling, and the core layer
+handles more high level works such as the region-based overhead/accuracy
+control and access-aware system operations.  Hence we can extend DAMON
+to use the different sources by implementing and using another DAMON
+operations set.  The core layer features will still be available with
+the new sources, without additional changes.
 
-In future, DAMON could be extended for h/w-based instruction sampling.
-If the h/w feature doesn't support address-based filtering, the sampled
-instruction would need to find the DAMON region of the address and mark
-it as accessed.
+Nevertheless, the current interface between the core and the operations
+set layers is optimized for the Accessed bits case.  Specifically, the
+interface asks the operations set if a give part of memory has accessed
+or not in a given time period (last sampling interval).  It is easy for
+Accessed bit use case, since operations set can simply read the current
+value of the Accessed bit, which is already well manageed for each
+mapping entities by the memory management subsystems.  For some sources
+other than Accessed bits, the operations set may need to keep the access
+information on its own, and answer to the core layer's question by
+reading its own access information collection.  Similar implementations
+of such operations set internal access information may required for
+multiple operations set implementations.
+
+Core Layer Changes for Reporting-based Monitoring
+-------------------------------------------------
+
+Optimize such possible duplicated efforts, by updating DAMON core layer
+to support real time access reporting.  The updated interface allows
+operations set implementations to report (or, push) their information to
+the core layer, on their preferred schedule.  DAMON core layer will
+handle the reports by managing meta data and updating the final
+monitoring results (DAMON regions) accordingly.
+
+Also add another operations set callback to determine if a given access
+report is eligible to be used for given operations set.  For example, if
+the operations set implementation is for monitoring only specific CPU or
+writes, the operations set could ask core layer to ignore reported
+accesses that made by other CPUs, or was for reads.
+
+How Per-CPU or Write-only Monitoring Can Be Implemented
+-------------------------------------------------------
+
+With these core layer changes, we can implement new DAMON operations set
+that utilizes different information source for page table Accessed bits
+restricted use cases.  For example, to utilize page faults information,
+we could implement an operations set that installs the fake page fault
+protections to access sampling pages per DAMON region for every sampling
+interval.  For that, damon_operations->preapre_access_checks() callback
+coudl be a good place to implement.  Then the developer would need to
+further update PROT_NONE page fault handlers to report the access events
+using the new report API, namely damon_report_access().  The report
+could contain infromation about which CPU, process, or thread made the
+access, and whether the access is for read or write.  And finally
+implementing the report-ignore logic to ignore accesses made by CPUs of
+no interest or reads, we can do per-CPU or write-only access monitoring.
+
+Plan for Dropping RFC
+---------------------
+
+This patch series is an RFC for early sharing of the idea that also
+shared on the last LSFMMBPF[1], as 'damon_report_access()' API plan.
+I actually wanted to post this later, but recently I received a few
+questiosn about this, so sharing this very early version.  The
+implementation is pretty simple and unoptimized.  No real use case of
+the changed interface (new operations set implementation) exists.  We
+will further optimize the core layer implementation and add one or more
+real operations set implementations that utilizing the report-based
+interface, by the final version of this patch series.
+
+[1] https://lwn.net/Articles/1016525/
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
