@@ -1,0 +1,68 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Bijan Tabatabai <bijan311@gmail.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 21 Jun 2025 09:42:28 -0700
+Subject: [RFC PATCH v2 4/6] mm/damon/sysfs-schemes: set damos->migrate_dest
+
+Pass user-specified multiple DAMOS action destinations and their weights
+to DAMON core API, so that user requests can really work.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index b9434cdaacdc..507ca7708078 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2576,6 +2576,29 @@ void damos_sysfs_update_effective_quotas(
+ 	}
+ }
+ 
++static int damos_sysfs_add_migrate_dest(struct damos *scheme,
++		struct damos_sysfs_dests *sysfs_dests)
++{
++	struct damos_migrate_dest *dest = &scheme->migrate_dest;
++	int i;
++
++	dest->node_id_arr = kmalloc_array(sysfs_dests->nr,
++			sizeof(*dest->node_id_arr), GFP_KERNEL);
++	if (!dest->node_id_arr)
++		return -ENOMEM;
++	dest->weight_arr = kmalloc_array(sysfs_dests->nr,
++			sizeof(*dest->weight_arr), GFP_KERNEL);
++	if (!dest->weight_arr)
++		/* ->node_id_arr will be freed by scheme destruction */
++		return -ENOMEM;
++	for (i = 0; i < sysfs_dests->nr; i++) {
++		dest->node_id_arr[i] = sysfs_dests->dests_arr[i]->id;
++		dest->weight_arr[i] = sysfs_dests->dests_arr[i]->weight;
++	}
++	dest->nr_dests = sysfs_dests->nr;
++	return 0;
++}
++
+ static struct damos *damon_sysfs_mk_scheme(
+ 		struct damon_sysfs_scheme *sysfs_scheme)
+ {
+@@ -2638,6 +2661,11 @@ static struct damos *damon_sysfs_mk_scheme(
+ 		damon_destroy_scheme(scheme);
+ 		return NULL;
+ 	}
++	err = damos_sysfs_add_migrate_dest(scheme, sysfs_scheme->dests);
++	if (err) {
++		damon_destroy_scheme(scheme);
++		return NULL;
++	}
+ 	return scheme;
+ }
+ 
+-- 
+2.39.5
