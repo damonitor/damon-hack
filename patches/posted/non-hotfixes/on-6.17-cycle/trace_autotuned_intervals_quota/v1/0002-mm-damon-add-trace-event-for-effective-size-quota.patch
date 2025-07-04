@@ -1,0 +1,108 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Cc: linux-trace-kernel@vger.kernel.org
+Date: Fri, 4 Jul 2025 14:00:41 -0700
+Subject: [PATCH 2/2] mm/damon: add trace event for effective size quota
+
+Aim-oriented DAMOS quota auto-tuning is an important and recommended
+feature for DAMOS users.  Add a trace event for the observability of the
+tuned quota and tuning itself.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/trace/events/damon.h | 26 ++++++++++++++++++++++++++
+ mm/damon/core.c              | 20 +++++++++++++++++++-
+ 2 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/include/trace/events/damon.h b/include/trace/events/damon.h
+index 32c611076023..36b2cdf47dce 100644
+--- a/include/trace/events/damon.h
++++ b/include/trace/events/damon.h
+@@ -9,6 +9,32 @@
+ #include <linux/types.h>
+ #include <linux/tracepoint.h>
+ 
++TRACE_EVENT_CONDITION(damos_esz,
++
++	TP_PROTO(unsigned int context_idx, unsigned int scheme_idx,
++		unsigned long esz, bool do_trace),
++
++	TP_ARGS(context_idx, scheme_idx, esz, do_trace),
++
++	TP_CONDITION(do_trace),
++
++	TP_STRUCT__entry(
++		__field(unsigned int, context_idx)
++		__field(unsigned int, scheme_idx)
++		__field(unsigned long, esz)
++	),
++
++	TP_fast_assign(
++		__entry->context_idx = context_idx;
++		__entry->scheme_idx = scheme_idx;
++		__entry->esz = esz;
++	),
++
++	TP_printk("ctx_idx=%u scheme_idx=%u esz=%lu",
++			__entry->context_idx, __entry->scheme_idx,
++			__entry->esz)
++);
++
+ TRACE_EVENT_CONDITION(damos_before_apply,
+ 
+ 	TP_PROTO(unsigned int context_idx, unsigned int scheme_idx,
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 57a1ace4d10d..6019b8ec4bba 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2011,12 +2011,26 @@ static void damos_set_effective_quota(struct damos_quota *quota)
+ 	quota->esz = esz;
+ }
+ 
++static void damos_trace_esz(struct damon_ctx *c, struct damos *s,
++		struct damos_quota *quota)
++{
++	unsigned int cidx = 0, sidx;
++	struct damos *siter;
++
++	damon_for_each_scheme(siter, c) {
++		if (siter == s)
++			break;
++		sidx++;
++	}
++	trace_damos_esz(cidx, sidx, quota->esz, true);
++}
++
+ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ {
+ 	struct damos_quota *quota = &s->quota;
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+-	unsigned long cumulated_sz;
++	unsigned long cumulated_sz, cached_esz;
+ 	unsigned int score, max_score = 0;
+ 
+ 	if (!quota->ms && !quota->sz && list_empty(&quota->goals))
+@@ -2030,7 +2044,11 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 		quota->total_charged_sz += quota->charged_sz;
+ 		quota->charged_from = jiffies;
+ 		quota->charged_sz = 0;
++		if (trace_damos_esz_enabled())
++			cached_esz = quota->esz;
+ 		damos_set_effective_quota(quota);
++		if (trace_damos_esz_enabled() && quota->esz != cached_esz)
++			damos_trace_esz(c, s, quota);
+ 	}
+ 
+ 	if (!c->ops.get_scheme_score)
+-- 
+2.39.5
