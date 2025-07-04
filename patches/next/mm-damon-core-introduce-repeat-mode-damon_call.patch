@@ -1,6 +1,16 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Sat, 28 Jun 2025 13:44:16 -0700
-Subject: [PATCH] mm/damon/core: support repetitive damon_call()
+Subject: [PATCH] mm/damon/core: introduce repeat mode damon_call()
+
+damon_call() can be useful for reading or writing DAMON internal data
+for one time.  A common pattern of DAMON core usage from DAMON modules
+is doing such reads and writes repeatedly, for example, to periodically
+update the DAMOS stats.  To do that with damon_call(), callers should
+call damon_call() repeatedly, with their own delay loop.  Each caller
+doing that is repetitive.  Introduce a repeat mode damon_call().
+Callers can use the mode by setting a new field in damon_call_control.
+If the mode is turned on, damon_call() returns success immediately, and
+DAMON repeats invoking the callback function inside kdamond main loop.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -29,7 +39,7 @@ index 101689966bb0..f98451bd58ab 100644
  /* private: internal use only */
  	/* informs if the kdamond finished handling of the request */
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index e7ba1175c28c..f23857562cd9 100644
+index e7ba1175c28c..1db4049a6bf7 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1376,8 +1376,9 @@ bool damon_is_running(struct damon_ctx *ctx)
@@ -82,14 +92,14 @@ index e7ba1175c28c..f23857562cd9 100644
  		list_del(&control->list);
  		mutex_unlock(&ctx->call_controls_lock);
 +		if (control->repeat)
-+			list_add(&repeat_controls, &control->list);
++			list_add(&control->list, &repeat_controls);
  	}
 +	control = list_first_entry_or_null(&repeat_controls,
 +			struct damon_call_control, list);
 +	if (!control || cancel)
 +		return;
 +	mutex_lock(&ctx->call_controls_lock);
-+	list_add_tail(&ctx->call_controls, &control->list);
++	list_add_tail(&control->list, &ctx->call_controls);
 +	mutex_unlock(&ctx->call_controls_lock);
  }
  
