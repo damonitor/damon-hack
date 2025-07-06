@@ -1,0 +1,77 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 2 Jul 2025 21:57:39 -0700
+Subject: [RFC PATCH 06/14] samples/damon/prcl: use damon_call() repeat mode
+         instead of damon_callback
+
+prcl uses damon_callback for periodically reading DAMON internal data.
+Use its alternative, damon_call() repeat mode.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/prcl.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/samples/damon/prcl.c b/samples/damon/prcl.c
+index d70f47924720..d3215699a5f4 100644
+--- a/samples/damon/prcl.c
++++ b/samples/damon/prcl.c
+@@ -34,8 +34,9 @@ MODULE_PARM_DESC(enable, "Enable of disable DAMON_SAMPLE_WSSE");
+ static struct damon_ctx *ctx;
+ static struct pid *target_pidp;
+ 
+-static int damon_sample_prcl_after_aggregate(struct damon_ctx *c)
++static int damon_sample_prcl_repeat_call_fn(void *data)
+ {
++	struct damon_ctx *c = data;
+ 	struct damon_target *t;
+ 
+ 	damon_for_each_target(t, c) {
+@@ -51,10 +52,16 @@ static int damon_sample_prcl_after_aggregate(struct damon_ctx *c)
+ 	return 0;
+ }
+ 
++static struct damon_call_control repeat_call_control = {
++	.fn = damon_sample_prcl_repeat_call_fn,
++	.repeat = true,
++};
++
+ static int damon_sample_prcl_start(void)
+ {
+ 	struct damon_target *target;
+ 	struct damos *scheme;
++	int err;
+ 
+ 	pr_info("start\n");
+ 
+@@ -79,8 +86,6 @@ static int damon_sample_prcl_start(void)
+ 	}
+ 	target->pid = target_pidp;
+ 
+-	ctx->callback.after_aggregation = damon_sample_prcl_after_aggregate;
+-
+ 	scheme = damon_new_scheme(
+ 			&(struct damos_access_pattern) {
+ 			.min_sz_region = PAGE_SIZE,
+@@ -100,7 +105,12 @@ static int damon_sample_prcl_start(void)
+ 	}
+ 	damon_set_schemes(ctx, &scheme, 1);
+ 
+-	return damon_start(&ctx, 1, true);
++	err = damon_start(&ctx, 1, true);
++	if (err)
++		return err;
++
++	repeat_call_control.data = ctx;
++	return damon_call(ctx, &repeat_call_control);
+ }
+ 
+ static void damon_sample_prcl_stop(void)
+-- 
+2.39.5

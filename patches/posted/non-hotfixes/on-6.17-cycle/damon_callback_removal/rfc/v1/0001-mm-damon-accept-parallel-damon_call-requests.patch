@@ -1,0 +1,135 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 28 Jun 2025 12:57:15 -0700
+Subject: [RFC PATCH 01/14] mm/damon: accept parallel damon_call() requests
+
+Calling damon_call() while it is serving for another parallel thread
+immediately fails with -EBUSY.  The caller should call it again, later.
+Each caller implementing such retry logic would be redundant.  Accept
+parallel damon_call() requests and do the wait instead of the caller.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  7 +++++--
+ mm/damon/core.c       | 49 ++++++++++++++++++++++---------------------
+ 2 files changed, 30 insertions(+), 26 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index accd45f203cd..9176a1c7d5a8 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -673,6 +673,8 @@ struct damon_call_control {
+ 	struct completion completion;
+ 	/* informs if the kdamond canceled @fn infocation */
+ 	bool canceled;
++	/* List head for siblings. */
++	struct list_head list;
+ };
+ 
+ /**
+@@ -798,8 +800,9 @@ struct damon_ctx {
+ 	/* for scheme quotas prioritization */
+ 	unsigned long *regions_score_histogram;
+ 
+-	struct damon_call_control *call_control;
+-	struct mutex call_control_lock;
++	/* lists of &struct damon_call_control */
++	struct list_head call_controls;
++	struct mutex call_controls_lock;
+ 
+ 	struct damos_walk_control *walk_control;
+ 	struct mutex walk_control_lock;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 45c237ade8cf..01e62bdcdd67 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -533,7 +533,8 @@ struct damon_ctx *damon_new_ctx(void)
+ 	ctx->next_ops_update_sis = 0;
+ 
+ 	mutex_init(&ctx->kdamond_lock);
+-	mutex_init(&ctx->call_control_lock);
++	INIT_LIST_HEAD(&ctx->call_controls);
++	mutex_init(&ctx->call_controls_lock);
+ 	mutex_init(&ctx->walk_control_lock);
+ 
+ 	ctx->attrs.min_nr_regions = 10;
+@@ -1353,14 +1354,11 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ {
+ 	init_completion(&control->completion);
+ 	control->canceled = false;
++	INIT_LIST_HEAD(&control->list);
+ 
+-	mutex_lock(&ctx->call_control_lock);
+-	if (ctx->call_control) {
+-		mutex_unlock(&ctx->call_control_lock);
+-		return -EBUSY;
+-	}
+-	ctx->call_control = control;
+-	mutex_unlock(&ctx->call_control_lock);
++	mutex_lock(&ctx->call_controls_lock);
++	list_add_tail(&ctx->call_controls, &control->list);
++	mutex_unlock(&ctx->call_controls_lock);
+ 	if (!damon_is_running(ctx))
+ 		return -EINVAL;
+ 	wait_for_completion(&control->completion);
+@@ -2379,11 +2377,11 @@ static void kdamond_usleep(unsigned long usecs)
+ }
+ 
+ /*
+- * kdamond_call() - handle damon_call_control.
++ * kdamond_call() - handle damon_call_control objects.
+  * @ctx:	The &struct damon_ctx of the kdamond.
+  * @cancel:	Whether to cancel the invocation of the function.
+  *
+- * If there is a &struct damon_call_control request that registered via
++ * If there are &struct damon_call_control requests that registered via
+  * &damon_call() on @ctx, do or cancel the invocation of the function depending
+  * on @cancel.  @cancel is set when the kdamond is already out of the main loop
+  * and therefore will be terminated.
+@@ -2393,21 +2391,24 @@ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ 	struct damon_call_control *control;
+ 	int ret = 0;
+ 
+-	mutex_lock(&ctx->call_control_lock);
+-	control = ctx->call_control;
+-	mutex_unlock(&ctx->call_control_lock);
+-	if (!control)
+-		return;
+-	if (cancel) {
+-		control->canceled = true;
+-	} else {
+-		ret = control->fn(control->data);
+-		control->return_code = ret;
++	while (true) {
++		mutex_lock(&ctx->call_controls_lock);
++		control = list_first_entry_or_null(&ctx->call_controls,
++				struct damon_call_control, list);
++		mutex_unlock(&ctx->call_controls_lock);
++		if (!control)
++			return;
++		if (cancel) {
++			control->canceled = true;
++		} else {
++			ret = control->fn(control->data);
++			control->return_code = ret;
++		}
++		mutex_lock(&ctx->call_controls_lock);
++		list_del(&control->list);
++		mutex_unlock(&ctx->call_controls_lock);
++		complete(&control->completion);
+ 	}
+-	complete(&control->completion);
+-	mutex_lock(&ctx->call_control_lock);
+-	ctx->call_control = NULL;
+-	mutex_unlock(&ctx->call_control_lock);
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+-- 
+2.39.5

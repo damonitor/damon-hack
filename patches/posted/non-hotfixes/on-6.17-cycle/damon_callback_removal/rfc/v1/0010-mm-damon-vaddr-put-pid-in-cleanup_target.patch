@@ -1,0 +1,93 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 4 Jul 2025 11:54:57 -0700
+Subject: [RFC PATCH 10/14] mm/damon/vaddr: put pid in cleanup_target()
+
+Implement cleanup_target() callback for [f]vaddr, which calls put_pid()
+for each target that will be destroyed.  Also remove redundant put_pid()
+calls in core and sysfs, which was required to be done redundantly due
+to the lack of such self cleanup in vaddr.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c  |  2 --
+ mm/damon/sysfs.c | 10 ++--------
+ mm/damon/vaddr.c |  6 ++++++
+ 3 files changed, 8 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index ce1087b5436f..6d526c5263d3 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1099,8 +1099,6 @@ static int damon_commit_targets(
+ 		} else {
+ 			struct damos *s;
+ 
+-			if (damon_target_has_pid(dst))
+-				put_pid(dst_target->pid);
+ 			damon_destroy_target(dst_target, dst);
+ 			damon_for_each_scheme(s, dst) {
+ 				if (s->quota.charge_target_from == dst_target) {
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index f2f9f756f5a2..5eba6ac53939 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1298,13 +1298,9 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+ static void damon_sysfs_destroy_targets(struct damon_ctx *ctx)
+ {
+ 	struct damon_target *t, *next;
+-	bool has_pid = damon_target_has_pid(ctx);
+ 
+-	damon_for_each_target_safe(t, next, ctx) {
+-		if (has_pid)
+-			put_pid(t->pid);
++	damon_for_each_target_safe(t, next, ctx)
+ 		damon_destroy_target(t, ctx);
+-	}
+ }
+ 
+ static int damon_sysfs_set_regions(struct damon_target *t,
+@@ -1387,10 +1383,8 @@ static void damon_sysfs_before_terminate(struct damon_ctx *ctx)
+ 	if (!damon_target_has_pid(ctx))
+ 		return;
+ 
+-	damon_for_each_target_safe(t, next, ctx) {
+-		put_pid(t->pid);
++	damon_for_each_target_safe(t, next, ctx)
+ 		damon_destroy_target(t, ctx);
+-	}
+ }
+ 
+ /*
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 46554e49a478..5c992317ee4c 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -627,6 +627,11 @@ static bool damon_va_target_valid(struct damon_target *t)
+ 	return false;
+ }
+ 
++static void damon_va_cleanup_target(struct damon_target *t)
++{
++	put_pid(t->pid);
++}
++
+ #ifndef CONFIG_ADVISE_SYSCALLS
+ static unsigned long damos_madvise(struct damon_target *target,
+ 		struct damon_region *r, int behavior)
+@@ -711,6 +716,7 @@ static int __init damon_va_initcall(void)
+ 		.prepare_access_checks = damon_va_prepare_access_checks,
+ 		.check_accesses = damon_va_check_accesses,
+ 		.target_valid = damon_va_target_valid,
++		.cleanup_target = damon_va_cleanup_target,
+ 		.cleanup = NULL,
+ 		.apply_scheme = damon_va_apply_scheme,
+ 		.get_scheme_score = damon_va_scheme_score,
+-- 
+2.39.5

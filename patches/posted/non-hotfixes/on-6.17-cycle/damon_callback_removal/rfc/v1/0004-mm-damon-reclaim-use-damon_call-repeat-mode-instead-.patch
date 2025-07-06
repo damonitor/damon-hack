@@ -1,0 +1,117 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 29 Jun 2025 14:04:00 -0700
+Subject: [RFC PATCH 04/14] mm/damon/reclaim: use damon_call() repeat mode
+         instead of damon_callback
+
+DAMON_RECLAIM uses damon_callback for periodically reading and writing
+DAMON internal data and parameters.  Use its alternative, damon_call()
+repeat mode.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/reclaim.c | 62 +++++++++++++++++++++++-----------------------
+ 1 file changed, 31 insertions(+), 31 deletions(-)
+
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index 0fe8996328b8..3c71b4596676 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -238,6 +238,35 @@ static int damon_reclaim_apply_parameters(void)
+ 	return err;
+ }
+ 
++static int damon_reclaim_handle_commit_inputs(void)
++{
++	int err;
++
++	if (!commit_inputs)
++		return 0;
++
++	err = damon_reclaim_apply_parameters();
++	commit_inputs = false;
++	return err;
++}
++
++static int damon_reclaim_damon_call_fn(void *arg)
++{
++	struct damon_ctx *c = arg;
++	struct damos *s;
++
++	/* update the stats parameter */
++	damon_for_each_scheme(s, c)
++		damon_reclaim_stat = s->stat;
++
++	return damon_reclaim_handle_commit_inputs();
++}
++
++static struct damon_call_control call_control = {
++	.fn = damon_reclaim_damon_call_fn,
++	.repeat = true,
++};
++
+ static int damon_reclaim_turn(bool on)
+ {
+ 	int err;
+@@ -257,7 +286,7 @@ static int damon_reclaim_turn(bool on)
+ 	if (err)
+ 		return err;
+ 	kdamond_pid = ctx->kdamond->pid;
+-	return 0;
++	return damon_call(ctx, &call_control);
+ }
+ 
+ static int damon_reclaim_enabled_store(const char *val,
+@@ -296,34 +325,6 @@ module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
+ MODULE_PARM_DESC(enabled,
+ 	"Enable or disable DAMON_RECLAIM (default: disabled)");
+ 
+-static int damon_reclaim_handle_commit_inputs(void)
+-{
+-	int err;
+-
+-	if (!commit_inputs)
+-		return 0;
+-
+-	err = damon_reclaim_apply_parameters();
+-	commit_inputs = false;
+-	return err;
+-}
+-
+-static int damon_reclaim_after_aggregation(struct damon_ctx *c)
+-{
+-	struct damos *s;
+-
+-	/* update the stats parameter */
+-	damon_for_each_scheme(s, c)
+-		damon_reclaim_stat = s->stat;
+-
+-	return damon_reclaim_handle_commit_inputs();
+-}
+-
+-static int damon_reclaim_after_wmarks_check(struct damon_ctx *c)
+-{
+-	return damon_reclaim_handle_commit_inputs();
+-}
+-
+ static int __init damon_reclaim_init(void)
+ {
+ 	int err = damon_modules_new_paddr_ctx_target(&ctx, &target);
+@@ -331,8 +332,7 @@ static int __init damon_reclaim_init(void)
+ 	if (err)
+ 		goto out;
+ 
+-	ctx->callback.after_wmarks_check = damon_reclaim_after_wmarks_check;
+-	ctx->callback.after_aggregation = damon_reclaim_after_aggregation;
++	call_control.data = ctx;
+ 
+ 	/* 'enabled' has set before this function, probably via command line */
+ 	if (enabled)
+-- 
+2.39.5
