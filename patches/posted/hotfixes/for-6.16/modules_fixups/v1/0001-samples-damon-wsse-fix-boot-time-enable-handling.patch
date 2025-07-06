@@ -1,0 +1,66 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Cc: stable@vger.kernel.org
+Date: Sat, 5 Jul 2025 13:23:00 -0700
+Subject: [PATCH 1/6] samples/damon/wsse: fix boot time enable handling
+
+If 'enable' parameter of the 'wsse' DAMON sample module is set at boot
+time via the kernel command line, memory allocation is tried before the
+slab is initialized.  As a result kernel NULL pointer dereference BUG
+can happen.  Fix it by checking the initialization status.
+
+Fixes: b757c6cfc696 ("samples/damon/wsse: start and stop DAMON as the user requests")
+Cc: stable@vger.kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/wsse.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/samples/damon/wsse.c b/samples/damon/wsse.c
+index e20238a249e7..15e2683fe5f3 100644
+--- a/samples/damon/wsse.c
++++ b/samples/damon/wsse.c
+@@ -89,6 +89,8 @@ static void damon_sample_wsse_stop(void)
+ 		put_pid(target_pidp);
+ }
+ 
++static bool init_called;
++
+ static int damon_sample_wsse_enable_store(
+ 		const char *val, const struct kernel_param *kp)
+ {
+@@ -103,6 +105,9 @@ static int damon_sample_wsse_enable_store(
+ 		return 0;
+ 
+ 	if (enable) {
++		if (!init_called)
++			return 0;
++
+ 		err = damon_sample_wsse_start();
+ 		if (err)
+ 			enable = false;
+@@ -114,7 +119,15 @@ static int damon_sample_wsse_enable_store(
+ 
+ static int __init damon_sample_wsse_init(void)
+ {
+-	return 0;
++	int err = 0;
++
++	init_called = true;
++	if (enable) {
++		err = damon_sample_wsse_start();
++		if (err)
++			enable = false;
++	}
++	return err;
+ }
+ 
+ module_init(damon_sample_wsse_init);
+-- 
+2.39.5

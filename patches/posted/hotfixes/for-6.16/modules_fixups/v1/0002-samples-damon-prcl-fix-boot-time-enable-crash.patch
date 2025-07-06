@@ -1,0 +1,62 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 5 Jul 2025 13:31:10 -0700
+Subject: [PATCH 2/6] samples/damon/prcl: fix boot time enable crash
+
+If 'enable' parameter of the 'prcl' DAMON sample module is set at boot
+time via the kernel command line, memory allocation is tried before the
+slab is initialized.  As a result kernel NULL pointer dereference BUG
+can happen.  Fix it by checking the initialization status.
+
+Fixes: 2aca254620a8 ("samples/damon: introduce a skeleton of a smaple DAMON module for proactive reclamation")
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/prcl.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/samples/damon/prcl.c b/samples/damon/prcl.c
+index 5597e6a08ab2..f04a18a8626a 100644
+--- a/samples/damon/prcl.c
++++ b/samples/damon/prcl.c
+@@ -109,6 +109,8 @@ static void damon_sample_prcl_stop(void)
+ 		put_pid(target_pidp);
+ }
+ 
++static bool init_called;
++
+ static int damon_sample_prcl_enable_store(
+ 		const char *val, const struct kernel_param *kp)
+ {
+@@ -122,6 +124,9 @@ static int damon_sample_prcl_enable_store(
+ 	if (enable == enabled)
+ 		return 0;
+ 
++	if (!init_called)
++		return 0;
++
+ 	if (enable) {
+ 		err = damon_sample_prcl_start();
+ 		if (err)
+@@ -134,6 +139,14 @@ static int damon_sample_prcl_enable_store(
+ 
+ static int __init damon_sample_prcl_init(void)
+ {
++	int err = 0;
++
++	init_called = true;
++	if (enable) {
++		err = damon_sample_prcl_start();
++		if (err)
++			enable = false;
++	}
+ 	return 0;
+ }
+ 
+-- 
+2.39.5
