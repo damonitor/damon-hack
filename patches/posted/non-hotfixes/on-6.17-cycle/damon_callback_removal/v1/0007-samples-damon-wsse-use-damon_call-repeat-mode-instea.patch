@@ -1,0 +1,67 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 2 Jul 2025 22:03:09 -0700
+Subject: [PATCH 07/14] samples/damon/wsse: use damon_call() repeat mode instead
+         of damon_callback
+
+wsse uses damon_callback for periodically reading DAMON internal data.
+Use its alternative, damon_call() repeat mode.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/wsse.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/samples/damon/wsse.c b/samples/damon/wsse.c
+index d87b3b0801d2..a250e86b24a5 100644
+--- a/samples/damon/wsse.c
++++ b/samples/damon/wsse.c
+@@ -35,8 +35,9 @@ MODULE_PARM_DESC(enabled, "Enable or disable DAMON_SAMPLE_WSSE");
+ static struct damon_ctx *ctx;
+ static struct pid *target_pidp;
+ 
+-static int damon_sample_wsse_after_aggregate(struct damon_ctx *c)
++static int damon_sample_wsse_repeat_call_fn(void *data)
+ {
++	struct damon_ctx *c = data;
+ 	struct damon_target *t;
+ 
+ 	damon_for_each_target(t, c) {
+@@ -52,9 +53,15 @@ static int damon_sample_wsse_after_aggregate(struct damon_ctx *c)
+ 	return 0;
+ }
+ 
++static struct damon_call_control repeat_call_control = {
++	.fn = damon_sample_wsse_repeat_call_fn,
++	.repeat = true,
++};
++
+ static int damon_sample_wsse_start(void)
+ {
+ 	struct damon_target *target;
++	int err;
+ 
+ 	pr_info("start\n");
+ 
+@@ -79,8 +86,11 @@ static int damon_sample_wsse_start(void)
+ 	}
+ 	target->pid = target_pidp;
+ 
+-	ctx->callback.after_aggregation = damon_sample_wsse_after_aggregate;
+-	return damon_start(&ctx, 1, true);
++	err = damon_start(&ctx, 1, true);
++	if (err)
++		return err;
++	repeat_call_control.data = ctx;
++	return damon_call(ctx, &repeat_call_control);
+ }
+ 
+ static void damon_sample_wsse_stop(void)
+-- 
+2.39.5

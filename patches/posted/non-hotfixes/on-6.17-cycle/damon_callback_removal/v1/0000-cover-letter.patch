@@ -1,0 +1,74 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 12 Jul 2025 12:49:13 -0700
+Subject: [PATCH 00/14] mm/damon: remove damon_callback
+
+damon_callback was the only way for communicating with DAMON for
+contexts running on its worker thread.  The interface is flexible
+and simple.  But as DAMON evolves with more features, damon_callback
+has become somewhat too old.  With runtime parameters update, for example,
+its lack of synchronization support was found to be inconvenient.
+Arguably it is also not easy to use correctly since the callers should
+understand when each callback is called, and implication of the return
+values from the callbacks.
+
+To replace it, damon_call() and damos_walk() are introduced.  And those
+replaced a few damon_callback use cases.  Some use cases of
+damon_callback such as parallel or repetitive DAMON internal data
+reading and additional cleanups cannot simply be replaced by
+damon_call() and damos_walk(), though.
+
+To allow those replaceable, extend damon_call() for parallel and/or
+repeated callbacks and modify the core/ops layers for additional
+resources cleanup.  With the updates, replace the remaining
+damon_callback usages and finally say goodbye to damon_callback.
+
+Changes from RFC
+(https://lore.kernel.org/20250706200018.42704-1-sj@kernel.org)
+- Fix wrong return from loop that prevents repeat mode damon_call().
+- Remove unnecessary put_pid() from DAMON sample modules.
+- Rebase to latest mm-new
+
+SeongJae Park (14):
+  mm/damon: accept parallel damon_call() requests
+  mm/damon/core: introduce repeat mode damon_call()
+  mm/damon/stat: use damon_call() repeat mode instead of damon_callback
+  mm/damon/reclaim: use damon_call() repeat mode instead of
+    damon_callback
+  mm/damon/lru_sort: use damon_call() repeat mode instead of
+    damon_callback
+  samples/damon/prcl: use damon_call() repeat mode instead of
+    damon_callback
+  samples/damon/wsse: use damon_call() repeat mode instead of
+    damon_callback
+  mm/damon/core: do not call ops.cleanup() when destroying targets
+  mm/damon/core: add cleanup_target() ops callback
+  mm/damon/vaddr: put pid in cleanup_target()
+  mm/damon/sysfs: remove damon_sysfs_destroy_targets()
+  mm/damon/core: destroy targets when kdamond_fn() finish
+  mm/damon/sysfs: remove damon_sysfs_before_terminate()
+  mm/damon/core: remove damon_callback
+
+ include/linux/damon.h        |  44 ++++---------
+ mm/damon/core.c              | 116 ++++++++++++++++++-----------------
+ mm/damon/lru_sort.c          |  70 ++++++++++-----------
+ mm/damon/reclaim.c           |  62 +++++++++----------
+ mm/damon/stat.c              |  17 ++++-
+ mm/damon/sysfs.c             |  41 +------------
+ mm/damon/tests/core-kunit.h  |   4 +-
+ mm/damon/tests/vaddr-kunit.h |   2 +-
+ mm/damon/vaddr.c             |   6 ++
+ samples/damon/prcl.c         |  20 ++++--
+ samples/damon/wsse.c         |  18 ++++--
+ 11 files changed, 189 insertions(+), 211 deletions(-)
+
+
+base-commit: 2c92772b92095b79ca713f215b192b555e41f72e
+-- 
+2.39.5
