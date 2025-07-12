@@ -26,7 +26,7 @@ def main():
     files = manually_updated_files
     for paragraph in content.split('\n\n'):
         lines = [l.strip() for l in paragraph.split('\n')]
-        if lines[0] != 'DATA ACCESS MONITOR':
+        if not lines[0] in ['DATA ACCESS MONITOR', 'DAMON']:
             continue
         for line in lines:
             if not line.startswith('F:\t'):
