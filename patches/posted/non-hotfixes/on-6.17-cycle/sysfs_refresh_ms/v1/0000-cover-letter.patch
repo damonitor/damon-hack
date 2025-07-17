@@ -1,0 +1,72 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 16 Jul 2025 22:53:30 -0700
+Subject: [PATCH 0/4] mm/damon/sysfs: support periodic and automated stats update
+
+DAMON sysfs interface provides files for reading DAMON internal status
+including auto-tuned monitoring intervals, DAMOS stats, DAMOS action
+applied regions, and auto-tuned DAMOS effective quota.  Among those,
+auto-tuned monitoring intervals, DAMOS stats and auto-tuned DAMOS
+effective quota are essential for common DAMON/S use cases.
+
+The content of the files are not automatically updated, though.  Users
+should manually request updates of the contents by writing a special
+command to 'state' file of each kdamond directory.  This interface is
+good for minimizing overhead, but causes the below problems.
+
+First, the usage is cumbersome.  This is arguably not a big problem,
+since the user-space tool (damo) can do this instead of the user.
+
+Second, it can be too slow.  The update request is not directly handled
+by the sysfs interface but kdamond thread.  And kdamond threads wake up
+only once per the sampling interval.  Hence if sampling interval is not
+short, each update request could take too long time.  The recommended
+sampling interval setup is asking DAMON to automatically tune it, within
+a range between 5 milliseconds and 10 seconds.  On production systems it
+is not very rare to have a few seconds sampling interval as a result of
+the auto-tuning, so this can disturb observing DAMON internal status.
+
+Finally, parallel update requests can conflict with each other.  When
+parallel update requests are received, DAMON sysfs interface simply
+returns -EBUSY to one of the requests.  DAMON user-space tool is hence
+implementing its own backoff mechanism, but this can make the operation
+even slower.
+
+Introduce a new sysfs file, namely refresh_ms, for asking DAMON sysfs
+interface to repeat the update of the above mentioned essential contents
+with a user-specified time delay.  If non-zero value is written to the
+file, DAMON sysfs interface does the updates for essential DAMON
+internal status including auto-tuned monitoring intervals, DAMOS stats,
+and auto-tuned DAMOS quotas using the user-written value as the time
+delay.  In other words, it is similar to periodically writing
+'update_schemes_stats', 'update_schemes_effective_quotas', and
+'update_tuned_intervals' keywords to the 'state' file.  If zero is
+written to the file, the automatic refresh is disabled.
+
+Changes from RFC
+(https://lore.kernel.or/20250712204650.155988-1-sj@kernel.org)
+- Wordsmith cover letter to clarify what are updated
+
+SeongJae Park (4):
+  mm/damon/sysfs: implement refresh_ms file under kdamond directory
+  mm/damon/sysfs: implement refresh_ms file internal work
+  Docs/admin-guide/mm/damon/usage: document refresh_ms file
+  Docs/ABI/damon: update for refresh_ms
+
+ .../ABI/testing/sysfs-kernel-mm-damon         |  7 +++
+ Documentation/admin-guide/mm/damon/usage.rst  | 13 ++++-
+ mm/damon/sysfs.c                              | 58 +++++++++++++++++++
+ 3 files changed, 75 insertions(+), 3 deletions(-)
+
+
+base-commit: 2951e548fd2e489bdaecf326e1c3d17d4b5663fe
+-- 
+2.39.5
