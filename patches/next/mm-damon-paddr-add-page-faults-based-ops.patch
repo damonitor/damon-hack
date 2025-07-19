@@ -1,0 +1,86 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 18 Jul 2025 17:06:49 -0700
+Subject: [PATCH] mm/damon/paddr: add page faults based ops
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  3 +++
+ mm/damon/paddr.c      | 27 ++++++++++++++++++++++++++-
+ 2 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 7de2bfa14f97..944b8286b453 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -628,12 +628,15 @@ struct damos {
+  * @DAMON_OPS_FVADDR:	Monitoring operations for only fixed ranges of virtual
+  *			address spaces
+  * @DAMON_OPS_PADDR:	Monitoring operations for the physical address space
++ * @DAMON_OPS_PADDR_FULAT:	Monitoring operations for the physical address
++ *				space, using page faults as the source
+  * @NR_DAMON_OPS:	Number of monitoring operations implementations
+  */
+ enum damon_ops_id {
+ 	DAMON_OPS_VADDR,
+ 	DAMON_OPS_FVADDR,
+ 	DAMON_OPS_PADDR,
++	DAMON_OPS_PADDR_FAULT,
+ #ifdef CONFIG_DAMON_CADDR
+ 	DAMON_OPS_CADDR,
+ #endif
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 3d9ff8fff6d9..7355f56b54a8 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -204,6 +204,16 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+ 	return max_nr_accesses;
+ }
+ 
++static void damon_pa_fault_prepare_access_checks(struct damon_ctx *ctx)
++{
++	return;
++}
++
++static unsigned int damon_pa_fault_check_accesses(struct damon_ctx *ctx)
++{
++	return 0;
++}
++
+ #ifdef CONFIG_DAMON_CADDR
+ 
+ /* caddr's access check can reuse almost every pa's access check logic, since
+@@ -586,6 +596,17 @@ static int __init damon_pa_initcall(void)
+ 		.apply_scheme = damon_pa_apply_scheme,
+ 		.get_scheme_score = damon_pa_scheme_score,
+ 	};
++	struct damon_operations fault_ops = {
++		.id = DAMON_OPS_PADDR_FAULT,
++		.init = NULL,
++		.update = NULL,
++		.prepare_access_checks = damon_pa_fault_prepare_access_checks,
++		.check_accesses = damon_pa_fault_check_accesses,
++		.target_valid = NULL,
++		.cleanup = NULL,
++		.apply_scheme = damon_pa_apply_scheme,
++		.get_scheme_score = damon_pa_scheme_score,
++	};
+ #ifdef CONFIG_DAMON_CADDR
+ 	struct damon_operations cops = {
+ 		.id = DAMON_OPS_CADDR,
+@@ -598,8 +619,12 @@ static int __init damon_pa_initcall(void)
+ 			4UL * 1024 * 1024 * 1024, 64UL * 1024 * 1024 * 1024);
+ 	damon_register_ops(&cops);
+ #endif
++	int err;
+ 
+-	return damon_register_ops(&ops);
++	err = damon_register_ops(&ops);
++	if (err)
++		return err;
++	return damon_register_ops(&fault_ops);
+ };
+ 
+ subsys_initcall(damon_pa_initcall);
+-- 
+2.39.5
+
