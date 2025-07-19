@@ -1,0 +1,67 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Cc: stable@vger.kernel.org
+Date: Thu, 17 Jul 2025 18:15:32 -0700
+Subject: [PATCH] mm/damon/core: commit damos_quota_goal->nid
+
+DAMOS quota goal uses 'nid' field when the metric is
+DAMOS_QUOTA_NODE_MEM_{USED,FREE}_BP.  But the goal commit function is
+not updating the goal's nid field.  Fix it.
+
+Fixes: 0e1c773b501f ("mm/damon/core: introduce damos quota goal metrics for memory node utilization") # 6.16.x
+Cc: stable@vger.kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f3ec3bd736ec..52a48c9316bc 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -756,6 +756,19 @@ static struct damos_quota_goal *damos_nth_quota_goal(
+ 	return NULL;
+ }
+ 
++static void damos_commit_quota_goal_union(
++		struct damos_quota_goal *dst, struct damos_quota_goal *src)
++{
++	switch (dst->metric) {
++	case DAMOS_QUOTA_NODE_MEM_USED_BP:
++	case DAMOS_QUOTA_NODE_MEM_FREE_BP:
++		dst->nid = src->nid;
++		break;
++	default:
++		break;
++	}
++}
++
+ static void damos_commit_quota_goal(
+ 		struct damos_quota_goal *dst, struct damos_quota_goal *src)
+ {
+@@ -764,6 +777,7 @@ static void damos_commit_quota_goal(
+ 	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
+ 		dst->current_value = src->current_value;
+ 	/* keep last_psi_total as is, since it will be updated in next cycle */
++	damos_commit_quota_goal_union(dst, src);
+ }
+ 
+ /**
+@@ -797,6 +811,7 @@ int damos_commit_quota_goals(struct damos_quota *dst, struct damos_quota *src)
+ 				src_goal->metric, src_goal->target_value);
+ 		if (!new_goal)
+ 			return -ENOMEM;
++		damos_commit_quota_goal_union(new_goal, src_goal);
+ 		damos_add_quota_goal(dst, new_goal);
+ 	}
+ 	return 0;
+
+base-commit: 5d6176edfeb848b1039a1a2c9c1c36dd7f83150f
+-- 
+2.39.5
