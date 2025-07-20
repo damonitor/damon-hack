@@ -1,0 +1,90 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 15 Jul 2025 21:57:59 -0700
+Subject: [PATCH 11/22] selftests/damon/drgn_dump_damon_status: dump DAMOS
+         filters
+
+drgn_dump_damon_status.py is a script for dumping DAMON internal status
+in json format.  It is being used for seeing if DAMON parameters that
+are set using _damon_sysfs.py are actually passed to DAMON in the kernel
+space.  It is, however, not dumping full DAMON internal status, and it
+makes increasing test coverage difficult.  Add damos filters dumping for
+more tests.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ .../selftests/damon/drgn_dump_damon_status.py | 43 ++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/damon/drgn_dump_damon_status.py b/tools/testing/selftests/damon/drgn_dump_damon_status.py
+index cf5d492670d8..7233369a3a44 100755
+--- a/tools/testing/selftests/damon/drgn_dump_damon_status.py
++++ b/tools/testing/selftests/damon/drgn_dump_damon_status.py
+@@ -135,8 +135,37 @@ def damos_migrate_dests_to_dict(dests):
+             'nr_dests': nr_dests,
+             }
+ 
++def damos_filter_to_dict(damos_filter):
++    filter_type_keyword = {
++            0: 'anon',
++            1: 'active',
++            2: 'memcg',
++            3: 'young',
++            4: 'hugepage_size',
++            5: 'unmapped',
++            6: 'addr',
++            7: 'target'
++            }
++    dict_ = {
++            'type': filter_type_keyword[int(damos_filter.type)],
++            'matching': bool(damos_filter.matching),
++            'allow': bool(damos_filter.allow),
++            }
++    type_ = dict_['type']
++    if type_ == 'memcg':
++        dict_['memcg_id'] = int(damos_filter.memcg_id)
++    elif type_ == 'addr':
++        dict_['addr_range'] = [int(damos_filter.addr_range.start),
++                               int(damos_filter.addr_range.end)]
++    elif type_ == 'target':
++        dict_['target_idx'] = int(damos_filter.target_idx)
++    elif type_ == 'hugeapge_size':
++        dict_['sz_range'] = [int(damos_filter.sz_range.min),
++                             int(damos_filter.sz_range.max)]
++    return dict_
++
+ def scheme_to_dict(scheme):
+-    return to_dict(scheme, [
++    dict_ = to_dict(scheme, [
+         ['pattern', damos_access_pattern_to_dict],
+         ['action', int],
+         ['apply_interval_us', int],
+@@ -145,6 +174,18 @@ def scheme_to_dict(scheme):
+         ['target_nid', int],
+         ['migrate_dests', damos_migrate_dests_to_dict],
+         ])
++    filters = []
++    for f in list_for_each_entry(
++            'struct damos_filter', scheme.filters.address_of_(), 'list'):
++        filters.append(damos_filter_to_dict(f))
++    dict_['filters'] = filters
++    ops_filters = []
++    for f in list_for_each_entry(
++            'struct damos_filter', scheme.ops_filters.address_of_(), 'list'):
++        ops_filters.append(damos_filter_to_dict(f))
++    dict_['ops_filters'] = ops_filters
++
++    return dict_
+ 
+ def schemes_to_list(schemes):
+     return [scheme_to_dict(s)
+-- 
+2.39.5
