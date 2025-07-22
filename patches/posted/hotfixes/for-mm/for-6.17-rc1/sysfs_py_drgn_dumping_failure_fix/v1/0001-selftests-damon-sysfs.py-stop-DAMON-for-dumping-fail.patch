@@ -1,0 +1,58 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel test robot <oliver.sang@intel.com>
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 21 Jul 2025 22:49:15 -0700
+Subject: [PATCH mm-stable] selftests/damon/sysfs.py: stop DAMON for dumping
+         failures
+
+Commit 4ece01897627 ("selftests/damon: add python and drgn-based DAMON
+sysfs test") in mm-stable tree introduced sysfs.py that runs drgn for
+dumping DAMON status.  When the DAMON status dumping fails for reasons
+including drgn uninstalled environment, the test fails without stopping
+DAMON.  Following DAMON selftests that assumes DAMON is not running when
+they executed therefore fail.  Catch dumping failures and stop DAMON for
+that case.
+
+Fixes: 4ece01897627 ("selftests/damon: add python and drgn-based DAMON sysfs test") # mm-stable
+Reported-by: kernel test robot <oliver.sang@intel.com>
+Closes: https://lore.kernel.org/oe-lkp/202507220707.9c5d6247-lkp@intel.com
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/sysfs.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tools/testing/selftests/damon/sysfs.py b/tools/testing/selftests/damon/sysfs.py
+index 4ff99db0d247..dbf6613529bd 100755
+--- a/tools/testing/selftests/damon/sysfs.py
++++ b/tools/testing/selftests/damon/sysfs.py
+@@ -8,6 +8,10 @@ import subprocess
+ import _damon_sysfs
+ 
+ def dump_damon_status_dict(pid):
++    try:
++        subprocess.check_output(['which', 'drgn'], stderr=subprocess.DEVNULL)
++    except:
++        return None, 'drgn not found'
+     file_dir = os.path.dirname(os.path.abspath(__file__))
+     dump_script = os.path.join(file_dir, 'drgn_dump_damon_status.py')
+     rc = subprocess.call(['drgn', dump_script, pid, 'damon_dump_output'],
+@@ -31,6 +35,7 @@ def main():
+     status, err = dump_damon_status_dict(kdamonds.kdamonds[0].pid)
+     if err is not None:
+         print(err)
++        kdamonds.stop()
+         exit(1)
+ 
+     if len(status['contexts']) != 1:
+
+base-commit: 49c3f600a9088332b3c1a6db2dc6f3516f273609
+-- 
+2.39.5
