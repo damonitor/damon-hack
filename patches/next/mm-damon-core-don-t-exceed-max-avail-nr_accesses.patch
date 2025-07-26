@@ -1,0 +1,44 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 26 Jul 2025 12:01:56 -0700
+Subject: [PATCH] mm/damon/core: don't exceed max avail nr_accesses
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 4368117955b1..949c8287fbaa 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2691,10 +2691,14 @@ static void kdamond_apply_access_report(struct damon_access_report *report,
+ {
+ 	struct damon_region *r;
+ 	int i;
++	unsigned int max_avail_nr_accesses;
+ 
+ 	if (ctx->ops.eligible_report && !ctx->ops.eligible_report(report, t))
+ 		return;
+ 
++	max_avail_nr_accesses = ctx->attrs.aggr_interval /
++		ctx->attrs.sample_interval;
++
+ 	/* todo: make search faster, e.g., binary search? */
+ 	damon_for_each_region(r, t) {
+ 		if (report->addr < r->ar.start)
+@@ -2702,8 +2706,11 @@ static void kdamond_apply_access_report(struct damon_access_report *report,
+ 		if (r->ar.end < report->addr + report->size)
+ 			continue;
+ 		/* TODO: optimize out loop */
+-		for (i = 0; i < report->nr_accesses; i++)
++		for (i = 0; i < report->nr_accesses; i++) {
++			if (r->nr_accesses == max_avail_nr_accesses)
++				break;
+ 			damon_update_region_access_rate(r, true, &ctx->attrs);
++		}
+ 		r->access_reported = true;
+ 	}
+ }
+-- 
+2.39.5
+

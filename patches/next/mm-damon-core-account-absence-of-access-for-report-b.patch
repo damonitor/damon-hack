@@ -1,0 +1,112 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 26 Jul 2025 11:44:19 -0700
+Subject: [PATCH] mm/damon/core: account absence of access for report-based
+ mode
+
+In report-based mode, only existence of accesses are counted, and this
+causes nr_accesses_bp corruption.  Check if access was reported, and
+account the absence of the access.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 38 +++++++++++++++++++++++++-------------
+ 2 files changed, 26 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 20d978500abd..cc60508ce7c4 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -83,6 +83,7 @@ struct damon_region {
+ 	unsigned int age;
+ /* private: Internal value for age calculation. */
+ 	unsigned int last_nr_accesses;
++	bool access_reported;
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 8fcddf7d72b6..c3cd4d17bdd0 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -148,6 +148,7 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+ 
+ 	region->age = 0;
+ 	region->last_nr_accesses = 0;
++	region->access_reported = false;
+ 
+ 	return region;
+ }
+@@ -2685,13 +2686,11 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ 	}
+ }
+ 
+-static unsigned int kdamond_apply_access_report(
+-		struct damon_access_report *report, struct damon_target *t,
+-		struct damon_ctx *ctx)
++static void kdamond_apply_access_report(struct damon_access_report *report,
++		struct damon_target *t, struct damon_ctx *ctx)
+ {
+ 	struct damon_region *r;
+ 	int i;
+-	unsigned int max_nr_accesses = 0;
+ 
+ 	if (ctx->ops.eligible_report && !ctx->ops.eligible_report(report, t))
+ 		return;
+@@ -2705,7 +2704,25 @@ static unsigned int kdamond_apply_access_report(
+ 		/* TODO: optimize out loop */
+ 		for (i = 0; i < report->nr_accesses; i++)
+ 			damon_update_region_access_rate(r, true, &ctx->attrs);
+-		max_nr_accesses = max(max_nr_accesses, r->nr_accesses);
++		r->access_reported = true;
++	}
++}
++
++static unsigned int kdamond_account_absence_of_access(struct damon_ctx *ctx)
++{
++	struct damon_target *t;
++	struct damon_region *r;
++	unsigned int max_nr_accesses = 0;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region(r, t) {
++			if (r->access_reported)
++				r->access_reported = false;
++			else
++				damon_update_region_access_rate(r, false,
++						&ctx->attrs);
++			max_nr_accesses = max(max_nr_accesses, r->nr_accesses);
++		}
+ 	}
+ 	return max_nr_accesses;
+ }
+@@ -2715,7 +2732,6 @@ static unsigned int kdamond_check_reported_accesses(struct damon_ctx *ctx)
+ 	int i;
+ 	struct damon_access_report *report;
+ 	struct damon_target *t;
+-	unsigned int max_nr_accesses = 0, max_nr_accesses_target;
+ 
+ 	mutex_lock(&damon_access_reports_lock);
+ 	for (i = 0; i < damon_access_reports_len; i++) {
+@@ -2727,15 +2743,11 @@ static unsigned int kdamond_check_reported_accesses(struct damon_ctx *ctx)
+ 			continue;
+ 		if (report->pid && !damon_target_has_pid(ctx))
+ 			continue;
+-		damon_for_each_target(t, ctx) {
+-			max_nr_accesses_target = kdamond_apply_access_report(
+-					report, t, ctx);
+-			max_nr_accesses = max(max_nr_accesses,
+-					max_nr_accesses_target);
+-		}
++		damon_for_each_target(t, ctx)
++			kdamond_apply_access_report( report, t, ctx);
+ 	}
+ 	mutex_unlock(&damon_access_reports_lock);
+-	return max_nr_accesses;
++	return kdamond_account_absence_of_access(ctx);
+ }
+ 
+ /*
+-- 
+2.39.5
+
