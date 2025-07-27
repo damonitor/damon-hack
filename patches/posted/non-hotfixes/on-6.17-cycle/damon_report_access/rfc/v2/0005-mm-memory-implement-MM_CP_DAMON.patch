@@ -1,0 +1,155 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 27 Jul 2025 11:01:27 -0700
+Subject: [RFC v2 5/7] mm/memory: implement MM_CP_DAMON
+
+DAMON is using Accessed bits of page table entries as the major source
+of the access information.  It lacks some additional information such as
+which CPU was making the access.  Page faults could be another source of
+information for such additional information.
+
+Implement another change_protection() flag for such use case, namely
+MM_CP_DAMON.  DAMON will install PAGE_NONE protections using the flag.
+To avoid interfering with NUMA_BALANCING, which is also using PAGE_NON
+protection, pass the faults to DAMON only when NUMA_BALANCING is
+disabled.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/mm.h |  1 +
+ mm/memory.c        | 53 ++++++++++++++++++++++++++++++++++++++++++++--
+ mm/mprotect.c      |  5 +++++
+ 3 files changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 21270f1664a4..ad92b77bf782 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -2567,6 +2567,7 @@ int get_cmdline(struct task_struct *task, char *buffer, int buflen);
+ #define  MM_CP_UFFD_WP_RESOLVE             (1UL << 3) /* Resolve wp */
+ #define  MM_CP_UFFD_WP_ALL                 (MM_CP_UFFD_WP | \
+ 					    MM_CP_UFFD_WP_RESOLVE)
++#define MM_CP_DAMON                        (1UL << 4)
+ 
+ bool can_change_pte_writable(struct vm_area_struct *vma, unsigned long addr,
+ 			     pte_t pte);
+diff --git a/mm/memory.c b/mm/memory.c
+index 92fd18a5d8d1..656e610867b0 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -75,6 +75,7 @@
+ #include <linux/ptrace.h>
+ #include <linux/vmalloc.h>
+ #include <linux/sched/sysctl.h>
++#include <linux/damon.h>
+ 
+ #include <trace/events/kmem.h>
+ 
+@@ -5972,6 +5973,47 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
+ 	return VM_FAULT_FALLBACK;
+ }
+ 
++static vm_fault_t do_damon_page(struct vm_fault *vmf, bool huge_pmd)
++{
++	struct damon_access_report access_report = {
++		.addr = vmf->address,
++		.size = 1,
++	};
++	struct vm_area_struct *vma = vmf->vma;
++	struct folio *folio;
++	pte_t pte, old_pte;
++	bool writable = false, ignore_writable = false;
++	bool pte_write_upgrade = vma_wants_manual_pte_write_upgrade(vma);
++
++	if (huge_pmd)
++		access_report.addr = PFN_PHYS(pmd_pfn(vmf->orig_pmd));
++	else
++		access_report.addr = PFN_PHYS(pte_pfn(vmf->orig_pte));
++
++	spin_lock(vmf->ptl);
++	old_pte = ptep_get(vmf->pte);
++	if (unlikely(!pte_same(old_pte, vmf->orig_pte))) {
++		pte_unmap_unlock(vmf->pte, vmf->ptl);
++		return 0;
++	}
++	pte = pte_modify(old_pte, vma->vm_page_prot);
++	writable = pte_write(pte);
++	if (!writable && pte_write_upgrade &&
++			can_change_pte_writable(vma, vmf->address, pte))
++		writable = true;
++	folio = vm_normal_folio(vma, vmf->address, pte);
++	if (folio && folio_test_large(folio))
++		numa_rebuild_large_mapping(vmf, vma, folio, pte,
++				ignore_writable, pte_write_upgrade);
++	else
++		numa_rebuild_single_mapping(vmf, vma, vmf->address, vmf->pte,
++				writable);
++	pte_unmap_unlock(vmf->pte, vmf->ptl);
++
++	damon_report_access(&access_report);
++	return 0;
++}
++
+ /*
+  * These routines also need to handle stuff like marking pages dirty
+  * and/or accessed for architectures that don't do it in hardware (most
+@@ -6036,8 +6078,11 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
+ 	if (!pte_present(vmf->orig_pte))
+ 		return do_swap_page(vmf);
+ 
+-	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
++	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
++		if (sysctl_numa_balancing_mode == NUMA_BALANCING_DISABLED)
++			return do_damon_page(vmf, false);
+ 		return do_numa_page(vmf);
++	}
+ 
+ 	spin_lock(vmf->ptl);
+ 	entry = vmf->orig_pte;
+@@ -6159,8 +6204,12 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
+ 			return 0;
+ 		}
+ 		if (pmd_trans_huge(vmf.orig_pmd)) {
+-			if (pmd_protnone(vmf.orig_pmd) && vma_is_accessible(vma))
++			if (pmd_protnone(vmf.orig_pmd) && vma_is_accessible(vma)) {
++				if (sysctl_numa_balancing_mode ==
++						NUMA_BALANCING_DISABLED)
++					return do_damon_page(&vmf, true);
+ 				return do_huge_pmd_numa_page(&vmf);
++			}
+ 
+ 			if ((flags & (FAULT_FLAG_WRITE|FAULT_FLAG_UNSHARE)) &&
+ 			    !pmd_write(vmf.orig_pmd)) {
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index 78bded7acf79..e8a76114e4f9 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -714,6 +714,11 @@ long change_protection(struct mmu_gather *tlb,
+ 	WARN_ON_ONCE(cp_flags & MM_CP_PROT_NUMA);
+ #endif
+ 
++#ifdef CONFIG_ARCH_SUPPORTS_NUMA_BALANCING
++	if (cp_flags & MM_CP_DAMON)
++		newprot = PAGE_NONE;
++#endif
++
+ 	if (is_vm_hugetlb_page(vma))
+ 		pages = hugetlb_change_protection(vma, start, end, newprot,
+ 						  cp_flags);
+-- 
+2.39.5
