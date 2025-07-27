@@ -1,0 +1,69 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 27 Jul 2025 11:00:36 -0700
+Subject: [PATCH] mm/damon: add operations set interface for access report
+ filtering
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 5 +++++
+ mm/damon/vaddr.c      | 7 +++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 14df67ecb9dc..80a5669d8ce2 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -590,6 +590,7 @@ enum damon_ops_id {
+  * @update:			Update operations-related data structures.
+  * @prepare_access_checks:	Prepare next access check of target regions.
+  * @check_accesses:		Check the accesses to target regions.
++ * @eligible_report:		Verify an access report for a target.
+  * @get_scheme_score:		Get the score of a region for a scheme.
+  * @apply_scheme:		Apply a DAMON-based operation scheme.
+  * @target_valid:		Determine if the target is valid.
+@@ -617,6 +618,8 @@ enum damon_ops_id {
+  * last preparation and update the number of observed accesses of each region.
+  * It should also return max number of observed accesses that made as a result
+  * of its update.  The value will be used for regions adjustment threshold.
++ * @eligible_report should check if the given access report is eligible to be
++ * used by this operations set for the given target.
+  * @get_scheme_score should return the priority score of a region for a scheme
+  * as an integer in [0, &DAMOS_MAX_SCORE].
+  * @apply_scheme is called from @kdamond when a region for user provided
+@@ -635,6 +638,8 @@ struct damon_operations {
+ 	void (*update)(struct damon_ctx *context);
+ 	void (*prepare_access_checks)(struct damon_ctx *context);
+ 	unsigned int (*check_accesses)(struct damon_ctx *context);
++	bool (*eligible_report)(struct damon_access_report *report,
++			struct damon_target *t);
+ 	int (*get_scheme_score)(struct damon_ctx *context,
+ 			struct damon_target *t, struct damon_region *r,
+ 			struct damos *scheme);
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 87e825349bdf..a80cd34e5232 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -792,6 +792,12 @@ static int damos_va_migrate_pte_entry(pte_t *pte, unsigned long addr,
+ 	return 0;
+ }
+ 
++static bool damon_va_eligible_report(struct damon_access_report *report,
++		struct damon_target *t)
++{
++	return report->pid == t->pid;
++}
++
+ /*
+  * Functions for the target validity check and cleanup
+  */
+@@ -954,6 +960,7 @@ static int __init damon_va_initcall(void)
+ 		.update = damon_va_update,
+ 		.prepare_access_checks = damon_va_prepare_access_checks,
+ 		.check_accesses = damon_va_check_accesses,
++		.eligible_report = damon_va_eligible_report,
+ 		.target_valid = damon_va_target_valid,
+ 		.cleanup_target = damon_va_cleanup_target,
+ 		.cleanup = NULL,
+-- 
+2.39.5
+
