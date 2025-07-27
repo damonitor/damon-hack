@@ -1,11 +1,11 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Tue, 6 May 2025 21:31:34 -0700
+Date: Sun, 27 Jul 2025 11:00:20 -0700
 Subject: [PATCH] mm/damon/core: introduce damon_report_access()
 
 DAMON core layer asks operations set layer about past access
 information, on core layer's schedule.  In other words, core layer
 "pulls" the information from the operations set layer.  This is
-problematic for a case that the operations set layer have no time and
+problematic for a case where the operations set layer has no time and
 space to save the information until the core layer queries.
 
 Add a new DAMON API function for reporting identified data accesses to
@@ -14,17 +14,19 @@ operations set layer to "push" the information to the core layer.  The
 function internally uses mutex, so reporting kernel code should be safe
 to sleep.
 
+This API was also discussed at LSFMM'25: https://lwn.net/Articles/1016525/
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h | 21 +++++++++++++++++++++
+ include/linux/damon.h | 26 ++++++++++++++++++++++++++
  mm/damon/core.c       | 35 +++++++++++++++++++++++++++++++++++
- 2 files changed, 56 insertions(+)
+ 2 files changed, 61 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 479ee52b79e1..2d3938d0ee64 100644
+index 479ee52b79e1..14df67ecb9dc 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -104,6 +104,25 @@ struct damon_target {
+@@ -104,6 +104,23 @@ struct damon_target {
  	struct list_head list;
  };
  
@@ -34,7 +36,6 @@ index 479ee52b79e1..2d3938d0ee64 100644
 + *			NULL if it is of the physical address.
 + * @addr:		The start address of the reporting region.
 + * @size:		The size of the reporting region.
-+ * @nr_accesses:	Number of detected accesses to the region.
 + *
 + * @pid could be stale, and hence shouldn't be de-referenced.
 + */
@@ -42,7 +43,6 @@ index 479ee52b79e1..2d3938d0ee64 100644
 +	struct pid *pid;
 +	unsigned long addr;
 +	unsigned long size;
-+	int nr_accesses;
 +/* private: */
 +	unsigned long report_jiffies;	/* when this report is made */
 +};
@@ -50,7 +50,7 @@ index 479ee52b79e1..2d3938d0ee64 100644
  /**
   * enum damos_action - Represents an action of a Data Access Monitoring-based
   * Operation Scheme.
-@@ -941,6 +960,8 @@ bool damon_is_running(struct damon_ctx *ctx);
+@@ -941,9 +958,18 @@ bool damon_is_running(struct damon_ctx *ctx);
  int damon_call(struct damon_ctx *ctx, struct damon_call_control *control);
  int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control);
  
@@ -59,8 +59,18 @@ index 479ee52b79e1..2d3938d0ee64 100644
  int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  				unsigned long *start, unsigned long *end);
  
++#else	/* CONFIG_DAMON */
++
++static inline void damon_report_access(struct damon_access_report *report)
++{
++	return;
++}
++
+ #endif	/* CONFIG_DAMON */
+ 
+ #endif	/* _DAMON_H */
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 64e59d15043a..b862136e6565 100644
+index 64e59d15043a..4e25fe100b56 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -24,6 +24,8 @@
@@ -99,7 +109,7 @@ index 64e59d15043a..b862136e6565 100644
 + * NOTE: we may be able to implement this as a lockless queue, and allow any
 + * context.  As the overhead is unknown, and region-based DAMON logics would
 + * guarantee the reports would be not made that frequently, let's start with
-+ * this simple implementation, though.
++ * this simple implementation.
 + */
 +void damon_report_access(struct damon_access_report *report)
 +{

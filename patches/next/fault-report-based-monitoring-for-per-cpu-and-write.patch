@@ -2,11 +2,13 @@ From: SeongJae Park <sj@kernel.org>
 Date: Mon, 20 Jan 2025 13:43:49 -0800
 Subject: [PATCH] ==== fault/report-based monitoring for per-cpu and write ====
 
-mm/damon/core: support multi-source reports-based access monitoring
+mm/damon: extend for page faults reporting based access monitoring
 
-TL; DR: Extend DAMON core-operations set layers interface for operations
-set driven report-based monitoring such as per-CPU and write-only access
-monitoring.
+TL; DR: Extend DAMON interface between core and operation sets for
+operation set driven report-based monitoring such as per-CPU and
+write-only access monitoring.  Further introduce an example physical
+address space monitoring operation set that uses page faults as the
+source of the information.
 
 Background
 ----------
@@ -14,12 +16,9 @@ Background
 Existing DAMON operations set implementations, namely paddr, vaddr, and
 fvaddr, use Accessed bits of page tables as the main source of the
 access information.  Accessed bits has some restrictions, though.  For
-example, it cannot tell which CPU or CPU made the access, whether the
+example, it cannot tell which CPU or GPU made the access, whether the
 access was read or write, and which part of the mapped entity was really
-accessed.  Also, it cannot capture accesses done without page table
-walks, e.g.,  TLB hit case, or unmapped pages.  Exisiting DAMON
-operations set can capture the accesses to unmapped pages utilizing
-PG_Idle, though.
+accessed.
 
 Depending on the use case, the limitations can be problematic.  Because
 the issue stems from the nature of page table Accessed bit, utilizing
@@ -29,26 +28,33 @@ any information from other kernel space friends such as subsystems or
 device drivers of CXL or GPUs could be examples of the different
 sources.
 
-DAMON separates its core and operations set layer.  Operations set layer
-handles the low level access information handling, and the core layer
-handles more high level works such as the region-based overhead/accuracy
-control and access-aware system operations.  Hence we can extend DAMON
-to use the different sources by implementing and using another DAMON
-operations set.  The core layer features will still be available with
-the new sources, without additional changes.
+DAMON separates its core and operation set layer for easy extensions.
+The operation set layer handles the low level access information
+handling, and the core layer handles more high level work such as the
+region-based overhead/accuracy control and access-aware system
+operations.  Hence we can extend DAMON to use the different sources by
+implementing and using another DAMON operations set.  The core layer
+features will still be available with the new sources, without
+additional changes.
 
-Nevertheless, the current interface between the core and the operations
+Nevertheless, the current interface between the core and the operation
 set layers is optimized for the Accessed bits case.  Specifically, the
-interface asks the operations set if a give part of memory has accessed
-or not in a given time period (last sampling interval).  It is easy for
-Accessed bit use case, since operations set can simply read the current
-value of the Accessed bit, which is already well manageed for each
-mapping entities by the memory management subsystems.  For some sources
-other than Accessed bits, the operations set may need to keep the access
-information on its own, and answer to the core layer's question by
-reading its own access information collection.  Similar implementations
-of such operations set internal access information may required for
-multiple operations set implementations.
+interface asks the operations set if a given part of memory has been
+accessed or not in a given time period (last sampling interval).  It is
+easy for the Accessed bit use case, since the information is stored in
+page tables.  Operation set can simply read the current value of the
+Accessed bit.
+
+For some sources other than Accessed bits, such as page faults or
+instruction sampling interrupts, the operations set may need to collect
+and keep the access information in its internal memory until the core
+layer asks the access information.  Only after answering the question,
+the information could be dropped.
+
+Implementing such operation set internal memory management woudl be not
+very trivial.  Also it could end up multiple similar operation set
+implementations having their own internal memory management code that is
+unnecessarily duplicated.
 
 Core Layer Changes for Reporting-based Monitoring
 -------------------------------------------------
@@ -61,27 +67,65 @@ handle the reports by managing meta data and updating the final
 monitoring results (DAMON regions) accordingly.
 
 Also add another operations set callback to determine if a given access
-report is eligible to be used for given operations set.  For example, if
-the operations set implementation is for monitoring only specific CPU or
-writes, the operations set could ask core layer to ignore reported
-accesses that made by other CPUs, or was for reads.
+report is eligible to be used for a given operations set.  For example,
+if the operations set implementation is for monitoring only specific CPU
+or writes, the operations set could ask the core layer to ignore
+reported accesses that were made by other CPUs, or were made for reads.
+
+paddr_fault: Page Faults-based Physical Address Space Access Monitoring
+-----------------------------------------------------------------------
+
+Using the core layer changes, implement a new DAMON operation set,
+namely paddr_fault.  It is the same as the page table Accessed bits
+based physical address space monitoring, but uses page faults as the
+source of the access information.
+
+Specifically, it installs PAGE_NONE protection to access sampling pages
+on damon_operations->prepare_access_checks() callback.  Then, it
+captures the following access to the page in the page fault handling
+context, and directly reports the findings to DAMON, using
+damon_report_access().
+
+For the PAGE_NONE protection use case, introduce a new
+change_protection() flag, namely MM_CP_DAMON.  To avoid interfering with
+NUMA_BALANCING, the page fault handling invokes fault handling logic of
+DAMON or NUMA_BALANCING, based on the NUMA_BALANCING enablement.
+
+This operation set is only for giving examples of how the
+damon_report_access() can be used for multiple sources of the
+information, and easy testing.  It ain't be merged into the mainline as
+is.  I'm currently planning to further develop it for per-CPU access
+monitoring by the final version of this patch series.
 
 How Per-CPU or Write-only Monitoring Can Be Implemented
 -------------------------------------------------------
 
-With these core layer changes, we can implement new DAMON operations set
-that utilizes different information source for page table Accessed bits
-restricted use cases.  For example, to utilize page faults information,
-we could implement an operations set that installs the fake page fault
-protections to access sampling pages per DAMON region for every sampling
-interval.  For that, damon_operations->preapre_access_checks() callback
-coudl be a good place to implement.  Then the developer would need to
-further update PROT_NONE page fault handlers to report the access events
-using the new report API, namely damon_report_access().  The report
-could contain information about which CPU, process, or thread made the
-access, and whether the access is for read or write.  And finally
-implementing the report-ignore logic to ignore accesses made by CPUs of
-no interest or reads, we can do per-CPU or write-only access monitoring.
+The paddr_fault can be extended for per-CPU or write-only monitoring.
+We can get the access source CPU or whether it was write access from the
+page fault information, and put that into the DAMON report (struct
+damon_access_report).  Extending damon_access_report struct with a few
+fields for storing the information would be needed.  Then we can make a
+new DAMON operation set that is similar to paddr_fault, but checks the
+eligibility of each access report, based on the CPU or write
+information.  Of course, extending the existing operation set could also
+be an option.  Then accesses made by CPUs of no interest or reads can be
+ignored, and users can show the per-CPU or write-only accesses using
+DAMON.
+
+Expected Users: Scheduling, VM Live Migration and NUMA Page Migrations
+----------------------------------------------------------------------
+
+We have ongoing off-list discussions of expected use cases of this patch
+series.  We expect this patch series can be used for implementing
+per-CPU access monitoring, and it can be useful for L3 cache
+utilization-aware threads/process scheduling.  Yet another expected use
+case is write-only monitoring, for finding easier live migration target
+VM instances.
+
+Also I believe this can be extended for not only per-CPU but any access
+entities including GPU-like accelerators, who expose their memory as
+NUMA nodes in some setups.  With that, I think we could make a holistic
+and efficient access-aware NUMA pages migration system.
 
 Patches Sequence
 ----------------
@@ -90,35 +134,38 @@ The first patch introduces damon_report_access() that any kernel code
 that can sleep can use, to report their access information on their
 schedule.  The second patch adds DAMON core-operations set interface for
 ignoring specific types of data access reports for the given operations
-set configuration.  The third patch further update core layer to really
-use the reported access information for making the monitoring results
-(DAMON regions) for API callers and ABI users.  The fourth patch updates
-virtual address operations set to ignore access reports for none-target
-virtual spaces.
+set configuration.  The third patch further implements the report
+eligibility check logic for vaddr.  The fourth patch updates the core
+layer to really use the reported access information for making the
+monitoring results (DAMON regions).
 
-The fifth and sixth patches are for only showing possible future
-extensions of the report struct for per-CPU and write-only monitoring.
+The fifth patch implements a new change_protection() flag, MM_CP_DAMON,
+and its fault handling logic for reporting the access to DAMON.  The
+sixth patch implements a new page faults based physical address space
+access monitoring operation set, namely paddr_fault, using MM_CP_DAMON.
+Finally, the seventh patch updates DAMON sysfs interface to support
+paddr_fault.
 
 Plan for Dropping RFC
 ---------------------
 
-This patch series is an RFC for early sharing of the idea that also
-shared on the last LSFMMBPF[1], as 'damon_report_access()' API plan.
-I actually wanted to post this later, but recently I received a few
-questiosn about this, so sharing this very early version.  The
-implementation is pretty simple and unoptimized.  No real use case of
-the changed interface (new operations set implementation) exists.  We
+This patch series is an RFC for early sharing of the idea that was also
+shared on the last LSFMMBPF[1], as 'damon_report_access()' API plan.  We
 will further optimize the core layer implementation and add one or more
-real operations set implementations that utilizing the report-based
+real operations set implementations that utilize the report-based
 interface, by the final version of this patch series.
 
-Previous Similar Approach
--------------------------
+Of course, concerns we find on RFCs should be addressed.
 
-Xin Hao worked[2] on a fault-based DAMON extension before.
+Revision History
+----------------
+
+Changes from RFC v1
+(https://lore.kernel.org/20250629201443.52569-1-sj@kernel.org)
+- Fixup report reading logic for access absence accounting
+- Implement page faults based operations set (paddr_fault)
 
 [1] https://lwn.net/Articles/1016525/
-[2] https://lore.kernel.org/linux-mm/cover.1645024354.git.xhao@linux.alibaba.com/
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
