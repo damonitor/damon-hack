@@ -7,18 +7,28 @@ bindir=$(dirname "$0")
 echo "push linux branches"
 
 git fetch linus
+git fetch akpm.korg.mm
 
 echo "sj.korg"
 git push sj.korg damon/next --force
 git push sj.korg linus/master:master
+git push sj.korg akpm.korg.mm/mm-new:mm-new
+git push sj.korg akpm.korg.mm/mm-stable:mm-unstable
+git push sj.korg akpm.korg.mm/mm-stable:mm-stable
 
 echo "gh.public"
 git push gh.public damon/next --force
 git push gh.public linus/master:master
+git push gh.public akpm.korg.mm/mm-new:mm-new
+git push gh.public akpm.korg.mm/mm-stable:mm-unstable
+git push gh.public akpm.korg.mm/mm-stable:mm-stable
 
 echo "gh.damon"
 git push gh.damon damon/next:next --force
 git push gh.damon linus/master:master
+git push gh.damon akpm.korg.mm/mm-new:mm-new
+git push gh.damon akpm.korg.mm/mm-stable:mm-unstable
+git push gh.damon akpm.korg.mm/mm-stable:mm-stable
 
 echo
 "$bindir/push_damon_hack.sh"
