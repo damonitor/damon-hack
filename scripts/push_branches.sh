@@ -7,7 +7,6 @@ bindir=$(dirname "$0")
 echo "push linux branches"
 
 git fetch linus
-git fetch akpm.korg.mm
 
 echo "sj.korg"
 git push sj.korg damon/next --force
