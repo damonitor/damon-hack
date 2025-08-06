@@ -70,7 +70,7 @@ for commit in $("$unmerged_commits_sh" "$old_mm_new..damon/next.old" \
 	"$new_mainline_base..$new_mm_new")
 do
 	if [ "$(git log -1 "$commit" --pretty=%s)" = \
-		"Add -damon suffix to the version name" ]
+		"add -damon suffix to the version name" ]
 	then
 		is_damon_version_marking_commit="true"
 	else
