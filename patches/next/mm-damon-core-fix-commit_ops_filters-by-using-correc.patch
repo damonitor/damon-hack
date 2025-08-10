@@ -1,5 +1,5 @@
 From: Sang-Heon Jeon <ekffu200098@gmail.com>
-Date: Sat, 9 Aug 2025 22:07:56 +0900
+Date: Sun, 10 Aug 2025 21:42:01 +0900
 Subject: [PATCH] mm/damon/core: fix commit_ops_filters by using correct nth
  function
 
@@ -10,25 +10,20 @@ corrupts ops_filters.
 Add damos_nth_ops_filter() which iterates ops_filters. Use this function
 to fix issues caused by wrong iteration.
 
-Also, add test to verify that modification is right way.
-
 Fixes: 3607cc590f18 ("mm/damon/core: support committing ops_filters") # 6.15.x
 Cc: stable@vger.kernel.org
 Signed-off-by: Sang-Heon Jeon <ekffu200098@gmail.com>
-Link: https://patch.msgid.link/20250809130756.637304-1-ekffu200098@gmail.com
+Link: https://patch.msgid.link/20250810124201.15743-1-ekffu200098@gmail.com
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c                               | 14 +++-
- tools/testing/selftests/damon/Makefile        |  1 +
- .../damon/sysfs_no_op_commit_break.py         | 72 +++++++++++++++++++
- 3 files changed, 86 insertions(+), 1 deletion(-)
- create mode 100755 tools/testing/selftests/damon/sysfs_no_op_commit_break.py
+ mm/damon/core.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index f49cf0d3def4..d1edf12f93cf 100644
+index 883d791a10e5..19c8f01fc81a 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -900,6 +900,18 @@ static struct damos_filter *damos_nth_filter(int n, struct damos *s)
+@@ -862,6 +862,18 @@ static struct damos_filter *damos_nth_filter(int n, struct damos *s)
  	return NULL;
  }
  
@@ -47,7 +42,7 @@ index f49cf0d3def4..d1edf12f93cf 100644
  static void damos_commit_filter_arg(
  		struct damos_filter *dst, struct damos_filter *src)
  {
-@@ -963,7 +975,7 @@ static int damos_commit_ops_filters(struct damos *dst, struct damos *src)
+@@ -925,7 +937,7 @@ static int damos_commit_ops_filters(struct damos *dst, struct damos *src)
  	int i = 0, j = 0;
  
  	damos_for_each_ops_filter_safe(dst_filter, next, dst) {
@@ -56,96 +51,6 @@ index f49cf0d3def4..d1edf12f93cf 100644
  		if (src_filter)
  			damos_commit_filter(dst_filter, src_filter);
  		else
-diff --git a/tools/testing/selftests/damon/Makefile b/tools/testing/selftests/damon/Makefile
-index 5b230deb19e8..44a4a819df55 100644
---- a/tools/testing/selftests/damon/Makefile
-+++ b/tools/testing/selftests/damon/Makefile
-@@ -17,6 +17,7 @@ TEST_PROGS += reclaim.sh lru_sort.sh
- TEST_PROGS += sysfs_update_removed_scheme_dir.sh
- TEST_PROGS += sysfs_update_schemes_tried_regions_hang.py
- TEST_PROGS += sysfs_memcg_path_leak.sh
-+TEST_PROGS += sysfs_no_op_commit_break.py
- 
- EXTRA_CLEAN = __pycache__
- 
-diff --git a/tools/testing/selftests/damon/sysfs_no_op_commit_break.py b/tools/testing/selftests/damon/sysfs_no_op_commit_break.py
-new file mode 100755
-index 000000000000..fbefb1c83045
---- /dev/null
-+++ b/tools/testing/selftests/damon/sysfs_no_op_commit_break.py
-@@ -0,0 +1,72 @@
-+#!/usr/bin/env python3
-+# SPDX-License-Identifier: GPL-2.0
-+
-+import json
-+import os
-+import subprocess
-+import sys
-+
-+import _damon_sysfs
-+
-+def dump_damon_status_dict(pid):
-+    try:
-+        subprocess.check_output(['which', 'drgn'], stderr=subprocess.DEVNULL)
-+    except:
-+        return None, 'drgn not found'
-+    file_dir = os.path.dirname(os.path.abspath(__file__))
-+    dump_script = os.path.join(file_dir, 'drgn_dump_damon_status.py')
-+    rc = subprocess.call(['drgn', dump_script, pid, 'damon_dump_output'],
-+        stderr=subprocess.DEVNULL)
-+
-+    if rc != 0:
-+        return None, f'drgn fail: return code({rc})'
-+    try:
-+        with open('damon_dump_output', 'r') as f:
-+            return json.load(f), None
-+    except Exception as e:
-+        return None, 'json.load fail (%s)' % e
-+
-+def main():
-+    kdamonds = _damon_sysfs.Kdamonds(
-+        [_damon_sysfs.Kdamond(
-+            contexts=[_damon_sysfs.DamonCtx(
-+                schemes=[_damon_sysfs.Damos(
-+                    ops_filters=[
-+                        _damon_sysfs.DamosFilter(
-+                            type_='anon',
-+                            matching=True,
-+                            allow=True,
-+                        )
-+                    ]
-+                )],
-+            )])]
-+    )
-+
-+    err = kdamonds.start()
-+    if err is not None:
-+        print('kdamond start failed: %s' % err)
-+        exit(1)
-+
-+    before_commit_status, err = \
-+        dump_damon_status_dict(kdamonds.kdamonds[0].pid)
-+    if err is not None:
-+        print(err)
-+        exit(1)
-+
-+    kdamonds.kdamonds[0].commit()
-+
-+    after_commit_status, err = \
-+        dump_damon_status_dict(kdamonds.kdamonds[0].pid)
-+    if err is not None:
-+        print(err)
-+        exit(1)
-+
-+    if before_commit_status != after_commit_status:
-+        print(f'before: {json.dump(before_commit_status, indent=2)}')
-+        print(f'after: {json.dump(after_commit_status, indent=2)}')
-+        exit(1)
-+
-+    kdamonds.stop()
-+
-+if __name__ == '__main__':
-+    main()
 -- 
 2.39.5
 
