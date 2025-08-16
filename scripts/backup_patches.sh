@@ -28,30 +28,16 @@ Assembled tree: $(git rev-parse damon/next)"
 git -C "$bindir" rm -r "$dest_dir"
 mkdir -p "$dest_dir"
 
-for commit in $(git log --reverse --pretty=%H "$commits")
-do
-	if [ ! -e "$dest_dir/series" ]
-	then
-		baseline=$(git log --pretty=%H -1 "$commit^")
-		echo "$baseline" > "$dest_dir/series"
-	fi
-	patch=$(git format-patch "$commit^".."$commit")
+lbx_path=$(realpath "$bindir/../../lazybox")
+patches_queue_py="$lbx_path/git_helpers/patches_queue.py"
+if [ ! -x "$patches_queue_py" ]
+then
+	echo "$patches_queue_py not found"
+	exit 1
+fi
 
-	# remove magic timestamp line to avoid unnecessary diff
-	no_magic_tmp_patch=$(mktemp no_magic_timestamp_XXXX)
-	tail -n +2 "$patch" > "$no_magic_tmp_patch"
-	mv "$no_magic_tmp_patch" "$patch"
-
-	final_name=$(echo "$patch" | cut -c 6-)
-	nr_duplicates=0
-	while [ -e "$dest_dir/$final_name" ]
-	do
-		nr_duplicates=$((nr_duplicates + 1))
-		final_name+="-$nr_duplicates"
-	done
-	mv "$patch" "$dest_dir/$final_name"
-	echo "$final_name" >> "$dest_dir/series"
-done
+"$patches_queue_py" \
+	--series "${dest_dir}/series" --commits "$commits" --repo ./
 
 git -C "$bindir" add "$dest_dir"
 git -C "$bindir" commit -s -m "patches/next: $commit_msg"
