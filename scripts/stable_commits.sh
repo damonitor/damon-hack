@@ -4,7 +4,7 @@
 # yet.
 
 bindir=$(dirname "$0")
-lbx_path=$(realpath "$bindir/../lazybox")
+lbx_path=$(realpath "$bindir/../../lazybox")
 stable_commits_check="$lbx_path/linux_hack/stable_commits_check.py"
 
 if [ ! -x "$stable_commits_check" ]
