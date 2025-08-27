@@ -9,11 +9,11 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 64 insertions(+), 60 deletions(-)
 
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index d7bb23ee1bda..ad930c972903 100644
+index 59b9d53d72ce..9b7498974164 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -44,7 +44,8 @@ static void __damon_pa_prepare_access_check(struct damon_region *r,
- 	damon_pa_mkold(damon_pa_phys_addr(r->sampling_addr, addr_unit));
+@@ -37,7 +37,8 @@ static void __damon_pa_prepare_access_check(struct damon_region *r)
+ 	damon_pa_mkold(r->sampling_addr);
  }
  
 -static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
@@ -22,53 +22,87 @@ index d7bb23ee1bda..ad930c972903 100644
  {
  	struct damon_target *t;
  	struct damon_region *r;
-@@ -55,6 +56,68 @@ static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
+@@ -48,57 +49,7 @@ static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
  	}
  }
  
+-static bool damon_pa_young(unsigned long paddr, unsigned long *folio_sz)
+-{
+-	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+-	bool accessed;
+-
+-	if (!folio)
+-		return false;
+-
+-	accessed = damon_folio_young(folio);
+-	*folio_sz = folio_size(folio);
+-	folio_put(folio);
+-	return accessed;
+-}
+-
+-static void __damon_pa_check_access(struct damon_region *r,
+-		struct damon_attrs *attrs)
+-{
+-	static unsigned long last_addr;
+-	static unsigned long last_folio_sz = PAGE_SIZE;
+-	static bool last_accessed;
+-
+-	/* If the region is in the last checked page, reuse the result */
+-	if (ALIGN_DOWN(last_addr, last_folio_sz) ==
+-				ALIGN_DOWN(r->sampling_addr, last_folio_sz)) {
+-		damon_update_region_access_rate(r, last_accessed, attrs);
+-		return;
+-	}
+-
+-	last_accessed = damon_pa_young(r->sampling_addr, &last_folio_sz);
+-	damon_update_region_access_rate(r, last_accessed, attrs);
+-
+-	last_addr = r->sampling_addr;
+-}
+-
+-static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+-{
+-	struct damon_target *t;
+-	struct damon_region *r;
+-	unsigned int max_nr_accesses = 0;
+-
+-	damon_for_each_target(t, ctx) {
+-		damon_for_each_region(r, t) {
+-			__damon_pa_check_access(r, &ctx->attrs);
+-			max_nr_accesses = max(r->nr_accesses, max_nr_accesses);
+-		}
+-	}
+-
+-	return max_nr_accesses;
+-}
+-
+-static bool damon_pa_fault_change_protection_one(struct folio *folio,
 +static bool damon_pa_change_protection_one(struct folio *folio,
-+		struct vm_area_struct *vma, unsigned long addr, void *arg)
-+{
-+	/* todo: batch or remove tlb flushing */
-+	struct mmu_gather tlb;
-+
-+	if (!vma_is_accessible(vma))
-+		return true;
-+
-+	tlb_gather_mmu(&tlb, vma->vm_mm);
-+
-+	change_protection(&tlb, vma, addr, addr + PAGE_SIZE, MM_CP_DAMON);
-+
-+	tlb_finish_mmu(&tlb);
-+	return true;
-+}
-+
+ 		struct vm_area_struct *vma, unsigned long addr, void *arg)
+ {
+ 	/* todo: batch or remove tlb flushing */
+@@ -115,11 +66,11 @@ static bool damon_pa_fault_change_protection_one(struct folio *folio,
+ 	return true;
+ }
+ 
+-static void damon_pa_fault_change_protection(unsigned long paddr)
 +static void damon_pa_change_protection(unsigned long paddr)
-+{
-+	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
-+	struct rmap_walk_control rwc = {
+ {
+ 	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+ 	struct rmap_walk_control rwc = {
+-		.rmap_one = damon_pa_fault_change_protection_one,
 +		.rmap_one = damon_pa_change_protection_one,
-+		.anon_lock = folio_lock_anon_vma_read,
-+	};
-+	bool need_lock;
-+
-+	if (!folio)
-+		return;
-+	if (!folio_mapped(folio) || !folio_raw_mapping(folio))
-+		return;
-+
-+	need_lock = !folio_test_anon(folio) || folio_test_ksm(folio);
-+	if (need_lock && !folio_trylock(folio))
-+		return;
-+
-+	rmap_walk(folio, &rwc);
-+
-+	if (need_lock)
-+		folio_unlock(folio);
-+}
-+
+ 		.anon_lock = folio_lock_anon_vma_read,
+ 	};
+ 	bool need_lock;
+@@ -139,22 +90,75 @@ static void damon_pa_fault_change_protection(unsigned long paddr)
+ 		folio_unlock(folio);
+ }
+ 
+-static void __damon_pa_fault_prepare_access_check(struct damon_region *r)
 +static void damon_pa_prepare_access_checks_faults(struct damon_ctx *ctx)
-+{
+ {
+-	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
 +	struct damon_target *t;
 +	struct damon_region *r;
 +
@@ -88,75 +122,61 @@ index d7bb23ee1bda..ad930c972903 100644
 +		damon_pa_prepare_access_checks_faults(ctx);
 +}
 +
- static bool damon_pa_young(phys_addr_t paddr, unsigned long *folio_sz)
- {
- 	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
-@@ -108,65 +171,6 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
- 	return max_nr_accesses;
++static bool damon_pa_young(unsigned long paddr, unsigned long *folio_sz)
++{
++	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
++	bool accessed;
++
++	if (!folio)
++		return false;
++
++	accessed = damon_folio_young(folio);
++	*folio_sz = folio_size(folio);
++	folio_put(folio);
++	return accessed;
++}
++
++static void __damon_pa_check_access(struct damon_region *r,
++		struct damon_attrs *attrs)
++{
++	static unsigned long last_addr;
++	static unsigned long last_folio_sz = PAGE_SIZE;
++	static bool last_accessed;
++
++	/* If the region is in the last checked page, reuse the result */
++	if (ALIGN_DOWN(last_addr, last_folio_sz) ==
++				ALIGN_DOWN(r->sampling_addr, last_folio_sz)) {
++		damon_update_region_access_rate(r, last_accessed, attrs);
++		return;
++	}
+ 
+-	damon_pa_fault_change_protection(r->sampling_addr);
++	last_accessed = damon_pa_young(r->sampling_addr, &last_folio_sz);
++	damon_update_region_access_rate(r, last_accessed, attrs);
++
++	last_addr = r->sampling_addr;
  }
  
--static bool damon_pa_fault_change_protection_one(struct folio *folio,
--		struct vm_area_struct *vma, unsigned long addr, void *arg)
--{
--	/* todo: batch or remove tlb flushing */
--	struct mmu_gather tlb;
--
--	if (!vma_is_accessible(vma))
--		return true;
--
--	tlb_gather_mmu(&tlb, vma->vm_mm);
--
--	change_protection(&tlb, vma, addr, addr + PAGE_SIZE, MM_CP_DAMON);
--
--	tlb_finish_mmu(&tlb);
--	return true;
--}
--
--static void damon_pa_fault_change_protection(unsigned long paddr)
--{
--	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
--	struct rmap_walk_control rwc = {
--		.rmap_one = damon_pa_fault_change_protection_one,
--		.anon_lock = folio_lock_anon_vma_read,
--	};
--	bool need_lock;
--
--	if (!folio)
--		return;
--	if (!folio_mapped(folio) || !folio_raw_mapping(folio))
--		return;
--
--	need_lock = !folio_test_anon(folio) || folio_test_ksm(folio);
--	if (need_lock && !folio_trylock(folio))
--		return;
--
--	rmap_walk(folio, &rwc);
--
--	if (need_lock)
--		folio_unlock(folio);
--}
--
--static void __damon_pa_fault_prepare_access_check(struct damon_region *r)
--{
--	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
--
--	damon_pa_fault_change_protection(r->sampling_addr);
--}
--
 -static void damon_pa_fault_prepare_access_checks(struct damon_ctx *ctx)
--{
--	struct damon_target *t;
--	struct damon_region *r;
--
--	damon_for_each_target(t, ctx) {
++static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r;
++	unsigned int max_nr_accesses = 0;
+ 
+ 	damon_for_each_target(t, ctx) {
 -		damon_for_each_region(r, t)
 -			__damon_pa_fault_prepare_access_check(r);
--	}
--}
--
++		damon_for_each_region(r, t) {
++			__damon_pa_check_access(r, &ctx->attrs);
++			max_nr_accesses = max(r->nr_accesses, max_nr_accesses);
++		}
+ 	}
++
++	return max_nr_accesses;
+ }
+ 
  /*
-  * damos_pa_filter_out - Return true if the page should be filtered out.
-  */
 -- 
 2.39.5
 
