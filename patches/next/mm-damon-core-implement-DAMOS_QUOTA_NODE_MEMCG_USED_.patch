@@ -1,0 +1,79 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 19 Jun 2025 12:06:50 -0700
+Subject: [PATCH] mm/damon/core: implement DAMOS_QUOTA_NODE_MEMCG_USED_BP
+
+Implement the behavior of DAMOS_QUOTA_NODE_MEMCG_USED_BP.  It uses sum
+of active/inactive anon/file pages of a given cgroup on a given NUMA
+node as the value of the metric.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 39c272f846d7..dd275b1026fa 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -10,6 +10,7 @@
+ #include <linux/damon.h>
+ #include <linux/delay.h>
+ #include <linux/kthread.h>
++#include <linux/memcontrol.h>
+ #include <linux/mm.h>
+ #include <linux/psi.h>
+ #include <linux/slab.h>
+@@ -2128,12 +2129,40 @@ static __kernel_ulong_t damos_get_node_mem_bp(
+ 		numerator = i.freeram;
+ 	return numerator * 10000 / i.totalram;
+ }
++
++static unsigned long damos_get_node_memcg_used_bp(
++		struct damos_quota_goal *goal)
++{
++	struct mem_cgroup *memcg;
++	struct lruvec *lruvec;
++	unsigned long used_pages;
++	struct sysinfo i;
++
++	rcu_read_lock();
++	memcg = mem_cgroup_from_id(goal->memcg_id);
++	mem_cgroup_flush_stats(memcg);
++	lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(goal->nid));
++	used_pages = lruvec_page_state(lruvec, NR_ACTIVE_ANON);
++	used_pages += lruvec_page_state(lruvec, NR_INACTIVE_ANON);
++	used_pages += lruvec_page_state(lruvec, NR_ACTIVE_FILE);
++	used_pages += lruvec_page_state(lruvec, NR_INACTIVE_FILE);
++	rcu_read_unlock();
++
++	si_meminfo_node(&i, goal->nid);
++	return used_pages * PAGE_SIZE * 10000 / i.totalram;
++}
+ #else
+ static __kernel_ulong_t damos_get_node_mem_bp(
+ 		struct damos_quota_goal *goal)
+ {
+ 	return 0;
+ }
++
++static unsigned long damos_get_node_memcg_used_bp(
++		struct damos_quota_goal *goal)
++{
++	return 0;
++}
+ #endif
+ 
+ /*
+@@ -2172,6 +2201,9 @@ static void damos_set_quota_goal_current_value(struct damos_quota_goal *goal)
+ 	case DAMOS_QUOTA_NODE_MEM_FREE_BP:
+ 		goal->current_value = damos_get_node_mem_bp(goal);
+ 		break;
++	case DAMOS_QUOTA_NODE_MEMCG_USED_BP:
++		goal->current_value = damos_get_node_memcg_used_bp(goal);
++		break;
+ 	case DAMOS_QUOTA_ACTIVE_MEM_BP:
+ 	case DAMOS_QUOTA_INACTIVE_MEM_BP:
+ 		goal->current_value = damos_get_in_active_mem_bp(
+-- 
+2.39.5
+
