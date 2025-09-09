@@ -1,0 +1,46 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kernel-team@meta.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 5 Sep 2025 18:52:44 -0700
+Subject: [RFC PATCH] mm/damon/core: reset age if nr_accesses changes between
+         non-zero and zero
+
+DAMON resets the age of a region if its nr_accesses value has
+significantly changed. Specifically, the threshold is calculated as 20%
+of largest nr_accesses of the current snapshot.  This means that regions
+changing the nr_accesses from zero to small non-zero value or from a
+small non-zero value to zero will keep the age.  Since many users treat
+zero nr_accesses regions special, this can be confusing.  Kernel code
+including DAMOS' regions priority calculation and DAMON_STAT's idle time
+calculation also treat zero nr_accesses regions special.  Make it
+unconfusing by resetting the age when the nr_accesses changes between
+zero and a non-zero value.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index be5942435d78..996647caca02 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2261,6 +2261,9 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+ 	damon_for_each_region_safe(r, next, t) {
+ 		if (abs(r->nr_accesses - r->last_nr_accesses) > thres)
+ 			r->age = 0;
++		else if ((!r->nr_accesses && r->last_nr_accesses) ||
++				(r->nr_accesses && !r->last_nr_accesses))
++			r->age = 0;
+ 		else
+ 			r->age++;
+ 
+
+base-commit: 580b0ae8069448252cfea72b75ba5b0857c128e0
+-- 
+2.39.5
