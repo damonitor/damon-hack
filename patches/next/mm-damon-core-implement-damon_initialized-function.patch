@@ -2,11 +2,23 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sat, 28 Jun 2025 13:52:26 -0700
 Subject: [PATCH] mm/damon/core: implement damon_initialized() function
 
+If DAMON is tried to be used when it is not yet successfully
+initialized, the caller could be crashed.  Such issues actually happened
+and were fixed for DAMON modules, e.g., commit 60d637302ec7
+("samples/damon/mtier: avoid starting DAMON before initialization"). The
+fixes assume DAMON will be ready in module_init time and implement their
+own hacks for seeing if it is safe to use DAMON or not.  Those are
+unnecessary duplications that are better to be handled by the DAMON core
+layer. Also, actually DAMON initialization could fail, though it is
+unlikely. In future, there might be likely DAMON initialization
+failures. Implement a core layer API function for seeing if DAMON is
+ready to be used or not.
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h | 1 +
- mm/damon/core.c       | 5 +++++
- 2 files changed, 6 insertions(+)
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 10 ++++++++++
+ 2 files changed, 11 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 484b0558f426..0f012b1e39fa 100644
@@ -21,13 +33,18 @@ index 484b0558f426..0f012b1e39fa 100644
  int damon_stop(struct damon_ctx **ctxs, int nr_ctxs);
  bool damon_is_running(struct damon_ctx *ctx);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index f32034973cc1..e0a0be4b97bc 100644
+index f32034973cc1..38ff417f4eb9 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2880,6 +2880,11 @@ void damon_update_region_access_rate(struct damon_region *r, bool accessed,
+@@ -2880,6 +2880,16 @@ void damon_update_region_access_rate(struct damon_region *r, bool accessed,
  		r->nr_accesses++;
  }
  
++/**
++ * damon_initialized() - Return if DAMON is ready to be used.
++ *
++ * Return: true if DAMON is ready to be used, false otherwise.
++ */
 +bool damon_initialized(void)
 +{
 +	return damon_region_cache != NULL;
