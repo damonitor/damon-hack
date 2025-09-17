@@ -1,0 +1,46 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 17 Sep 2025 08:31:54 -0700
+Subject: [PATCH] mm/damon/sysfs: set damon_ctx->min_sz_region only for paddr
+ use case
+
+damon_ctx->addr_unit is respected only for physical address space
+monitoring use case.  Meanwhile, damon_ctx->min_sz_region is used by the
+core layer for aligning regions, regardless of whether it is set for
+physical address space monitoring or virtual address spaces monitoring.
+And it is set as 'DAMON_MIN_REGION / damon_ctx->addr_unit'.  Hence, if
+user sets ->addr_unit on virtual address spaces monitoring mode, regions
+can be unexpectedly aligned in <PAGE_SIZE granularity.  It shouldn't
+cause crash-like issues but make monitoring and DAMOS behavior difficult
+to understand.
+
+Fix the unexpected behavior by setting ->min_sz_region only when it is
+configured for physical address space monitoring.
+
+The issue was found from a result of Chris' experiments that thankfully
+shared with me off-list.
+
+Cc: Chris Mason <clm@fb.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index fe4e73d0ebbb..883b0d886d68 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1435,7 +1435,10 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+ 	if (err)
+ 		return err;
+ 	ctx->addr_unit = sys_ctx->addr_unit;
+-	ctx->min_sz_region = max(DAMON_MIN_REGION / sys_ctx->addr_unit, 1);
++	/* addr_unit is respected by only DAMON_OPS_PADDR */
++	if (sys_ctx->ops_id == DAMON_OPS_PADDR)
++		ctx->min_sz_region = max(
++				DAMON_MIN_REGION / sys_ctx->addr_unit, 1);
+ 	err = damon_sysfs_set_attrs(ctx, sys_ctx->attrs);
+ 	if (err)
+ 		return err;
+-- 
+2.39.5
+
