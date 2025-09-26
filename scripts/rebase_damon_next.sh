@@ -87,7 +87,14 @@ do
 	if ! git cherry-pick --allow-empty "$commit"
 	then
 		echo "Cherry-pick failed for $commit."
-		echo "Resolve it, further apply"
+		read -p "Skip it and continue? [y/N] " answer
+		if [ "$answer" = "y" ]
+		then
+			git cherry-pick --skip
+			continue
+		fi
+
+		echo "Ok, aborting here.  Resolve it, further apply"
 		echo $("$unmerged_commits_sh" \
 			"$old_mm_new..damon/next.old" \
 			"$new_mainline_base..$new_mm_new")
