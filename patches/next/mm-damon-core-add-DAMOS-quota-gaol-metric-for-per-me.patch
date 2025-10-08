@@ -1,16 +1,19 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 19 Jun 2025 12:55:35 -0700
-Subject: [PATCH] mm/damon: add DAMOS_QUOTA_NODE_MEMCG_FREE_BP quota tuning
- goal metric
+Subject: [PATCH] mm/damon/core: add DAMOS quota gaol metric for per-memcg
+ per-numa free memory
 
 Add a variant of DAMOS_QUOTA_NODE_MEMCG_USED_BP, for free memory
-portion.  Note that this commit only extends the DAMON API.  The real
-behavior will be implemented by a following commit.
+portion.  The value of the metric is implemented as the entire memory of
+the given NUMA node subtracted by the given cgroup's usage.  So from a
+perspective, "unused" could be a better term than "free".  But arguably
+it is not very clear what is better, so use the term "free".
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h | 6 ++++--
- 1 file changed, 4 insertions(+), 2 deletions(-)
+ mm/damon/core.c       | 9 +++++++--
+ 2 files changed, 11 insertions(+), 4 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 0adea795651e..d405c47ea34a 100644
@@ -43,6 +46,40 @@ index 0adea795651e..d405c47ea34a 100644
   */
  struct damos_quota_goal {
  	enum damos_quota_goal_metric metric;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1eacf78aa358..a31ede50906c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2039,7 +2039,7 @@ static unsigned long damos_get_node_memcg_used_bp(
+ {
+ 	struct mem_cgroup *memcg;
+ 	struct lruvec *lruvec;
+-	unsigned long used_pages;
++	unsigned long used_pages, numerator;
+ 	struct sysinfo i;
+ 
+ 	rcu_read_lock();
+@@ -2059,7 +2059,11 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 	used_pages += lruvec_page_state(lruvec, NR_INACTIVE_FILE);
+ 
+ 	si_meminfo_node(&i, goal->nid);
+-	return used_pages * 10000 / i.totalram;
++	if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
++		numerator = used_pages;
++	else	/* DAMOS_QUOTA_NODE_MEMCG_FREE_BP */
++		numerator = i.totalram - used_pages;
++	return numerator * 10000 / i.totalram;
+ }
+ #else
+ static __kernel_ulong_t damos_get_node_mem_bp(
+@@ -2094,6 +2098,7 @@ static void damos_set_quota_goal_current_value(struct damos_quota_goal *goal)
+ 		goal->current_value = damos_get_node_mem_bp(goal);
+ 		break;
+ 	case DAMOS_QUOTA_NODE_MEMCG_USED_BP:
++	case DAMOS_QUOTA_NODE_MEMCG_FREE_BP:
+ 		goal->current_value = damos_get_node_memcg_used_bp(goal);
+ 		break;
+ 	default:
 -- 
 2.39.5
 

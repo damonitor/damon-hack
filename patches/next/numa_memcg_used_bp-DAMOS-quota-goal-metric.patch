@@ -195,26 +195,42 @@ confirmed it works as intended.
 Setup
 -----
 
-Configure a QEMU virtual machine having two NUMA nodes.  Each node has
-about 27 GiB memory.  The first node represents faster NUMA node, and
-the second node represents slower NUMA node of the above example use
-case scenario.
+I configured a QEMU virtual machine representing a simplfied version of
+the system that described on the above memory tiering example use case.
+The system equips 40 CPU cores, and two NUMA nodes that each having 30
+GiB physical memory.  The first node (node 0) represents the faster NUMA
+node, and the second node (node 1) represents the slower NUMA node.  In
+specific, below qemu command line options are used.
 
-Create two cgroups, namely workload_a and workload_b.  And run a test
-program in each cgroup, resulting in one process per cgroup.  The test
-program allocates 10 GiB memory and evenly split it into 10 regions.
-After the allocation, it repeatedly access the first region for one
-minute, than the second one for one minute, and so on.  After the one
-minute repeated access for the tenth region is done, it rpeats the
-access from the first region.  So the process has 10 GiB of data in
-total, but only 1 GiB of it is hot at a given moment, and the hot data
-is gradually changed.
+    [...]
+    -object memory-backend-ram,size=30G,id=m0 \
+    -object memory-backend-ram,size=30G,id=m1 \
+    -numa node,cpus=0-39,memdev=m0 \
+    -numa node,memdev=m1 \
+    [...]
+
+I booted the virtual machine with a kernel that this patch series is
+applied.  On the virtual amchine, I created two cgroups, namely
+workload_a and workload_b.  And ran a test program in each cgroup,
+resulting in one process per cgroup.  The test program allocates 10 GiB
+memory and evenly split it into 10 regions.  After the allocation, it
+repeatedly access the first region for one minute, than the second one
+for one minute, and so on.  After the one minute repeated access for the
+tenth region is done, it rpeats the access from the first region.  So
+the process has 10 GiB of data in total, but only 1 GiB of it is hot at
+a given moment, and the hot data is gradually changed.
 
 While the processes are running, run DAMON for simple access-aware
 memory tiering using below script.  It migrates hot and cold data of the
 cgroups into node 0 and node 1, aiming the first and the second cgroups
 (workload_a and workload_b, respectively) utilizes about 9.7% and 19.7%
 of node 0, respectively.
+
+Note that this setup is a simplified version of the above example use
+case, for ease of test.  Also note that we assigned 30 GiB physical
+memory to node 0, but DAMON in this setup works for only 27 GiB of node
+0.  It is due to an internal implementation detail of DAMON user-space
+tool, that not really important for this test.
 
     #!/bin/bash
     damo start \
@@ -269,6 +285,7 @@ From RFC v1
 - Handle mem_cgroup_from_id() NULL return case
 - Add test results on the cover letter
 - Wordsmith cover letter and commit messages
+- Merge core layer interface and implementation changes into one commit
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
