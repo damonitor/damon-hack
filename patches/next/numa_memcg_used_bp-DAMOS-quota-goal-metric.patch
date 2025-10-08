@@ -4,15 +4,15 @@ Subject: [PATCH] ==== numa_memcg_used_bp DAMOS quota goal metric ====
 
 mm/damon: allow DAMOS auto-tuned for per-memcg per-node memory usage
 
-This patch series introduce two new DAMOS quota auto-tuning target
-metrics for per-cgroup per-node memory usage.  Those are assumed to be
-useful for various cgroup-aware case including memory tiering on
-cgroup-based multi-tenant systems.
+Introduce two new DAMOS quota auto-tuning target metrics for per-cgroup
+per-NUMA node memory utilization.  Expected use cases are cgroup level
+access-aware NUMA memory managements, such as memory tiering or
+proactive reclamation on cgroup-based multi-tenant NUMA systems.
 
 Background
-----------
+==========
 
-DAMOS' aim-oriented aggressiveness auto-tuning feature is a highly
+The aim-oriented aggressiveness auto-tuning feature of DAMOS is a highly
 recommended way for modern DAMOS use cases.  Using it, users can specify
 what system status they want to achive with what access-aware system
 operations.  For example, reclaim cold memory aiming 0.5 % of memory
@@ -22,39 +22,40 @@ automatically adjusts the aggressiveness of the system operation (e.g.,
 increase/decrease reclaim target coldness threshold) based on current
 status of the system.
 
-The use case is hence limited by the supported system status metrics for
+The use case is limited by the supported system status metrics for
 specifying the target system status.  Two new system metrics for
 per-node memory usage ratio, namely DAMOS_QUOTA_NODE_MEM_{USED,FREE}_BP,
 were recently added to extend the use cases for access-aware NUMA nodes
-management, such as memory tiering.
+management, such as memory tiering.  Those are expected to be useful for
+not only memory tiering but also general access-aware inter-NUMA node
+page migration, though.
 
 Limitation
-~~~~~~~~~~
+----------
 
 The per-node memory usage based auto-tuning can be applied only
-system-wide.  For cgroups-based multi tenant systems, it could harm the
-fairness.  For example, even if the cgroups have their own memory.low
-values for protecting their memory, it could result in a cgroup having
-more hot pages using more portion of fast tier NUMA node.  Depending on
-the definition and promise of the fairness, this could be suboptimum.
+system-wide.  For cgroups-based multi tenant systems, it could arguably
+harm the fairness.  For example, a cgroup may use faster NUMA node
+memory more than other cgroup, depending on their access pattern.  If
+the user of each cgroup are promised to get same quality and amount of
+the system resource, this can arguably be an unfair situation.
 
 DAMOS supports cgroup-aware system operations via DAMOS filter.  But
 quota auto-tuning system is not aware of cgroups.
 
 New DAMOS Quota Tuning Metrics for Per-Cgroup Per-NUMA Memory Usage
--------------------------------------------------------------------
+===================================================================
 
-To overcome the limitation, this patch series introduces two new DAMOS
-quota auto-tuning goal metrics, namely
-DAMOS_QUOTA_NODE_MEMCG_{USED,FREE}_BP.  Those can be thought of as a
-variant of DAMOS_QUOTA_NODE_MEM_{USED,FREE}_BP that extended for
-cgroups.
+To overcome the limitation, introduce two new DAMOS quota auto-tuning
+goal metrics, namely DAMOS_QUOTA_NODE_MEMCG_{USED,FREE}_BP.  Those can
+be thought of as a variant of DAMOS_QUOTA_NODE_MEM_{USED,FREE}_BP that
+extended for cgroups.
 
 The two metrics specifies per-cgroup, per-node amount of used and unused
 memory in ratio to the total memory of the node.  For example, let's
 assume a system has two NUMA nodes of size 100 GiB and 50 GiB.  And two
-cgroups are using 40 and 60 GiB of node 0, 20 and 10 GiB of node 1,
-respectively.
+cgroups are using 40 GiB and 60 GiB of node 0, 20 GiB and 10 GiB of node
+1, respectively, as illustrated by the below table.
 
                      node-0    node-1
     Total memory     100 GiB   50 GiB
@@ -62,9 +63,10 @@ respectively.
     Cgroup B usage   60 GiB    10 GiB
 
 Then, DAMOS_QUOTA_NODE_MEMCG_USED_BP for the cgroups for the first node
-are, 40 GiB / 100 GiB = 4000 bp and 60 GiB / 100 GiB = 6000 bp,
-respectively.  Those for the second node are, 20 GiB / 50 GiB = 4000 bp
-and 10 GiB / 50 GiB = 2000 bp, respectively.
+are, 40 GiB / 100 GiB = 4,000 bp (40 percent) and 60 GiB / 100 GiB =
+6,000 bp (60 percent), respectively.  Those for the second node are,
+20 GiB / 50 GiB = 4000 bp (40 percent) and 10 GiB / 50 GiB = 2000 bp (20
+percent), respectively.
 
 DAMOS_QUOTA_NODE_MEMCG_FREE_BP for the four cases are, 60 GiB /100 GiB =
 6000 bp, 40 GiB / 100 GiB = 4000 bp, 30 GiB / 50 GiB = 6000 bp, and 40
@@ -85,7 +87,7 @@ per-cgroup and per-node DAMOS should make as a result of the
 auto-tuning.
 
 Example Usecase: Cgroup-aware Memory Tiering
---------------------------------------------
+============================================
 
 Let's suppose a system having two NUMA nodes.  The first node (node 0)
 is CPU-attached and fast.  The second node (node 1) is CPU-unattached
@@ -96,9 +98,9 @@ percent of each nodes preferring more of node 0, like below, using DAMON
 user-space tool.
 
     # ./damo start \
-    	\ # kdamond for node 1 (slow)
+    	`# kdamond for node 1 (slow)` \
         --numa_node 1 --monitoring_intervals_goal 4% 3 5ms 10s \
-	    \ # promotion scheme for cgroup a
+	    `# promotion scheme for cgroup a` \
             --damos_action migrate_hot 0 --damos_access_rate 5% max \
             --damos_apply_interval 1s \
 	    --damos_filter allow memcg /workloads/a \
@@ -106,7 +108,7 @@ user-space tool.
             --damos_quota_interval 1s --damos_quota_space 200MB \
             --damos_quota_goal node_memcg_used_bp 29.7% 0 /workloads/a \
 	    \
-	    \ # promotion scheme for cgroup b
+	    `# promotion scheme for cgroup b` \
             --damos_action migrate_hot 0 --damos_access_rate 5% max \
             --damos_apply_interval 1s \
 	    --damos_filter allow memcg /workloads/b \
@@ -114,9 +116,9 @@ user-space tool.
             --damos_quota_interval 1s --damos_quota_space 200MB \
             --damos_quota_goal node_memcg_used_bp 69.7% 0 workloads/b \
 	    \
-    	\ # kdamond for node 0 (fast)
+    	`# kdamond for node 0 (fast)` \
         --numa_node 0 --monitoring_intervals_goal 4% 3 5ms 10s \
-            \ # demotion scheme for cgroup a
+            `# demotion scheme for cgroup a` \
             --damos_action migrate_cold 1 --damos_access_rate 0% 0% \
             --damos_apply_interval 1s \
 	    --damos_filter allow memcg /workloads/a \
@@ -124,7 +126,7 @@ user-space tool.
             --damos_quota_interval 1s --damos_quota_space 200MB \
             --damos_quota_goal node_memcg_free_bp 70.5% 0 \
 	    \
-            \ # demotion scheme for cgroup b
+            `# demotion scheme for cgroup b` \
             --damos_action migrate_cold 1 --damos_access_rate 0% 0% \
             --damos_apply_interval 1s \
 	    --damos_filter allow memcg /workloads/a \
@@ -136,11 +138,11 @@ user-space tool.
         --nr_targets 1 1 --nr_schemes 2 2 --nr_ctxs 1 1
 
 With the command, the user-space tool will ask DAMON to spawn two kernel
-threads, monitoring access to node 1 (slow) and node 0 (fast),
-respectively.  It installs two DAMOS schemes on each threads.  Let's
-call them "promotion scheme for cgroup a", "promotion scheme for cgroup
-b", "demotion scheme for cgroup a", "demotion scheme for cgroup b", in
-the order.  The promotion schemes are installed on the DAMON thread for
+threads, each for monitoring access to node 1 (slow) and node 0 (fast),
+respectively.  It installs two DAMOS schemes on each thread.  Let's call
+them "promotion scheme for cgroup a", "promotion scheme for cgroup b",
+"demotion scheme for cgroup a", "demotion scheme for cgroup b", in the
+order.  The promotion schemes are installed on the DAMON thread for
 node 1 (slow), and demotion schemes are installed on the DAMON thrad for
 node 0 (fast).
 
@@ -184,23 +186,35 @@ appropriate cgroups in node 0 to node 1, under the 200 MiB per second
 speed cap, while adjusting the speed based on how much more than wanted
 memory is being used.
 
-Tests
+Test: Per-cgroup Memory Tiering
+===============================
+
+I ran a simplified per-cgroup memory tiering using the feature, and
+confirmed it works as intended.
+
+Setup
 -----
 
 Configure a QEMU virtual machine having two NUMA nodes.  Each node has
-about 27 GiB memory.
+about 27 GiB memory.  The first node represents faster NUMA node, and
+the second node represents slower NUMA node of the above example use
+case scenario.
 
-Create two cgroups (namely workload_a and workload_b).  And run a test
-program in each cgroup, result in one process per cgroup.  The test
-program allocates 10 memory regions of 1 GiB size, repeatedly access the
-first one for one minute, than the second one for one minute, and so on.
-So the process has 10 GiB of data but only 1 GiB of it is hot at a given
-moment.
+Create two cgroups, namely workload_a and workload_b.  And run a test
+program in each cgroup, resulting in one process per cgroup.  The test
+program allocates 10 GiB memory and evenly split it into 10 regions.
+After the allocation, it repeatedly access the first region for one
+minute, than the second one for one minute, and so on.  After the one
+minute repeated access for the tenth region is done, it rpeats the
+access from the first region.  So the process has 10 GiB of data in
+total, but only 1 GiB of it is hot at a given moment, and the hot data
+is gradually changed.
 
-While the processes are running, run DAMON with below config.  It
-migrates hot and cold data of the cgroups into node 0 and node 1, aiming
-the first and the second cgroups (workload_a and workload_b,
-respectively) utilizes about 9.7% and 19.7% of node 0, respectiveely.
+While the processes are running, run DAMON for simple access-aware
+memory tiering using below script.  It migrates hot and cold data of the
+cgroups into node 0 and node 1, aiming the first and the second cgroups
+(workload_a and workload_b, respectively) utilizes about 9.7% and 19.7%
+of node 0, respectively.
 
     #!/bin/bash
     damo start \
@@ -233,35 +247,28 @@ respectively) utilizes about 9.7% and 19.7% of node 0, respectiveely.
                 --damos_nr_quota_goals 1 1 1 1 --damos_nr_filters 2 2 2 2 \
         --nr_targets 1 1 --nr_schemes 2 2 --nr_ctxs 1 1
 
-After starting DAMON, the pages continuously be migrated into node 0 and
-node 1.  After a few minutes, the memory usage of the cgroups converges
-into the aimed ones, and keep the level.  I collected the memory usage
-stat using memory.numa_stat file, 42 times with 5 seconds delay between
-each stat reads.  The results are as below:
+After starting DAMON, the pages continuously be migrated across nodes.
+After a few minutes, the memory usage of the cgroups converges into the
+aimed ones, and keep the level, as expected.  To confirm the status is
+kept in the target level as expected, I collected the memory usage stat
+of the cgroups using memory.numa_stat file, after the stat is converged.
+I repeat the collection 42 times with 5 seconds delay between each stat
+read.  The results are as below:
 
-workload_a: 2.79 GiB in average, 522.06 MiB in stdev.
-workload_b: 5.15 GiB in average, 739.10 MiB in stdev.
-
-Future Works for Dropping RFC tag
----------------------------------
-
-This is an RFC.  Only build test is done.  More testing should be
-essential for dropping the RFC tag.  Patches sequence and commit
-messages might also be changed.
-
-Also, this patch series is based on the tip of DAMON development tree
-(damon/next), which contains a few patches that not yet merged in mm-new
-or even not yet posted.  Proper rebase should be made for non-RFC
-version.
+    node0_memory_usage  average  stdev
+    workload_a          2.79GiB  522.06MiB
+    workload_b          5.15GiB  739.10MiB
 
 Changelog
 ---------
 
 From RFC v1
 (https://lore.kernel.org/20250619220023.24023-1-sj@kernel.org)
-- Fix totalram unit calculation
-- Put mem_cgroup_flush_stats() out of RCU critical section
+- Fix wrong totalram unit in memory util calculation
+- Put mem_cgroup_flush_stats() out of RCU read-side critical section
 - Handle mem_cgroup_from_id() NULL return case
+- Add test results on the cover letter
+- Wordsmith cover letter and commit messages
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
