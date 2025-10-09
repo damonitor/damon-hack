@@ -40,7 +40,7 @@ memory more than other cgroup, depending on their access pattern.  If
 the user of each cgroup are promised to get same quality and amount of
 the system resource, this can arguably be an unfair situation.
 
-DAMOS supports cgroup-aware system operations via DAMOS filter.  But
+DAMOS supports cgroup level system operations via DAMOS filter.  But
 quota auto-tuning system is not aware of cgroups.
 
 New DAMOS Quota Tuning Metrics for Per-Cgroup Per-NUMA Memory Usage
@@ -86,16 +86,16 @@ Using these, users can specify how much [un]used amount of memory for
 per-cgroup and per-node DAMOS should make as a result of the
 auto-tuning.
 
-Example Usecase: Cgroup-aware Memory Tiering
+Example Usecase: Cgroup Level Memory Tiering
 ============================================
 
-Let's suppose a system having two NUMA nodes.  The first node (node 0)
-is CPU-attached and fast.  The second node (node 1) is CPU-unattached
-and slow.  It runs two cgroups, hoping to use 30 percent and 70 percent
-of system memory, respectively.  Then, we can implement memory tiering
-for the system using DAMOS to let the cgroups use 30 percent and 70
-percent of each nodes preferring more of node 0, like below, using DAMON
-user-space tool.
+Let's suppose a typical and simple tiered memory system.  The system
+equips two NUMA nodes.  The first node (node 0) is CPU-attached and
+fast.  The second node (node 1) is CPU-unattached and slow.  It runs two
+cgroups that desire to use about 30 percent and 70 percent of the faster
+node as much as possible for their hot data, respectively.  Then, the
+user can implement DAMOS-based memory tiering for the system using DAMON
+user-space tool (damo), like below.
 
     # ./damo start \
     	`# kdamond for node 1 (slow)` \
@@ -138,18 +138,17 @@ user-space tool.
         --nr_targets 1 1 --nr_schemes 2 2 --nr_ctxs 1 1
 
 With the command, the user-space tool will ask DAMON to spawn two kernel
-threads, each for monitoring access to node 1 (slow) and node 0 (fast),
-respectively.  It installs two DAMOS schemes on each thread.  Let's call
-them "promotion scheme for cgroup a", "promotion scheme for cgroup b",
-"demotion scheme for cgroup a", "demotion scheme for cgroup b", in the
-order.  The promotion schemes are installed on the DAMON thread for
-node 1 (slow), and demotion schemes are installed on the DAMON thrad for
-node 0 (fast).
+threads, each for monitoring accesses to node 1 (slow) and node 0
+(fast), respectively.  It installs two DAMOS schemes on each thread.
+Let's call them "promotion scheme for cgroup a/b", and "demotion scheme
+for cgroup a/b" in the order.  The promotion schemes are installed on
+the DAMON thread for node 1 (slow), and demotion schemes are installed
+on the DAMON thread for node 0 (fast).
 
-Cgroup-aware Hot Pages Migration (Promotion)
+Cgroup Level Hot Pages Migration (Promotion)
 --------------------------------------------
 
-Promotion schemes will find memory regions on node 1 (slow), that any
+Promotion schemes will find memory regions on node 1 (slow), that some
 access was detected.  The schemes will then migrate the found memory to
 node 0 (fast), hottest pages first.
 
@@ -157,27 +156,29 @@ For accurate and effective migration, these schemes use two page level
 filters.  First, the migration will be filtered for only cgroup A and
 cgroup B.  That is, promotion scheme for cgroup B will not do the
 migration if the page is for cgroup A.  Secondly, the schemes will
-filter out pages that having unset page table's Accessed bit for those.
-The per-page Accessed bit check will also unset the bit for next check.
+ignore pages that having their page table's Accessed bits unset.  The
+per-page Accessed bit check logic will also unset the bit if it was set,
+for the next check.
 
 For controlled amount of system resource consumption and aiming on the
 target memory usage, the schemes use quotas setup.  The migration is
-limited to be done only up to 200 MiB per second, to limit the system
-resource usage.  And DAMOS_QUOTA_NODE_MEMCG_USED_BP target is set for
-29.7% and 69.7% of node 0 (fast), respectively.  The target value is
+limited to be done only up to 200 MiB per second, to limit the peak
+system resource usage.  And DAMOS_QUOTA_NODE_MEMCG_USED_BP target is set
+for 29.7% and 69.7% of node 0 (fast), respectively.  The target value is
 lower than the high level goal (30% and 70% system memory), to give a
 headroom on node 0 (fast).  DAMOS will adjust the speed of the pages
-migration based on the target and current memory usage.  For example, if
-cgroup A is utilizing only 10% of node 0, DAMOS will try to migrate more
-of cgroup A hot pages from node 1, up to 200 MiB per second.  If cgroup
-A utilizes more than 29.7% of node 0 memory, the cgroup A hot pages
-migration from node 1 to node 0 will be slowered and eventually stopped.
+migration based on the target and current per-cgroup node 0 memory
+usage.  For example, if cgroup A is utilizing only 10% of node 0, DAMOS
+will try to migrate more of cgroup A hot pages from node 1 to node 0, up
+to 200 MiB per second.  If cgroup A utilizes more than 29.7% of node 0
+memory, the cgroup A hot pages migration from node 1 to node 0 will be
+slowered and eventually stopped.
 
-Cgroup-aware Cold Pages Migration (Demotion)
+Cgroup Level Cold Pages Migration (Demotion)
 --------------------------------------------
 
 Demotion schemes are similar to promotion schemes, but differ in
-filtering setup and quota tuning setup.  Those filters out pages having
+filtering setup and quota tuning setup.  Those filter out pages having
 page table Accessed bit set.  And set 70.5% and 30.5% of node 0 memory
 free rate for the cgroup A and B, respectively.  Hence, if promotion
 schemes or something made cgroup A and/or B uses more than 29.5% and
@@ -186,21 +187,31 @@ appropriate cgroups in node 0 to node 1, under the 200 MiB per second
 speed cap, while adjusting the speed based on how much more than wanted
 memory is being used.
 
+The quota target values are set to overlap with promotion targets, to
+keep minimum level of pages exchange between the nodes.  This is to
+avoid a case that the target memory utilization is met, and then access
+pattern changes (pages in node 1 becomes hotter than pages in node 0)
+while the memory utilization is unchanged.  With out the overlap,
+neither promotion of hotter pages in node 1, nor demotion of colder
+pages in node 0 will happen since both goals are met.  As a result, the
+faster and slower node will unexpectedly serve cold and hot data.
+
 Test: Per-cgroup Memory Tiering
 ===============================
 
-I ran a simplified per-cgroup memory tiering using the feature, and
+I ran a simplified cgroup level memory tiering using the feature, and
 confirmed it works as intended.
 
 Setup
 -----
 
 I configured a QEMU virtual machine representing a simplfied version of
-the system that described on the above memory tiering example use case.
-The system equips 40 CPU cores, and two NUMA nodes that each having 30
-GiB physical memory.  The first node (node 0) represents the faster NUMA
-node, and the second node (node 1) represents the slower NUMA node.  In
-specific, below qemu command line options are used.
+the system that described on the above cgroup level memory tiering
+example use case.  The system equips 40 CPU cores and two NUMA nodes
+that each having 30 GiB physical memory.  The first node (node 0)
+represents the faster NUMA node, and the second node (node 1) represents
+the slower NUMA node.  In specific, below qemu command line options are
+used.
 
     [...]
     -object memory-backend-ram,size=30G,id=m0 \
@@ -216,21 +227,21 @@ resulting in one process per cgroup.  The test program allocates 10 GiB
 memory and evenly split it into 10 regions.  After the allocation, it
 repeatedly access the first region for one minute, than the second one
 for one minute, and so on.  After the one minute repeated access for the
-tenth region is done, it rpeats the access from the first region.  So
+10-th region is done, it repeats the access from the first region.  So
 the process has 10 GiB of data in total, but only 1 GiB of it is hot at
 a given moment, and the hot data is gradually changed.
 
-While the processes are running, run DAMON for simple access-aware
+While the processes are running, run DAMON for a simple access-aware
 memory tiering using below script.  It migrates hot and cold data of the
 cgroups into node 0 and node 1, aiming the first and the second cgroups
-(workload_a and workload_b, respectively) utilizes about 9.7% and 19.7%
-of node 0, respectively.
+(workload_a and workload_b, respectively) utilizes about 9.7 percent and
+19.7 percent of node 0, respectively.
 
 Note that this setup is a simplified version of the above example use
 case, for ease of test.  Also note that we assigned 30 GiB physical
-memory to node 0, but DAMON in this setup works for only 27 GiB of node
-0.  It is due to an internal implementation detail of DAMON user-space
-tool, that not really important for this test.
+memory to node 0, but DAMON in this setup works for only 27 GiB of the
+memory.  It is due to an internal implementation detail of DAMON
+user-space tool, that not really important for this test.
 
     #!/bin/bash
     damo start \
@@ -264,19 +275,25 @@ tool, that not really important for this test.
         --nr_targets 1 1 --nr_schemes 2 2 --nr_ctxs 1 1
 
 After starting DAMON, the pages continuously be migrated across nodes.
-After a few minutes, the memory usage of the cgroups converges into the
-aimed ones, and keep the level, as expected.  To confirm the status is
-kept in the target level as expected, I collected the memory usage stat
-of the cgroups using memory.numa_stat file, after the stat is converged.
-I repeat the collection 42 times with 5 seconds delay between each stat
-read.  The results are as below:
+A few minutes later, the memory usage of the cgroups converges into the
+aimed amounts, and keep the level, as expected.  To confirm the status
+is kept in the target level as expected, I collected the memory usage
+stat of the cgroups using memory.numa_stat file, after the stats are
+converged.  I repeat the stat collection 42 times with 5 seconds delay
+between each of the collections.  The results are as below:
 
     node0_memory_usage  average  stdev
     workload_a          2.79GiB  522.06MiB
     workload_b          5.15GiB  739.10MiB
 
+The average values are quite close to the targetted values: 27 GiB *
+9.7% = 2.619 GiB for workload_a, and 27 GiB * 19.7% = 5.319 GiB.  A
+level of variances are expected, given the overlap of the
+promotion/demotion targets, and dynamic data access pattern of the
+workloads.  Give that, the measured variances are in a reasonabe level.
+
 Changelog
----------
+=========
 
 From RFC v1
 (https://lore.kernel.org/20250619220023.24023-1-sj@kernel.org)
@@ -285,7 +302,8 @@ From RFC v1
 - Handle mem_cgroup_from_id() NULL return case
 - Add test results on the cover letter
 - Wordsmith cover letter and commit messages
-- Merge core layer interface and implementation changes into one commit
+- Merge interface and implementation changes for free metric into one commit
+- Fix wrong memcg_id kerneldoc comment
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
