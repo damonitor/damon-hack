@@ -1,0 +1,139 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 15 Oct 2025 11:27:36 -0700
+Subject: [PATCH] mm/damon: rename damos->filters to damos->core_filters
+
+Make it less confusing.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h                                  | 10 +++++-----
+ mm/damon/core.c                                        |  6 +++---
+ mm/damon/tests/core-kunit.h                            |  2 +-
+ .../testing/selftests/damon/drgn_dump_damon_status.py  |  8 ++++----
+ tools/testing/selftests/damon/sysfs.py                 |  2 +-
+ 5 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index b2a2bc47c1a3..b68cfcb616ba 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -531,7 +531,7 @@ struct damos_migrate_dests {
+  * @wmarks:		Watermarks for automated (in)activation of this scheme.
+  * @migrate_dests:	Destination nodes if @action is "migrate_{hot,cold}".
+  * @target_nid:		Destination node if @action is "migrate_{hot,cold}".
+- * @filters:		Additional set of &struct damos_filter for &action.
++ * @core_filters:	Additional set of &struct damos_filter for &action.
+  * @ops_filters:	ops layer handling &struct damos_filter objects list.
+  * @last_applied:	Last @action applied ops-managing entity.
+  * @stat:		Statistics of this scheme.
+@@ -569,7 +569,7 @@ struct damos_migrate_dests {
+  *
+  * Before applying the &action to a memory region, &struct damon_operations
+  * implementation could check pages of the region and skip &action to respect
+- * &filters
++ * &core_filters
+  *
+  * The minimum entity that @action can be applied depends on the underlying
+  * &struct damon_operations.  Since it may not be aligned with the core layer
+@@ -618,7 +618,7 @@ struct damos {
+ 			struct damos_migrate_dests migrate_dests;
+ 		};
+ 	};
+-	struct list_head filters;
++	struct list_head core_filters;
+ 	struct list_head ops_filters;
+ 	void *last_applied;
+ 	struct damos_stat stat;
+@@ -956,10 +956,10 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 	list_for_each_entry_safe(goal, next, &(quota)->goals, list)
+ 
+ #define damos_for_each_core_filter(f, scheme) \
+-	list_for_each_entry(f, &(scheme)->filters, list)
++	list_for_each_entry(f, &(scheme)->core_filters, list)
+ 
+ #define damos_for_each_core_filter_safe(f, next, scheme) \
+-	list_for_each_entry_safe(f, next, &(scheme)->filters, list)
++	list_for_each_entry_safe(f, next, &(scheme)->core_filters, list)
+ 
+ #define damos_for_each_ops_filter(f, scheme) \
+ 	list_for_each_entry(f, &(scheme)->ops_filters, list)
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f05940ed5bdf..c8945a09f2b9 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -319,7 +319,7 @@ void damos_add_filter(struct damos *s, struct damos_filter *f)
+ 	if (damos_filter_for_ops(f->type))
+ 		list_add_tail(&f->list, &s->ops_filters);
+ 	else
+-		list_add_tail(&f->list, &s->filters);
++		list_add_tail(&f->list, &s->core_filters);
+ }
+ 
+ static void damos_del_filter(struct damos_filter *f)
+@@ -410,7 +410,7 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
+ 	 */
+ 	scheme->next_apply_sis = 0;
+ 	scheme->walk_completed = false;
+-	INIT_LIST_HEAD(&scheme->filters);
++	INIT_LIST_HEAD(&scheme->core_filters);
+ 	INIT_LIST_HEAD(&scheme->ops_filters);
+ 	scheme->stat = (struct damos_stat){};
+ 	INIT_LIST_HEAD(&scheme->list);
+@@ -1025,7 +1025,7 @@ static void damos_set_filters_default_reject(struct damos *s)
+ 		s->core_filters_default_reject = false;
+ 	else
+ 		s->core_filters_default_reject =
+-			damos_filters_default_reject(&s->filters);
++			damos_filters_default_reject(&s->core_filters);
+ 	s->ops_filters_default_reject =
+ 		damos_filters_default_reject(&s->ops_filters);
+ }
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 2c4c1db22148..4bfcb4e3fc02 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -717,7 +717,7 @@ static void damon_test_set_filters_default_reject(struct kunit *test)
+ 	struct damos scheme;
+ 	struct damos_filter *target_filter, *anon_filter;
+ 
+-	INIT_LIST_HEAD(&scheme.filters);
++	INIT_LIST_HEAD(&scheme.core_filters);
+ 	INIT_LIST_HEAD(&scheme.ops_filters);
+ 
+ 	damos_set_filters_default_reject(&scheme);
+diff --git a/tools/testing/selftests/damon/drgn_dump_damon_status.py b/tools/testing/selftests/damon/drgn_dump_damon_status.py
+index 7233369a3a44..1b47132f73d2 100755
+--- a/tools/testing/selftests/damon/drgn_dump_damon_status.py
++++ b/tools/testing/selftests/damon/drgn_dump_damon_status.py
+@@ -174,11 +174,11 @@ def scheme_to_dict(scheme):
+         ['target_nid', int],
+         ['migrate_dests', damos_migrate_dests_to_dict],
+         ])
+-    filters = []
++    core_filters = []
+     for f in list_for_each_entry(
+-            'struct damos_filter', scheme.filters.address_of_(), 'list'):
+-        filters.append(damos_filter_to_dict(f))
+-    dict_['filters'] = filters
++            'struct damos_filter', scheme.core_filters.address_of_(), 'list'):
++        core_filters.append(damos_filter_to_dict(f))
++    dict_['core_filters'] = core_filters
+     ops_filters = []
+     for f in list_for_each_entry(
+             'struct damos_filter', scheme.ops_filters.address_of_(), 'list'):
+diff --git a/tools/testing/selftests/damon/sysfs.py b/tools/testing/selftests/damon/sysfs.py
+index 2666c6f0f1a5..7fd024a6e68c 100755
+--- a/tools/testing/selftests/damon/sysfs.py
++++ b/tools/testing/selftests/damon/sysfs.py
+@@ -132,7 +132,7 @@ def assert_scheme_committed(scheme, dump):
+     assert_watermarks_committed(scheme.watermarks, dump['wmarks'])
+     # TODO: test filters directory
+     for idx, f in enumerate(scheme.core_filters.filters):
+-        assert_filter_committed(f, dump['filters'][idx])
++        assert_filter_committed(f, dump['core_filters'][idx])
+     for idx, f in enumerate(scheme.ops_filters.filters):
+         assert_filter_committed(f, dump['ops_filters'][idx])
+ 
+-- 
+2.47.3
+
