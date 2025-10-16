@@ -1,0 +1,92 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: bijan311@gmail.com
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 16 Oct 2025 13:51:38 -0700
+Subject: [RFC PATCH 1/5] mm/damon/core: add damon_target->obsolete for pin-point
+         removal
+
+DAMON's monitoring targets parameters update function,
+damon_commit_targets(), is not providing a way to remove a target in the
+middle of existing targets list.  Extend the API by adding a field to
+struct damon_target.  If the field of a damon_commit_targets() source
+target is set, it indicates the matcing target on the existing targets
+list is obsolete.  damon_commit_targets() understands that and remove
+those from the list, while respecting the index based matching for other
+non-obsolete targets.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  6 ++++++
+ mm/damon/core.c       | 10 +++++++++-
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 524dea87cac7..8a7b45b9e40d 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -92,17 +92,23 @@ struct damon_region {
+  * @nr_regions:		Number of monitoring target regions of this target.
+  * @regions_list:	Head of the monitoring target regions of this target.
+  * @list:		List head for siblings.
++ * @obsolete:		Whether the commit destination target is obsolete.
+  *
+  * Each monitoring context could have multiple targets.  For example, a context
+  * for virtual memory address spaces could have multiple target processes.  The
+  * @pid should be set for appropriate &struct damon_operations including the
+  * virtual address spaces monitoring operations.
++ *
++ * @obsolte is used only for damon_commit_targets() source targets, to specify
++ * the matching destination targets are obsolte.  Read damon_commit_targets()
++ * to see how it is handled.
+  */
+ struct damon_target {
+ 	struct pid *pid;
+ 	unsigned int nr_regions;
+ 	struct list_head regions_list;
+ 	struct list_head list;
++	bool obsolete;
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 70e66562a1b3..3242a9573db0 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -492,6 +492,7 @@ struct damon_target *damon_new_target(void)
+ 	t->nr_regions = 0;
+ 	INIT_LIST_HEAD(&t->regions_list);
+ 	INIT_LIST_HEAD(&t->list);
++	t->obsolete = false;
+ 
+ 	return t;
+ }
+@@ -1213,7 +1214,11 @@ static int damon_commit_targets(
+ 
+ 	damon_for_each_target_safe(dst_target, next, dst) {
+ 		src_target = damon_nth_target(i++, src);
+-		if (src_target) {
++		/*
++		 * If src target is obsolete, do not commit the parameters to
++		 * the dst target, and further remove the dst target.
++		 */
++		if (src_target && !src_target->obsolete) {
+ 			err = damon_commit_target(
+ 					dst_target, damon_target_has_pid(dst),
+ 					src_target, damon_target_has_pid(src),
+@@ -1236,6 +1241,9 @@ static int damon_commit_targets(
+ 	damon_for_each_target_safe(src_target, next, src) {
+ 		if (j++ < i)
+ 			continue;
++		/* target to remove has no matching dst */
++		if (src_target->obsolete)
++			return -EINVAL;
+ 		new_target = damon_new_target();
+ 		if (!new_target)
+ 			return -ENOMEM;
+-- 
+2.47.3
