@@ -1,0 +1,480 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 1 Sep 2025 19:28:09 -0700
+Subject: [PATCH] mm/damon/tests/core-kunit: add more tests, for committing
+
+Should be split later.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 433 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 433 insertions(+)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 2122de3a3953..22cec9ec20c5 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -431,10 +431,194 @@ static void damos_test_commit_filter(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, dst_filter->matching, src_filter->matching);
+ 	KUNIT_EXPECT_EQ(test, dst_filter->allow, src_filter->allow);
+ 
++	/* TODO: test damos_commit_filter_arg for different types */
++
+ 	damos_destroy_filter(src_filter);
+ 	damos_destroy_filter(dst_filter);
+ }
+ 
++static void damos_test_commit_quota_goal_ensure_committed(struct kunit *test,
++		struct damos_quota_goal *dst, struct damos_quota_goal *src,
++		u64 last_psi_total)
++{
++	struct damos_quota_goal dst_cp, src_cp;
++
++	KUNIT_EXPECT_EQ(test, dst->metric, src->metric);
++	KUNIT_EXPECT_EQ(test, dst->target_value, src->target_value);
++	if (src->metric == DAMOS_QUOTA_USER_INPUT)
++		KUNIT_EXPECT_EQ(test, dst->current_value, src->current_value);
++	/* last_psi_total is not updated */
++	if (last_psi_total)
++		KUNIT_EXPECT_EQ(test, dst->last_psi_total, last_psi_total);
++	switch (dst->metric) {
++	case DAMOS_QUOTA_NODE_MEM_USED_BP:
++	case DAMOS_QUOTA_NODE_MEM_FREE_BP:
++		KUNIT_EXPECT_EQ(test, dst->nid, src->nid);
++		break;
++	default:
++		break;
++	}
++
++	/*
++	 * Adding parameter fields without updating relevant commit code is
++	 * common.  Comapre entire bits except known unupdated fields, to fail
++	 * on such cases.
++	 */
++	memcpy(&dst_cp, dst, sizeof(dst_cp));
++	memcpy(&src_cp, src, sizeof(src_cp));
++	dst_cp.list = src_cp.list;
++	dst_cp.current_value = src_cp.current_value;
++	dst_cp.last_psi_total = src_cp.last_psi_total;
++	dst_cp.nid = src_cp.nid;
++	dst_cp.memcg_id = src_cp.memcg_id;
++
++	KUNIT_EXPECT_EQ(test, memcmp(&dst_cp, &src_cp, sizeof(dst_cp)), 0);
++}
++
++static int damos_test_commit_quota_goal_for(struct kunit *test,
++		struct damos_quota_goal *dst,
++		enum damos_quota_goal_metric src_metric,
++		unsigned long src_target_val, unsigned long src_current_val,
++		int src_nid)
++{
++	struct damos_quota_goal *src;
++	u64 dst_last_psi_total;
++
++	src = damos_new_quota_goal(src_metric, src_target_val);
++	src->current_value = src_current_val;
++	if (src_nid)
++		src->nid = src_nid;
++
++	if (dst->metric == DAMOS_QUOTA_SOME_MEM_PSI_US)
++		dst_last_psi_total = dst->last_psi_total;
++	else
++		dst_last_psi_total = 0;
++	damos_commit_quota_goal(dst, src);
++	damos_test_commit_quota_goal_ensure_committed(test, dst, src,
++			dst_last_psi_total);
++	damos_destroy_quota_goal(src);
++	return 0;
++}
++
++static void damos_test_commit_quota_goal(struct kunit *test)
++{
++	struct damos_quota_goal *dst;
++
++	dst = damos_new_quota_goal(DAMOS_QUOTA_SOME_MEM_PSI_US, 1000);
++	if (!dst)
++		kunit_skip(test, "dst_gaol alloc fail\n");
++	dst->current_value = 123;
++	dst->last_psi_total = 456;
++	if (damos_test_commit_quota_goal_for(test, dst, DAMOS_QUOTA_USER_INPUT,
++				789, 12, 0)) {
++		kfree(dst);
++		kunit_skip(test, "USER_INPUT test error\n");
++		return;
++	}
++	if (damos_test_commit_quota_goal_for(test, dst,
++				DAMOS_QUOTA_NODE_MEM_FREE_BP, 345, 678, 9)) {
++		kfree(dst);
++		kunit_skip(test, "NODE_MEM_FREE_BP test error\n");
++		return;
++	}
++	if (damos_test_commit_quota_goal_for(test, dst,
++				DAMOS_QUOTA_NODE_MEM_USED_BP, 12, 345, 6)) {
++		kfree(dst);
++		kunit_skip(test, "NODE_MEM_USED_BP test error\n");
++		return;
++	}
++	if (damos_test_commit_quota_goal_for(test, dst,
++				DAMOS_QUOTA_USER_INPUT, 789, 12, 0)) {
++		kfree(dst);
++		kunit_skip(test, "USER_INPUT test error\n");
++		return;
++	}
++
++	damos_destroy_quota_goal(dst);
++}
++
++static void damos_test_commit_quota_goals(struct kunit *test)
++{
++	struct damos_quota dst = {
++		.reset_interval = 1,
++		.ms = 2,
++		.sz = 3,
++		.weight_sz = 4,
++		.weight_nr_accesses = 5,
++		.weight_age = 6,
++	};
++	struct damos_quota src = dst;
++	struct damos_quota_goal *goal, *dst_goal, *next;
++	int nr_dst_goals = 0;
++
++	INIT_LIST_HEAD(&dst.goals);
++	INIT_LIST_HEAD(&src.goals);
++
++	goal = damos_new_quota_goal(DAMOS_QUOTA_USER_INPUT, 1000);
++	if (!goal)
++		kunit_skip(test, "gaol alloc fail\n");
++	goal->current_value = 500;
++	damos_add_quota_goal(&src, goal);
++	damos_commit_quota_goals(&dst, &src);
++
++	damos_for_each_quota_goal(dst_goal, (&dst)) {
++		nr_dst_goals++;
++		KUNIT_EXPECT_EQ(test, dst_goal->target_value,
++				goal->target_value);
++		KUNIT_EXPECT_EQ(test, dst_goal->metric, goal->metric);
++		KUNIT_EXPECT_EQ(test, dst_goal->current_value,
++				goal->current_value);
++	}
++	KUNIT_EXPECT_EQ(test, nr_dst_goals, 1);
++
++	/* TODO: test in place commit and removal commit */
++
++	damos_destroy_quota_goal(goal);
++	damos_for_each_quota_goal_safe(dst_goal, next, (&dst))
++		damos_destroy_quota_goal(dst_goal);
++}
++
++static void damos_test_commit_quota(struct kunit *test)
++{
++	struct damos_quota dst = {
++		.reset_interval = 1,
++		.ms = 2,
++		.sz = 3,
++		.weight_sz = 4,
++		.weight_nr_accesses = 5,
++		.weight_age = 6,
++	};
++	struct damos_quota src = {
++		.reset_interval = 7,
++		.ms = 8,
++		.sz = 9,
++		.weight_sz = 10,
++		.weight_nr_accesses = 11,
++		.weight_age = 12,
++	};
++
++	INIT_LIST_HEAD(&dst.goals);
++	INIT_LIST_HEAD(&src.goals);
++
++	damos_commit_quota(&dst, &src);
++
++	KUNIT_EXPECT_EQ(test, dst.reset_interval, src.reset_interval);
++	KUNIT_EXPECT_EQ(test, dst.ms, src.ms);
++	KUNIT_EXPECT_EQ(test, dst.sz, src.sz);
++	KUNIT_EXPECT_EQ(test, dst.weight_sz, src.weight_sz);
++	KUNIT_EXPECT_EQ(test, dst.weight_nr_accesses, src.weight_nr_accesses);
++	KUNIT_EXPECT_EQ(test, dst.weight_age, src.weight_age);
++
++	/*
++	 * Adding parameter fields without updating relevant commit code is
++	 * common.  Comapre entire bits except known unupdated fields, to fail
++	 * on such cases.
++	 */
++	dst.goals = src.goals;
++	dst.esz = src.esz;
++	KUNIT_EXPECT_EQ(test, memcmp(&dst, &src, sizeof(dst)), 0);
++}
++
+ static void damos_test_filter_out(struct kunit *test)
+ {
+ 	struct damon_target *t;
+@@ -597,6 +781,250 @@ static void damon_test_set_filters_default_reject(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, true);
+ }
+ 
++static int damon_test_commit_ctx_add_src_targets(struct damon_ctx *ctx)
++{
++	struct damon_target *target;
++
++	target = damon_new_target();
++	if (!target)
++		return -ENOMEM;
++	damon_add_target(ctx, target);
++	return 0;
++}
++
++static struct damon_ctx *damon_test_commit_ctx_new_src_ctx(void)
++{
++	struct damon_ctx *src;
++	int err;
++
++	src = damon_new_ctx();
++	if (!src)
++		return src;
++	src->attrs = (struct damon_attrs){
++		.sample_interval = 6000,
++		.aggr_interval = 900000,
++		.ops_update_interval = 180000000,
++		.intervals_goal = {
++			.access_bp = 500,
++			.aggrs = 4,
++			.min_sample_us = 6000,
++			.max_sample_us = 11000000,
++		},
++		.min_nr_regions = 30,
++		.max_nr_regions = 3000,
++	};
++	src->addr_unit = 1024;
++	src->min_sz_region = 4;
++	err = damon_test_commit_ctx_add_src_targets(src);
++	if (err) {
++		damon_destroy_ctx(src);
++		return NULL;
++	}
++
++	return src;
++}
++
++static int damon_test_commit_ctx_add_dst_targets(struct damon_ctx *ctx)
++{
++	struct damon_target *target;
++
++	target = damon_new_target();
++	if (!target)
++		return -ENOMEM;
++	damon_add_target(ctx, target);
++	return 0;
++}
++
++static struct damon_ctx *damon_test_commit_ctx_new_dst_ctx(void)
++{
++	struct damon_ctx *dst;
++	int err;
++
++	dst = damon_new_ctx();
++	if (!dst)
++		return dst;
++	dst->attrs = (struct damon_attrs){
++		.sample_interval = 5000,
++		.aggr_interval = 100000,
++		.ops_update_interval = 60000000,
++		.intervals_goal = {
++			.access_bp = 400,
++			.aggrs = 3,
++			.min_sample_us = 5000,
++			.max_sample_us = 10000000,
++		},
++		.min_nr_regions = 10,
++		.max_nr_regions = 1000,
++	};
++	dst->addr_unit = 1;
++	dst->min_sz_region = 4096;
++	err = damon_test_commit_ctx_add_dst_targets(dst);
++	if (err) {
++		damon_destroy_ctx(dst);
++		return NULL;
++	}
++
++	return dst;
++}
++
++static void damon_test_commit_ctx_ensure_regions_committed(
++		struct damon_target *dst, struct damon_target *src,
++		struct kunit *test)
++{
++	struct damon_region *dst_region, *src_region;
++	int i;
++
++	for (i = 0; i < dst->nr_regions; i++) {
++		dst_region = __nth_region_of(dst, i);
++		src_region = __nth_region_of(src, i);
++		KUNIT_EXPECT_EQ(test, memcmp(dst_region, src_region,
++					sizeof(*dst_region)), 0);
++	}
++}
++
++static int damon_test_nr_targets(struct damon_ctx *ctx)
++{
++	struct damon_target *target;
++	int i = 0;
++
++	damon_for_each_target(target, ctx)
++		i++;
++	return i;
++}
++
++static struct damon_target *damon_test_nth_target(struct damon_ctx *ctx, int n)
++{
++	struct damon_target *target;
++	int i = 0;
++
++	damon_for_each_target(target, ctx) {
++		if (i == n)
++			return target;
++		i++;
++	}
++	return NULL;
++}
++
++static void damon_test_commit_ctx_ensure_target_committed(struct kunit *test,
++		struct damon_ctx *dst, struct damon_ctx *src)
++{
++	struct damon_target *dst_target, *src_target;
++	int i;
++
++	KUNIT_EXPECT_EQ(test, damon_test_nr_targets(dst),
++			damon_test_nr_targets(src));
++
++	for (i = 0; i < damon_test_nr_targets(dst); i++) {
++		dst_target = damon_test_nth_target(dst, i);
++		src_target = damon_test_nth_target(src, i);
++		KUNIT_EXPECT_PTR_EQ(test, dst_target->pid, src_target->pid);
++		KUNIT_EXPECT_EQ(test, dst_target->nr_regions,
++				src_target->nr_regions);
++		damon_test_commit_ctx_ensure_regions_committed(dst_target,
++				src_target, test);
++	}
++}
++
++static int damon_test_nr_schemes(struct damon_ctx *dst)
++{
++	struct damos *scheme;
++	int i = 0;
++
++	damon_for_each_scheme(scheme, dst)
++		i++;
++	return i;
++}
++
++static void damon_test_commit_ctx_ensure_schemes_committed(struct kunit *test,
++		struct damon_ctx *dst, struct damon_ctx *src)
++{
++	KUNIT_EXPECT_EQ(test, damon_test_nr_schemes(dst),
++			damon_test_nr_schemes(src));
++}
++
++static void damon_test_commit_ctx_ensure_committed(struct kunit *test,
++		struct damon_ctx *dst, struct damon_ctx *src)
++{
++	/* test if attrs are committed as expected */
++	dst->attrs.aggr_samples = 0;
++	src->attrs.aggr_samples = 0;
++	KUNIT_EXPECT_EQ(test, memcmp(&dst->attrs, &src->attrs,
++				sizeof(src->attrs)), 0);
++	damon_test_commit_ctx_ensure_target_committed(test, dst, src);
++	damon_test_commit_ctx_ensure_schemes_committed(test, dst, src);
++}
++
++static void damon_test_commit_ctx(struct kunit *test)
++{
++	struct damon_ctx *dst, *src;
++
++	dst = damon_test_commit_ctx_new_dst_ctx();
++	if (!dst) {
++		kunit_skip(test, "dst alloc fail\n");
++		return;
++	}
++	src = damon_test_commit_ctx_new_src_ctx();
++	if (!src) {
++		kunit_skip(test, "src alloc fail\n");
++		damon_destroy_ctx(dst);
++		return;
++	}
++	damon_commit_ctx(dst, src);
++	damon_test_commit_ctx_ensure_committed(test, dst, src);
++	damon_destroy_ctx(src);
++	damon_destroy_ctx(dst);
++}
++
++static int damon_test_commit_targets_set_n_targets(
++		struct damon_ctx *ctx, int nr_targets)
++{
++	struct damon_target *target;
++	int i;
++
++	for (i = 0; i < nr_targets; i++) {
++		target = damon_new_target();
++		if (!target)
++			return -ENOMEM;
++		damon_add_target(ctx, target);
++	}
++	return 0;
++}
++
++static void damon_test_commit_targets(struct kunit *test)
++{
++	struct damon_ctx *dst, *src;
++	struct damon_target *t;
++	int err = 0, i;
++
++	dst = damon_new_ctx();
++	if (!dst)
++		kunit_skip(test, "dst alloc fail");
++	src = damon_new_ctx();
++	if (!src) {
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "src alloc fail");
++	}
++	if (damon_test_commit_targets_set_n_targets(src, 5)) {
++		damon_destroy_ctx(src);
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "src targets set fail");
++	}
++	if (damon_test_commit_targets_set_n_targets(dst, 5)) {
++		damon_destroy_ctx(src);
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "dst targets set fail");
++	}
++	err = damon_commit_targets(dst, src);
++	KUNIT_EXPECT_EQ(test, err, 0);
++	i = 0;
++	damon_for_each_target(t, dst)
++		i++;
++	KUNIT_EXPECT_EQ(test, i, 5);
++
++	damon_destroy_ctx(src);
++	damon_destroy_ctx(dst);
++}
++
+ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_target),
+ 	KUNIT_CASE(damon_test_regions),
+@@ -612,10 +1040,15 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_set_attrs),
+ 	KUNIT_CASE(damon_test_moving_sum),
+ 	KUNIT_CASE(damos_test_new_filter),
++	KUNIT_CASE(damos_test_commit_quota_goal),
++	KUNIT_CASE(damos_test_commit_quota_goals),
++	KUNIT_CASE(damos_test_commit_quota),
+ 	KUNIT_CASE(damos_test_commit_filter),
+ 	KUNIT_CASE(damos_test_filter_out),
+ 	KUNIT_CASE(damon_test_feed_loop_next_input),
+ 	KUNIT_CASE(damon_test_set_filters_default_reject),
++	KUNIT_CASE(damon_test_commit_ctx),
++	KUNIT_CASE(damon_test_commit_targets),
+ 	{},
+ };
+ 
+-- 
+2.47.3
+
