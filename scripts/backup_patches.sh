@@ -10,8 +10,15 @@ then
 	exit 1
 fi
 
-commit_msg=$1
 bindir=$(dirname $0)
+commit_msg=$1
+
+if "$bindir/patches_uptodate.sh" > /dev/null
+then
+	echo "Patches queue is already up to date."
+	exit 1
+fi
+
 dest_dir=$(realpath "$bindir/../patches/next")
 damon_next_baseline=$("$bindir/get_damon_next_baseline_commit.sh")
 if [ "$damon_next_baseline" = "" ]
