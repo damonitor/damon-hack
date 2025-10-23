@@ -1,0 +1,91 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Bijan Tabatabai <bijan311@gmail.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: damon@lists.linux.dev
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 22 Oct 2025 18:24:59 -0700
+Subject: [PATCH 0/9] mm/damon: support pin-point targets removal
+
+DAMON maintains the targets in a list, and allows committing only an
+entire list of targets having the new parameters.  Targets having same
+index on the lists are treated as matching source and destination
+targets.  If an existing target cannot find a matching one in the
+sources list, the target is removed.  This means that there is no way to
+remove only a specific monitoring target in the middle of the current
+targets list.
+
+Such pin-point target removal is really needed in some use cases,
+though.  Monitoring access patterns on virtual address spaces of
+processes that spawned from the same ancestor is one example.  If a
+process of the group is terminated, the user may want to remove the
+matching DAMON target as soon as possible, to save in-kernel memory
+usage for the unnecessary target data.  The user may also want to do
+that without turning DAMON off or removing unnecessary targets, to keep
+the current monitoring results for other active processes.
+
+Extend DAMON kernel API and sysfs ABI to support the pin-point removal
+in the following way.  For API, add a new damon_target field, namely
+'obsolete'.  If the field on parameters commit source target is set, it
+means the matching destination target is obsolete.  Then the parameters
+commit logic removes the destination target from the existing targets
+list.  For sysfs ABI, add a new file under the target directory, namely
+'obsolete_target'.  It is connected with the 'obsolete' field of the
+commit source targets, so internally using the new API.
+
+Also add a selftest for the new feature.  The related helper scripts for
+manipulating the sysfs interface and dumping in-kernel DAMON status are
+also extended for this.  Note that the selftest part was initially
+posted as an individual RFC series [1], but now merged into this one.
+
+Bijan Tabatabai (bijan311@gmail.com) has originally reported this issue,
+and participated in this solution design on a GitHub issue [1] for DAMON
+user-space tool.
+
+Changes from RFC
+(https://lore.kernel.org/20251016214736.84286-1-sj@kernel.org)
+- Wordsmith commit messages
+- Add Reviewed-by: tags from Bijan
+- Add a kselftest for the functionality of the new feature
+  (https://lore.kernel.org/20251018204448.8906-1-sj@kernel.org)
+
+[1] https://github.com/damonitor/damo/issues/36
+
+SeongJae Park (9):
+  mm/damon/core: add damon_target->obsolete for pin-point removal
+  mm/damon/sysfs: test commit input against realistic destination
+  mm/damon/sysfs: implement obsolete_target file
+  Docs/admin-guide/mm/damon/usage: document obsolete_target file
+  Docs/ABI/damon: document obsolete_target sysfs file
+  selftests/damon/_damon_sysfs: support obsolete_target file
+  drgn_dump_damon_status: dump damon_target->obsolete
+  sysfs.py: extend assert_ctx_committed() for monitoring targets
+  selftests/damon/sysfs: add obsolete_target test
+
+ .../ABI/testing/sysfs-kernel-mm-damon         |  7 +++
+ Documentation/admin-guide/mm/damon/usage.rst  | 13 +++--
+ include/linux/damon.h                         |  6 +++
+ mm/damon/core.c                               | 10 +++-
+ mm/damon/sysfs.c                              | 51 ++++++++++++++++++-
+ tools/testing/selftests/damon/_damon_sysfs.py | 11 +++-
+ .../selftests/damon/drgn_dump_damon_status.py |  1 +
+ tools/testing/selftests/damon/sysfs.py        | 48 +++++++++++++++++
+ 8 files changed, 140 insertions(+), 7 deletions(-)
+
+
+base-commit: a3e008fdd7964bc3e6d876491c202d476406ed59
+-- 
+2.47.3

@@ -1,0 +1,77 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Bijan Tabatabai <bijan311@gmail.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 16 Oct 2025 13:51:38 -0700
+Subject: [PATCH 2/9] mm/damon/sysfs: test commit input against realistic
+         destination
+
+DAMON sysfs interface tests if given online parameters update request is
+valid, by committing those using the DAMON kernel API, to a test-purpose
+destination context.  The test-purpose destination context is
+constructed using damon_new_ctx(), so it has no target, no scheme.
+
+If a source target has the obsolete field set, the test-purpose commit
+will fail because damon_commit_targets() fails when there is a source
+obsolete target that cannot find its matching destination target.  DAMON
+sysfs interface is not letting users set the field for now, so there is
+no problem.  However, the following commit will support that.  Also
+there could be similar future changes that making commit fails based on
+current context structure.
+
+Make the test purpose commit destination context similar to the current
+running one, by committing the running one to the test purpose context,
+before doing the real test-purpose commit.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Reviewed-by: Bijan Tabatabai <bijan311@gmail.com>
+---
+ mm/damon/sysfs.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index ccfb624a94b8..0fe6ea68d311 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1451,6 +1451,26 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+ static struct damon_ctx *damon_sysfs_build_ctx(
+ 		struct damon_sysfs_context *sys_ctx);
+ 
++/*
++ * Return a new damon_ctx for testing new parameters to commit.
++ */
++static struct damon_ctx *damon_sysfs_new_test_ctx(
++		struct damon_ctx *running_ctx)
++{
++	struct damon_ctx *test_ctx;
++	int err;
++
++	test_ctx = damon_new_ctx();
++	if (!test_ctx)
++		return NULL;
++	err = damon_commit_ctx(test_ctx, running_ctx);
++	if (err) {
++		damon_destroy_ctx(test_ctx);
++		return NULL;
++	}
++	return test_ctx;
++}
++
+ /*
+  * damon_sysfs_commit_input() - Commit user inputs to a running kdamond.
+  * @kdamond:	The kobject wrapper for the associated kdamond.
+@@ -1472,7 +1492,7 @@ static int damon_sysfs_commit_input(void *data)
+ 	param_ctx = damon_sysfs_build_ctx(kdamond->contexts->contexts_arr[0]);
+ 	if (IS_ERR(param_ctx))
+ 		return PTR_ERR(param_ctx);
+-	test_ctx = damon_new_ctx();
++	test_ctx = damon_sysfs_new_test_ctx(kdamond->damon_ctx);
+ 	if (!test_ctx)
+ 		return -ENOMEM;
+ 	err = damon_commit_ctx(test_ctx, param_ctx);
+-- 
+2.47.3
