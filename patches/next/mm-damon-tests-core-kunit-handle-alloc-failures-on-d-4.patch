@@ -1,49 +1,49 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Mon, 27 Oct 2025 18:24:55 -0700
+Date: Tue, 28 Oct 2025 21:21:18 -0700
 Subject: [PATCH] mm/damon/tests/core-kunit: handle alloc failures on
- damon_test_set_filters_default_reject() 6.16
+ damos_test_filter_out()
 
-Fixes: 094fb14913c7 ("mm/damon/tests/core-kunit: add a test for damos_set_filters_default_reject()")
-Cc: <stable@vger.kernel.org> # 6.16.x
+damon_test_filter_out() is assuming all dynamic memory allocation in it
+will succeed.  Those are indeed likely in the real use cases since those
+allocations are too small to fail, but theoretically those could fail.
+In the case, inappropriate memory access can happen.  Fix it by
+appropriately cleanup pre-allocated memory and skip the execution of the
+remaining tests in the failure cases.
+
+Fixes: 26713c890875 ("mm/damon/core-test: add a unit test for __damos_filter_out()")
+Cc: <stable@vger.kernel.org> # 6.6.x
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/tests/core-kunit.h | 9 ++++++---
- 1 file changed, 6 insertions(+), 3 deletions(-)
+ mm/damon/tests/core-kunit.h | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
 
 diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
-index 2c641f66142a..dfa7a3485d59 100644
+index 5af8275ffd7d..a03ae9ddd88a 100644
 --- a/mm/damon/tests/core-kunit.h
 +++ b/mm/damon/tests/core-kunit.h
-@@ -637,6 +637,8 @@ static void damon_test_set_filters_default_reject(struct kunit *test)
- 	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, false);
+@@ -542,11 +542,22 @@ static void damos_test_filter_out(struct kunit *test)
+ 	struct damos_filter *f;
  
- 	target_filter = damos_new_filter(DAMOS_FILTER_TYPE_TARGET, true, true);
-+	if (!target_filter)
+ 	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
++	if (!f)
 +		kunit_skip(test, "filter alloc fail");
- 	damos_add_filter(&scheme, target_filter);
- 	damos_set_filters_default_reject(&scheme);
- 	/*
-@@ -662,6 +664,10 @@ static void damon_test_set_filters_default_reject(struct kunit *test)
- 	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, false);
+ 	f->addr_range = (struct damon_addr_range){
+ 		.start = DAMON_MIN_REGION * 2, .end = DAMON_MIN_REGION * 6};
  
- 	anon_filter = damos_new_filter(DAMOS_FILTER_TYPE_ANON, true, true);
-+	if (!anon_filter) {
-+		damos_free_filter(target_filter);
-+		kunit_skip(test, "anon_filter alloc fail");
+ 	t = damon_new_target();
++	if (!t) {
++		damos_destroy_filter(f);
++		kunit_skip(test, "target alloc fail");
 +	}
- 	damos_add_filter(&scheme, anon_filter);
+ 	r = damon_new_region(DAMON_MIN_REGION * 3, DAMON_MIN_REGION * 5);
++	if (!r) {
++		damos_destroy_filter(f);
++		damon_free_target(t);
++		kunit_skip(test, "region alloc fail");
++	}
+ 	damon_add_region(r, t);
  
- 	damos_set_filters_default_reject(&scheme);
-@@ -687,9 +693,6 @@ static void damon_test_set_filters_default_reject(struct kunit *test)
- 	 */
- 	KUNIT_EXPECT_EQ(test, scheme.core_filters_default_reject, false);
- 	KUNIT_EXPECT_EQ(test, scheme.ops_filters_default_reject, true);
--
--	damos_free_filter(anon_filter);
--	damos_free_filter(target_filter);
- }
- 
- static struct kunit_case damon_test_cases[] = {
+ 	/* region in the range */
 -- 
 2.47.3
 

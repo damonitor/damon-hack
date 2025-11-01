@@ -1,42 +1,62 @@
 From: SeongJae Park <sj@kernel.org>
-Date: Tue, 28 Oct 2025 21:21:18 -0700
+Date: Mon, 27 Oct 2025 18:04:00 -0700
 Subject: [PATCH] mm/damon/tests/core-kunit: handle alloc failures on
- damos_test_filter_out() 6.6
+ damon_test_split_regions_of()
 
-Fixes: 26713c890875 ("mm/damon/core-test: add a unit test for __damos_filter_out()")
-Cc: <stable@vger.kernel.org> # 6.6.x
+damon_test_split_regions_of() is assuming all dynamic memory allocation
+in it will succeed.  Those are indeed likely in the real use cases since
+those allocations are too small to fail, but theoretically those could
+fail.  In the case, inappropriate memory access can happen.  Fix it by
+appropriately cleanup pre-allocated memory and skip the execution of the
+remaining tests in the failure cases.
+
+Fixes: 17ccae8bb5c9 ("mm/damon: add kunit tests")
+Cc: <stable@vger.kernel.org> # 5.15.x
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/tests/core-kunit.h | 11 +++++++++++
- 1 file changed, 11 insertions(+)
+ mm/damon/tests/core-kunit.h | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
 
 diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
-index e525309de71b..2c641f66142a 100644
+index 98f2a3de7cea..10618cdd188e 100644
 --- a/mm/damon/tests/core-kunit.h
 +++ b/mm/damon/tests/core-kunit.h
-@@ -520,11 +520,22 @@ static void damos_test_filter_out(struct kunit *test)
- 	struct damos_filter *f;
+@@ -278,15 +278,35 @@ static void damon_test_split_regions_of(struct kunit *test)
+ 	struct damon_target *t;
+ 	struct damon_region *r;
  
- 	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
-+	if (!f)
-+		kunit_skip(test, "filter alloc fail");
- 	f->addr_range = (struct damon_addr_range){
- 		.start = DAMON_MIN_REGION * 2, .end = DAMON_MIN_REGION * 6};
- 
++	if (!c)
++		kunit_skip("ctx alloc fail");
  	t = damon_new_target();
 +	if (!t) {
-+		damos_destroy_filter(f);
++		damon_destroy_ctx(c);
 +		kunit_skip(test, "target alloc fail");
 +	}
- 	r = damon_new_region(DAMON_MIN_REGION * 3, DAMON_MIN_REGION * 5);
+ 	r = damon_new_region(0, 22);
 +	if (!r) {
-+		damos_destroy_filter(f);
++		damon_destroy_ctx(c);
 +		damon_free_target(t);
 +		kunit_skip(test, "region alloc fail");
 +	}
  	damon_add_region(r, t);
+ 	damon_split_regions_of(t, 2, DAMON_MIN_REGION);
+ 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 2u);
+ 	damon_free_target(t);
  
- 	/* region in the range */
+ 	t = damon_new_target();
++	if (!t) {
++		damon_destroy_ctx(c);
++		kunit_skip(test, "second target alloc fail");
++	}
+ 	r = damon_new_region(0, 220);
++	if (!r) {
++		damon_destroy_ctx(c);
++		damon_free_target(t);
++		kunit_skip(test, "second region alloc fail");
++	}
+ 	damon_add_region(r, t);
+ 	damon_split_regions_of(t, 4, DAMON_MIN_REGION);
+ 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 4u);
 -- 
 2.47.3
 
