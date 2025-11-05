@@ -1,0 +1,120 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 4 Nov 2025 21:38:08 -0800
+Subject: [PATCH] mm/damon/vaddr: cleanup using pmd_trans_huge_lock()
+
+Three pmd walk functions in vaddr.c are doing pmd_trans_huge() check and
+then pmd_lock().  Replace it with pmd_trans_huge_lock(), which does the
+check and locking at once.
+
+Yet another advantage of the new code is the simpler handling of pmd
+migration entries case.  pmd_trans_huge() doesn't accept migration
+entries while pmd_trans_huge_lock() accepts those.  Hence if the pmd is
+a migration entry, this change makes the handling of the pmd be finished
+within the THP handling part.  The old code requires the handling
+further goes down to PTE handling part below.
+
+The old complicated code flow actually contributed to a mistake that
+resulted in a softlockup [1] issue.  And this change is suggested by
+Hugh on his reply to the issue report, for not only fixing the issue but
+also for cleanup of the code.  We decided to make a simpler fix for the
+ease of the stable kernels porting.  But as I also acknowledged on the
+thread, this change is nice cleanup for both length of the code and the
+simplicity of the code execution flow.
+
+[1] https://lore.kernel.org/296c2b3f-6748-158f-b85d-2952165c0588@google.com
+
+Suggested-by: Hugh Dickins <hughd@google.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/vaddr.c | 48 ++++++++++++------------------------------------
+ 1 file changed, 12 insertions(+), 36 deletions(-)
+
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 0932acee50c7..fa3d126da5bc 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -307,24 +307,14 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 		unsigned long next, struct mm_walk *walk)
+ {
+ 	pte_t *pte;
+-	pmd_t pmde;
+ 	spinlock_t *ptl;
+ 
+-	if (pmd_trans_huge(pmdp_get(pmd))) {
+-		ptl = pmd_lock(walk->mm, pmd);
+-		pmde = pmdp_get(pmd);
+-
+-		if (!pmd_present(pmde)) {
+-			spin_unlock(ptl);
+-			return 0;
+-		}
+-
+-		if (pmd_trans_huge(pmde)) {
++	ptl = pmd_trans_huge_lock(pmd, walk->vma);
++	if (ptl) {
++		if (pmd_present(pmdp_get(pmd)))
+ 			damon_pmdp_mkold(pmd, walk->vma, addr);
+-			spin_unlock(ptl);
+-			return 0;
+-		}
+ 		spin_unlock(ptl);
++		return 0;
+ 	}
+ 
+ 	pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+@@ -446,21 +436,12 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	struct damon_young_walk_private *priv = walk->private;
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-	if (pmd_trans_huge(pmdp_get(pmd))) {
+-		pmd_t pmde;
+-
+-		ptl = pmd_lock(walk->mm, pmd);
+-		pmde = pmdp_get(pmd);
++	ptl = pmd_trans_huge_lock(pmd, walk->vma);
++	if (ptl) {
++		pmd_t pmde = pmdp_get(pmd);
+ 
+-		if (!pmd_present(pmde)) {
+-			spin_unlock(ptl);
+-			return 0;
+-		}
+-
+-		if (!pmd_trans_huge(pmde)) {
+-			spin_unlock(ptl);
+-			goto regular_page;
+-		}
++		if (!pmd_present(pmde))
++			goto huge_out;
+ 		folio = damon_get_folio(pmd_pfn(pmde));
+ 		if (!folio)
+ 			goto huge_out;
+@@ -474,8 +455,6 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 		spin_unlock(ptl);
+ 		return 0;
+ 	}
+-
+-regular_page:
+ #endif	/* CONFIG_TRANSPARENT_HUGEPAGE */
+ 
+ 	pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+@@ -917,13 +896,10 @@ static int damos_va_stat_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	int nr;
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-	if (pmd_trans_huge(*pmd)) {
+-		pmd_t pmde;
++	ptl = pmd_trans_huge_lock(pmd, vma);
++	if (ptl) {
++		pmd_t pmde = pmdp_get(pmd);
+ 
+-		ptl = pmd_trans_huge_lock(pmd, vma);
+-		if (!ptl)
+-			return 0;
+-		pmde = pmdp_get(pmd);
+ 		if (!pmd_present(pmde))
+ 			goto huge_unlock;
+ 
+-- 
+2.47.3
+
