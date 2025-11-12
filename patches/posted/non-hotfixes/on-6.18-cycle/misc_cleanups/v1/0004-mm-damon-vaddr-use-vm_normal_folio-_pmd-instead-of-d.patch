@@ -1,0 +1,110 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 5 Nov 2025 17:57:51 -0800
+Subject: [PATCH 4/9] mm/damon/vaddr: use vm_normal_folio{,_pmd}() instead of
+         damon_get_folio()
+
+A few page table walk entry callback functions in vaddr.c uses
+damon_get_folio() with p{te,md}_pfn() to get the folio, and then
+put_folio().  Simplify and drop unnecessary folio get/put by using
+vm_normal_folio() and its friends instead.
+
+Note that this cleanup was suggested by David Hildenbrand during a
+review of another patch series [1] and the patch was updated following
+the suggestion.  This patch further applies the cleanup to DAMON code
+that merged before the patch.
+
+[1] https://lore.kernel.org/0cb3d5a5-683b-4dba-90a8-b45ab83eec53@redhat.com
+
+Suggested-by: David Hildenbrand <david@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/vaddr.c | 19 ++++++-------------
+ 1 file changed, 6 insertions(+), 13 deletions(-)
+
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 0ad1ce120aa1..9c06cfe4526f 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -442,7 +442,7 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 
+ 		if (!pmd_present(pmde))
+ 			goto huge_out;
+-		folio = damon_get_folio(pmd_pfn(pmde));
++		folio = vm_normal_folio_pmd(walk->vma, addr, pmde);
+ 		if (!folio)
+ 			goto huge_out;
+ 		if (pmd_young(pmde) || !folio_test_idle(folio) ||
+@@ -450,7 +450,6 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 						addr))
+ 			priv->young = true;
+ 		*priv->folio_sz = HPAGE_PMD_SIZE;
+-		folio_put(folio);
+ huge_out:
+ 		spin_unlock(ptl);
+ 		return 0;
+@@ -463,14 +462,13 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	ptent = ptep_get(pte);
+ 	if (!pte_present(ptent))
+ 		goto out;
+-	folio = damon_get_folio(pte_pfn(ptent));
++	folio = vm_normal_folio(walk->vma, addr, ptent);
+ 	if (!folio)
+ 		goto out;
+ 	if (pte_young(ptent) || !folio_test_idle(folio) ||
+ 			mmu_notifier_test_young(walk->mm, addr))
+ 		priv->young = true;
+ 	*priv->folio_sz = folio_size(folio);
+-	folio_put(folio);
+ out:
+ 	pte_unmap_unlock(pte, ptl);
+ 	return 0;
+@@ -718,18 +716,16 @@ static int damos_va_migrate_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	/* Tell page walk code to not split the PMD */
+ 	walk->action = ACTION_CONTINUE;
+ 
+-	folio = damon_get_folio(pmd_pfn(pmde));
++	folio = vm_normal_folio_pmd(walk->vma, addr, pmde);
+ 	if (!folio)
+ 		goto unlock;
+ 
+ 	if (damos_va_filter_out(s, folio, walk->vma, addr, NULL, pmd))
+-		goto put_folio;
++		goto unlock;
+ 
+ 	damos_va_migrate_dests_add(folio, walk->vma, addr, dests,
+ 		migration_lists);
+ 
+-put_folio:
+-	folio_put(folio);
+ unlock:
+ 	spin_unlock(ptl);
+ 	return 0;
+@@ -752,18 +748,15 @@ static int damos_va_migrate_pte_entry(pte_t *pte, unsigned long addr,
+ 	if (pte_none(ptent) || !pte_present(ptent))
+ 		return 0;
+ 
+-	folio = damon_get_folio(pte_pfn(ptent));
++	folio = vm_normal_folio(walk->vma, addr, ptent);
+ 	if (!folio)
+ 		return 0;
+ 
+ 	if (damos_va_filter_out(s, folio, walk->vma, addr, pte, NULL))
+-		goto put_folio;
++		return 0;
+ 
+ 	damos_va_migrate_dests_add(folio, walk->vma, addr, dests,
+ 		migration_lists);
+-
+-put_folio:
+-	folio_put(folio);
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
