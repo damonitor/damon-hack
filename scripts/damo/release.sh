@@ -44,7 +44,12 @@ if [ ! -e "$damo_version_py" ]
 then
 	damo_version_py=damo_version.py
 fi
-echo "__version__ = '$new_version'" > "$damo_version_py"
+old_version=$(./damo version)
+if ! sed -i "s/$old_version/$new_version/" "$damo_version_py"
+then
+	echo "$damo_version_py update fail"
+	exit 1
+fi
 if [ ! $(./damo version) = "$new_version" ]
 then
 	echo "Making new version failed"
