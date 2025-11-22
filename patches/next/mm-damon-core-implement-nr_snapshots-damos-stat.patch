@@ -1,0 +1,66 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 22 Nov 2025 11:50:25 -0800
+Subject: [PATCH] mm/damon/core: implement nr_snapshots damos stat
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  3 +++
+ mm/damon/core.c       | 13 ++++++++++---
+ 2 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 30dad1eaf3dd..c82a0e073b91 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -367,6 +367,8 @@ struct damos_watermarks {
+  * @sz_ops_filter_passed:
+  *		Total bytes that passed ops layer-handled DAMOS filters.
+  * @qt_exceeds: Total number of times the quota of the scheme has exceeded.
++ * @nr_snapshots:
++ *		Total number of DAMON snapshots that the scheme has tried.
+  *
+  * "Tried an action to a region" in this context means the DAMOS core logic
+  * determined the region as eligible to apply the action.  The access pattern
+@@ -392,6 +394,7 @@ struct damos_stat {
+ 	unsigned long sz_applied;
+ 	unsigned long sz_ops_filter_passed;
+ 	unsigned long qt_exceeds;
++	unsigned long nr_snapshots;
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 05cceabea7bf..4a148a5e0614 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -175,6 +175,12 @@ void damon_destroy_region(struct damon_region *r, struct damon_target *t)
+ 	damon_free_region(r);
+ }
+ 
++static bool damon_is_last_region(struct damon_region *r,
++		struct damon_target *t)
++{
++	return list_is_last(&t->regions_list, &r->list);
++}
++
+ /*
+  * Check whether a region is intersecting an address range
+  *
+@@ -2045,10 +2051,11 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 		if (damos_skip_charged_region(t, &r, s, c->min_sz_region))
+ 			continue;
+ 
+-		if (!damos_valid_target(c, t, r, s))
+-			continue;
++		if (damos_valid_target(c, t, r, s))
++			damos_apply_scheme(c, t, r, s);
+ 
+-		damos_apply_scheme(c, t, r, s);
++		if (damon_is_last_region(r, t))
++			s->stat.nr_snapshots++;
+ 	}
+ }
+ 
+-- 
+2.47.3
+

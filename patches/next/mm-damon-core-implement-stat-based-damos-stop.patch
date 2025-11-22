@@ -1,0 +1,93 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 22 Nov 2025 12:14:53 -0800
+Subject: [PATCH] mm/damon/core: implement stat based damos stop
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  5 +++++
+ mm/damon/core.c       | 25 +++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 1be75f5e3cc2..d797d5700455 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -541,6 +541,7 @@ struct damos_migrate_dests {
+  * @ops_filters:	ops layer handling &struct damos_filter objects list.
+  * @last_applied:	Last @action applied ops-managing entity.
+  * @stat:		Statistics of this scheme.
++ * @max_stat:		Upper limit of stats.
+  * @list:		List head for siblings.
+  *
+  * For each @apply_interval_us, DAMON finds regions which fit in the
+@@ -587,6 +588,9 @@ struct damos_migrate_dests {
+  * finished.
+  *
+  * After applying the &action to each region, &stat is updated.
++ *
++ * If any of updated stat exceeds that of &max_stats that is non-zero, the
++ * scheme is deactivated.
+  */
+ struct damos {
+ 	struct damos_access_pattern pattern;
+@@ -626,6 +630,7 @@ struct damos {
+ 	struct list_head ops_filters;
+ 	void *last_applied;
+ 	struct damos_stat stat;
++	struct damos_stat max_stat;
+ 	struct list_head list;
+ };
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 18a524d2ef3c..6c40f31f151f 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -419,6 +419,7 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
+ 	INIT_LIST_HEAD(&scheme->core_filters);
+ 	INIT_LIST_HEAD(&scheme->ops_filters);
+ 	scheme->stat = (struct damos_stat){};
++	scheme->max_stat = (struct damos_stat){};
+ 	INIT_LIST_HEAD(&scheme->list);
+ 
+ 	scheme->quota = *(damos_quota_init(quota));
+@@ -1788,6 +1789,27 @@ static bool damos_skip_charged_region(struct damon_target *t,
+ 	return false;
+ }
+ 
++static bool damos_max_stat_exceeded(struct damos *s)
++{
++	if (s->max_stat.nr_tried && s->max_stat.nr_tried <= s->stat.nr_tried)
++		return true;
++	if (s->max_stat.sz_tried && s->max_stat.sz_tried <= s->stat.sz_tried)
++		return true;
++	if (s->max_stat.sz_tried &&
++			s->max_stat.nr_applied <= s->stat.nr_applied)
++		return true;
++	if (s->max_stat.sz_tried && s->max_stat.sz_ops_filter_passed <=
++			s->stat.sz_ops_filter_passed)
++		return true;
++	if (s->max_stat.sz_tried &&
++			s->max_stat.qt_exceeds <= s->stat.qt_exceeds)
++		return true;
++	if (s->max_stat.sz_tried &&
++			s->max_stat.nr_snapshots <= s->stat.nr_snapshots)
++		return true;
++	return false;
++}
++
+ static void damos_update_stat(struct damos *s,
+ 		unsigned long sz_tried, unsigned long sz_applied,
+ 		unsigned long sz_ops_filter_passed)
+@@ -2051,6 +2073,9 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 		if (damos_skip_charged_region(t, &r, s, c->min_sz_region))
+ 			continue;
+ 
++		if (damos_max_stat_exceeded(s))
++			continue;
++
+ 		if (damos_valid_target(c, t, r, s))
+ 			damos_apply_scheme(c, t, r, s);
+ 
+-- 
+2.47.3
+
