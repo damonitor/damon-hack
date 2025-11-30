@@ -1,0 +1,101 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 30 Nov 2025 13:49:56 -0800
+Subject: [PATCH] mm/memory: move fault reporting into damon
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  7 +++++++
+ mm/damon/core.c       | 20 ++++++++++++++++++++
+ mm/memory.c           | 14 +-------------
+ 3 files changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index c874dfb49cc9..dc1a060c4cf3 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1112,6 +1112,13 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control);
+ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control);
+ 
+ void damon_report_access(struct damon_access_report *report);
++#ifdef CONFIG_MMU
++void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd);
++#else
++static inline void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
++{
++}
++#endif
+ 
+ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+ 				unsigned long *start, unsigned long *end,
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1ffbc9d6d9ca..5d71c0308539 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1756,6 +1756,26 @@ void damon_report_access(struct damon_access_report *report)
+ 	mutex_unlock(&damon_access_reports_lock);
+ }
+ 
++#ifdef CONFIG_MMU
++void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
++{
++	struct damon_access_report access_report = {
++		.addr = vmf->address,
++		.tid = task_pid_vnr(current),
++		.size = 1,
++		.is_write = vmf->flags & FAULT_FLAG_WRITE,
++		.cpu = smp_processor_id(),
++	};
++
++	if (huge_pmd)
++		access_report.addr = PFN_PHYS(pmd_pfn(vmf->orig_pmd));
++	else
++		access_report.addr = PFN_PHYS(pte_pfn(vmf->orig_pte));
++
++	damon_report_access(&access_report);
++}
++#endif
++
+ /*
+  * Warn and fix corrupted ->nr_accesses[_bp] for investigations and preventing
+  * the problem being propagated.
+diff --git a/mm/memory.c b/mm/memory.c
+index e08c2e72fb23..f2393ce0230f 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -6184,24 +6184,12 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
+ 
+ static vm_fault_t do_damon_page(struct vm_fault *vmf, bool huge_pmd)
+ {
+-	struct damon_access_report access_report = {
+-		.addr = vmf->address,
+-		.tid = task_pid_vnr(current),
+-		.size = 1,
+-		.is_write = vmf->flags & FAULT_FLAG_WRITE,
+-		.cpu = smp_processor_id(),
+-	};
+ 	struct vm_area_struct *vma = vmf->vma;
+ 	struct folio *folio;
+ 	pte_t pte, old_pte;
+ 	bool writable = false, ignore_writable = false;
+ 	bool pte_write_upgrade = vma_wants_manual_pte_write_upgrade(vma);
+ 
+-	if (huge_pmd)
+-		access_report.addr = PFN_PHYS(pmd_pfn(vmf->orig_pmd));
+-	else
+-		access_report.addr = PFN_PHYS(pte_pfn(vmf->orig_pte));
+-
+ 	spin_lock(vmf->ptl);
+ 	old_pte = ptep_get(vmf->pte);
+ 	if (unlikely(!pte_same(old_pte, vmf->orig_pte))) {
+@@ -6222,7 +6210,7 @@ static vm_fault_t do_damon_page(struct vm_fault *vmf, bool huge_pmd)
+ 				writable);
+ 	pte_unmap_unlock(vmf->pte, vmf->ptl);
+ 
+-	damon_report_access(&access_report);
++	damon_report_page_fault(vmf, huge_pmd);
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+
