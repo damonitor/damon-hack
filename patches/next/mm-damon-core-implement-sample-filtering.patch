@@ -1,0 +1,80 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 30 Nov 2025 09:08:26 -0800
+Subject: [PATCH] mm/damon/core: implement sample filtering
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 50 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 069d154bcbda..752563a1b006 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -623,6 +623,13 @@ static struct damon_sample_filter *damon_nth_sample_filter(int n,
+ 	return NULL;
+ }
+ 
++static struct damon_sample_filter *damon_last_sample_filter_or_null(
++		struct damon_sample_control *ctrl)
++{
++	return list_last_entry_or_null(&ctrl->sample_filters,
++			struct damon_sample_filter, list);
++}
++
+ struct damon_ctx *damon_new_ctx(void)
+ {
+ 	struct damon_ctx *ctx;
+@@ -2977,6 +2984,49 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ 	}
+ }
+ 
++static bool damon_sample_filter_matching(struct damon_access_report *report,
++		struct damon_sample_filter *filter)
++{
++	bool matched = false;
++	int i;
++
++	switch (filter->type) {
++	case DAMON_FILTER_TYPE_CPUMASK:
++		matched = cpumask_test_cpu(report->cpu, &filter->cpumask);
++		break;
++	case DAMON_FILTER_TYPE_THREADS:
++		for (i = 0; i < filter->nr_tids; i++) {
++			if (report->tid != filter->tid_arr[i])
++				continue;
++			matched = true;
++			break;
++		}
++		break;
++	case DAMON_FILTER_TYPE_WRITE:
++		matched = report->is_write;
++		break;
++	default:
++		break;
++	}
++	return matched == filter->matching;
++}
++
++static bool damon_sample_filter_out(struct damon_access_report *report,
++		struct damon_sample_control *ctrl)
++{
++	struct damon_sample_filter *filter;
++
++	damon_for_each_sample_filter(filter, ctrl) {
++		if (damon_sample_filter_matching(report, filter) &&
++				!filter->allow)
++			return true;
++	}
++	filter = damon_last_sample_filter_or_null(ctrl);
++	if (!filter)
++		return false;
++	return !filter->allow;
++}
++
+ static void kdamond_apply_access_report(struct damon_access_report *report,
+ 		struct damon_target *t, struct damon_ctx *ctx)
+ {
+-- 
+2.47.3
+
