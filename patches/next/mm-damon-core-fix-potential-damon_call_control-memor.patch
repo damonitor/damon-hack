@@ -1,0 +1,49 @@
+From: Enze Li <lienze@kylinos.cn>
+Date: Tue, 2 Dec 2025 10:14:07 +0800
+Subject: [PATCH] mm/damon/core: fix potential damon_call_control memory leak
+
+Refer to my reply to the original posting of this patch for detail.  I
+asked Enze to repost this patch, but adding this into my tree first, to
+not forget adding this fix in a timely manner.
+
+Signed-off-by: Enze Li <lienze@kylinos.cn>
+Link: https://patch.msgid.link/20251202021407.11818-1-lienze@kylinos.cn
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f9fc0375890a..4ad5f290d382 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2573,13 +2573,19 @@ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ 			list_add(&control->list, &repeat_controls);
+ 		}
+ 	}
+-	control = list_first_entry_or_null(&repeat_controls,
+-			struct damon_call_control, list);
+-	if (!control || cancel)
+-		return;
+-	mutex_lock(&ctx->call_controls_lock);
+-	list_add_tail(&control->list, &ctx->call_controls);
+-	mutex_unlock(&ctx->call_controls_lock);
++	while (true) {
++		control = list_first_entry_or_null(&repeat_controls,
++				struct damon_call_control, list);
++		if (!control)
++			break;
++		/* Unlink from the repeate_controls list. */
++		list_del(&control->list);
++		if (cancel)
++			continue;
++		mutex_lock(&ctx->call_controls_lock);
++		list_add(&control->list, &ctx->call_controls);
++		mutex_unlock(&ctx->call_controls_lock);
++	}
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+-- 
+2.47.3
+
