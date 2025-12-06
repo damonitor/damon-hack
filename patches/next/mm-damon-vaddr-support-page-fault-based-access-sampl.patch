@@ -1,0 +1,97 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 5 Dec 2025 17:28:59 -0800
+Subject: [PATCH] mm/damon/vaddr: support page fault based access sampling
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/vaddr.c | 60 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 2750c88e7225..39b6c6351bf2 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -14,6 +14,7 @@
+ #include <linux/page_idle.h>
+ #include <linux/pagewalk.h>
+ #include <linux/sched/mm.h>
++#include <asm/tlb.h>
+ 
+ #include "../internal.h"
+ #include "ops-common.h"
+@@ -406,7 +407,7 @@ static void __damon_va_prepare_access_check(struct mm_struct *mm,
+ 	damon_va_mkold(mm, r->sampling_addr);
+ }
+ 
+-static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
++static void damon_va_prepare_access_checks_abit(struct damon_ctx *ctx)
+ {
+ 	struct damon_target *t;
+ 	struct mm_struct *mm;
+@@ -422,6 +423,63 @@ static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
+ 	}
+ }
+ 
++static int damon_change_protection_pmd_entry(pmd_t *pmd, unsigned long addr,
++		unsigned long next, struct mm_walk *walk)
++{
++	struct vm_area_struct *vma = walk->vma;
++	struct mmu_gather tlb;
++
++	tlb_gather_mmu(&tlb, vma->vm_mm);
++	change_protection(&tlb, vma, addr, addr + PAGE_SIZE, MM_CP_DAMON);
++	tlb_finish_mmu(&tlb);
++	return 0;
++}
++
++static void damon_va_change_protection(
++		struct mm_struct *mm, unsigned long addr)
++{
++
++	static const struct mm_walk_ops walk_ops = {
++		.pmd_entry = damon_change_protection_pmd_entry,
++		.walk_lock = PGWALK_RDLOCK,
++	};
++
++	mmap_read_lock(mm);
++	walk_page_range(mm, addr, addr + 1, &walk_ops, NULL);
++	mmap_read_unlock(mm);
++}
++
++static void __damon_va_prepare_access_check_faults(struct mm_struct *mm,
++		struct damon_region *r)
++{
++	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
++	damon_va_change_protection(mm, r->sampling_addr);
++}
++
++static void damon_va_prepare_access_checks_faults(struct damon_ctx *ctx)
++{
++	struct damon_target *t;
++	struct mm_struct *mm;
++	struct damon_region *r;
++
++	damon_for_each_target(t, ctx) {
++		mm = damon_get_mm(t);
++		if (!mm)
++			continue;
++		damon_for_each_region(r, t)
++			__damon_va_prepare_access_check_faults(mm, r);
++		mmput(mm);
++	}
++}
++
++static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
++{
++	if (ctx->sample_control.primitives_enabled.page_table)
++		damon_va_prepare_access_checks_abit(ctx);
++	if (ctx->sample_control.primitives_enabled.page_fault)
++		damon_va_prepare_access_checks_faults(ctx);
++}
++
+ struct damon_young_walk_private {
+ 	/* size of the folio for the access checked virtual memory address */
+ 	unsigned long *folio_sz;
+-- 
+2.47.3
+
