@@ -1,0 +1,75 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 2 Dec 2025 22:32:55 -0800
+Subject: [PATCH] mm/damon/core: implement damon_report_page_fault()
+
+Implement a DAMON core API for reporting page fault events to DAMON.  It
+is a wrapper of damon_report_access().
+
+This is a temporal hack.  In future versions that will have no RFC tag,
+only damon_report_access() may be used.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 10 ++++++++++
+ mm/damon/core.c       | 17 +++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index b9359c76a6f1..b8ebb2aa02c8 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1017,6 +1017,13 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control);
+ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control);
+ 
+ void damon_report_access(struct damon_access_report *report);
++#ifdef CONFIG_MMU
++void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd);
++#else
++static inline void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
++{
++}
++#endif
+ 
+ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+ 				unsigned long *start, unsigned long *end,
+@@ -1027,6 +1034,9 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+ static inline void damon_report_access(struct damon_access_report *report)
+ {
+ }
++static inline void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
++{
++}
+ 
+ #endif	/* CONFIG_DAMON */
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index aadba39494a2..3f5bb6d34b51 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1579,6 +1579,23 @@ void damon_report_access(struct damon_access_report *report)
+ 	mutex_unlock(&damon_access_reports_lock);
+ }
+ 
++#ifdef CONFIG_MMU
++void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
++{
++	struct damon_access_report access_report = {
++		.size = 1,	/* todo: set appripriately */
++	};
++
++	if (huge_pmd)
++		access_report.addr = PFN_PHYS(pmd_pfn(vmf->orig_pmd));
++	else
++		access_report.addr = PFN_PHYS(pte_pfn(vmf->orig_pte));
++	/* todo: report vmf->address as virtual address */
++
++	damon_report_access(&access_report);
++}
++#endif
++
+ /*
+  * Warn and fix corrupted ->nr_accesses[_bp] for investigations and preventing
+  * the problem being propagated.
+-- 
+2.47.3
+

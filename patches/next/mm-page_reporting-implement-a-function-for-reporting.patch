@@ -1,0 +1,55 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 4 May 2024 15:22:29 -0700
+Subject: [PATCH] mm/page_reporting: implement a function for reporting
+ specific pfn range
+
+Implement a function for reporting pages of specific pfn range, for
+non-free pages reporting use case.  The use case will be implemented by
+following commits.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/page_reporting.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/mm/page_reporting.c b/mm/page_reporting.c
+index e4c428e61d8c..e14f2e979f16 100644
+--- a/mm/page_reporting.c
++++ b/mm/page_reporting.c
+@@ -349,6 +349,33 @@ static void page_reporting_process(struct work_struct *work)
+ static DEFINE_MUTEX(page_reporting_mutex);
+ DEFINE_STATIC_KEY_FALSE(page_reporting_enabled);
+ 
++#ifdef CONFIG_ACMA
++
++int page_report(unsigned long pfn, unsigned long nr_pages)
++{
++	struct page_reporting_dev_info *prdev;
++	struct scatterlist sgl;
++	int err;
++
++	rcu_read_lock();
++
++	prdev = rcu_dereference(pr_dev_info);
++	if (!prdev || !prdev->report) {
++		rcu_read_unlock();
++		return -ENOENT;
++	}
++
++	sg_init_table(&sgl, 1);
++	sg_set_page(&sgl, NULL, nr_pages << PAGE_SHIFT, 0);
++	sgl.dma_address = PFN_PHYS(pfn);
++
++	err = prdev->report(prdev, sgl, 1);
++	rcu_read_unlock();
++	return err;
++}
++
++#endif
++
+ int page_reporting_register(struct page_reporting_dev_info *prdev)
+ {
+ 	int err = 0;
+-- 
+2.47.3
+
