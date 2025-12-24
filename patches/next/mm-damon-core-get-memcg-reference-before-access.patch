@@ -1,0 +1,54 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Tue, 23 Dec 2025 19:45:27 -0800
+Subject: [PATCH] mm/damon/core: get memcg reference before access
+
+The commit b74a120bcf507 ("mm/damon/core: implement
+DAMOS_QUOTA_NODE_MEMCG_USED_BP") added accesses to memcg structure
+without getting reference to it. This is unsafe. Let's get the reference
+before accessing the memcg.
+
+Link: https://patch.msgid.link/20251224034527.3751306-1-shakeel.butt@linux.dev
+Fixes: b74a120bcf507 ("mm/damon/core: implement DAMOS_QUOTA_NODE_MEMCG_USED_BP")
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Meta kernel team <kernel-team@meta.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index da4820110e48..2d3e8006db50 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2067,13 +2067,15 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 
+ 	rcu_read_lock();
+ 	memcg = mem_cgroup_from_id(goal->memcg_id);
+-	rcu_read_unlock();
+-	if (!memcg) {
++	if (!memcg || !mem_cgroup_tryget(memcg)) {
++		rcu_read_unlock();
+ 		if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
+ 			return 0;
+ 		else	/* DAMOS_QUOTA_NODE_MEMCG_FREE_BP */
+ 			return 10000;
+ 	}
++	rcu_read_unlock();
++
+ 	mem_cgroup_flush_stats(memcg);
+ 	lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(goal->nid));
+ 	used_pages = lruvec_page_state(lruvec, NR_ACTIVE_ANON);
+@@ -2081,6 +2083,8 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 	used_pages += lruvec_page_state(lruvec, NR_ACTIVE_FILE);
+ 	used_pages += lruvec_page_state(lruvec, NR_INACTIVE_FILE);
+ 
++	mem_cgroup_put(memcg);
++
+ 	si_meminfo_node(&i, goal->nid);
+ 	if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
+ 		numerator = used_pages;
+-- 
+2.47.3
+
