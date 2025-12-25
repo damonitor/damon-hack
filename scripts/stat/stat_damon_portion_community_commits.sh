@@ -21,11 +21,11 @@ pr_stat()
 
 	range=$1
 	from_sj=$(git log "$range" --oneline --author=SeongJae -- \
-		$("$bindir/damon_source_files.py") \
+		$("$bindir/../damon_source_files.py") \
 		| wc -l)
 	from_comm=$(git log "$range" --oneline \
 		--perl-regexp --author='^((?!SeongJae).*)$' -- \
-		$("$bindir/damon_source_files.py") \
+		$("$bindir/../damon_source_files.py") \
 		| wc -l)
 	portion=$(awk "BEGIN {printf \"%.2f%%\", \
 		${from_comm} * 100 / (${from_sj} + ${from_comm})}")
