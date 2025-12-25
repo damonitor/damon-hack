@@ -87,10 +87,19 @@ do
 	if ! git cherry-pick --allow-empty "$commit"
 	then
 		echo "Cherry-pick failed for $commit."
-		read -p "Skip it and continue? [y/N] " answer
-		if [ "$answer" = "y" ]
+		echo "What do do?"
+		echo "1. Skip it and continue."
+		echo "2. Wait until you manually resolve it in another window."
+		echo "3. Just exit."
+		read -p "Enter the item number: " answer
+		if [ "$answer" = "1" ]
 		then
 			git cherry-pick --skip
+			continue
+		fi
+		if [ "$answer" = "2" ]
+		then
+			read -p "Enter anything after manual resolving: " foo
 			continue
 		fi
 
