@@ -64,26 +64,10 @@ merged_commits=$("$unmerged_commits_sh" --merged --human_readable \
 git branch -M damon/next damon/next.old
 git checkout akpm.korg.mm/mm-new -b damon/next.new
 
-version_marking_commit=""
 old_mainline_base=$(git describe "$old_mm_new" --match "v*" --abbrev=0)
 for commit in $("$unmerged_commits_sh" "$old_mm_new..damon/next.old" \
 	"$new_mainline_base..$new_mm_new")
 do
-	if [ "$(git log -1 "$commit" --pretty=%s)" = \
-		"add -damon suffix to the version name" ]
-	then
-		is_damon_version_marking_commit="true"
-	else
-		is_damon_version_marking_commit="false"
-	fi
-
-	if [ ! "$old_mainline_base" = "$new_mainline_base" ] && \
-		[ "$is_damon_version_marking_commit" = "true" ]
-	then
-		version_marking_commit="$commit"
-		continue
-	fi
-
 	if ! git cherry-pick --allow-empty "$commit"
 	then
 		echo "Cherry-pick failed for $commit."
@@ -117,8 +101,7 @@ git branch -M damon/next.new damon/next
 if [ ! "$old_mainline_base" = "$new_mainline_base" ]
 then
 	echo
-	echo "!!! Pick the DAMON version commit manually"
-	echo "!!! ($version_marking_commit)"
+	echo "!!! mainline base changed."
 	echo
 fi
 
