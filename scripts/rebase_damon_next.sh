@@ -83,7 +83,9 @@ do
 		fi
 		if [ "$answer" = "2" ]
 		then
-			read -p "Enter anything after manual resolving: " foo
+			echo "Ok, please resolve the conflict, and "
+			echo "further complete the current cherry-pick."
+			read -p "Then, enter anything to continue: " foo
 			continue
 		fi
 
