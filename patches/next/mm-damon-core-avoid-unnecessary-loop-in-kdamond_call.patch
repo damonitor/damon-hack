@@ -1,0 +1,86 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 1 Jan 2026 14:53:30 -0800
+Subject: [PATCH] mm/damon/core: avoid unnecessary loop in kdamond_call()
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 59 ++++++++++++++++++-------------------------------
+ 1 file changed, 21 insertions(+), 38 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b3d6efadb328..43293b2b15b9 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2965,48 +2965,31 @@ static void kdamond_usleep(unsigned long usecs)
+  */
+ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ {
+-	struct damon_call_control *control;
+-	LIST_HEAD(repeat_controls);
+-	int ret = 0;
+-
+-	while (true) {
+-		mutex_lock(&ctx->call_controls_lock);
+-		control = list_first_entry_or_null(&ctx->call_controls,
+-				struct damon_call_control, list);
+-		mutex_unlock(&ctx->call_controls_lock);
+-		if (!control)
+-			break;
+-		if (cancel) {
++	struct damon_call_control *control, *next;
++	LIST_HEAD(controls);
++
++	mutex_lock(&ctx->call_controls_lock);
++	list_splice_tail_init(&ctx->call_controls, &controls);
++	mutex_unlock(&ctx->call_controls_lock);
++
++	list_for_each_entry_safe(control, next, &controls, list) {
++		if (!control->repeat || cancel)
++			list_del(&control->list);
++
++		if (cancel)
+ 			control->canceled = true;
+-		} else {
+-			ret = control->fn(control->data);
+-			control->return_code = ret;
+-		}
+-		mutex_lock(&ctx->call_controls_lock);
+-		list_del(&control->list);
+-		mutex_unlock(&ctx->call_controls_lock);
+-		if (!control->repeat) {
++		else
++			control->return_code = control->fn(control->data);
++
++		if (!control->repeat)
+ 			complete(&control->completion);
+-		} else if (control->canceled && control->dealloc_on_cancel) {
++		else if (control->canceled && control->dealloc_on_cancel)
+ 			kfree(control);
+-			continue;
+-		} else {
+-			list_add(&control->list, &repeat_controls);
+-		}
+-	}
+-	while (true) {
+-		control = list_first_entry_or_null(&repeat_controls,
+-				struct damon_call_control, list);
+-		if (!control)
+-			break;
+-		/* Unlink from the repeate_controls list. */
+-		list_del(&control->list);
+-		if (cancel)
+-			continue;
+-		mutex_lock(&ctx->call_controls_lock);
+-		list_add(&control->list, &ctx->call_controls);
+-		mutex_unlock(&ctx->call_controls_lock);
+ 	}
++
++	mutex_lock(&ctx->call_controls_lock);
++	list_splice_tail(&controls, &ctx->call_controls);
++	mutex_unlock(&ctx->call_controls_lock);
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+-- 
+2.47.3
+
