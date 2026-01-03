@@ -2,16 +2,17 @@
 
 damon_next_baseline="mm-new"
 
-if [ $# -ne 1 ]
+if [ $# -ne 2 ]
 then
-	echo "Usage: $0 <commit message>"
+	echo "Usage: $0 <damon/next commit> <commit message>"
 	echo
 	echo "e.g., $0 \"rebase on latest mm-new"
 	exit 1
 fi
 
 bindir=$(dirname $0)
-commit_msg=$1
+damon_next_commit=$1
+commit_msg=$2
 
 if "$bindir/patches_uptodate.sh" > /dev/null
 then
@@ -26,11 +27,11 @@ then
 	echo "Fail baseline finding"
 	exit 1
 fi
-commits="$damon_next_baseline..damon/next"
+commits="$damon_next_baseline..${damon_next_commit}"
 
 commit_msg="$commit_msg
 
-Assembled tree: $(git rev-parse damon/next)"
+Assembled tree: $(git rev-parse $damon_next_commit)"
 
 git -C "$bindir" rm -r "$dest_dir"
 mkdir -p "$dest_dir"
