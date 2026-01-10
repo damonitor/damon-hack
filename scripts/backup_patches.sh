@@ -4,15 +4,15 @@ damon_next_baseline="mm-new"
 
 if [ $# -ne 2 ]
 then
-	echo "Usage: $0 <damon/next commit> <commit message>"
+	echo "Usage: $0 <commit message> <damon/next commit>"
 	echo
 	echo "e.g., $0 \"rebase on latest mm-new"
 	exit 1
 fi
 
 bindir=$(dirname $0)
-damon_next_commit=$1
-commit_msg=$2
+commit_msg=$1
+damon_next_commit=$2
 
 if "$bindir/patches_uptodate.sh" > /dev/null
 then
