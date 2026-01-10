@@ -6,7 +6,7 @@ if [ $# -ne 2 ]
 then
 	echo "Usage: $0 <commit message> <damon/next commit>"
 	echo
-	echo "e.g., $0 \"rebase on latest mm-new"
+	echo "e.g., $0 \"rebase on latest mm-new" HEAD
 	exit 1
 fi
 
