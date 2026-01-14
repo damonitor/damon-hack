@@ -18,10 +18,10 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  6 files changed, 49 insertions(+), 47 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 983c9bf66eee..a2b7bff0305a 100644
+index 3bfc9f204ca0..0806cebb0bdb 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -905,7 +905,7 @@ struct damon_sample_control {
+@@ -773,7 +773,7 @@ struct damon_attrs {
   *
   * @ops:	Set of monitoring operations for given use cases.
   * @addr_unit:	Scale factor for core to ops address conversion.
@@ -30,16 +30,16 @@ index 983c9bf66eee..a2b7bff0305a 100644
   * @adaptive_targets:	Head of monitoring targets (&damon_target) list.
   * @schemes:		Head of schemes (&damos) list.
   */
-@@ -951,7 +951,7 @@ struct damon_ctx {
+@@ -818,7 +818,7 @@ struct damon_ctx {
+ /* public: */
  	struct damon_operations ops;
- 	struct damon_sample_control sample_control;
  	unsigned long addr_unit;
 -	unsigned long min_sz_region;
 +	unsigned long min_region_sz;
  
  	struct list_head adaptive_targets;
  	struct list_head schemes;
-@@ -1046,7 +1046,7 @@ static inline void damon_insert_region(struct damon_region *r,
+@@ -907,7 +907,7 @@ static inline void damon_insert_region(struct damon_region *r,
  void damon_add_region(struct damon_region *r, struct damon_target *t);
  void damon_destroy_region(struct damon_region *r, struct damon_target *t);
  int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
@@ -48,20 +48,20 @@ index 983c9bf66eee..a2b7bff0305a 100644
  void damon_update_region_access_rate(struct damon_region *r, bool accessed,
  		struct damon_attrs *attrs);
  
-@@ -1132,7 +1132,7 @@ static inline void damon_report_page_fault(struct vm_fault *vmf, bool huge_pmd)
+@@ -975,7 +975,7 @@ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control);
  
  int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  				unsigned long *start, unsigned long *end,
 -				unsigned long min_sz_region);
 +				unsigned long min_region_sz);
  
- #ifdef CONFIG_ACMA
+ #endif	/* CONFIG_DAMON */
  
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 82725daffd2d..49fed647afc6 100644
+index 14b8297be675..87bf79ed4396 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -221,7 +221,7 @@ static int damon_fill_regions_holes(struct damon_region *first,
+@@ -203,7 +203,7 @@ static int damon_fill_regions_holes(struct damon_region *first,
   * @t:		the given target.
   * @ranges:	array of new monitoring target ranges.
   * @nr_ranges:	length of @ranges.
@@ -70,7 +70,7 @@ index 82725daffd2d..49fed647afc6 100644
   *
   * This function adds new regions to, or modify existing regions of a
   * monitoring target to fit in specific ranges.
-@@ -229,7 +229,7 @@ static int damon_fill_regions_holes(struct damon_region *first,
+@@ -211,7 +211,7 @@ static int damon_fill_regions_holes(struct damon_region *first,
   * Return: 0 if success, or negative error code otherwise.
   */
  int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
@@ -79,7 +79,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	struct damon_region *r, *next;
  	unsigned int i;
-@@ -266,16 +266,16 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+@@ -248,16 +248,16 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
  			/* no region intersects with this range */
  			newr = damon_new_region(
  					ALIGN_DOWN(range->start,
@@ -100,8 +100,8 @@ index 82725daffd2d..49fed647afc6 100644
  
  			/* fill possible holes in the range */
  			err = damon_fill_regions_holes(first, last, t);
-@@ -661,7 +661,7 @@ struct damon_ctx *damon_new_ctx(void)
- 	INIT_LIST_HEAD(&ctx->sample_control.sample_filters);
+@@ -553,7 +553,7 @@ struct damon_ctx *damon_new_ctx(void)
+ 	ctx->attrs.max_nr_regions = 1000;
  
  	ctx->addr_unit = 1;
 -	ctx->min_sz_region = DAMON_MIN_REGION_SZ;
@@ -109,7 +109,7 @@ index 82725daffd2d..49fed647afc6 100644
  
  	INIT_LIST_HEAD(&ctx->adaptive_targets);
  	INIT_LIST_HEAD(&ctx->schemes);
-@@ -1254,7 +1254,7 @@ static struct damon_target *damon_nth_target(int n, struct damon_ctx *ctx)
+@@ -1142,7 +1142,7 @@ static struct damon_target *damon_nth_target(int n, struct damon_ctx *ctx)
   * If @src has no region, @dst keeps current regions.
   */
  static int damon_commit_target_regions(struct damon_target *dst,
@@ -118,7 +118,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	struct damon_region *src_region;
  	struct damon_addr_range *ranges;
-@@ -1271,7 +1271,7 @@ static int damon_commit_target_regions(struct damon_target *dst,
+@@ -1159,7 +1159,7 @@ static int damon_commit_target_regions(struct damon_target *dst,
  	i = 0;
  	damon_for_each_region(src_region, src)
  		ranges[i++] = src_region->ar;
@@ -127,7 +127,7 @@ index 82725daffd2d..49fed647afc6 100644
  	kfree(ranges);
  	return err;
  }
-@@ -1279,11 +1279,11 @@ static int damon_commit_target_regions(struct damon_target *dst,
+@@ -1167,11 +1167,11 @@ static int damon_commit_target_regions(struct damon_target *dst,
  static int damon_commit_target(
  		struct damon_target *dst, bool dst_has_pid,
  		struct damon_target *src, bool src_has_pid,
@@ -141,7 +141,7 @@ index 82725daffd2d..49fed647afc6 100644
  	if (err)
  		return err;
  	if (dst_has_pid)
-@@ -1310,7 +1310,7 @@ static int damon_commit_targets(
+@@ -1198,7 +1198,7 @@ static int damon_commit_targets(
  			err = damon_commit_target(
  					dst_target, damon_target_has_pid(dst),
  					src_target, damon_target_has_pid(src),
@@ -150,7 +150,7 @@ index 82725daffd2d..49fed647afc6 100644
  			if (err)
  				return err;
  		} else {
-@@ -1337,7 +1337,7 @@ static int damon_commit_targets(
+@@ -1225,7 +1225,7 @@ static int damon_commit_targets(
  			return -ENOMEM;
  		err = damon_commit_target(new_target, false,
  				src_target, damon_target_has_pid(src),
@@ -159,16 +159,16 @@ index 82725daffd2d..49fed647afc6 100644
  		if (err) {
  			damon_destroy_target(new_target, NULL);
  			return err;
-@@ -1479,7 +1479,7 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
- 	if (err)
- 		return err;
+@@ -1272,7 +1272,7 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 	}
+ 	dst->ops = src->ops;
  	dst->addr_unit = src->addr_unit;
 -	dst->min_sz_region = src->min_sz_region;
 +	dst->min_region_sz = src->min_region_sz;
  
  	return 0;
  }
-@@ -1512,8 +1512,8 @@ static unsigned long damon_region_sz_limit(struct damon_ctx *ctx)
+@@ -1305,8 +1305,8 @@ static unsigned long damon_region_sz_limit(struct damon_ctx *ctx)
  
  	if (ctx->attrs.min_nr_regions)
  		sz /= ctx->attrs.min_nr_regions;
@@ -179,7 +179,7 @@ index 82725daffd2d..49fed647afc6 100644
  
  	return sz;
  }
-@@ -1970,7 +1970,7 @@ static bool damos_valid_target(struct damon_ctx *c, struct damon_target *t,
+@@ -1696,7 +1696,7 @@ static bool damos_valid_target(struct damon_ctx *c, struct damon_target *t,
   * @t:	The target of the region.
   * @rp:	The pointer to the region.
   * @s:	The scheme to be applied.
@@ -188,7 +188,7 @@ index 82725daffd2d..49fed647afc6 100644
   *
   * If a quota of a scheme has exceeded in a quota charge window, the scheme's
   * action would applied to only a part of the target access pattern fulfilling
-@@ -1988,7 +1988,8 @@ static bool damos_valid_target(struct damon_ctx *c, struct damon_target *t,
+@@ -1714,7 +1714,8 @@ static bool damos_valid_target(struct damon_ctx *c, struct damon_target *t,
   * Return: true if the region should be entirely skipped, false otherwise.
   */
  static bool damos_skip_charged_region(struct damon_target *t,
@@ -198,7 +198,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	struct damon_region *r = *rp;
  	struct damos_quota *quota = &s->quota;
-@@ -2010,11 +2011,11 @@ static bool damos_skip_charged_region(struct damon_target *t,
+@@ -1736,11 +1737,11 @@ static bool damos_skip_charged_region(struct damon_target *t,
  		if (quota->charge_addr_from && r->ar.start <
  				quota->charge_addr_from) {
  			sz_to_skip = ALIGN_DOWN(quota->charge_addr_from -
@@ -213,7 +213,7 @@ index 82725daffd2d..49fed647afc6 100644
  			}
  			damon_split_region_at(t, r, sz_to_skip);
  			r = damon_next_region(r);
-@@ -2040,7 +2041,7 @@ static void damos_update_stat(struct damos *s,
+@@ -1766,7 +1767,7 @@ static void damos_update_stat(struct damos *s,
  
  static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
  		struct damon_region *r, struct damos_filter *filter,
@@ -222,7 +222,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	bool matched = false;
  	struct damon_target *ti;
-@@ -2057,8 +2058,8 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1783,8 +1784,8 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
  		matched = target_idx == filter->target_idx;
  		break;
  	case DAMOS_FILTER_TYPE_ADDR:
@@ -233,7 +233,7 @@ index 82725daffd2d..49fed647afc6 100644
  
  		/* inside the range */
  		if (start <= r->ar.start && r->ar.end <= end) {
-@@ -2094,7 +2095,7 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+@@ -1820,7 +1821,7 @@ static bool damos_filter_out(struct damon_ctx *ctx, struct damon_target *t,
  
  	s->core_filters_allowed = false;
  	damos_for_each_core_filter(filter, s) {
@@ -242,7 +242,7 @@ index 82725daffd2d..49fed647afc6 100644
  			if (filter->allow)
  				s->core_filters_allowed = true;
  			return !filter->allow;
-@@ -2229,7 +2230,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -1955,7 +1956,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  	if (c->ops.apply_scheme) {
  		if (quota->esz && quota->charged_sz + sz > quota->esz) {
  			sz = ALIGN_DOWN(quota->esz - quota->charged_sz,
@@ -250,8 +250,8 @@ index 82725daffd2d..49fed647afc6 100644
 +					c->min_region_sz);
  			if (!sz)
  				goto update_stat;
- 			if (sz >= damon_sz_region(r)) {
-@@ -2286,7 +2287,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 			damon_split_region_at(t, r, sz);
+@@ -2003,7 +2004,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
  		if (quota->esz && quota->charged_sz >= quota->esz)
  			continue;
  
@@ -260,7 +260,7 @@ index 82725daffd2d..49fed647afc6 100644
  			continue;
  
  		if (s->max_nr_snapshots &&
-@@ -2802,7 +2803,7 @@ static void damon_split_region_at(struct damon_target *t,
+@@ -2496,7 +2497,7 @@ static void damon_split_region_at(struct damon_target *t,
  
  /* Split every region in the given target into 'nr_subs' regions */
  static void damon_split_regions_of(struct damon_target *t, int nr_subs,
@@ -269,7 +269,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	struct damon_region *r, *next;
  	unsigned long sz_region, sz_sub = 0;
-@@ -2812,13 +2813,13 @@ static void damon_split_regions_of(struct damon_target *t, int nr_subs,
+@@ -2506,13 +2507,13 @@ static void damon_split_regions_of(struct damon_target *t, int nr_subs,
  		sz_region = damon_sz_region(r);
  
  		for (i = 0; i < nr_subs - 1 &&
@@ -285,7 +285,7 @@ index 82725daffd2d..49fed647afc6 100644
  			/* Do not allow blank region */
  			if (sz_sub == 0 || sz_sub >= sz_region)
  				continue;
-@@ -2858,7 +2859,7 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
+@@ -2552,7 +2553,7 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
  		nr_subregions = 3;
  
  	damon_for_each_target(t, ctx)
@@ -294,7 +294,7 @@ index 82725daffd2d..49fed647afc6 100644
  
  	last_nr_regions = nr_regions;
  }
-@@ -3324,7 +3325,7 @@ static bool damon_find_biggest_system_ram(unsigned long *start,
+@@ -2901,7 +2902,7 @@ static bool damon_find_biggest_system_ram(unsigned long *start,
   * @t:		The monitoring target to set the region.
   * @start:	The pointer to the start address of the region.
   * @end:	The pointer to the end address of the region.
@@ -303,7 +303,7 @@ index 82725daffd2d..49fed647afc6 100644
   *
   * This function sets the region of @t as requested by @start and @end.  If the
   * values of @start and @end are zero, however, this function finds the biggest
-@@ -3336,7 +3337,7 @@ static bool damon_find_biggest_system_ram(unsigned long *start,
+@@ -2913,7 +2914,7 @@ static bool damon_find_biggest_system_ram(unsigned long *start,
   */
  int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  			unsigned long *start, unsigned long *end,
@@ -312,7 +312,7 @@ index 82725daffd2d..49fed647afc6 100644
  {
  	struct damon_addr_range addr_range;
  
-@@ -3349,7 +3350,7 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+@@ -2926,7 +2927,7 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
  
  	addr_range.start = *start;
  	addr_range.end = *end;
@@ -379,10 +379,10 @@ index 5e18b164f6d8..536f02bd173e 100644
  	return ctx;
  free_out:
 diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
-index e4a4b7f66972..4602aace4898 100644
+index 57d36d60f329..b7f66196bec4 100644
 --- a/mm/damon/sysfs.c
 +++ b/mm/damon/sysfs.c
-@@ -1918,7 +1918,7 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+@@ -1365,7 +1365,7 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
  
  static int damon_sysfs_set_regions(struct damon_target *t,
  		struct damon_sysfs_regions *sysfs_regions,
@@ -391,7 +391,7 @@ index e4a4b7f66972..4602aace4898 100644
  {
  	struct damon_addr_range *ranges = kmalloc_array(sysfs_regions->nr,
  			sizeof(*ranges), GFP_KERNEL | __GFP_NOWARN);
-@@ -1940,7 +1940,7 @@ static int damon_sysfs_set_regions(struct damon_target *t,
+@@ -1387,7 +1387,7 @@ static int damon_sysfs_set_regions(struct damon_target *t,
  		if (ranges[i - 1].end > ranges[i].start)
  			goto out;
  	}
@@ -400,7 +400,7 @@ index e4a4b7f66972..4602aace4898 100644
  out:
  	kfree(ranges);
  	return err;
-@@ -1962,7 +1962,8 @@ static int damon_sysfs_add_target(struct damon_sysfs_target *sys_target,
+@@ -1409,7 +1409,8 @@ static int damon_sysfs_add_target(struct damon_sysfs_target *sys_target,
  			return -EINVAL;
  	}
  	t->obsolete = sys_target->obsolete;
@@ -410,7 +410,7 @@ index e4a4b7f66972..4602aace4898 100644
  }
  
  static int damon_sysfs_add_targets(struct damon_ctx *ctx,
-@@ -2089,7 +2090,7 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+@@ -1469,7 +1470,7 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
  	ctx->addr_unit = sys_ctx->addr_unit;
  	/* addr_unit is respected by only DAMON_OPS_PADDR */
  	if (sys_ctx->ops_id == DAMON_OPS_PADDR)
