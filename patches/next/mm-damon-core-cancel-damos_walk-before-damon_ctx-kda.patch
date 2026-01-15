@@ -3,19 +3,14 @@ Date: Thu, 1 Jan 2026 14:00:16 -0800
 Subject: [PATCH] mm/damon/core: cancel damos_walk() before damon_ctx->kdamond
  reset
 
-damon_call() requests cancelling was done after damon_ctx->kdamond
-reset.  This caused a race that could result in use-after-free.  Now
-the issue is fixed via commit xxxx ("mm/damon/core: remove call_control
-in inactive contexts") by doing the cancel operation before the
-->kdamond reset.
-
-damos_walk() requests are also canceled after ->kdamond reset.  Because
-it is not allowing multiple requests, no same problem exists.  But, a
-future change might mistakenly make a real problematic related to the
-race.  Simplify the case by removing the race.  This also makes the
-damon_ctx internal cleanup flows of kdamond_fn() consistent and clean.
-All damon_ctx dependent things are ensured to be cleaned once the
-API caller shows kdamond_fn is reset.
+damos_walk() request is canceled after damon_ctx->kdamond is reset.
+This can make weird situations where damon_is_running() returns false
+but the DAMON context has the damos_walk() request linked.  There was
+similar situation for damon_call() requests handling, which was able to
+cause use-after-free bug.  Because damos_walk() is always synchronously
+handled, there is no such problematic race case.  But, keeping it as is
+could stem another complicated race condition bugs in future.  Avoid the
+racy situation by cancelling the requests before the ->kdamond reset.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -23,11 +18,11 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 1 insertion(+), 2 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index f25e4a951aff..27abdb2c5aaa 100644
+index 8b81726d77d9..e6f44827c627 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2858,14 +2858,13 @@ static int kdamond_fn(void *data)
- 		ctx->ops.cleanup(ctx);
+@@ -2856,14 +2856,13 @@ static int kdamond_fn(void *data)
+ 
  	kfree(ctx->regions_score_histogram);
  	kdamond_call(ctx, true);
 +	damos_walk_cancel(ctx);

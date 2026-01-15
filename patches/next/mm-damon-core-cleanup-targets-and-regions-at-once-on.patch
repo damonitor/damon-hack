@@ -1,18 +1,13 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Mon, 29 Dec 2025 21:35:01 -0800
-Subject: [PATCH] mm/damon/core: cleanup targets right before
- damon_ctx->kdamond reset
+Subject: [PATCH] mm/damon/core: cleanup targets and regions at once on kdamond
+ termination
 
-In the past, DAMON sysfs was putting target pids before the given DAMON
-context terminates, using the damon_callback->before_terminate callback.
-For the reason, only damon_region objects were cleaned up right after
-kdamond_fn()'s main loop.  Commit ff01aba6e458 ("mm/damon/vaddr: put pid
-in cleanup_target()") made it no more necessary, by embedding the pid
-cleanup inside damon_target deallocation.  Further, commit 3a69f1635769
-("mm/damon/core: destroy targets when kdamond_fn() finish") made the
-targets deallocated just before kdamond_fn() returns.
-
-Cleanup both region and targets at once, right after the main loop.
+When kdamond terminates, it destroys the regions of the context first,
+and destroys targets of the context just before the kdamond main
+function returns.  Doing the cleanups separatively twice in different
+places is only complicating the code.  Destroy targets and regions at
+once.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -20,7 +15,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 1 insertion(+), 7 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 81b998d32074..f25e4a951aff 100644
+index aff77091d187..8b81726d77d9 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2748,8 +2748,6 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
@@ -42,9 +37,9 @@ index 81b998d32074..f25e4a951aff 100644
 -	}
 +	damon_destroy_targets(ctx);
  
- 	if (ctx->ops.cleanup)
- 		ctx->ops.cleanup(ctx);
-@@ -2877,7 +2872,6 @@ static int kdamond_fn(void *data)
+ 	kfree(ctx->regions_score_histogram);
+ 	kdamond_call(ctx, true);
+@@ -2875,7 +2870,6 @@ static int kdamond_fn(void *data)
  		running_exclusive_ctxs = false;
  	mutex_unlock(&damon_lock);
  

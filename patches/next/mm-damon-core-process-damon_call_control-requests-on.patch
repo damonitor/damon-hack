@@ -1,20 +1,24 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 1 Jan 2026 14:53:30 -0800
-Subject: [PATCH] mm/damon/core: make kdamond handles damon_call_controls on
- local list
+Subject: [PATCH] mm/damon/core: process damon_call_control requests on a local
+ list
 
 kdamond_call() handles damon_call() requests on the ->call_controls list
 of damon_ctx, which is shared with damon_call() callers.  To protect the
 list from the concurrent access while letting the callback function free
-from the call_controls_lock, the function handles the damon_call_control
-objects one by one, while acquiring and releasing the call_controls_lock
-for the each one.
+from the call_controls_lock, the function does complicated locking.  In
+detail, for each damon_call_control object on the list, the function
+removes the control object object from the list under locking, invoke
+the callback of the control object without locking, and then put back
+the control object back to the list under locking if it is the repeat
+mode control object.  It is complicated, and easy to contend with other
+threads as the number of concurrent callback requests increase.
 
-It it unnecessarily making the locking sequence complicated.  Simplify
-the locking sequence by moving entire damon_call_control objects from
-the shared list to a local list at once under the lock protection,
-handling those without locking, and adding back necessary controls to
-the shared list again, at once.
+Simplify the locking sequence by moving all damon_call_control objects
+from the shared list to a local list at once under the signle lock
+protection, processing the callback requests without locking, and adding
+back repeat mode controls to the shared list again at once again, again
+under the single lock protection.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -22,7 +26,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 21 insertions(+), 38 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 046a16731f69..c91d5a8aca6a 100644
+index e6f44827c627..ae5b772ceffb 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2649,48 +2649,31 @@ static void kdamond_usleep(unsigned long usecs)
