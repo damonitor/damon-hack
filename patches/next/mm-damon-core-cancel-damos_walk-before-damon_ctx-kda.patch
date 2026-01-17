@@ -5,12 +5,19 @@ Subject: [PATCH] mm/damon/core: cancel damos_walk() before damon_ctx->kdamond
 
 damos_walk() request is canceled after damon_ctx->kdamond is reset.
 This can make weird situations where damon_is_running() returns false
-but the DAMON context has the damos_walk() request linked.  There was
-similar situation for damon_call() requests handling, which was able to
-cause use-after-free bug.  Because damos_walk() is always synchronously
-handled, there is no such problematic race case.  But, keeping it as is
-could stem another complicated race condition bugs in future.  Avoid the
-racy situation by cancelling the requests before the ->kdamond reset.
+but the DAMON context has the damos_walk() request linked.  There was a
+similar situation for damon_call() requests handling [1], which _was_
+able to cause a racy use-after-free bug.  Unlike the case of
+damon_call(), because damos_walk() is always synchronously handled and
+allows only single request at time, there is no such problematic race
+cases.  But, keeping it as is could stem another subtle race condition
+bug in future.
+
+Avoid that by cancelling the requests before the ->kdamond reset.  Note
+that this change also makes all damon_ctx dependent resource cleanups
+consistently done before the damon_ctx->kdamond reset.
+
+[1] https://lore.kernel.org/20251230014532.47563-1-sj@kernel.org
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -18,7 +25,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 1 insertion(+), 2 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 8b81726d77d9..e6f44827c627 100644
+index 0c8ac11a49f9..0bed937b1dce 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2856,14 +2856,13 @@ static int kdamond_fn(void *data)

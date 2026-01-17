@@ -4,10 +4,29 @@ Subject: [PATCH] mm/damon/core: cleanup targets and regions at once on kdamond
  termination
 
 When kdamond terminates, it destroys the regions of the context first,
-and destroys targets of the context just before the kdamond main
-function returns.  Doing the cleanups separatively twice in different
-places is only complicating the code.  Destroy targets and regions at
-once.
+and the targets of the context just before the kdamond main function
+returns.  Because regions are linked inside targets, doing them
+separately is only inefficient and looks weird.  A more serious problem
+is that the cleanup of the targets is done after damon_ctx->kdamond
+reset, which is the event that lets DAMON API callers know the kdamond
+is no longer actively running.  That is, some DAMON targets could still
+exist while kdamond is not running.  There are no real problems from
+this, but this implicit fact could cause subtle racy issues in future.
+Destroy targets and regions at one.
+
+Adding contexts on how the code has evolved in the way.  Doing only
+regions destruction was because putting pids of the targets were done on
+DAMON API callers.  Commit 7114bc5e01cf ("mm/damon/core: add
+cleanup_target() ops callback") moved the role to be done via operations
+set on each target destruction.  Hence it removed the reason to do only
+regions cleanup.  Commit 3a69f1635769 ("mm/damon/core: destroy targets
+when kdamond_fn() finish") therefore further destructed targets on
+kdamond termination time.  It was still separated from regions
+destruction because damon_operations->cleanup() may do additional
+targets cleanup.  Placing the targets destruction after
+damon_ctx->kdamond reset was just an unnecessary decision of the commit.
+The previous commit removed damon_operations->cleanup(), so there is no
+more reason to do destructions of regions and targets separately.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -15,7 +34,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 1 insertion(+), 7 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index aff77091d187..8b81726d77d9 100644
+index 53514cb712cf..0c8ac11a49f9 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2748,8 +2748,6 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)

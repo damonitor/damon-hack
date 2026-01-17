@@ -5,20 +5,24 @@ Subject: [PATCH] mm/damon/core: process damon_call_control requests on a local
 
 kdamond_call() handles damon_call() requests on the ->call_controls list
 of damon_ctx, which is shared with damon_call() callers.  To protect the
-list from the concurrent access while letting the callback function free
-from the call_controls_lock, the function does complicated locking.  In
-detail, for each damon_call_control object on the list, the function
-removes the control object object from the list under locking, invoke
-the callback of the control object without locking, and then put back
-the control object back to the list under locking if it is the repeat
-mode control object.  It is complicated, and easy to contend with other
-threads as the number of concurrent callback requests increase.
+list from concurrent accesses while letting the callback function
+independent of the call_controls_lock, the function does complicated
+locking operations.  For each damon_call_control object on the list, the
+function removes the control object object from the list under locking,
+invoke the callback of the control object without locking, and then puts
+the control object back to the list if needed, under locking.  It is
+complicated, and can contend the locks more frequently with other DAMON
+API caller threads as the number of concurrent callback requests
+increases.  Contention overhead is not a big deal, but the increased
+race opportunity can make headaches.
 
 Simplify the locking sequence by moving all damon_call_control objects
-from the shared list to a local list at once under the signle lock
+from the shared list to a local list at once under the single lock
 protection, processing the callback requests without locking, and adding
 back repeat mode controls to the shared list again at once again, again
-under the single lock protection.
+under the single lock protection.  This change makes the number of
+locking in kdamond_call() be always two, regardless of the number of the
+queued requests.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -26,7 +30,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 21 insertions(+), 38 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index e6f44827c627..ae5b772ceffb 100644
+index 0bed937b1dce..54a7ea98340a 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2649,48 +2649,31 @@ static void kdamond_usleep(unsigned long usecs)
