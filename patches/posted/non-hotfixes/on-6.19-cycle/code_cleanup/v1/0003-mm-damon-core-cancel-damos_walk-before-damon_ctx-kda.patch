@@ -1,0 +1,54 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 1 Jan 2026 14:00:16 -0800
+Subject: [PATCH 3/8] mm/damon/core: cancel damos_walk() before
+         damon_ctx->kdamond reset
+
+damos_walk() request is canceled after damon_ctx->kdamond is reset.
+This can make weird situations where damon_is_running() returns false
+but the DAMON context has the damos_walk() request linked.  There was a
+similar situation for damon_call() requests handling [1], which _was_
+able to cause a racy use-after-free bug.  Unlike the case of
+damon_call(), because damos_walk() is always synchronously handled and
+allows only single request at time, there is no such problematic race
+cases.  But, keeping it as is could stem another subtle race condition
+bug in future.
+
+Avoid that by cancelling the requests before the ->kdamond reset.  Note
+that this change also makes all damon_ctx dependent resource cleanups
+consistently done before the damon_ctx->kdamond reset.
+
+[1] https://lore.kernel.org/20251230014532.47563-1-sj@kernel.org
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0c8ac11a49f9..0bed937b1dce 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2856,14 +2856,13 @@ static int kdamond_fn(void *data)
+ 
+ 	kfree(ctx->regions_score_histogram);
+ 	kdamond_call(ctx, true);
++	damos_walk_cancel(ctx);
+ 
+ 	pr_debug("kdamond (%d) finishes\n", current->pid);
+ 	mutex_lock(&ctx->kdamond_lock);
+ 	ctx->kdamond = NULL;
+ 	mutex_unlock(&ctx->kdamond_lock);
+ 
+-	damos_walk_cancel(ctx);
+-
+ 	mutex_lock(&damon_lock);
+ 	nr_running_ctxs--;
+ 	if (!nr_running_ctxs && running_exclusive_ctxs)
+-- 
+2.47.3
