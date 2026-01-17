@@ -38,6 +38,10 @@ mkdir -p "$dest_dir"
 
 lbx_path=$(realpath "$bindir/../../lazybox")
 patches_queue_py="$lbx_path/git_helpers/patches_queue.py"
+if [ ! -f "$patches_queue_py" ]
+then
+	patches_queue_py="$lbx_path/version_control/patches_queue.py"
+fi
 if [ ! -x "$patches_queue_py" ]
 then
 	echo "$patches_queue_py not found"
