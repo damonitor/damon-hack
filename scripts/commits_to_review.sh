@@ -1,34 +1,15 @@
 #!/bin/bash
 
-if [ $# -ne 1 ]
+bindir=$(dirname "$0")
+review_stat_py="${bindir}/../../lazybox/linux_hack/review_stat.py"
+if [ ! -f "$review_stat_py" ]
 then
-	echo "Usage: $0 <commits>"
+	echo "${review_stat_py} not found"
 	exit 1
 fi
 
-commits=$1
+sj="SeongJae Park <sj@kernel.org>"
 
-review_missed=""
-
-for commit in $(git log --reverse "$commits" --pretty=%H)
-do
-	commit_content=$(git show "$commit")
-	if ! echo "$commit_content" | grep damon --quiet
-	then
-		continue
-	fi
-	if echo "$commit_content" | grep "Signed-off-by: SeongJae Park" --quiet
-	then
-		continue
-	fi
-	if ! git show "$commit" | grep "Reviewed-by: SeongJae Park" --quiet
-	then
-		review_missed+="$commit "
-	fi
-done
-
-for commit in $review_missed
-do
-	desc=$(git log -1 "$commit" --pretty="%h (\"%s\")")
-	echo "review missed for $desc"
-done
+"$review_stat_py" --commits sj.korg/mm-stable..sj.korg/mm-new \
+	--subsystem DAMON --not_signed_off_by "$sj" --not_reviewed_by "$sj" \
+	--not_acked_by "$sj"
