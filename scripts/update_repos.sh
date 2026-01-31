@@ -27,6 +27,10 @@ echo "masim"
 git -C "${repos_dir}/masim" remote update
 git -C "${repos_dir}/masim" rebase gh.upstream/master
 
+echo "lazybox"
+git -C "${repos_dir}/lazybox" remote update
+git -C "${repos_dir}/lazybox" rebase origin/master
+
 echo "linux"
 # don't rebase linux as it might be complicated, and the tree can be reproduced
 # from patches.
