@@ -19,6 +19,6 @@ fi
 	"${summary_dir}/summary"
 
 git -C "$bindir" add "$summary_dir"
-git -C "$bindir" commit -s -m "patches/m/summary: update"
+git -C "$bindir" commit -s -m "patches/mm/summary: update"
 
 This is generated via $(basename "$0")"
