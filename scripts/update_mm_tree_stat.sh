@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# TODO
 # - save all mm.git commits after master as patches
 #   - for making DAMON tree always reproducible
+# TODO
 # - list of full patches
 # - list patches that not authored by SJ but not reviewed by SJ.
 
@@ -14,17 +14,22 @@ linux_dir=$(realpath "${bindir}/../../linux")
 mm_tree_summary=$(realpath \
 	"${bindir}/../../lazybox/linux_hack/mm_tree_summary.py")
 
-summary_dir=${damon_hack_dir}/patches/mm/summary
-if [ ! -d "$summary_dir" ]
-then
-	mkdir -p "$summary_dir"
-fi
+mm_patches_dir=${damon_hack_dir}/patches/mm
+summary_dir=${mm_patches_dir}/summary
+
+git -C "$bindir" rm -r "$mm_patches_dir"
+
+mkdir -p "$summary_dir"
 
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--export_info "${summary_dir}/commits_info.json" \
+	--save_patches "$mm_patches_dir"
+
+"$mm_tree_summary" --linux_dir "$linux_dir" \
+	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON > "${summary_dir}/summary"
 
-git -C "$bindir" add "$summary_dir"
-git -C "$bindir" commit -s -m "patches/mm/summary: update"
+git -C "$bindir" add "$mm_patches_dir"
+git -C "$bindir" commit -s -m "patches/mm: update"
 
 This is generated via $(basename "$0")"
