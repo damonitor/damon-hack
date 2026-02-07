@@ -20,19 +20,23 @@ git -C "$bindir" rm -r "$mm_patches_dir"
 
 mkdir -p "$summary_dir"
 
+# save mm patches for reassembling damon/next tree without mm.git for a case.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--export_info "${summary_dir}/commits_info.json" \
 	--save_patches "$mm_patches_dir" > /dev/null
 
+# save brief summary of review status.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON > "${summary_dir}/summary"
 
+# save the summary with full patches list.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON \
 	--full_commits_list > "${summary_dir}/commits_list"
 
+# save the summary for patches not authored by SJ but not reviewed by SJ.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter reject not subsystem DAMON \
