@@ -18,6 +18,9 @@ mm_tree_summary=$(realpath \
 mm_patches_dir=${damon_hack_dir}/patches/mm
 summary_dir=${mm_patches_dir}/summary
 
+old_info=$(mktemp old_mm_info_XXXXX)
+cp "${summary_dir}/commits_info.json" "$old_info"
+
 git -C "$bindir" rm -r "$mm_patches_dir"
 
 mkdir -p "$summary_dir"
@@ -46,10 +49,25 @@ mkdir -p "$summary_dir"
 	--filter allow not reviewer "SeongJae Park <sj@kernel.org>" \
 	--full_commits_list > "${summary_dir}/sj_to_review"
 
+# save diff of the patches.
+"$mm_tree_summary" --linux_dir "$linux_dir" \
+	--import_info "${summary_dir}/commits_info.json" \
+	--filter allow subsystem DAMON \
+	--diff_old "$old_info" --list_changed_commits \
+	> "${summary_dir}/changes_from_last_update"
+
+rm "$old_info"
+
 git -C "$bindir" add "$mm_patches_dir"
 git -C "$bindir" commit -s -m "patches/mm: update
 
 This is generated via $(basename "$0")"
+
+echo
+echo "Changes from last update"
+echo "========================"
+echo
+cat "${summary_dir}/changes_from_last_update"
 
 echo
 echo "DAMON patches review stat"
