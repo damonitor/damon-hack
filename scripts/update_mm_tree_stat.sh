@@ -3,7 +3,6 @@
 # - save all mm.git commits after master as patches
 #   - for making DAMON tree always reproducible
 # - list of full patches
-# TODO
 # - list patches that not authored by SJ but not reviewed by SJ.
 
 set -e
@@ -33,6 +32,13 @@ mkdir -p "$summary_dir"
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON \
 	--full_commits_list > "${summary_dir}/commits_list"
+
+"$mm_tree_summary" --linux_dir "$linux_dir" \
+	--import_info "${summary_dir}/commits_info.json" \
+	--filter reject not subsystem DAMON \
+	--filter reject author "SeongJae Park <sj@kernel.org>" \
+	--filter allow not reviewer "SeongJae Park <sj@kernel.org>" \
+	--full_commits_list > "${summary_dir}/sj_to_review"
 
 git -C "$bindir" add "$mm_patches_dir"
 git -C "$bindir" commit -s -m "patches/mm: update
