@@ -4,6 +4,8 @@
 #   - for making DAMON tree always reproducible
 # - list of full patches
 # - list patches that not authored by SJ but not reviewed by SJ.
+# TODO
+# - Save diff of summary
 
 set -e
 
