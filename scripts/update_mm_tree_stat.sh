@@ -20,9 +20,9 @@ then
 	mkdir -p "$summary_dir"
 fi
 
-"$mm_tree_summary" --linux_dir "$linux_dir" --subsystem DAMON \
-	--export_info "${summary_dir}/commits_info.json" > \
-	"${summary_dir}/summary"
+"$mm_tree_summary" --linux_dir "$linux_dir" \
+	--export_info "${summary_dir}/commits_info.json" \
+	--filter allow subsystem DAMON > "${summary_dir}/summary"
 
 git -C "$bindir" add "$summary_dir"
 git -C "$bindir" commit -s -m "patches/mm/summary: update"
