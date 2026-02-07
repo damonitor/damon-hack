@@ -2,8 +2,8 @@
 
 # - save all mm.git commits after master as patches
 #   - for making DAMON tree always reproducible
-# TODO
 # - list of full patches
+# TODO
 # - list patches that not authored by SJ but not reviewed by SJ.
 
 set -e
@@ -28,6 +28,11 @@ mkdir -p "$summary_dir"
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON > "${summary_dir}/summary"
+
+"$mm_tree_summary" --linux_dir "$linux_dir" \
+	--import_info "${summary_dir}/commits_info.json" \
+	--filter allow subsystem DAMON \
+	--full_commits_list > "${summary_dir}/commits_list"
 
 git -C "$bindir" add "$mm_patches_dir"
 git -C "$bindir" commit -s -m "patches/mm: update
