@@ -22,7 +22,7 @@ mkdir -p "$summary_dir"
 
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--export_info "${summary_dir}/commits_info.json" \
-	--save_patches "$mm_patches_dir"
+	--save_patches "$mm_patches_dir" > /dev/null
 
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
