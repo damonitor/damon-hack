@@ -30,6 +30,6 @@ mkdir -p "$summary_dir"
 	--filter allow subsystem DAMON > "${summary_dir}/summary"
 
 git -C "$bindir" add "$mm_patches_dir"
-git -C "$bindir" commit -s -m "patches/mm: update"
+git -C "$bindir" commit -s -m "patches/mm: update
 
 This is generated via $(basename "$0")"
