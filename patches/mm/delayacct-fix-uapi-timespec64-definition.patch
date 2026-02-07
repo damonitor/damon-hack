@@ -1,0 +1,105 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Mon, 2 Feb 2026 10:59:00 +0100
+Subject: [PATCH] delayacct: fix uapi timespec64 definition
+
+The custom definition of 'struct timespec64' is incompatible with both the
+kernel's internal definition and the glibc type, at least on big-endian
+targets that have the tv_nsec field in a different place, and the
+definition clashes with any userspace that also defines a timespec64
+structure.
+
+Running the header check with -Wpadding enabled produces this output that
+warns about the incorrect padding:
+
+usr/include/linux/taskstats.h:25:1: error: padding struct size to alignment boundary with 4 bytes [-Werror=padded]
+
+Remove the hack and instead use the regular __kernel_timespec type that is
+meant to be used in uapi definitions.
+
+Link: https://lkml.kernel.org/r/20260202095906.1344100-1-arnd@kernel.org
+Fixes: 29b63f6eff0e ("delayacct: add timestamp of delay max")
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Cc: Fan Yu <fan.yu9@zte.com.cn>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Yang Yang <yang.yang29@zte.com.cn>
+Cc: Balbir Singh <bsingharora@gmail.com>
+Cc: Jiang Kun <jiang.kun2@zte.com.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/uapi/linux/taskstats.h | 27 +++++++++------------------
+ kernel/delayacct.c             |  6 ++++--
+ 2 files changed, 13 insertions(+), 20 deletions(-)
+
+diff --git a/include/uapi/linux/taskstats.h b/include/uapi/linux/taskstats.h
+index 1b31e8e14d2fa..3ae25f3ce0672 100644
+--- a/include/uapi/linux/taskstats.h
++++ b/include/uapi/linux/taskstats.h
+@@ -18,16 +18,7 @@
+ #define _LINUX_TASKSTATS_H
+ 
+ #include <linux/types.h>
+-#ifdef __KERNEL__
+-#include <linux/time64.h>
+-#else
+-#ifndef _LINUX_TIME64_H
+-struct timespec64 {
+-	__s64   tv_sec;         /* seconds */
+-	long    tv_nsec;        /* nanoseconds */
+-};
+-#endif
+-#endif
++#include <linux/time_types.h>
+ 
+ /* Format for per-task data returned to userland when
+  *	- a task exits
+@@ -242,14 +233,14 @@ struct taskstats {
+ 	__u64	irq_delay_min;
+ 
+ 	/*v17: delay max timestamp record*/
+-	struct timespec64 cpu_delay_max_ts;
+-	struct timespec64 blkio_delay_max_ts;
+-	struct timespec64 swapin_delay_max_ts;
+-	struct timespec64 freepages_delay_max_ts;
+-	struct timespec64 thrashing_delay_max_ts;
+-	struct timespec64 compact_delay_max_ts;
+-	struct timespec64 wpcopy_delay_max_ts;
+-	struct timespec64 irq_delay_max_ts;
++	struct __kernel_timespec cpu_delay_max_ts;
++	struct __kernel_timespec blkio_delay_max_ts;
++	struct __kernel_timespec swapin_delay_max_ts;
++	struct __kernel_timespec freepages_delay_max_ts;
++	struct __kernel_timespec thrashing_delay_max_ts;
++	struct __kernel_timespec compact_delay_max_ts;
++	struct __kernel_timespec wpcopy_delay_max_ts;
++	struct __kernel_timespec irq_delay_max_ts;
+ };
+ 
+ 
+diff --git a/kernel/delayacct.c b/kernel/delayacct.c
+index d58ffc63bcba0..2e55c493c98bf 100644
+--- a/kernel/delayacct.c
++++ b/kernel/delayacct.c
+@@ -18,7 +18,8 @@
+ do { \
+ 	d->type##_delay_max = tsk->delays->type##_delay_max; \
+ 	d->type##_delay_min = tsk->delays->type##_delay_min; \
+-	d->type##_delay_max_ts = tsk->delays->type##_delay_max_ts; \
++	d->type##_delay_max_ts.tv_sec = tsk->delays->type##_delay_max_ts.tv_sec; \
++	d->type##_delay_max_ts.tv_nsec = tsk->delays->type##_delay_max_ts.tv_nsec; \
+ 	tmp = d->type##_delay_total + tsk->delays->type##_delay; \
+ 	d->type##_delay_total = (tmp < d->type##_delay_total) ? 0 : tmp; \
+ 	d->type##_count += tsk->delays->type##_count; \
+@@ -175,7 +176,8 @@ int delayacct_add_tsk(struct taskstats *d, struct task_struct *tsk)
+ 
+ 	d->cpu_delay_max = tsk->sched_info.max_run_delay;
+ 	d->cpu_delay_min = tsk->sched_info.min_run_delay;
+-	d->cpu_delay_max_ts = tsk->sched_info.max_run_delay_ts;
++	d->cpu_delay_max_ts.tv_sec = tsk->sched_info.max_run_delay_ts.tv_sec;
++	d->cpu_delay_max_ts.tv_nsec = tsk->sched_info.max_run_delay_ts.tv_nsec;
+ 	tmp = (s64)d->cpu_delay_total + t2;
+ 	d->cpu_delay_total = (tmp < (s64)d->cpu_delay_total) ? 0 : tmp;
+ 	tmp = (s64)d->cpu_run_virtual_total + t3;
+-- 
+2.47.3
+

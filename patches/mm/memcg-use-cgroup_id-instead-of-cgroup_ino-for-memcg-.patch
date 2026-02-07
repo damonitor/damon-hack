@@ -1,0 +1,121 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 25 Dec 2025 15:21:12 -0800
+Subject: [PATCH] memcg: use cgroup_id() instead of cgroup_ino() for memcg ID
+
+Switch mem_cgroup_ino() from using cgroup_ino() to cgroup_id().  The
+cgroup_ino() returns the kernfs inode number while cgroup_id() returns the
+kernfs node ID.  For 64-bit systems, they are the same.  Also
+cgroup_get_from_id() expects 64-bit node ID which is called by
+mem_cgroup_get_from_ino().
+
+Change the type from unsigned long to u64 to match cgroup_id()'s return
+type, and update the format specifiers accordingly.
+
+Note that the names mem_cgroup_ino() and mem_cgroup_get_from_ino() are now
+misnomers since they deal with cgroup IDs rather than inode numbers.  A
+follow-up patch will rename them.
+
+Link: https://lkml.kernel.org/r/20251225232116.294540-5-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 10 +++++-----
+ mm/memcontrol.c            |  2 +-
+ mm/shrinker_debug.c        |  7 ++++---
+ 3 files changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 77f32be26ea8a..c823150ec2884 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -836,12 +836,12 @@ static inline unsigned short mem_cgroup_id(struct mem_cgroup *memcg)
+ }
+ struct mem_cgroup *mem_cgroup_from_id(unsigned short id);
+ 
+-static inline unsigned long mem_cgroup_ino(struct mem_cgroup *memcg)
++static inline u64 mem_cgroup_ino(struct mem_cgroup *memcg)
+ {
+-	return memcg ? cgroup_ino(memcg->css.cgroup) : 0;
++	return memcg ? cgroup_id(memcg->css.cgroup) : 0;
+ }
+ 
+-struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino);
++struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino);
+ 
+ static inline struct mem_cgroup *mem_cgroup_from_seq(struct seq_file *m)
+ {
+@@ -1306,12 +1306,12 @@ static inline struct mem_cgroup *mem_cgroup_from_private_id(unsigned short id)
+ 	return NULL;
+ }
+ 
+-static inline unsigned long mem_cgroup_ino(struct mem_cgroup *memcg)
++static inline u64 mem_cgroup_ino(struct mem_cgroup *memcg)
+ {
+ 	return 0;
+ }
+ 
+-static inline struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
++static inline struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino)
+ {
+ 	return NULL;
+ }
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 92beb74482fae..1ff2f9bd820c4 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3620,7 +3620,7 @@ struct mem_cgroup *mem_cgroup_from_id(unsigned short id)
+ 	return mem_cgroup_from_private_id(id);
+ }
+ 
+-struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
++struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino)
+ {
+ 	struct cgroup *cgrp;
+ 	struct cgroup_subsys_state *css;
+diff --git a/mm/shrinker_debug.c b/mm/shrinker_debug.c
+index 8aaeb8f5c3af0..7ef16a0b2959d 100644
+--- a/mm/shrinker_debug.c
++++ b/mm/shrinker_debug.c
+@@ -70,7 +70,7 @@ static int shrinker_debugfs_count_show(struct seq_file *m, void *v)
+ 					       memcg_aware ? memcg : NULL,
+ 					       count_per_node);
+ 		if (total) {
+-			seq_printf(m, "%lu", mem_cgroup_ino(memcg));
++			seq_printf(m, "%llu", mem_cgroup_ino(memcg));
+ 			for_each_node(nid)
+ 				seq_printf(m, " %lu", count_per_node[nid]);
+ 			seq_putc(m, '\n');
+@@ -106,7 +106,8 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 					   size_t size, loff_t *pos)
+ {
+ 	struct shrinker *shrinker = file->private_data;
+-	unsigned long nr_to_scan = 0, ino, read_len;
++	unsigned long nr_to_scan = 0, read_len;
++	u64 ino;
+ 	struct shrink_control sc = {
+ 		.gfp_mask = GFP_KERNEL,
+ 	};
+@@ -119,7 +120,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 		return -EFAULT;
+ 	kbuf[read_len] = '\0';
+ 
+-	if (sscanf(kbuf, "%lu %d %lu", &ino, &nid, &nr_to_scan) != 3)
++	if (sscanf(kbuf, "%llu %d %lu", &ino, &nid, &nr_to_scan) != 3)
+ 		return -EINVAL;
+ 
+ 	if (nid < 0 || nid >= nr_node_ids)
+-- 
+2.47.3
+

@@ -1,0 +1,187 @@
+From: Rohan McLure <rmclure@linux.ibm.com>
+Date: Fri, 19 Dec 2025 04:09:36 +1100
+Subject: [PATCH] mm/page_table_check: reinstate address parameter in
+ [__]page_table_check_pmd[s]_set()
+
+This reverts commit a3b837130b58 ("mm/page_table_check: remove unused
+parameter in [__]page_table_check_pmd_set").
+
+Reinstate previously unused parameters for the purpose of supporting
+powerpc platforms, as many do not encode user/kernel ownership of the
+page in the pte, but instead in the address of the access.
+
+Apply this to __page_table_check_pmds_set(), page_table_check_pmd_set(), and
+the page_table_check_pmd_set() wrapper macro.
+
+[ajd@linux.ibm.com: rebase on arm64 + riscv changes, update commit message]
+Link: https://lkml.kernel.org/r/20251219-pgtable_check_v18rebase-v18-4-755bc151a50b@linux.ibm.com
+Signed-off-by: Rohan McLure <rmclure@linux.ibm.com>
+Signed-off-by: Andrew Donnellan <ajd@linux.ibm.com>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Acked-by: Ingo Molnar <mingo@kernel.org>  # x86
+Acked-by: Alexandre Ghiti <alexghiti@rivosinc.com> # riscv
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Guo Weikang <guoweikang.kernel@gmail.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Miehlbradt <nicholas@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Paul Mackerras <paulus@ozlabs.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Thomas Huth <thuth@redhat.com>
+Cc: "Vishal Moola (Oracle)" <vishal.moola@gmail.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h |  5 +++--
+ arch/riscv/include/asm/pgtable.h |  4 ++--
+ arch/x86/include/asm/pgtable.h   |  4 ++--
+ include/linux/page_table_check.h | 12 ++++++------
+ mm/page_table_check.c            |  4 ++--
+ 5 files changed, 15 insertions(+), 14 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index 87ed9b1c011e1..4b580d6246f5a 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -684,7 +684,8 @@ static inline void __set_ptes_anysz(struct mm_struct *mm, unsigned long addr,
+ 		page_table_check_ptes_set(mm, ptep, pte, nr);
+ 		break;
+ 	case PMD_SIZE:
+-		page_table_check_pmds_set(mm, (pmd_t *)ptep, pte_pmd(pte), nr);
++		page_table_check_pmds_set(mm, addr, (pmd_t *)ptep,
++					  pte_pmd(pte), nr);
+ 		break;
+ #ifndef __PAGETABLE_PMD_FOLDED
+ 	case PUD_SIZE:
+@@ -1489,7 +1490,7 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
+ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
+ 		unsigned long address, pmd_t *pmdp, pmd_t pmd)
+ {
+-	page_table_check_pmd_set(vma->vm_mm, pmdp, pmd);
++	page_table_check_pmd_set(vma->vm_mm, address, pmdp, pmd);
+ 	return __pmd(xchg_relaxed(&pmd_val(*pmdp), pmd_val(pmd)));
+ }
+ #endif
+diff --git a/arch/riscv/include/asm/pgtable.h b/arch/riscv/include/asm/pgtable.h
+index 07705adee1281..82b1c79bc2dd5 100644
+--- a/arch/riscv/include/asm/pgtable.h
++++ b/arch/riscv/include/asm/pgtable.h
+@@ -946,7 +946,7 @@ static inline pmd_t pmd_swp_clear_soft_dirty(pmd_t pmd)
+ static inline void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+ 				pmd_t *pmdp, pmd_t pmd)
+ {
+-	page_table_check_pmd_set(mm, pmdp, pmd);
++	page_table_check_pmd_set(mm, addr, pmdp, pmd);
+ 	return __set_pte_at(mm, (pte_t *)pmdp, pmd_pte(pmd));
+ }
+ 
+@@ -1023,7 +1023,7 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
+ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
+ 				unsigned long address, pmd_t *pmdp, pmd_t pmd)
+ {
+-	page_table_check_pmd_set(vma->vm_mm, pmdp, pmd);
++	page_table_check_pmd_set(vma->vm_mm, address, pmdp, pmd);
+ 	return __pmd(atomic_long_xchg((atomic_long_t *)pmdp, pmd_val(pmd)));
+ }
+ 
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index 2b540c563d8dd..7fd876f8d828e 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1214,7 +1214,7 @@ static inline pud_t native_local_pudp_get_and_clear(pud_t *pudp)
+ static inline void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+ 			      pmd_t *pmdp, pmd_t pmd)
+ {
+-	page_table_check_pmd_set(mm, pmdp, pmd);
++	page_table_check_pmd_set(mm, addr, pmdp, pmd);
+ 	set_pmd(pmdp, pmd);
+ }
+ 
+@@ -1357,7 +1357,7 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
+ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
+ 		unsigned long address, pmd_t *pmdp, pmd_t pmd)
+ {
+-	page_table_check_pmd_set(vma->vm_mm, pmdp, pmd);
++	page_table_check_pmd_set(vma->vm_mm, address, pmdp, pmd);
+ 	if (IS_ENABLED(CONFIG_SMP)) {
+ 		return xchg(pmdp, pmd);
+ 	} else {
+diff --git a/include/linux/page_table_check.h b/include/linux/page_table_check.h
+index 0bf18b884a126..cf7c28d8d468c 100644
+--- a/include/linux/page_table_check.h
++++ b/include/linux/page_table_check.h
+@@ -19,8 +19,8 @@ void __page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd);
+ void __page_table_check_pud_clear(struct mm_struct *mm, pud_t pud);
+ void __page_table_check_ptes_set(struct mm_struct *mm, pte_t *ptep, pte_t pte,
+ 		unsigned int nr);
+-void __page_table_check_pmds_set(struct mm_struct *mm, pmd_t *pmdp, pmd_t pmd,
+-		unsigned int nr);
++void __page_table_check_pmds_set(struct mm_struct *mm, unsigned long addr,
++		pmd_t *pmdp, pmd_t pmd, unsigned int nr);
+ void __page_table_check_puds_set(struct mm_struct *mm, unsigned long addr,
+ 		pud_t *pudp, pud_t pud, unsigned int nr);
+ void __page_table_check_pte_clear_range(struct mm_struct *mm,
+@@ -77,12 +77,12 @@ static inline void page_table_check_ptes_set(struct mm_struct *mm,
+ }
+ 
+ static inline void page_table_check_pmds_set(struct mm_struct *mm,
+-		pmd_t *pmdp, pmd_t pmd, unsigned int nr)
++		unsigned long addr, pmd_t *pmdp, pmd_t pmd, unsigned int nr)
+ {
+ 	if (static_branch_likely(&page_table_check_disabled))
+ 		return;
+ 
+-	__page_table_check_pmds_set(mm, pmdp, pmd, nr);
++	__page_table_check_pmds_set(mm, addr, pmdp, pmd, nr);
+ }
+ 
+ static inline void page_table_check_puds_set(struct mm_struct *mm,
+@@ -132,7 +132,7 @@ static inline void page_table_check_ptes_set(struct mm_struct *mm,
+ }
+ 
+ static inline void page_table_check_pmds_set(struct mm_struct *mm,
+-		pmd_t *pmdp, pmd_t pmd, unsigned int nr)
++		unsigned long addr, pmd_t *pmdp, pmd_t pmd, unsigned int nr)
+ {
+ }
+ 
+@@ -149,7 +149,7 @@ static inline void page_table_check_pte_clear_range(struct mm_struct *mm,
+ 
+ #endif /* CONFIG_PAGE_TABLE_CHECK */
+ 
+-#define page_table_check_pmd_set(mm, pmdp, pmd)	page_table_check_pmds_set(mm, pmdp, pmd, 1)
++#define page_table_check_pmd_set(mm, addr, pmdp, pmd)	page_table_check_pmds_set(mm, addr, pmdp, pmd, 1)
+ #define page_table_check_pud_set(mm, addr, pudp, pud)	page_table_check_puds_set(mm, addr, pudp, pud, 1)
+ 
+ #endif /* __LINUX_PAGE_TABLE_CHECK_H */
+diff --git a/mm/page_table_check.c b/mm/page_table_check.c
+index a48f835216a1f..86dc4e4d1dad1 100644
+--- a/mm/page_table_check.c
++++ b/mm/page_table_check.c
+@@ -225,8 +225,8 @@ static inline void page_table_check_pmd_flags(pmd_t pmd)
+ 	}
+ }
+ 
+-void __page_table_check_pmds_set(struct mm_struct *mm, pmd_t *pmdp, pmd_t pmd,
+-		unsigned int nr)
++void __page_table_check_pmds_set(struct mm_struct *mm, unsigned long addr,
++		pmd_t *pmdp, pmd_t pmd, unsigned int nr)
+ {
+ 	unsigned long stride = PMD_SIZE >> PAGE_SHIFT;
+ 	unsigned int i;
+-- 
+2.47.3
+

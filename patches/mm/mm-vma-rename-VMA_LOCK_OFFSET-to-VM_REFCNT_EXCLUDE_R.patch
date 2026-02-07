@@ -1,0 +1,227 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Fri, 23 Jan 2026 20:12:11 +0000
+Subject: [PATCH] mm/vma: rename VMA_LOCK_OFFSET to
+ VM_REFCNT_EXCLUDE_READERS_FLAG
+
+Patch series "mm: add and use vma_assert_stabilised() helper", v4.
+
+This series first introduces a series of refactorings, intended to
+significantly improve readability and abstraction of the code.
+
+Sometimes we wish to assert that a VMA is stable, that is - the VMA cannot
+be changed underneath us.  This will be the case if EITHER the VMA lock or
+the mmap lock is held.
+
+We already open-code this in two places - anon_vma_name() in mm/madvise.c
+and vma_flag_set_atomic() in include/linux/mm.h.
+
+This series adds vma_assert_stablised() which abstract this can be used in
+these callsites instead.
+
+This implementation uses lockdep where possible - that is VMA read locks -
+which correctly track read lock acquisition/release via:
+
+vma_start_read() ->
+rwsem_acquire_read()
+
+vma_start_read_locked() ->
+vma_start_read_locked_nested() ->
+rwsem_acquire_read()
+
+And:
+
+vma_end_read() ->
+vma_refcount_put() ->
+rwsem_release()
+
+We don't track the VMA locks using lockdep for VMA write locks, however
+these are predicated upon mmap write locks whose lockdep state we do
+track, and additionally vma_assert_stabillised() asserts this check if VMA
+read lock is not held, so we get lockdep coverage in this case also.
+
+We also add extensive comments to describe what we're doing.
+
+There's some tricky stuff around mmap locking and stabilisation races that
+we have to be careful of that I describe in the patch introducing
+vma_assert_stabilised().
+
+This change also lays the foundation for future series to add this assert
+in further places where we wish to make it clear that we rely upon a
+stabilised VMA.
+
+The motivation for this change was precisely this.
+
+
+This patch (of 10):
+
+The VMA_LOCK_OFFSET value encodes a flag which vma->vm_refcnt is set to in
+order to indicate that a VMA is in the process of having VMA read-locks
+excluded in __vma_enter_locked() (that is, first checking if there are any
+VMA read locks held, and if there are, waiting on them to be released).
+
+This happens when a VMA write lock is being established, or a VMA is being
+marked detached and discovers that the VMA reference count is elevated due
+to read-locks temporarily elevating the reference count only to discover a
+VMA write lock is in place.
+
+The naming does not convey any of this, so rename VMA_LOCK_OFFSET to
+VM_REFCNT_EXCLUDE_READERS_FLAG (with a sensible new prefix to
+differentiate from the newly introduced VMA_*_BIT flags).
+
+Also rename VMA_REF_LIMIT to VM_REFCNT_LIMIT to make this consistent also.
+
+Update comments to reflect this.
+
+No functional change intended.
+
+Link: https://lkml.kernel.org/r/817bd763e5fe35f23e01347996f9007e6eb88460.1769198904.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_types.h  | 17 +++++++++++++----
+ include/linux/mmap_lock.h | 14 ++++++++------
+ mm/mmap_lock.c            | 17 ++++++++++-------
+ 3 files changed, 31 insertions(+), 17 deletions(-)
+
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index 78950eb8926dc..bdbf17c4f26b5 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -752,8 +752,17 @@ static inline struct anon_vma_name *anon_vma_name_alloc(const char *name)
+ }
+ #endif
+ 
+-#define VMA_LOCK_OFFSET	0x40000000
+-#define VMA_REF_LIMIT	(VMA_LOCK_OFFSET - 1)
++/*
++ * While __vma_enter_locked() is working to ensure are no read-locks held on a
++ * VMA (either while acquiring a VMA write lock or marking a VMA detached) we
++ * set the VM_REFCNT_EXCLUDE_READERS_FLAG in vma->vm_refcnt to indiciate to
++ * vma_start_read() that the reference count should be left alone.
++ *
++ * Once the operation is complete, this value is subtracted from vma->vm_refcnt.
++ */
++#define VM_REFCNT_EXCLUDE_READERS_BIT	(30)
++#define VM_REFCNT_EXCLUDE_READERS_FLAG	(1U << VM_REFCNT_EXCLUDE_READERS_BIT)
++#define VM_REFCNT_LIMIT			(VM_REFCNT_EXCLUDE_READERS_FLAG - 1)
+ 
+ struct vma_numab_state {
+ 	/*
+@@ -935,10 +944,10 @@ struct vm_area_struct {
+ 	/*
+ 	 * Can only be written (using WRITE_ONCE()) while holding both:
+ 	 *  - mmap_lock (in write mode)
+-	 *  - vm_refcnt bit at VMA_LOCK_OFFSET is set
++	 *  - vm_refcnt bit at VM_REFCNT_EXCLUDE_READERS_FLAG is set
+ 	 * Can be read reliably while holding one of:
+ 	 *  - mmap_lock (in read or write mode)
+-	 *  - vm_refcnt bit at VMA_LOCK_OFFSET is set or vm_refcnt > 1
++	 *  - vm_refcnt bit at VM_REFCNT_EXCLUDE_READERS_BIT is set or vm_refcnt > 1
+ 	 * Can be read unreliably (using READ_ONCE()) for pessimistic bailout
+ 	 * while holding nothing (except RCU to keep the VMA struct allocated).
+ 	 *
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index b50416fbba207..5acbd4ba1b52c 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -125,12 +125,14 @@ static inline void vma_lock_init(struct vm_area_struct *vma, bool reset_refcnt)
+ static inline bool is_vma_writer_only(int refcnt)
+ {
+ 	/*
+-	 * With a writer and no readers, refcnt is VMA_LOCK_OFFSET if the vma
+-	 * is detached and (VMA_LOCK_OFFSET + 1) if it is attached. Waiting on
+-	 * a detached vma happens only in vma_mark_detached() and is a rare
+-	 * case, therefore most of the time there will be no unnecessary wakeup.
++	 * With a writer and no readers, refcnt is VM_REFCNT_EXCLUDE_READERS_FLAG
++	 * if the vma is detached and (VM_REFCNT_EXCLUDE_READERS_FLAG + 1) if it is
++	 * attached. Waiting on a detached vma happens only in
++	 * vma_mark_detached() and is a rare case, therefore most of the time
++	 * there will be no unnecessary wakeup.
+ 	 */
+-	return (refcnt & VMA_LOCK_OFFSET) && refcnt <= VMA_LOCK_OFFSET + 1;
++	return (refcnt & VM_REFCNT_EXCLUDE_READERS_FLAG) &&
++		refcnt <= VM_REFCNT_EXCLUDE_READERS_FLAG + 1;
+ }
+ 
+ static inline void vma_refcount_put(struct vm_area_struct *vma)
+@@ -159,7 +161,7 @@ static inline bool vma_start_read_locked_nested(struct vm_area_struct *vma, int
+ 
+ 	mmap_assert_locked(vma->vm_mm);
+ 	if (unlikely(!__refcount_inc_not_zero_limited_acquire(&vma->vm_refcnt, &oldcnt,
+-							      VMA_REF_LIMIT)))
++							      VM_REFCNT_LIMIT)))
+ 		return false;
+ 
+ 	rwsem_acquire_read(&vma->vmlock_dep_map, 0, 1, _RET_IP_);
+diff --git a/mm/mmap_lock.c b/mm/mmap_lock.c
+index 7421b7ea80012..1d23b48552e94 100644
+--- a/mm/mmap_lock.c
++++ b/mm/mmap_lock.c
+@@ -54,7 +54,7 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 		bool detaching, int state)
+ {
+ 	int err;
+-	unsigned int tgt_refcnt = VMA_LOCK_OFFSET;
++	unsigned int tgt_refcnt = VM_REFCNT_EXCLUDE_READERS_FLAG;
+ 
+ 	mmap_assert_write_locked(vma->vm_mm);
+ 
+@@ -66,7 +66,7 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 	 * If vma is detached then only vma_mark_attached() can raise the
+ 	 * vm_refcnt. mmap_write_lock prevents racing with vma_mark_attached().
+ 	 */
+-	if (!refcount_add_not_zero(VMA_LOCK_OFFSET, &vma->vm_refcnt))
++	if (!refcount_add_not_zero(VM_REFCNT_EXCLUDE_READERS_FLAG, &vma->vm_refcnt))
+ 		return 0;
+ 
+ 	rwsem_acquire(&vma->vmlock_dep_map, 0, 0, _RET_IP_);
+@@ -74,7 +74,7 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 		   refcount_read(&vma->vm_refcnt) == tgt_refcnt,
+ 		   state);
+ 	if (err) {
+-		if (refcount_sub_and_test(VMA_LOCK_OFFSET, &vma->vm_refcnt)) {
++		if (refcount_sub_and_test(VM_REFCNT_EXCLUDE_READERS_FLAG, &vma->vm_refcnt)) {
+ 			/*
+ 			 * The wait failed, but the last reader went away
+ 			 * as well.  Tell the caller the VMA is detached.
+@@ -92,7 +92,8 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 
+ static inline void __vma_exit_locked(struct vm_area_struct *vma, bool *detached)
+ {
+-	*detached = refcount_sub_and_test(VMA_LOCK_OFFSET, &vma->vm_refcnt);
++	*detached = refcount_sub_and_test(VM_REFCNT_EXCLUDE_READERS_FLAG,
++					  &vma->vm_refcnt);
+ 	rwsem_release(&vma->vmlock_dep_map, _RET_IP_);
+ }
+ 
+@@ -180,13 +181,15 @@ static inline struct vm_area_struct *vma_start_read(struct mm_struct *mm,
+ 	}
+ 
+ 	/*
+-	 * If VMA_LOCK_OFFSET is set, __refcount_inc_not_zero_limited_acquire()
+-	 * will fail because VMA_REF_LIMIT is less than VMA_LOCK_OFFSET.
++	 * If VM_REFCNT_EXCLUDE_READERS_FLAG is set,
++	 * __refcount_inc_not_zero_limited_acquire() will fail because
++	 * VM_REFCNT_LIMIT is less than VM_REFCNT_EXCLUDE_READERS_FLAG.
++	 *
+ 	 * Acquire fence is required here to avoid reordering against later
+ 	 * vm_lock_seq check and checks inside lock_vma_under_rcu().
+ 	 */
+ 	if (unlikely(!__refcount_inc_not_zero_limited_acquire(&vma->vm_refcnt, &oldcnt,
+-							      VMA_REF_LIMIT))) {
++							      VM_REFCNT_LIMIT))) {
+ 		/* return EAGAIN if vma got detached from under us */
+ 		vma = oldcnt ? NULL : ERR_PTR(-EAGAIN);
+ 		goto err;
+-- 
+2.47.3
+

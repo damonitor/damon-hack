@@ -1,0 +1,104 @@
+From: Andrey Ryabinin <ryabinin.a.a@gmail.com>
+Date: Tue, 13 Jan 2026 20:15:16 +0100
+Subject: [PATCH] mm/kasan/kunit: extend vmalloc OOB tests to cover vrealloc()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Extend the vmalloc_oob() test to validate OOB detection after resizing
+vmalloc allocations with vrealloc().
+
+The test now verifies that KASAN correctly poisons and unpoisons vmalloc
+memory when allocations are shrunk and expanded, ensuring OOB accesses are
+reliably detected after each resize.
+
+[ryabinin.a.a@gmail.com: adjust vrealloc() size]
+  Link: https://lkml.kernel.org/r/20260116132822.22227-1-ryabinin.a.a@gmail.com
+Link: https://lkml.kernel.org/r/20260113191516.31015-2-ryabinin.a.a@gmail.com
+Signed-off-by: Andrey Ryabinin <ryabinin.a.a@gmail.com>
+Reviewed-by: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Dmitriy Vyukov <dvyukov@google.com>
+Cc: Maciej Żenczykowski <maze@google.com>
+Cc: Uladzislau Rezki <urezki@gmail.com>
+Cc: Vincenzo Frascino <vincenzo.frascino@arm.com>
+Cc: Maciej Wieczor-Retman <maciej.wieczor-retman@intel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kasan/kasan_test_c.c | 50 ++++++++++++++++++++++++++++-------------
+ 1 file changed, 35 insertions(+), 15 deletions(-)
+
+diff --git a/mm/kasan/kasan_test_c.c b/mm/kasan/kasan_test_c.c
+index 2cafca31b0925..b4d1579621218 100644
+--- a/mm/kasan/kasan_test_c.c
++++ b/mm/kasan/kasan_test_c.c
+@@ -1840,6 +1840,29 @@ static void vmalloc_helpers_tags(struct kunit *test)
+ 	vfree(ptr);
+ }
+ 
++static void vmalloc_oob_helper(struct kunit *test, char *v_ptr, size_t size)
++{
++	/*
++	 * We have to be careful not to hit the guard page in vmalloc tests.
++	 * The MMU will catch that and crash us.
++	 */
++
++	/* Make sure in-bounds accesses are valid. */
++	v_ptr[0] = 0;
++	v_ptr[size - 1] = 0;
++
++	/*
++	 * An unaligned access past the requested vmalloc size.
++	 * Only generic KASAN can precisely detect these.
++	 */
++	if (IS_ENABLED(CONFIG_KASAN_GENERIC))
++		KUNIT_EXPECT_KASAN_FAIL(test, ((volatile char *)v_ptr)[size]);
++
++	/* An aligned access into the first out-of-bounds granule. */
++	size = round_up(size, KASAN_GRANULE_SIZE);
++	KUNIT_EXPECT_KASAN_FAIL_READ(test, ((volatile char *)v_ptr)[size]);
++}
++
+ static void vmalloc_oob(struct kunit *test)
+ {
+ 	char *v_ptr, *p_ptr;
+@@ -1856,24 +1879,21 @@ static void vmalloc_oob(struct kunit *test)
+ 
+ 	OPTIMIZER_HIDE_VAR(v_ptr);
+ 
+-	/*
+-	 * We have to be careful not to hit the guard page in vmalloc tests.
+-	 * The MMU will catch that and crash us.
+-	 */
++	vmalloc_oob_helper(test, v_ptr, size);
+ 
+-	/* Make sure in-bounds accesses are valid. */
+-	v_ptr[0] = 0;
+-	v_ptr[size - 1] = 0;
++	size -= KASAN_GRANULE_SIZE + 1;
++	v_ptr = vrealloc(v_ptr, size, GFP_KERNEL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, v_ptr);
+ 
+-	/*
+-	 * An unaligned access past the requested vmalloc size.
+-	 * Only generic KASAN can precisely detect these.
+-	 */
+-	if (IS_ENABLED(CONFIG_KASAN_GENERIC))
+-		KUNIT_EXPECT_KASAN_FAIL(test, ((volatile char *)v_ptr)[size]);
++	OPTIMIZER_HIDE_VAR(v_ptr);
+ 
+-	/* An aligned access into the first out-of-bounds granule. */
+-	KUNIT_EXPECT_KASAN_FAIL_READ(test, ((volatile char *)v_ptr)[size + 5]);
++	vmalloc_oob_helper(test, v_ptr, size);
++
++	size += 2 * KASAN_GRANULE_SIZE + 2;
++	v_ptr = vrealloc(v_ptr, size, GFP_KERNEL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, v_ptr);
++
++	vmalloc_oob_helper(test, v_ptr, size);
+ 
+ 	/* Check that in-bounds accesses to the physical page are valid. */
+ 	page = vmalloc_to_page(v_ptr);
+-- 
+2.47.3
+

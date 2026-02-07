@@ -1,0 +1,142 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Mon, 15 Dec 2025 15:03:17 +0000
+Subject: [PATCH] mm: bail out of lazy_mmu_mode_* in interrupt context
+
+The lazy MMU mode cannot be used in interrupt context.  This is documented
+in <linux/pgtable.h>, but isn't consistently handled across architectures.
+
+arm64 ensures that calls to lazy_mmu_mode_* have no effect in interrupt
+context, because such calls do occur in certain configurations - see
+commit b81c688426a9 ("arm64/mm: Disable barrier batching in interrupt
+contexts").  Other architectures do not check this situation, most likely
+because it hasn't occurred so far.
+
+Let's handle this in the new generic lazy_mmu layer, in the same fashion
+as arm64: bail out of lazy_mmu_mode_* if in_interrupt().  Also remove the
+arm64 handling that is now redundant.
+
+Both arm64 and x86/Xen also ensure that any lazy MMU optimisation is
+disabled while in interrupt (see queue_pte_barriers() and
+xen_get_lazy_mode() respectively).  This will be handled in the generic
+layer in a subsequent patch.
+
+Link: https://lkml.kernel.org/r/20251215150323.2218608-9-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Boris Ostrovsky <boris.ostrovsky@oracle.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Juegren Gross <jgross@suse.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Venkat Rao Bagalkote <venkat88@linux.ibm.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h |  9 ---------
+ include/linux/pgtable.h          | 17 ++++++++++++++++-
+ 2 files changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index f7d66c2613476..bf9178902bdb4 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -94,26 +94,17 @@ static inline void arch_enter_lazy_mmu_mode(void)
+ 	 * keeps tracking simple.
+ 	 */
+ 
+-	if (in_interrupt())
+-		return;
+-
+ 	set_thread_flag(TIF_LAZY_MMU);
+ }
+ 
+ static inline void arch_flush_lazy_mmu_mode(void)
+ {
+-	if (in_interrupt())
+-		return;
+-
+ 	if (test_and_clear_thread_flag(TIF_LAZY_MMU_PENDING))
+ 		emit_pte_barriers();
+ }
+ 
+ static inline void arch_leave_lazy_mmu_mode(void)
+ {
+-	if (in_interrupt())
+-		return;
+-
+ 	arch_flush_lazy_mmu_mode();
+ 	clear_thread_flag(TIF_LAZY_MMU);
+ }
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 116a18b7916c4..dddde6873d1ed 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -233,26 +233,41 @@ static inline int pmd_dirty(pmd_t pmd)
+  * preemption, as a consequence generic code may not sleep while the lazy MMU
+  * mode is active.
+  *
+- * Nesting is not permitted and the mode cannot be used in interrupt context.
++ * The mode is disabled in interrupt context and calls to the lazy_mmu API have
++ * no effect.
++ *
++ * Nesting is not permitted.
+  */
+ #ifdef CONFIG_ARCH_HAS_LAZY_MMU_MODE
+ static inline void lazy_mmu_mode_enable(void)
+ {
++	if (in_interrupt())
++		return;
++
+ 	arch_enter_lazy_mmu_mode();
+ }
+ 
+ static inline void lazy_mmu_mode_disable(void)
+ {
++	if (in_interrupt())
++		return;
++
+ 	arch_leave_lazy_mmu_mode();
+ }
+ 
+ static inline void lazy_mmu_mode_pause(void)
+ {
++	if (in_interrupt())
++		return;
++
+ 	arch_leave_lazy_mmu_mode();
+ }
+ 
+ static inline void lazy_mmu_mode_resume(void)
+ {
++	if (in_interrupt())
++		return;
++
+ 	arch_enter_lazy_mmu_mode();
+ }
+ #else
+-- 
+2.47.3
+

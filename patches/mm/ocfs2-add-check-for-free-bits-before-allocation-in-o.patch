@@ -1,0 +1,73 @@
+From: Deepanshu Kartikey <kartikey406@gmail.com>
+Date: Sun, 4 Jan 2026 19:05:04 +0530
+Subject: [PATCH] ocfs2: add check for free bits before allocation in
+ ocfs2_move_extent()
+
+Add a check to verify the group descriptor has enough free bits before
+attempting allocation in ocfs2_move_extent().  This prevents a kernel
+BUG_ON crash in ocfs2_block_group_set_bits() when the move_extents ioctl
+is called on a crafted or corrupted filesystem.
+
+The existing validation in ocfs2_validate_gd_self() only checks static
+metadata consistency (bg_free_bits_count <= bg_bits) when the descriptor
+is first read from disk.  However, during move_extents operations,
+multiple allocations can exhaust the free bits count below the requested
+allocation size, triggering BUG_ON(le16_to_cpu(bg->bg_free_bits_count) <
+num_bits).
+
+The debug trace shows the issue clearly:
+  - Block group 32 validated with bg_free_bits_count=427
+  - Repeated allocations decreased count: 427 -> 171 -> 43 -> ... -> 1
+  - Final request for 2 bits with only 1 available triggers BUG_ON
+
+By adding an early check in ocfs2_move_extent() right after
+ocfs2_find_victim_alloc_group(), we return -ENOSPC gracefully instead of
+crashing the kernel.  This also avoids unnecessary work in
+ocfs2_probe_alloc_group() and __ocfs2_move_extent() when the allocation
+will fail.
+
+Link: https://lkml.kernel.org/r/20260104133504.14810-1-kartikey406@gmail.com
+Signed-off-by: Deepanshu Kartikey <kartikey406@gmail.com>
+Reported-by: syzbot+7960178e777909060224@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=7960178e777909060224
+Link: https://lore.kernel.org/all/20251231115801.293726-1-kartikey406@gmail.com/T/ [v1]
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Jun Piao <piaojun@huawei.com>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/move_extents.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/move_extents.c b/fs/ocfs2/move_extents.c
+index 99637e34d9daf..e3cdf87884843 100644
+--- a/fs/ocfs2/move_extents.c
++++ b/fs/ocfs2/move_extents.c
+@@ -662,6 +662,12 @@ static int ocfs2_move_extent(struct ocfs2_move_extents_context *context,
+ 		goto out_commit;
+ 	}
+ 
++	gd = (struct ocfs2_group_desc *)gd_bh->b_data;
++	if (le16_to_cpu(gd->bg_free_bits_count) < len) {
++		ret = -ENOSPC;
++		goto out_commit;
++	}
++
+ 	/*
+ 	 * probe the victim cluster group to find a proper
+ 	 * region to fit wanted movement, it even will perform
+@@ -682,7 +688,6 @@ static int ocfs2_move_extent(struct ocfs2_move_extents_context *context,
+ 		goto out_commit;
+ 	}
+ 
+-	gd = (struct ocfs2_group_desc *)gd_bh->b_data;
+ 	ret = ocfs2_alloc_dinode_update_counts(gb_inode, handle, gb_bh, len,
+ 					       le16_to_cpu(gd->bg_chain));
+ 	if (ret) {
+-- 
+2.47.3
+

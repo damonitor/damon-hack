@@ -1,0 +1,267 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Sat, 20 Dec 2025 03:57:51 +0800
+Subject: [PATCH] mm/shmem: never bypass the swap cache for SWP_SYNCHRONOUS_IO
+
+Now the overhead of the swap cache is trivial to none, bypassing the swap
+cache is no longer a good optimization.
+
+We have removed the cache bypass swapin for anon memory, now do the same
+for shmem.  Many helpers and functions can be dropped now.
+
+The performance may slightly drop because of the co-existence and double
+update of swap_map and swap table, and this problem will be improved very
+soon in later commits by dropping the swap_map update partially:
+
+Swapin of 24 GB file with tmpfs with
+transparent_hugepage_tmpfs=within_size and ZRAM, 3 test runs on my
+machine:
+
+Before:  After this commit:  After this series:
+5.99s    6.29s               6.08s
+
+And later swap table phases will drop the swap_map completely to avoid
+overhead and reduce memory usage.
+
+Link: https://lkml.kernel.org/r/20251219195751.61328-1-ryncsn@gmail.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Tested-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Rafael J. Wysocki (Intel) <rafael@kernel.org>
+Cc: Yosry Ahmed <yosry.ahmed@linux.dev>
+Cc: Deepanshu Kartikey <kartikey406@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c    | 65 ++++++++++++++-------------------------------------
+ mm/swap.h     |  4 ----
+ mm/swapfile.c | 35 +++++++--------------------
+ 3 files changed, 27 insertions(+), 77 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 3fbca0670bc79..c60392d054e26 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -2037,10 +2037,9 @@ static struct folio *shmem_swap_alloc_folio(struct inode *inode,
+ 		swp_entry_t entry, int order, gfp_t gfp)
+ {
+ 	struct shmem_inode_info *info = SHMEM_I(inode);
++	struct folio *new, *swapcache;
+ 	int nr_pages = 1 << order;
+-	struct folio *new;
+ 	gfp_t alloc_gfp;
+-	void *shadow;
+ 
+ 	/*
+ 	 * We have arrived here because our zones are constrained, so don't
+@@ -2080,34 +2079,19 @@ static struct folio *shmem_swap_alloc_folio(struct inode *inode,
+ 		goto fallback;
+ 	}
+ 
+-	/*
+-	 * Prevent parallel swapin from proceeding with the swap cache flag.
+-	 *
+-	 * Of course there is another possible concurrent scenario as well,
+-	 * that is to say, the swap cache flag of a large folio has already
+-	 * been set by swapcache_prepare(), while another thread may have
+-	 * already split the large swap entry stored in the shmem mapping.
+-	 * In this case, shmem_add_to_page_cache() will help identify the
+-	 * concurrent swapin and return -EEXIST.
+-	 */
+-	if (swapcache_prepare(entry, nr_pages)) {
++	swapcache = swapin_folio(entry, new);
++	if (swapcache != new) {
+ 		folio_put(new);
+-		new = ERR_PTR(-EEXIST);
+-		/* Try smaller folio to avoid cache conflict */
+-		goto fallback;
++		if (!swapcache) {
++			/*
++			 * The new folio is charged already, swapin can
++			 * only fail due to another raced swapin.
++			 */
++			new = ERR_PTR(-EEXIST);
++			goto fallback;
++		}
+ 	}
+-
+-	__folio_set_locked(new);
+-	__folio_set_swapbacked(new);
+-	new->swap = entry;
+-
+-	memcg1_swapin(entry, nr_pages);
+-	shadow = swap_cache_get_shadow(entry);
+-	if (shadow)
+-		workingset_refault(new, shadow);
+-	folio_add_lru(new);
+-	swap_read_folio(new, NULL);
+-	return new;
++	return swapcache;
+ fallback:
+ 	/* Order 0 swapin failed, nothing to fallback to, abort */
+ 	if (!order)
+@@ -2197,8 +2181,7 @@ static int shmem_replace_folio(struct folio **foliop, gfp_t gfp,
+ }
+ 
+ static void shmem_set_folio_swapin_error(struct inode *inode, pgoff_t index,
+-					 struct folio *folio, swp_entry_t swap,
+-					 bool skip_swapcache)
++					 struct folio *folio, swp_entry_t swap)
+ {
+ 	struct address_space *mapping = inode->i_mapping;
+ 	swp_entry_t swapin_error;
+@@ -2214,8 +2197,7 @@ static void shmem_set_folio_swapin_error(struct inode *inode, pgoff_t index,
+ 
+ 	nr_pages = folio_nr_pages(folio);
+ 	folio_wait_writeback(folio);
+-	if (!skip_swapcache)
+-		swap_cache_del_folio(folio);
++	swap_cache_del_folio(folio);
+ 	/*
+ 	 * Don't treat swapin error folio as alloced. Otherwise inode->i_blocks
+ 	 * won't be 0 when inode is released and thus trigger WARN_ON(i_blocks)
+@@ -2315,7 +2297,6 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 	softleaf_t index_entry;
+ 	struct swap_info_struct *si;
+ 	struct folio *folio = NULL;
+-	bool skip_swapcache = false;
+ 	int error, nr_pages, order;
+ 	pgoff_t offset;
+ 
+@@ -2358,7 +2339,6 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 				folio = NULL;
+ 				goto failed;
+ 			}
+-			skip_swapcache = true;
+ 		} else {
+ 			/* Cached swapin only supports order 0 folio */
+ 			folio = shmem_swapin_cluster(swap, gfp, info, index);
+@@ -2414,9 +2394,8 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 	 * and swap cache folios are never partially freed.
+ 	 */
+ 	folio_lock(folio);
+-	if ((!skip_swapcache && !folio_test_swapcache(folio)) ||
+-	    shmem_confirm_swap(mapping, index, swap) < 0 ||
+-	    folio->swap.val != swap.val) {
++	if (!folio_matches_swap_entry(folio, swap) ||
++	    shmem_confirm_swap(mapping, index, swap) < 0) {
+ 		error = -EEXIST;
+ 		goto unlock;
+ 	}
+@@ -2448,12 +2427,7 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 	if (sgp == SGP_WRITE)
+ 		folio_mark_accessed(folio);
+ 
+-	if (skip_swapcache) {
+-		folio->swap.val = 0;
+-		swapcache_clear(si, swap, nr_pages);
+-	} else {
+-		swap_cache_del_folio(folio);
+-	}
++	swap_cache_del_folio(folio);
+ 	folio_mark_dirty(folio);
+ 	swap_free_nr(swap, nr_pages);
+ 	put_swap_device(si);
+@@ -2464,14 +2438,11 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 	if (shmem_confirm_swap(mapping, index, swap) < 0)
+ 		error = -EEXIST;
+ 	if (error == -EIO)
+-		shmem_set_folio_swapin_error(inode, index, folio, swap,
+-					     skip_swapcache);
++		shmem_set_folio_swapin_error(inode, index, folio, swap);
+ unlock:
+ 	if (folio)
+ 		folio_unlock(folio);
+ failed_nolock:
+-	if (skip_swapcache)
+-		swapcache_clear(si, folio->swap, folio_nr_pages(folio));
+ 	if (folio)
+ 		folio_put(folio);
+ 	put_swap_device(si);
+diff --git a/mm/swap.h b/mm/swap.h
+index 5d4a33c4adda8..2f79458b37f3b 100644
+--- a/mm/swap.h
++++ b/mm/swap.h
+@@ -403,10 +403,6 @@ static inline int swap_writeout(struct folio *folio,
+ 	return 0;
+ }
+ 
+-static inline void swapcache_clear(struct swap_info_struct *si, swp_entry_t entry, int nr)
+-{
+-}
+-
+ static inline struct folio *swap_cache_get_folio(swp_entry_t entry)
+ {
+ 	return NULL;
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 5cfa068fd7c9a..ea02d97951261 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1614,22 +1614,6 @@ struct swap_info_struct *get_swap_device(swp_entry_t entry)
+ 	return NULL;
+ }
+ 
+-static void swap_entries_put_cache(struct swap_info_struct *si,
+-				   swp_entry_t entry, int nr)
+-{
+-	unsigned long offset = swp_offset(entry);
+-	struct swap_cluster_info *ci;
+-
+-	ci = swap_cluster_lock(si, offset);
+-	if (swap_only_has_cache(si, offset, nr)) {
+-		swap_entries_free(si, ci, entry, nr);
+-	} else {
+-		for (int i = 0; i < nr; i++, entry.val++)
+-			swap_entry_put_locked(si, ci, entry, SWAP_HAS_CACHE);
+-	}
+-	swap_cluster_unlock(ci);
+-}
+-
+ static bool swap_entries_put_map(struct swap_info_struct *si,
+ 				 swp_entry_t entry, int nr)
+ {
+@@ -1765,13 +1749,21 @@ void swap_free_nr(swp_entry_t entry, int nr_pages)
+ void put_swap_folio(struct folio *folio, swp_entry_t entry)
+ {
+ 	struct swap_info_struct *si;
++	struct swap_cluster_info *ci;
++	unsigned long offset = swp_offset(entry);
+ 	int size = 1 << swap_entry_order(folio_order(folio));
+ 
+ 	si = _swap_info_get(entry);
+ 	if (!si)
+ 		return;
+ 
+-	swap_entries_put_cache(si, entry, size);
++	ci = swap_cluster_lock(si, offset);
++	if (swap_only_has_cache(si, offset, size))
++		swap_entries_free(si, ci, entry, size);
++	else
++		for (int i = 0; i < size; i++, entry.val++)
++			swap_entry_put_locked(si, ci, entry, SWAP_HAS_CACHE);
++	swap_cluster_unlock(ci);
+ }
+ 
+ int __swap_count(swp_entry_t entry)
+@@ -3784,15 +3776,6 @@ int swapcache_prepare(swp_entry_t entry, int nr)
+ 	return __swap_duplicate(entry, SWAP_HAS_CACHE, nr);
+ }
+ 
+-/*
+- * Caller should ensure entries belong to the same folio so
+- * the entries won't span cross cluster boundary.
+- */
+-void swapcache_clear(struct swap_info_struct *si, swp_entry_t entry, int nr)
+-{
+-	swap_entries_put_cache(si, entry, nr);
+-}
+-
+ /*
+  * add_swap_count_continuation - called when a swap count is duplicated
+  * beyond SWAP_MAP_MAX, it allocates a new page and links that to the entry's
+-- 
+2.47.3
+

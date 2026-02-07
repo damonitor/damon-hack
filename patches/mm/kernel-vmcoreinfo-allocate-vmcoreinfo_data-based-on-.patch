@@ -1,0 +1,73 @@
+From: Pnina Feder <pnina.feder@mobileye.com>
+Date: Tue, 16 Dec 2025 15:28:00 +0200
+Subject: [PATCH] kernel: vmcoreinfo: allocate vmcoreinfo_data based on
+ VMCOREINFO_BYTES
+
+Patch series "vmcoreinfo: support VMCOREINFO_BYTES larger than PAGE_SIZE".
+
+VMCOREINFO_BYTES is defined as a configurable size, but multiple
+code paths implicitly assume it always fits into a single page.
+
+This series removes that assumption by allocating and mapping
+vmcoreinfo based on its actual size.
+
+Patch 1 updates vmcoreinfo allocation to use get_order(VMCOREINFO_BYTES).
+Patch 2 updates crash kernel handling to correctly allocate and map
+multiple pages when copying vmcoreinfo.
+
+This makes vmcoreinfo size consistent across the kernel and avoids
+future breakage if VMCOREINFO_BYTES grows.
+
+(No functional change when VMCOREINFO_BYTES == PAGE_SIZE.)
+
+
+This patch (of 2):
+
+VMCOREINFO_BYTES defines the size of vmcoreinfo data, but the current
+implementation assumes a single page allocation.
+
+Allocate vmcoreinfo_data using get_order(VMCOREINFO_BYTES) so that
+vmcoreinfo can safely grow beyond PAGE_SIZE.
+
+This avoids hidden assumptions and keeps vmcoreinfo size consistent across
+the kernel.
+
+Link: https://lkml.kernel.org/r/20251216132801.807260-1-pnina.feder@mobileye.com
+Link: https://lkml.kernel.org/r/20251216132801.807260-2-pnina.feder@mobileye.com
+Signed-off-by: Pnina Feder <pnina.feder@mobileye.com>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Dave Young <dyoung@redhat.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/vmcore_info.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/vmcore_info.c b/kernel/vmcore_info.c
+index fe9bf8db1922e..22b3205dd4dc5 100644
+--- a/kernel/vmcore_info.c
++++ b/kernel/vmcore_info.c
+@@ -137,7 +137,9 @@ EXPORT_SYMBOL_GPL(hwerr_log_error_type);
+ 
+ static int __init crash_save_vmcoreinfo_init(void)
+ {
+-	vmcoreinfo_data = (unsigned char *)get_zeroed_page(GFP_KERNEL);
++	int order;
++	order = get_order(VMCOREINFO_BYTES);
++	vmcoreinfo_data = (unsigned char *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, order);
+ 	if (!vmcoreinfo_data) {
+ 		pr_warn("Memory allocation for vmcoreinfo_data failed\n");
+ 		return -ENOMEM;
+@@ -146,7 +148,7 @@ static int __init crash_save_vmcoreinfo_init(void)
+ 	vmcoreinfo_note = alloc_pages_exact(VMCOREINFO_NOTE_SIZE,
+ 						GFP_KERNEL | __GFP_ZERO);
+ 	if (!vmcoreinfo_note) {
+-		free_page((unsigned long)vmcoreinfo_data);
++		free_pages((unsigned long)vmcoreinfo_data, order);
+ 		vmcoreinfo_data = NULL;
+ 		pr_warn("Memory allocation for vmcoreinfo_note failed\n");
+ 		return -ENOMEM;
+-- 
+2.47.3
+

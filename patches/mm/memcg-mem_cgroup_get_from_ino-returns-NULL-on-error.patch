@@ -1,0 +1,69 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 25 Dec 2025 15:21:11 -0800
+Subject: [PATCH] memcg: mem_cgroup_get_from_ino() returns NULL on error
+
+Change mem_cgroup_get_from_ino() to return NULL on error instead of
+ERR_PTR values.  This simplifies the API: NULL indicates failure, and a
+valid pointer indicates success with a CSS reference held that the caller
+must release via mem_cgroup_put().
+
+Link: https://lkml.kernel.org/r/20251225232116.294540-4-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c     | 6 ++----
+ mm/shrinker_debug.c | 2 +-
+ 2 files changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index e85816960e38d..92beb74482fae 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3624,17 +3624,15 @@ struct mem_cgroup *mem_cgroup_get_from_ino(unsigned long ino)
+ {
+ 	struct cgroup *cgrp;
+ 	struct cgroup_subsys_state *css;
+-	struct mem_cgroup *memcg;
++	struct mem_cgroup *memcg = NULL;
+ 
+ 	cgrp = cgroup_get_from_id(ino);
+ 	if (IS_ERR(cgrp))
+-		return ERR_CAST(cgrp);
++		return NULL;
+ 
+ 	css = cgroup_get_e_css(cgrp, &memory_cgrp_subsys);
+ 	if (css)
+ 		memcg = container_of(css, struct mem_cgroup, css);
+-	else
+-		memcg = ERR_PTR(-ENOENT);
+ 
+ 	cgroup_put(cgrp);
+ 
+diff --git a/mm/shrinker_debug.c b/mm/shrinker_debug.c
+index 20eaee3e97f7a..8aaeb8f5c3af0 100644
+--- a/mm/shrinker_debug.c
++++ b/mm/shrinker_debug.c
+@@ -130,7 +130,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 
+ 	if (shrinker->flags & SHRINKER_MEMCG_AWARE) {
+ 		memcg = mem_cgroup_get_from_ino(ino);
+-		if (!memcg || IS_ERR(memcg))
++		if (!memcg)
+ 			return -ENOENT;
+ 
+ 		if (!mem_cgroup_online(memcg)) {
+-- 
+2.47.3
+

@@ -1,0 +1,203 @@
+From: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Date: Wed, 21 Jan 2026 11:49:46 -0500
+Subject: [PATCH] mm: use unmap_desc struct for freeing page tables
+
+Pass through the unmap_desc to free_pgtables() because it almost has
+everything necessary and is already on the stack.
+
+Updates testing code as necessary.
+
+No functional changes intended.
+
+Link: https://lkml.kernel.org/r/20260121164946.2093480-12-Liam.Howlett@oracle.com
+Signed-off-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h                    |  5 +----
+ mm/memory.c                      | 37 ++++++++++++++------------------
+ mm/mmap.c                        |  6 +++---
+ mm/vma.c                         |  6 ++----
+ tools/testing/vma/vma_internal.h |  7 +++---
+ 5 files changed, 25 insertions(+), 36 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 0f3ad8665d95e..ef71a1d9991f2 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -512,10 +512,7 @@ bool __folio_end_writeback(struct folio *folio);
+ void deactivate_file_folio(struct folio *folio);
+ void folio_activate(struct folio *folio);
+ 
+-void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+-		   struct vm_area_struct *vma, unsigned long pg_start,
+-		   unsigned long pg_end, unsigned long vma_end,
+-		   bool mm_wr_locked);
++void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
+ 
+ void pmd_install(struct mm_struct *mm, pmd_t *pmd, pgtable_t *pte);
+ 
+diff --git a/mm/memory.c b/mm/memory.c
+index 6c3fdf04ec96d..0cd7e4df11c02 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -373,12 +373,7 @@ void free_pgd_range(struct mmu_gather *tlb,
+ /**
+  * free_pgtables() - Free a range of page tables
+  * @tlb: The mmu gather
+- * @mas: The maple state
+- * @vma: The first vma
+- * @pg_start: The lowest page table address (floor)
+- * @pg_end: The highest page table address (ceiling)
+- * @vma_end: The highest vma tree search address
+- * @mm_wr_locked: boolean indicating if the mm is write locked
++ * @unmap: The unmap_desc
+  *
+  * Note: pg_start and pg_end are provided to indicate the absolute range of the
+  * page tables that should be removed.  This can differ from the vma mappings on
+@@ -388,21 +383,21 @@ void free_pgd_range(struct mmu_gather *tlb,
+  * The vma_end differs from the pg_end when a dup_mmap() failed and the tree has
+  * unrelated data to the mm_struct being torn down.
+  */
+-void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+-		   struct vm_area_struct *vma, unsigned long pg_start,
+-		   unsigned long pg_end, unsigned long vma_end,
+-		   bool mm_wr_locked)
++void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *unmap)
+ {
+ 	struct unlink_vma_file_batch vb;
++	struct ma_state *mas = unmap->mas;
++	struct vm_area_struct *vma = unmap->first;
+ 
+ 	/*
+ 	 * Note: USER_PGTABLES_CEILING may be passed as the value of pg_end and
+-	 * may be 0.  Underflow is expected in this case.  Otherwise the
+-	 * pagetable end is exclusive.
+-	 * vma_end is exclusive.
+-	 * The last vma address should never be larger than the pagetable end.
++	 * may be 0.  The underflow here is fine and expected.
++	 * The vma_end is exclusive, which is fine until we use the mas_ instead
++	 * of the vma iterators.
++	 * For freeing the page tables to make sense, the vma_end must be larger
++	 * than the pg_end, so check that after the potential underflow.
+ 	 */
+-	WARN_ON_ONCE(vma_end - 1 > pg_end - 1);
++	WARN_ON_ONCE(unmap->vma_end - 1 > unmap->pg_end - 1);
+ 
+ 	tlb_free_vmas(tlb);
+ 
+@@ -410,13 +405,13 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+ 		unsigned long addr = vma->vm_start;
+ 		struct vm_area_struct *next;
+ 
+-		next = mas_find(mas, vma_end - 1);
++		next = mas_find(mas, unmap->tree_end - 1);
+ 
+ 		/*
+ 		 * Hide vma from rmap and truncate_pagecache before freeing
+ 		 * pgtables
+ 		 */
+-		if (mm_wr_locked)
++		if (unmap->mm_wr_locked)
+ 			vma_start_write(vma);
+ 		unlink_anon_vmas(vma);
+ 
+@@ -428,16 +423,16 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+ 		 */
+ 		while (next && next->vm_start <= vma->vm_end + PMD_SIZE) {
+ 			vma = next;
+-			next = mas_find(mas, vma_end - 1);
+-			if (mm_wr_locked)
++			next = mas_find(mas, unmap->tree_end - 1);
++			if (unmap->mm_wr_locked)
+ 				vma_start_write(vma);
+ 			unlink_anon_vmas(vma);
+ 			unlink_file_vma_batch_add(&vb, vma);
+ 		}
+ 		unlink_file_vma_batch_final(&vb);
+ 
+-		free_pgd_range(tlb, addr, vma->vm_end,
+-			pg_start, next ? next->vm_start : pg_end);
++		free_pgd_range(tlb, addr, vma->vm_end, unmap->pg_start,
++			       next ? next->vm_start : unmap->pg_end);
+ 		vma = next;
+ 	} while (vma);
+ }
+diff --git a/mm/mmap.c b/mm/mmap.c
+index 042b6b4b6ab86..8771b276d63db 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -1307,10 +1307,10 @@ void exit_mmap(struct mm_struct *mm)
+ 	 */
+ 	mm_flags_set(MMF_OOM_SKIP, mm);
+ 	mmap_write_lock(mm);
++	unmap.mm_wr_locked = true;
+ 	mt_clear_in_rcu(&mm->mm_mt);
+-	vma_iter_set(&vmi, vma->vm_end);
+-	free_pgtables(&tlb, &vmi.mas, vma, FIRST_USER_ADDRESS,
+-		      USER_PGTABLES_CEILING, USER_PGTABLES_CEILING, true);
++	vma_iter_set(&vmi, unmap.tree_reset);
++	free_pgtables(&tlb, &unmap);
+ 	tlb_finish_mmu(&tlb);
+ 
+ 	/*
+diff --git a/mm/vma.c b/mm/vma.c
+index 876d2db5329dd..f352d5c722126 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -475,15 +475,13 @@ void remove_vma(struct vm_area_struct *vma)
+ void unmap_region(struct unmap_desc *unmap)
+ {
+ 	struct mm_struct *mm = unmap->first->vm_mm;
+-	struct ma_state *mas = unmap->mas;
+ 	struct mmu_gather tlb;
+ 
+ 	tlb_gather_mmu(&tlb, mm);
+ 	update_hiwater_rss(mm);
+ 	unmap_vmas(&tlb, unmap);
+-	mas_set(mas, unmap->tree_reset);
+-	free_pgtables(&tlb, mas, unmap->first, unmap->pg_start, unmap->pg_end,
+-		      unmap->tree_end, unmap->mm_wr_locked);
++	mas_set(unmap->mas, unmap->tree_reset);
++	free_pgtables(&tlb, unmap);
+ 	tlb_finish_mmu(&tlb);
+ }
+ 
+diff --git a/tools/testing/vma/vma_internal.h b/tools/testing/vma/vma_internal.h
+index 0b4918aac8d6d..ca4eb563b29ba 100644
+--- a/tools/testing/vma/vma_internal.h
++++ b/tools/testing/vma/vma_internal.h
+@@ -1137,11 +1137,10 @@ static inline void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap)
+ {
+ }
+ 
+-static inline void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+-		   struct vm_area_struct *vma, unsigned long floor,
+-		   unsigned long ceiling, unsigned long tree_max,
+-		   bool mm_wr_locked)
++static inline void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc)
+ {
++	(void)tlb;
++	(void)desc;
+ }
+ 
+ static inline void mapping_unmap_writable(struct address_space *mapping)
+-- 
+2.47.3
+

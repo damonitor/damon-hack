@@ -1,0 +1,63 @@
+From: "Pratyush Yadav (Google)" <pratyush@kernel.org>
+Date: Thu, 22 Jan 2026 16:18:40 +0100
+Subject: [PATCH] mm: memfd_luo: use memfd_alloc_file() instead of
+ shmem_file_setup()
+
+When restoring a memfd, the file is created using shmem_file_setup().
+While memfd creation also calls this function to get the file, it also
+does other things:
+
+  1. The O_LARGEFILE flag is set on the file. If this is not done,
+  writes on the memfd exceeding 2 GiB fail.
+
+  2. FMODE_LSEEK, FMODE_PREAD, and FMODE_PWRITE are set on the file.
+  This makes sure the file is seekable and can be used with pread() and
+  pwrite().
+
+  3. Initializes the security field for the inode and makes sure that
+  inode creation is permitted by the security module.
+
+Currently, none of those things are done.  This means writes above 2 GiB
+fail, pread(), and pwrite() fail, and so on.  lseek() happens to work
+because file_init_path() sets it because shmem defines fop->llseek.
+
+Fix this by using memfd_alloc_file() to get the file to make sure the
+initialization sequence for normal and preserved memfd is the same.
+
+Link: https://lkml.kernel.org/r/20260122151842.4069702-3-pratyush@kernel.org
+Fixes: b3749f174d68 ("mm: memfd_luo: allow preserving memfd")
+Signed-off-by: Pratyush Yadav (Google) <pratyush@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memfd_luo.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memfd_luo.c b/mm/memfd_luo.c
+index 4f6ba63b43105..01a72e4d3ef69 100644
+--- a/mm/memfd_luo.c
++++ b/mm/memfd_luo.c
+@@ -78,6 +78,7 @@
+ #include <linux/liveupdate.h>
+ #include <linux/shmem_fs.h>
+ #include <linux/vmalloc.h>
++#include <linux/memfd.h>
+ #include "internal.h"
+ 
+ static int memfd_luo_preserve_folios(struct file *file,
+@@ -443,8 +444,7 @@ static int memfd_luo_retrieve(struct liveupdate_file_op_args *args)
+ 	if (!ser)
+ 		return -EINVAL;
+ 
+-	file = shmem_file_setup("", 0, VM_NORESERVE);
+-
++	file = memfd_alloc_file("", 0);
+ 	if (IS_ERR(file)) {
+ 		pr_err("failed to setup file: %pe\n", file);
+ 		return PTR_ERR(file);
+-- 
+2.47.3
+

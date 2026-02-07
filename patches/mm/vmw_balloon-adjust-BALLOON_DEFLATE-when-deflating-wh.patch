@@ -1,0 +1,84 @@
+From: "David Hildenbrand (Red Hat)" <david@kernel.org>
+Date: Tue, 20 Jan 2026 00:01:09 +0100
+Subject: [PATCH] vmw_balloon: adjust BALLOON_DEFLATE when deflating while
+ migrating
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm: balloon infrastructure cleanups", v3.
+
+I started with wanting to remove the dependency of the balloon
+infrastructure on the page lock, but ended up performing various other
+cleanups, some of which I had on my todo list for years.
+
+This series heavily cleans up and simplifies our balloon infrastructure,
+including our balloon page migration functionality.
+
+With this series, we no longer make use of the page lock for PageOffline
+pages as part of the balloon infrastructure (preparing for memdescs where
+PageOffline pages won't have any such lock), and simplifies migration
+handling such that refcounting can more easily be adjusted later
+(long-term focus is for PageOffline pages to not have a refcount either).
+
+Plenty of related cleanups.
+
+
+This patch (of 24):
+
+When we're effectively deflating the balloon while migrating a page
+because inflating the new page failed, we're not adjusting
+BALLOON_DEFLATE.
+
+Let's do that.  This is a preparation for factoring out this handling to
+the core code, making it work in a similar way first.
+
+As this (deflating while migrating because of inflation error) is a corner
+case that I don't really expect to happen in practice and the stats are
+not that crucial, this likely doesn't classify as a fix.
+
+Link: https://lkml.kernel.org/r/20260119230133.3551867-1-david@kernel.org
+Link: https://lkml.kernel.org/r/20260119230133.3551867-2-david@kernel.org
+Signed-off-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Acked-by: Michael S. Tsirkin <mst@redhat.com
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: Jerrin Shaji George <jerrin.shaji-george@broadcom.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/misc/vmw_balloon.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/misc/vmw_balloon.c b/drivers/misc/vmw_balloon.c
+index cc1d18b3df5ca..2cc34c4968fac 100644
+--- a/drivers/misc/vmw_balloon.c
++++ b/drivers/misc/vmw_balloon.c
+@@ -1818,6 +1818,8 @@ static int vmballoon_migratepage(struct balloon_dev_info *b_dev_info,
+ 	if (status == VMW_BALLOON_SUCCESS) {
+ 		balloon_page_insert(&b->b_dev_info, newpage);
+ 		__count_vm_event(BALLOON_MIGRATE);
++	} else {
++		__count_vm_event(BALLOON_DEFLATE);
+ 	}
+ 
+ 	/*
+-- 
+2.47.3
+

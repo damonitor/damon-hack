@@ -1,0 +1,243 @@
+From: Jason Miu <jasonmiu@google.com>
+Date: Mon, 5 Jan 2026 18:58:38 +0200
+Subject: [PATCH] kho: relocate vmalloc preservation structure to KHO ABI
+ header
+
+The `struct kho_vmalloc` defines the in-memory layout for preserving
+vmalloc regions across kexec.  This layout is a contract between kernels
+and part of the KHO ABI.
+
+To reflect this relationship, the related structs and helper macros are
+relocated to the ABI header, `include/linux/kho/abi/kexec_handover.h`.
+This move places the structure's definition under the protection of the
+KHO_FDT_COMPATIBLE version string.
+
+The structure and its components are now also documented within the ABI
+header to describe the contract and prevent ABI breaks.
+
+[rppt@kernel.org: update comment, per Pratyush]
+  Link: https://lkml.kernel.org/r/aW_Mqp6HcqLwQImS@kernel.org
+Link: https://lkml.kernel.org/r/20260105165839.285270-6-rppt@kernel.org
+Signed-off-by: Jason Miu <jasonmiu@google.com>
+Co-developed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/core-api/kho/abi.rst     |  6 ++
+ include/linux/kexec_handover.h         | 27 +--------
+ include/linux/kho/abi/kexec_handover.h | 78 ++++++++++++++++++++++++++
+ include/linux/kho/abi/memfd.h          |  2 +-
+ kernel/liveupdate/kexec_handover.c     | 15 -----
+ lib/test_kho.c                         |  1 +
+ 6 files changed, 88 insertions(+), 41 deletions(-)
+
+diff --git a/Documentation/core-api/kho/abi.rst b/Documentation/core-api/kho/abi.rst
+index a1ee0f4817278..1d9916adee233 100644
+--- a/Documentation/core-api/kho/abi.rst
++++ b/Documentation/core-api/kho/abi.rst
+@@ -10,6 +10,12 @@ Core Kexec Handover ABI
+ .. kernel-doc:: include/linux/kho/abi/kexec_handover.h
+    :doc: Kexec Handover ABI
+ 
++vmalloc preservation ABI
++========================
++
++.. kernel-doc:: include/linux/kho/abi/kexec_handover.h
++   :doc: Kexec Handover ABI for vmalloc Preservation
++
+ See Also
+ ========
+ 
+diff --git a/include/linux/kexec_handover.h b/include/linux/kexec_handover.h
+index 5f7b9de97e8d3..a56ff3ffaf176 100644
+--- a/include/linux/kexec_handover.h
++++ b/include/linux/kexec_handover.h
+@@ -11,34 +11,11 @@ struct kho_scratch {
+ 	phys_addr_t size;
+ };
+ 
++struct kho_vmalloc;
++
+ struct folio;
+ struct page;
+ 
+-#define DECLARE_KHOSER_PTR(name, type) \
+-	union {                        \
+-		phys_addr_t phys;      \
+-		type ptr;              \
+-	} name
+-#define KHOSER_STORE_PTR(dest, val)               \
+-	({                                        \
+-		typeof(val) v = val;              \
+-		typecheck(typeof((dest).ptr), v); \
+-		(dest).phys = virt_to_phys(v);    \
+-	})
+-#define KHOSER_LOAD_PTR(src)                                                 \
+-	({                                                                   \
+-		typeof(src) s = src;                                         \
+-		(typeof((s).ptr))((s).phys ? phys_to_virt((s).phys) : NULL); \
+-	})
+-
+-struct kho_vmalloc_chunk;
+-struct kho_vmalloc {
+-	DECLARE_KHOSER_PTR(first, struct kho_vmalloc_chunk *);
+-	unsigned int total_pages;
+-	unsigned short flags;
+-	unsigned short order;
+-};
+-
+ #ifdef CONFIG_KEXEC_HANDOVER
+ bool kho_is_enabled(void);
+ bool is_kho_boot(void);
+diff --git a/include/linux/kho/abi/kexec_handover.h b/include/linux/kho/abi/kexec_handover.h
+index af9fa8c134c73..2201a0d2c159a 100644
+--- a/include/linux/kho/abi/kexec_handover.h
++++ b/include/linux/kho/abi/kexec_handover.h
+@@ -10,6 +10,8 @@
+ #ifndef _LINUX_KHO_ABI_KEXEC_HANDOVER_H
+ #define _LINUX_KHO_ABI_KEXEC_HANDOVER_H
+ 
++#include <linux/types.h>
++
+ /**
+  * DOC: Kexec Handover ABI
+  *
+@@ -82,4 +84,80 @@
+ /* The FDT property for sub-FDTs. */
+ #define KHO_FDT_SUB_TREE_PROP_NAME "fdt"
+ 
++/**
++ * DOC: Kexec Handover ABI for vmalloc Preservation
++ *
++ * The Kexec Handover ABI for preserving vmalloc'ed memory is defined by
++ * a set of structures and helper macros. The layout of these structures is a
++ * stable contract between kernels and is versioned by the KHO_FDT_COMPATIBLE
++ * string.
++ *
++ * The preservation is managed through a main descriptor &struct kho_vmalloc,
++ * which points to a linked list of &struct kho_vmalloc_chunk structures. These
++ * chunks contain the physical addresses of the preserved pages, allowing the
++ * next kernel to reconstruct the vmalloc area with the same content and layout.
++ * Helper macros are also defined for storing and loading pointers within
++ * these structures.
++ */
++
++/* Helper macro to define a union for a serializable pointer. */
++#define DECLARE_KHOSER_PTR(name, type)	\
++	union {                        \
++		u64 phys;              \
++		type ptr;              \
++	} name
++
++/* Stores the physical address of a serializable pointer. */
++#define KHOSER_STORE_PTR(dest, val)               \
++	({                                        \
++		typeof(val) v = val;              \
++		typecheck(typeof((dest).ptr), v); \
++		(dest).phys = virt_to_phys(v);    \
++	})
++
++/* Loads the stored physical address back to a pointer. */
++#define KHOSER_LOAD_PTR(src)						\
++	({                                                                   \
++		typeof(src) s = src;                                         \
++		(typeof((s).ptr))((s).phys ? phys_to_virt((s).phys) : NULL); \
++	})
++
++/*
++ * This header is embedded at the beginning of each `kho_vmalloc_chunk`
++ * and contains a pointer to the next chunk in the linked list,
++ * stored as a physical address for handover.
++ */
++struct kho_vmalloc_hdr {
++	DECLARE_KHOSER_PTR(next, struct kho_vmalloc_chunk *);
++};
++
++#define KHO_VMALLOC_SIZE				\
++	((PAGE_SIZE - sizeof(struct kho_vmalloc_hdr)) / \
++	 sizeof(u64))
++
++/*
++ * Each chunk is a single page and is part of a linked list that describes
++ * a preserved vmalloc area. It contains the header with the link to the next
++ * chunk and a zero terminated array of physical addresses of the pages that
++ * make up the preserved vmalloc area.
++ */
++struct kho_vmalloc_chunk {
++	struct kho_vmalloc_hdr hdr;
++	u64 phys[KHO_VMALLOC_SIZE];
++};
++
++static_assert(sizeof(struct kho_vmalloc_chunk) == PAGE_SIZE);
++
++/*
++ * Describes a preserved vmalloc memory area, including the
++ * total number of pages, allocation flags, page order, and a pointer to the
++ * first chunk of physical page addresses.
++ */
++struct kho_vmalloc {
++	DECLARE_KHOSER_PTR(first, struct kho_vmalloc_chunk *);
++	unsigned int total_pages;
++	unsigned short flags;
++	unsigned short order;
++};
++
+ #endif	/* _LINUX_KHO_ABI_KEXEC_HANDOVER_H */
+diff --git a/include/linux/kho/abi/memfd.h b/include/linux/kho/abi/memfd.h
+index c211c31334a36..68cb6303b846e 100644
+--- a/include/linux/kho/abi/memfd.h
++++ b/include/linux/kho/abi/memfd.h
+@@ -12,7 +12,7 @@
+ #define _LINUX_KHO_ABI_MEMFD_H
+ 
+ #include <linux/types.h>
+-#include <linux/kexec_handover.h>
++#include <linux/kho/abi/kexec_handover.h>
+ 
+ /**
+  * DOC: memfd Live Update ABI
+diff --git a/kernel/liveupdate/kexec_handover.c b/kernel/liveupdate/kexec_handover.c
+index 8f57d6e040afb..66fcdda0ebdcc 100644
+--- a/kernel/liveupdate/kexec_handover.c
++++ b/kernel/liveupdate/kexec_handover.c
+@@ -876,21 +876,6 @@ void kho_unpreserve_pages(struct page *page, unsigned int nr_pages)
+ }
+ EXPORT_SYMBOL_GPL(kho_unpreserve_pages);
+ 
+-struct kho_vmalloc_hdr {
+-	DECLARE_KHOSER_PTR(next, struct kho_vmalloc_chunk *);
+-};
+-
+-#define KHO_VMALLOC_SIZE				\
+-	((PAGE_SIZE - sizeof(struct kho_vmalloc_hdr)) / \
+-	 sizeof(phys_addr_t))
+-
+-struct kho_vmalloc_chunk {
+-	struct kho_vmalloc_hdr hdr;
+-	phys_addr_t phys[KHO_VMALLOC_SIZE];
+-};
+-
+-static_assert(sizeof(struct kho_vmalloc_chunk) == PAGE_SIZE);
+-
+ /* vmalloc flags KHO supports */
+ #define KHO_VMALLOC_SUPPORTED_FLAGS	(VM_ALLOC | VM_ALLOW_HUGE_VMAP)
+ 
+diff --git a/lib/test_kho.c b/lib/test_kho.c
+index 47de562807955..3431daca69689 100644
+--- a/lib/test_kho.c
++++ b/lib/test_kho.c
+@@ -19,6 +19,7 @@
+ #include <linux/printk.h>
+ #include <linux/vmalloc.h>
+ #include <linux/kexec_handover.h>
++#include <linux/kho/abi/kexec_handover.h>
+ 
+ #include <net/checksum.h>
+ 
+-- 
+2.47.3
+

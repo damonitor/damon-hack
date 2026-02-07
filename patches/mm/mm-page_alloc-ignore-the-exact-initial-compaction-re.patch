@@ -1,0 +1,116 @@
+From: Vlastimil Babka <vbabka@suse.cz>
+Date: Tue, 6 Jan 2026 12:52:36 +0100
+Subject: [PATCH] mm/page_alloc: ignore the exact initial compaction result
+
+Patch series "tweaks for __alloc_pages_slowpath()", v3.
+
+
+This patch (of 3):
+
+For allocations that are of costly order and __GFP_NORETRY (and can
+perform compaction) we attempt direct compaction first.  If that fails, we
+continue with a single round of direct reclaim+compaction (as for other
+__GFP_NORETRY allocations, except the compaction is of lower priority),
+with two exceptions that fail immediately:
+
+- __GFP_THISNODE is specified, to prevent zone_reclaim_mode-like
+  behavior for e.g. THP page faults
+
+- compaction failed because it was deferred (i.e. has been failing
+  recently so further attempts are not done for a while) or skipped,
+  which means there are insufficient free base pages to defragment to
+  begin with
+
+Upon closer inspection, the second condition has a somewhat flawed
+reasoning.  If there are not enough base pages and reclaim could create
+them, we instead fail.  When there are enough base pages and compaction
+has already ran and failed, we proceed and hope that reclaim and the
+subsequent compaction attempt will succeed.  But it's unclear why they
+should and whether it will be as inexpensive as intended.
+
+It might make therefore more sense to just fail unconditionally after the
+initial compaction attempt.  However that would change the semantics of
+__GFP_NORETRY to attempt reclaim at least once.
+
+Alternatively we can remove the compaction result checks and proceed with
+the single reclaim and (lower priority) compaction attempt, leaving only
+the __GFP_THISNODE exception for failing immediately.
+
+Link: https://lkml.kernel.org/r/20260106-thp-thisnode-tweak-v3-0-f5d67c21a193@suse.cz
+Link: https://lkml.kernel.org/r/20260106-thp-thisnode-tweak-v3-1-f5d67c21a193@suse.cz
+Signed-off-by: Vlastimil Babka <vbabka@suse.cz>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 34 ++++++----------------------------
+ 1 file changed, 6 insertions(+), 28 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index bc3ee3102b19a..8e6d2e61374ae 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4797,44 +4797,22 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 		 * includes some THP page fault allocations
+ 		 */
+ 		if (costly_order && (gfp_mask & __GFP_NORETRY)) {
+-			/*
+-			 * If allocating entire pageblock(s) and compaction
+-			 * failed because all zones are below low watermarks
+-			 * or is prohibited because it recently failed at this
+-			 * order, fail immediately unless the allocator has
+-			 * requested compaction and reclaim retry.
+-			 *
+-			 * Reclaim is
+-			 *  - potentially very expensive because zones are far
+-			 *    below their low watermarks or this is part of very
+-			 *    bursty high order allocations,
+-			 *  - not guaranteed to help because isolate_freepages()
+-			 *    may not iterate over freed pages as part of its
+-			 *    linear scan, and
+-			 *  - unlikely to make entire pageblocks free on its
+-			 *    own.
+-			 */
+-			if (compact_result == COMPACT_SKIPPED ||
+-			    compact_result == COMPACT_DEFERRED)
+-				goto nopage;
+-
+ 			/*
+ 			 * THP page faults may attempt local node only first,
+ 			 * but are then allowed to only compact, not reclaim,
+ 			 * see alloc_pages_mpol().
+ 			 *
+-			 * Compaction can fail for other reasons than those
+-			 * checked above and we don't want such THP allocations
+-			 * to put reclaim pressure on a single node in a
+-			 * situation where other nodes might have plenty of
+-			 * available memory.
++			 * Compaction has failed above and we don't want such
++			 * THP allocations to put reclaim pressure on a single
++			 * node in a situation where other nodes might have
++			 * plenty of available memory.
+ 			 */
+ 			if (gfp_mask & __GFP_THISNODE)
+ 				goto nopage;
+ 
+ 			/*
+-			 * Looks like reclaim/compaction is worth trying, but
+-			 * sync compaction could be very expensive, so keep
++			 * Proceed with single round of reclaim/compaction, but
++			 * since sync compaction could be very expensive, keep
+ 			 * using async compaction.
+ 			 */
+ 			compact_priority = INIT_COMPACT_PRIORITY;
+-- 
+2.47.3
+

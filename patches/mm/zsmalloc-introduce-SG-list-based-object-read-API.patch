@@ -1,0 +1,142 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Tue, 13 Jan 2026 12:46:45 +0900
+Subject: [PATCH] zsmalloc: introduce SG-list based object read API
+
+Currently, zsmalloc performs address linearization on read (which
+sometimes requires memcpy() to a local buffer).  Not all zsmalloc users
+need a linear address.  For example, Crypto API supports SG-list,
+performing linearization under the hood, if needed.  In addition, some
+compressors can have native SG-list support, completely avoiding the
+linearization step.
+
+Provide an SG-list based zsmalloc read API:
+- zs_obj_read_sg_begin()
+- zs_obj_read_sg_end()
+
+This API allows callers to obtain an SG representation of the object (one
+entry for objects that are contained in a single page and two entries for
+spanning objects), avoiding the need for a bounce buffer and memcpy.
+
+[senozhatsky@chromium.org: make zs_obj_read_sg_begin() return void, per Yosry]
+  Link: https://lkml.kernel.org/r/20260117024900.792237-1-senozhatsky@chromium.org
+Link: https://lkml.kernel.org/r/20260113034645.2729998-1-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Acked-by: Herbert Xu <herbert@gondor.apana.org.au>
+Tested-by: Yosry Ahmed <yosry.ahmed@linux.dev>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/zsmalloc.h |  4 +++
+ mm/zsmalloc.c            | 63 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+)
+
+diff --git a/include/linux/zsmalloc.h b/include/linux/zsmalloc.h
+index 5565c3171007c..478410c880b1f 100644
+--- a/include/linux/zsmalloc.h
++++ b/include/linux/zsmalloc.h
+@@ -22,6 +22,7 @@ struct zs_pool_stats {
+ };
+ 
+ struct zs_pool;
++struct scatterlist;
+ 
+ struct zs_pool *zs_create_pool(const char *name);
+ void zs_destroy_pool(struct zs_pool *pool);
+@@ -43,6 +44,9 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ 			size_t mem_len, void *local_copy);
+ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+ 		     size_t mem_len, void *handle_mem);
++void zs_obj_read_sg_begin(struct zs_pool *pool, unsigned long handle,
++			  struct scatterlist *sg, size_t mem_len);
++void zs_obj_read_sg_end(struct zs_pool *pool, unsigned long handle);
+ void zs_obj_write(struct zs_pool *pool, unsigned long handle,
+ 		  void *handle_mem, size_t mem_len);
+ 
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index cc3d9501ae219..dccb88d52c075 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -30,6 +30,7 @@
+ #include <linux/highmem.h>
+ #include <linux/string.h>
+ #include <linux/slab.h>
++#include <linux/scatterlist.h>
+ #include <linux/spinlock.h>
+ #include <linux/sprintf.h>
+ #include <linux/shrinker.h>
+@@ -1141,6 +1142,68 @@ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+ }
+ EXPORT_SYMBOL_GPL(zs_obj_read_end);
+ 
++void zs_obj_read_sg_begin(struct zs_pool *pool, unsigned long handle,
++			  struct scatterlist *sg, size_t mem_len)
++{
++	struct zspage *zspage;
++	struct zpdesc *zpdesc;
++	unsigned long obj, off;
++	unsigned int obj_idx;
++	struct size_class *class;
++
++	/* Guarantee we can get zspage from handle safely */
++	read_lock(&pool->lock);
++	obj = handle_to_obj(handle);
++	obj_to_location(obj, &zpdesc, &obj_idx);
++	zspage = get_zspage(zpdesc);
++
++	/* Make sure migration doesn't move any pages in this zspage */
++	zspage_read_lock(zspage);
++	read_unlock(&pool->lock);
++
++	class = zspage_class(pool, zspage);
++	off = offset_in_page(class->size * obj_idx);
++
++	if (!ZsHugePage(zspage))
++		off += ZS_HANDLE_SIZE;
++
++	if (off + mem_len <= PAGE_SIZE) {
++		/* this object is contained entirely within a page */
++		sg_init_table(sg, 1);
++		sg_set_page(sg, zpdesc_page(zpdesc), mem_len, off);
++	} else {
++		size_t sizes[2];
++
++		/* this object spans two pages */
++		sizes[0] = PAGE_SIZE - off;
++		sizes[1] = mem_len - sizes[0];
++
++		sg_init_table(sg, 2);
++		sg_set_page(sg, zpdesc_page(zpdesc), sizes[0], off);
++
++		zpdesc = get_next_zpdesc(zpdesc);
++		sg = sg_next(sg);
++
++		sg_set_page(sg, zpdesc_page(zpdesc), sizes[1], 0);
++	}
++}
++EXPORT_SYMBOL_GPL(zs_obj_read_sg_begin);
++
++void zs_obj_read_sg_end(struct zs_pool *pool, unsigned long handle)
++{
++	struct zspage *zspage;
++	struct zpdesc *zpdesc;
++	unsigned long obj;
++	unsigned int obj_idx;
++
++	obj = handle_to_obj(handle);
++	obj_to_location(obj, &zpdesc, &obj_idx);
++	zspage = get_zspage(zpdesc);
++
++	zspage_read_unlock(zspage);
++}
++EXPORT_SYMBOL_GPL(zs_obj_read_sg_end);
++
+ void zs_obj_write(struct zs_pool *pool, unsigned long handle,
+ 		  void *handle_mem, size_t mem_len)
+ {
+-- 
+2.47.3
+

@@ -1,0 +1,68 @@
+From: Enze Li <lienze@kylinos.cn>
+Date: Tue, 2 Dec 2025 16:23:40 +0800
+Subject: [PATCH] mm/damon/core: fix memory leak of repeat mode
+ damon_call_control objects
+
+A memory leak exists in the handling of repeat mode damon_call_control
+objects by kdamond_call().  While damon_call() correctly allows multiple
+repeat mode objects (with ->repeat set to true) to be added to the
+per-context list, kdamond_call() incorrectly processes them.
+
+The function moves all repeat mode objects from the context's list to a
+temporary list (repeat_controls).  However, it only moves the first object
+back to the context's list for future calls, leaving the remaining objects
+on the temporary list where they are abandoned and leaked.
+
+This patch fixes the leak by ensuring all repeat mode objects are properly
+re-added to the context's list.
+
+Note that the leak is not in the real world, and therefore no user is
+impacted.  It is only potential for imaginaray damon_call() use cases that
+do not exist in the tree for now.  In more detail, the leak happens only
+when the multiple repeat mode objects are assumed to be deallocated by
+kdamond_call() (damon_call_control->dealloc_on_cancel is set).  There is
+no such damon_call() use cases at the moment.
+
+Link: https://lkml.kernel.org/r/20251202082340.34178-1-lienze@kylinos.cn
+Fixes: 43df7676e550 ("mm/damon/core: introduce repeat mode damon_call()")
+Signed-off-by: Enze Li <lienze@kylinos.cn>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 84f80a20f2336..c852cac4f82e9 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2606,13 +2606,19 @@ static void kdamond_call(struct damon_ctx *ctx, bool cancel)
+ 			list_add(&control->list, &repeat_controls);
+ 		}
+ 	}
+-	control = list_first_entry_or_null(&repeat_controls,
+-			struct damon_call_control, list);
+-	if (!control || cancel)
+-		return;
+-	mutex_lock(&ctx->call_controls_lock);
+-	list_add_tail(&control->list, &ctx->call_controls);
+-	mutex_unlock(&ctx->call_controls_lock);
++	while (true) {
++		control = list_first_entry_or_null(&repeat_controls,
++				struct damon_call_control, list);
++		if (!control)
++			break;
++		/* Unlink from the repeate_controls list. */
++		list_del(&control->list);
++		if (cancel)
++			continue;
++		mutex_lock(&ctx->call_controls_lock);
++		list_add(&control->list, &ctx->call_controls);
++		mutex_unlock(&ctx->call_controls_lock);
++	}
+ }
+ 
+ /* Returns negative error code if it's not activated but should return */
+-- 
+2.47.3
+

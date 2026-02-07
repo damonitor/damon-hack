@@ -1,0 +1,61 @@
+From: Ran Xiaokai <ran.xiaokai@zte.com.cn>
+Date: Thu, 22 Jan 2026 13:27:40 +0000
+Subject: [PATCH] kho: init alloc tags when restoring pages from reserved
+ memory
+
+Memblock pages (including reserved memory) should have their allocation
+tags initialized to CODETAG_EMPTY via clear_page_tag_ref() before being
+released to the page allocator.  When kho restores pages through
+kho_restore_page(), missing this call causes mismatched
+allocation/deallocation tracking and below warning message:
+
+alloc_tag was not set
+WARNING: include/linux/alloc_tag.h:164 at ___free_pages+0xb8/0x260, CPU#1: swapper/0/1
+RIP: 0010:___free_pages+0xb8/0x260
+ kho_restore_vmalloc+0x187/0x2e0
+ kho_test_init+0x3c4/0xa30
+ do_one_initcall+0x62/0x2b0
+ kernel_init_freeable+0x25b/0x480
+ kernel_init+0x1a/0x1c0
+ ret_from_fork+0x2d1/0x360
+
+Add missing clear_page_tag_ref() annotation in kho_restore_page() to
+fix this.
+
+Link: https://lkml.kernel.org/r/20260122132740.176468-1-ranxiaokai627@163.com
+Fixes: fc33e4b44b27 ("kexec: enable KHO support for memory preservation")
+Signed-off-by: Ran Xiaokai <ran.xiaokai@zte.com.cn>
+Reviewed-by: Pratyush Yadav <pratyush@kernel.org>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/kexec_handover.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/kernel/liveupdate/kexec_handover.c b/kernel/liveupdate/kexec_handover.c
+index d4482b6e3cae3..96767b106cac7 100644
+--- a/kernel/liveupdate/kexec_handover.c
++++ b/kernel/liveupdate/kexec_handover.c
+@@ -255,6 +255,14 @@ static struct page *kho_restore_page(phys_addr_t phys, bool is_folio)
+ 	if (is_folio && info.order)
+ 		prep_compound_page(page, info.order);
+ 
++	/* Always mark headpage's codetag as empty to avoid accounting mismatch */
++	clear_page_tag_ref(page);
++	if (!is_folio) {
++		/* Also do that for the non-compound tail pages */
++		for (unsigned int i = 1; i < nr_pages; i++)
++			clear_page_tag_ref(page + i);
++	}
++
+ 	adjust_managed_page_count(page, nr_pages);
+ 	return page;
+ }
+-- 
+2.47.3
+

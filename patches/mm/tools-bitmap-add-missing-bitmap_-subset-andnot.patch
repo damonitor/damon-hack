@@ -1,0 +1,118 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Thu, 22 Jan 2026 16:06:13 +0000
+Subject: [PATCH] tools: bitmap: add missing bitmap_[subset(), andnot()]
+
+The bitmap_subset() and bitmap_andnot() functions are not present in the
+tools version of include/linux/bitmap.h, so add them as subsequent patches
+implement test code that requires them.
+
+We also add the missing __bitmap_subset() to tools/lib/bitmap.c.
+
+Link: https://lkml.kernel.org/r/0fd0d4ec868297f522003cb4b5898b53b498805b.1769097829.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Damien Le Moal <dlemoal@kernel.org>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Yury Norov <ynorov@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/include/linux/bitmap.h | 22 ++++++++++++++++++++++
+ tools/lib/bitmap.c           | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 51 insertions(+)
+
+diff --git a/tools/include/linux/bitmap.h b/tools/include/linux/bitmap.h
+index 0d992245c600d..250883090a5df 100644
+--- a/tools/include/linux/bitmap.h
++++ b/tools/include/linux/bitmap.h
+@@ -24,6 +24,10 @@ void __bitmap_set(unsigned long *map, unsigned int start, int len);
+ void __bitmap_clear(unsigned long *map, unsigned int start, int len);
+ bool __bitmap_intersects(const unsigned long *bitmap1,
+ 			 const unsigned long *bitmap2, unsigned int bits);
++bool __bitmap_subset(const unsigned long *bitmap1,
++		     const unsigned long *bitmap2, unsigned int nbits);
++bool __bitmap_andnot(unsigned long *dst, const unsigned long *bitmap1,
++		    const unsigned long *bitmap2, unsigned int nbits);
+ 
+ #define BITMAP_FIRST_WORD_MASK(start) (~0UL << ((start) & (BITS_PER_LONG - 1)))
+ #define BITMAP_LAST_WORD_MASK(nbits) (~0UL >> (-(nbits) & (BITS_PER_LONG - 1)))
+@@ -81,6 +85,15 @@ static inline void bitmap_or(unsigned long *dst, const unsigned long *src1,
+ 		__bitmap_or(dst, src1, src2, nbits);
+ }
+ 
++static __always_inline
++bool bitmap_andnot(unsigned long *dst, const unsigned long *src1,
++		   const unsigned long *src2, unsigned int nbits)
++{
++	if (small_const_nbits(nbits))
++		return (*dst = *src1 & ~(*src2) & BITMAP_LAST_WORD_MASK(nbits)) != 0;
++	return __bitmap_andnot(dst, src1, src2, nbits);
++}
++
+ static inline unsigned long *bitmap_alloc(unsigned int nbits, gfp_t flags __maybe_unused)
+ {
+ 	return malloc(bitmap_size(nbits));
+@@ -157,6 +170,15 @@ static inline bool bitmap_intersects(const unsigned long *src1,
+ 		return __bitmap_intersects(src1, src2, nbits);
+ }
+ 
++static __always_inline
++bool bitmap_subset(const unsigned long *src1, const unsigned long *src2, unsigned int nbits)
++{
++	if (small_const_nbits(nbits))
++		return ! ((*src1 & ~(*src2)) & BITMAP_LAST_WORD_MASK(nbits));
++	else
++		return __bitmap_subset(src1, src2, nbits);
++}
++
+ static inline void bitmap_set(unsigned long *map, unsigned int start, unsigned int nbits)
+ {
+ 	if (__builtin_constant_p(nbits) && nbits == 1)
+diff --git a/tools/lib/bitmap.c b/tools/lib/bitmap.c
+index 51255c69754d3..aa83d22c45e37 100644
+--- a/tools/lib/bitmap.c
++++ b/tools/lib/bitmap.c
+@@ -140,3 +140,32 @@ void __bitmap_clear(unsigned long *map, unsigned int start, int len)
+ 		*p &= ~mask_to_clear;
+ 	}
+ }
++
++bool __bitmap_andnot(unsigned long *dst, const unsigned long *bitmap1,
++				const unsigned long *bitmap2, unsigned int bits)
++{
++	unsigned int k;
++	unsigned int lim = bits/BITS_PER_LONG;
++	unsigned long result = 0;
++
++	for (k = 0; k < lim; k++)
++		result |= (dst[k] = bitmap1[k] & ~bitmap2[k]);
++	if (bits % BITS_PER_LONG)
++		result |= (dst[k] = bitmap1[k] & ~bitmap2[k] &
++			   BITMAP_LAST_WORD_MASK(bits));
++	return result != 0;
++}
++
++bool __bitmap_subset(const unsigned long *bitmap1,
++		     const unsigned long *bitmap2, unsigned int bits)
++{
++	unsigned int k, lim = bits/BITS_PER_LONG;
++	for (k = 0; k < lim; ++k)
++		if (bitmap1[k] & ~bitmap2[k])
++			return false;
++
++	if (bits % BITS_PER_LONG)
++		if ((bitmap1[k] & ~bitmap2[k]) & BITMAP_LAST_WORD_MASK(bits))
++			return false;
++	return true;
++}
+-- 
+2.47.3
+

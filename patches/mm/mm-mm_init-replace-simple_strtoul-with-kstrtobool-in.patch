@@ -1,0 +1,77 @@
+From: Thorsten Blum <thorsten.blum@linux.dev>
+Date: Wed, 17 Dec 2025 12:02:13 +0100
+Subject: [PATCH] mm/mm_init: replace simple_strtoul with kstrtobool in
+ set_hashdist
+
+Use bool for 'hashdist' and replace simple_strtoul() with kstrtobool() for
+parsing the 'hashdist=' boot parameter.  Unlike simple_strtoul(), which
+returns an unsigned long, kstrtobool() converts the string directly to
+bool and avoids implicit casting.
+
+Check the return value of kstrtobool() and reject invalid values.  This
+adds error handling while preserving behavior for existing values, and
+removes use of the deprecated simple_strtoul() helper.  The current code
+silently sets 'hashdist = 0' if parsing fails, instead of leaving the
+default value (HASHDIST_DEFAULT) unchanged.
+
+Additionally, kstrtobool() accepts common boolean strings such as "on" and
+"off".
+
+Link: https://lkml.kernel.org/r/20251217110214.50807-1-thorsten.blum@linux.dev
+Signed-off-by: Thorsten Blum <thorsten.blum@linux.dev>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memblock.h | 4 ++--
+ mm/mm_init.c             | 9 +++------
+ 2 files changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/memblock.h b/include/linux/memblock.h
+index 221118b5a16e1..6ec5e9ac06992 100644
+--- a/include/linux/memblock.h
++++ b/include/linux/memblock.h
+@@ -598,9 +598,9 @@ extern void *alloc_large_system_hash(const char *tablename,
+  */
+ #ifdef CONFIG_NUMA
+ #define HASHDIST_DEFAULT IS_ENABLED(CONFIG_64BIT)
+-extern int hashdist;		/* Distribute hashes across NUMA nodes? */
++extern bool hashdist;		/* Distribute hashes across NUMA nodes? */
+ #else
+-#define hashdist (0)
++#define hashdist (false)
+ #endif
+ 
+ #ifdef CONFIG_MEMTEST
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index fc2a6f1e518f1..d86248566a56b 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -646,21 +646,18 @@ int __meminit early_pfn_to_nid(unsigned long pfn)
+ 	return nid;
+ }
+ 
+-int hashdist = HASHDIST_DEFAULT;
++bool hashdist = HASHDIST_DEFAULT;
+ 
+ static int __init set_hashdist(char *str)
+ {
+-	if (!str)
+-		return 0;
+-	hashdist = simple_strtoul(str, &str, 0);
+-	return 1;
++	return kstrtobool(str, &hashdist) == 0;
+ }
+ __setup("hashdist=", set_hashdist);
+ 
+ static inline void fixup_hashdist(void)
+ {
+ 	if (num_node_state(N_MEMORY) == 1)
+-		hashdist = 0;
++		hashdist = false;
+ }
+ #else
+ static inline void fixup_hashdist(void) {}
+-- 
+2.47.3
+

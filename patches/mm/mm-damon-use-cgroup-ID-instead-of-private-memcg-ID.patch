@@ -1,0 +1,119 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 25 Dec 2025 15:21:13 -0800
+Subject: [PATCH] mm/damon: use cgroup ID instead of private memcg ID
+
+DAMON was using the internal private memcg ID which is meant for tracking
+kernel objects that outlive their cgroup.  Switch to using the public
+cgroup ID instead.
+
+Link: https://lkml.kernel.org/r/20251225232116.294540-6-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h    | 4 ++--
+ mm/damon/core.c          | 7 ++-----
+ mm/damon/ops-common.c    | 2 +-
+ mm/damon/sysfs-schemes.c | 8 ++++----
+ 4 files changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index a67292a2f09dc..650e7ecfa32b8 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -203,7 +203,7 @@ struct damos_quota_goal {
+ 		u64 last_psi_total;
+ 		struct {
+ 			int nid;
+-			unsigned short memcg_id;
++			u64 memcg_id;
+ 		};
+ 	};
+ 	struct list_head list;
+@@ -419,7 +419,7 @@ struct damos_filter {
+ 	bool matching;
+ 	bool allow;
+ 	union {
+-		unsigned short memcg_id;
++		u64 memcg_id;
+ 		struct damon_addr_range addr_range;
+ 		int target_idx;
+ 		struct damon_size_range sz_range;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 7f0028e23f92d..3edbff685534d 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2094,16 +2094,13 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 	unsigned long used_pages, numerator;
+ 	struct sysinfo i;
+ 
+-	rcu_read_lock();
+-	memcg = mem_cgroup_from_id(goal->memcg_id);
+-	if (!memcg || !mem_cgroup_tryget(memcg)) {
+-		rcu_read_unlock();
++	memcg = mem_cgroup_get_from_ino(goal->memcg_id);
++	if (!memcg) {
+ 		if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
+ 			return 0;
+ 		else	/* DAMOS_QUOTA_NODE_MEMCG_FREE_BP */
+ 			return 10000;
+ 	}
+-	rcu_read_unlock();
+ 
+ 	mem_cgroup_flush_stats(memcg);
+ 	lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(goal->nid));
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index a218d99222342..dd81db95f9011 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -274,7 +274,7 @@ bool damos_folio_filter_match(struct damos_filter *filter, struct folio *folio)
+ 		if (!memcg)
+ 			matched = false;
+ 		else
+-			matched = filter->memcg_id == mem_cgroup_id(memcg);
++			matched = filter->memcg_id == mem_cgroup_ino(memcg);
+ 		rcu_read_unlock();
+ 		break;
+ 	case DAMOS_FILTER_TYPE_YOUNG:
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 19bc2288cd68c..6125f259eceab 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2494,7 +2494,7 @@ static bool damon_sysfs_memcg_path_eq(struct mem_cgroup *memcg,
+ 	return false;
+ }
+ 
+-static int damon_sysfs_memcg_path_to_id(char *memcg_path, unsigned short *id)
++static int damon_sysfs_memcg_path_to_id(char *memcg_path, u64 *id)
+ {
+ 	struct mem_cgroup *memcg;
+ 	char *path;
+@@ -2509,11 +2509,11 @@ static int damon_sysfs_memcg_path_to_id(char *memcg_path, unsigned short *id)
+ 
+ 	for (memcg = mem_cgroup_iter(NULL, NULL, NULL); memcg;
+ 			memcg = mem_cgroup_iter(NULL, memcg, NULL)) {
+-		/* skip removed memcg */
+-		if (!mem_cgroup_id(memcg))
++		/* skip offlined memcg */
++		if (!mem_cgroup_online(memcg))
+ 			continue;
+ 		if (damon_sysfs_memcg_path_eq(memcg, path, memcg_path)) {
+-			*id = mem_cgroup_id(memcg);
++			*id = mem_cgroup_ino(memcg);
+ 			found = true;
+ 			break;
+ 		}
+-- 
+2.47.3
+

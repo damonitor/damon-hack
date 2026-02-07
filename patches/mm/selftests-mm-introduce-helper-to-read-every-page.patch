@@ -1,0 +1,122 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Thu, 22 Jan 2026 17:02:21 +0000
+Subject: [PATCH] selftests/mm: introduce helper to read every page
+
+FORCE_READ(*addr) ensures that the compiler will emit a load from addr.
+Several tests need to trigger such a load for a range of pages, ensuring
+that every page is faulted in, if it wasn't already.
+
+Introduce a new helper force_read_pages() that does exactly that and
+replace existing loops with a call to it.
+
+The step size (regular/huge page size) is preserved for all loops, except
+in split_huge_page_test.  Reading every byte is unnecessary; we now read
+every huge page, matching the following call to check_huge_file().
+
+Link: https://lkml.kernel.org/r/20260122170224.4056513-7-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: Yunsheng Lin <linyunsheng@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/hugetlb-madvise.c      | 9 +--------
+ tools/testing/selftests/mm/pfnmap.c               | 9 +++------
+ tools/testing/selftests/mm/split_huge_page_test.c | 6 +-----
+ tools/testing/selftests/mm/vm_util.h              | 7 +++++++
+ 4 files changed, 12 insertions(+), 19 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/hugetlb-madvise.c b/tools/testing/selftests/mm/hugetlb-madvise.c
+index 05d9d2805ae49..5b12041fa3104 100644
+--- a/tools/testing/selftests/mm/hugetlb-madvise.c
++++ b/tools/testing/selftests/mm/hugetlb-madvise.c
+@@ -47,14 +47,7 @@ void write_fault_pages(void *addr, unsigned long nr_pages)
+ 
+ void read_fault_pages(void *addr, unsigned long nr_pages)
+ {
+-	unsigned long i;
+-
+-	for (i = 0; i < nr_pages; i++) {
+-		unsigned long *addr2 =
+-			((unsigned long *)(addr + (i * huge_page_size)));
+-		/* Prevent the compiler from optimizing out the entire loop: */
+-		FORCE_READ(*addr2);
+-	}
++	force_read_pages(addr, nr_pages, huge_page_size);
+ }
+ 
+ int main(int argc, char **argv)
+diff --git a/tools/testing/selftests/mm/pfnmap.c b/tools/testing/selftests/mm/pfnmap.c
+index f546dfb10caeb..45b5f1cf60194 100644
+--- a/tools/testing/selftests/mm/pfnmap.c
++++ b/tools/testing/selftests/mm/pfnmap.c
+@@ -35,18 +35,15 @@ static void signal_handler(int sig)
+ 
+ static int test_read_access(char *addr, size_t size, size_t pagesize)
+ {
+-	size_t offs;
+ 	int ret;
+ 
+ 	if (signal(SIGSEGV, signal_handler) == SIG_ERR)
+ 		return -EINVAL;
+ 
+ 	ret = sigsetjmp(sigjmp_buf_env, 1);
+-	if (!ret) {
+-		for (offs = 0; offs < size; offs += pagesize)
+-			/* Force a read that the compiler cannot optimize out. */
+-			*((volatile char *)(addr + offs));
+-	}
++	if (!ret)
++		force_read_pages(addr, size/pagesize, pagesize);
++
+ 	if (signal(SIGSEGV, SIG_DFL) == SIG_ERR)
+ 		return -EINVAL;
+ 
+diff --git a/tools/testing/selftests/mm/split_huge_page_test.c b/tools/testing/selftests/mm/split_huge_page_test.c
+index 40799f3f02131..e0167111bdd15 100644
+--- a/tools/testing/selftests/mm/split_huge_page_test.c
++++ b/tools/testing/selftests/mm/split_huge_page_test.c
+@@ -652,11 +652,7 @@ static int create_pagecache_thp_and_fd(const char *testfile, size_t fd_size,
+ 	}
+ 	madvise(*addr, fd_size, MADV_HUGEPAGE);
+ 
+-	for (size_t i = 0; i < fd_size; i++) {
+-		char *addr2 = *addr + i;
+-
+-		FORCE_READ(*addr2);
+-	}
++	force_read_pages(*addr, fd_size / pmd_pagesize, pmd_pagesize);
+ 
+ 	if (!check_huge_file(*addr, fd_size / pmd_pagesize, pmd_pagesize)) {
+ 		ksft_print_msg("No large pagecache folio generated, please provide a filesystem supporting large folio\n");
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index 6ad32b1830f1f..522f7f9050f50 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -54,6 +54,13 @@ static inline unsigned int pshift(void)
+ 	return __page_shift;
+ }
+ 
++static inline void force_read_pages(char *addr, unsigned int nr_pages,
++				    size_t pagesize)
++{
++	for (unsigned int i = 0; i < nr_pages; i++)
++		FORCE_READ(addr[i * pagesize]);
++}
++
+ bool detect_huge_zeropage(void);
+ 
+ /*
+-- 
+2.47.3
+

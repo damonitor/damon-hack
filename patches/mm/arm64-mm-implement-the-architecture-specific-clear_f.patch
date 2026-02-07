@@ -1,0 +1,74 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Fri, 26 Dec 2025 14:07:58 +0800
+Subject: [PATCH] arm64: mm: implement the architecture-specific
+ clear_flush_young_ptes()
+
+Implement the Arm64 architecture-specific clear_flush_young_ptes() to
+enable batched checking of young flags and TLB flushing, improving
+performance during large folio reclamation.
+
+Performance testing:
+Allocate 10G clean file-backed folios by mmap() in a memory cgroup, and
+try to reclaim 8G file-backed folios via the memory.reclaim interface.  I
+can observe 33% performance improvement on my Arm64 32-core server (and
+10%+ improvement on my X86 machine).  Meanwhile, the hotspot
+folio_check_references() dropped from approximately 35% to around 5%.
+
+W/o patchset:
+real	0m1.518s
+user	0m0.000s
+sys	0m1.518s
+
+W/ patchset:
+real	0m1.018s
+user	0m0.000s
+sys	0m1.018s
+
+Link: https://lkml.kernel.org/r/9d866a2644051e13a41ef4d6ca3909c6e1f9e229.1766631066.git.baolin.wang@linux.alibaba.com
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Cc: Harry Yoo <harry.yoo@oracle.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index 3dabf5ea17faf..a17eb8a767884 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -1838,6 +1838,17 @@ static inline int ptep_clear_flush_young(struct vm_area_struct *vma,
+ 	return contpte_clear_flush_young_ptes(vma, addr, ptep, 1);
+ }
+ 
++#define clear_flush_young_ptes clear_flush_young_ptes
++static inline int clear_flush_young_ptes(struct vm_area_struct *vma,
++					 unsigned long addr, pte_t *ptep,
++					 unsigned int nr)
++{
++	if (likely(nr == 1 && !pte_cont(__ptep_get(ptep))))
++		return __ptep_clear_flush_young(vma, addr, ptep);
++
++	return contpte_clear_flush_young_ptes(vma, addr, ptep, nr);
++}
++
+ #define wrprotect_ptes wrprotect_ptes
+ static __always_inline void wrprotect_ptes(struct mm_struct *mm,
+ 				unsigned long addr, pte_t *ptep, unsigned int nr)
+-- 
+2.47.3
+

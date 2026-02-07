@@ -1,0 +1,53 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Thu, 22 Jan 2026 11:50:02 +0800
+Subject: [PATCH] hugetlb: increase hugepage reservations when using
+ node-specific "hugepages=" cmdline
+
+Commit 3dfd02c90037 ("hugetlb: increase number of reserving hugepages via
+cmdline") raised the number of hugepages that can be reserved through the
+boot-time "hugepages=" parameter for the non-node-specific case, but left
+the node-specific form of the same parameter unchanged.
+
+This patch extends the same optimization to node-specific reservations.
+When HugeTLB vmemmap optimization (HVO) is enabled and a node cannot
+satisfy the requested hugepages, the code first releases ordinary
+struct-page memory of hugepages obtained from the buddy allocator,
+allowing their struct-page memory to be reclaimed and reused for
+additional hugepage reservations on that node.
+
+This is particularly beneficial for configurations that require identical,
+large per-node hugepage reservations.  On a four-node, 384 GB x86 VM, the
+patch raises the attainable 2 MiB hugepage reservation from under 374 GB
+to more than 379 GB.
+
+Link: https://lkml.kernel.org/r/20260122035002.79958-1-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 120ebd448b423..0b005e944ee39 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3435,6 +3435,13 @@ static void __init hugetlb_hstate_alloc_pages_onenode(struct hstate *h, int nid)
+ 
+ 			folio = only_alloc_fresh_hugetlb_folio(h, gfp_mask, nid,
+ 					&node_states[N_MEMORY], NULL);
++			if (!folio && !list_empty(&folio_list) &&
++			    hugetlb_vmemmap_optimizable_size(h)) {
++				prep_and_add_allocated_folios(h, &folio_list);
++				INIT_LIST_HEAD(&folio_list);
++				folio = only_alloc_fresh_hugetlb_folio(h, gfp_mask, nid,
++						&node_states[N_MEMORY], NULL);
++			}
+ 			if (!folio)
+ 				break;
+ 			list_add(&folio->lru, &folio_list);
+-- 
+2.47.3
+

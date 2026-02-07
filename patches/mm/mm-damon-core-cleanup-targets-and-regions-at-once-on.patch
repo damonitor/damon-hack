@@ -1,0 +1,73 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 17 Jan 2026 09:52:49 -0800
+Subject: [PATCH] mm/damon/core: cleanup targets and regions at once on kdamond
+ termination
+
+When kdamond terminates, it destroys the regions of the context first, and
+the targets of the context just before the kdamond main function returns.
+Because regions are linked inside targets, doing them separately is only
+inefficient and looks weird.  A more serious problem is that the cleanup
+of the targets is done after damon_ctx->kdamond reset, which is the event
+that lets DAMON API callers know the kdamond is no longer actively
+running.  That is, some DAMON targets could still exist while kdamond is
+not running.  There are no real problems from this, but this implicit fact
+could cause subtle racy issues in future.  Destroy targets and regions at
+one.
+
+Adding contexts on how the code has evolved in the way.  Doing only
+regions destruction was because putting pids of the targets were done on
+DAMON API callers.  Commit 7114bc5e01cf ("mm/damon/core: add
+cleanup_target() ops callback") moved the role to be done via operations
+set on each target destruction.  Hence it removed the reason to do only
+regions cleanup.  Commit 3a69f1635769 ("mm/damon/core: destroy targets
+when kdamond_fn() finish") therefore further destructed targets on kdamond
+termination time.  It was still separated from regions destruction because
+damon_operations->cleanup() may do additional targets cleanup.  Placing
+the targets destruction after damon_ctx->kdamond reset was just an
+unnecessary decision of the commit.  The previous commit removed
+damon_operations->cleanup(), so there is no more reason to do destructions
+of regions and targets separately.
+
+Link: https://lkml.kernel.org/r/20260117175256.82826-3-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 8 +-------
+ 1 file changed, 1 insertion(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 53514cb712cf2..0c8ac11a49f92 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2748,8 +2748,6 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ static int kdamond_fn(void *data)
+ {
+ 	struct damon_ctx *ctx = data;
+-	struct damon_target *t;
+-	struct damon_region *r, *next;
+ 	unsigned int max_nr_accesses = 0;
+ 	unsigned long sz_limit = 0;
+ 
+@@ -2854,10 +2852,7 @@ static int kdamond_fn(void *data)
+ 		}
+ 	}
+ done:
+-	damon_for_each_target(t, ctx) {
+-		damon_for_each_region_safe(r, next, t)
+-			damon_destroy_region(r, t);
+-	}
++	damon_destroy_targets(ctx);
+ 
+ 	kfree(ctx->regions_score_histogram);
+ 	kdamond_call(ctx, true);
+@@ -2875,7 +2870,6 @@ static int kdamond_fn(void *data)
+ 		running_exclusive_ctxs = false;
+ 	mutex_unlock(&damon_lock);
+ 
+-	damon_destroy_targets(ctx);
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+

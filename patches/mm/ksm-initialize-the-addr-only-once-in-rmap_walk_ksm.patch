@@ -1,0 +1,72 @@
+From: xu xin <xu.xin16@zte.com.cn>
+Date: Mon, 12 Jan 2026 21:55:22 +0800
+Subject: [PATCH] ksm: initialize the addr only once in rmap_walk_ksm
+
+Patch series "KSM: Optimizations for rmap_walk_ksm".
+
+There are two perfomance optimization patches for rmap_walk_ksm.  Patch
+[1/2] moves the initializaion of addr from the position inside loop to the
+position before the loop, since the variable will not change in the loop.
+Patch [2/2] optimizes rmap_walk_ksm() by passing a suitable page offset
+range to the anon_vma_interval_tree_foreach loop to reduce ineffective
+checks.
+
+The performance metrics are presented in [2/2].
+
+
+This patch (of 2):
+
+This is a minor performance optimization, especially when there are many
+for-loop iterations, because the addr variable doesn't change across
+iterations.
+
+Therefore, it only needs to be initialized once before the loop.
+
+Link: https://lkml.kernel.org/r/20260112215522600q2jPW2Un_1HGohr1lVXJ3@zte.com.cn
+Signed-off-by: xu xin <xu.xin16@zte.com.cn>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Wang Yaxin <wang.yaxin@zte.com.cn>
+Cc: Yang Yang <yang.yang29@zte.com.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/ksm.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/mm/ksm.c b/mm/ksm.c
+index 2d89a7c8b4ebc..5d9c51acec9af 100644
+--- a/mm/ksm.c
++++ b/mm/ksm.c
+@@ -3171,6 +3171,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+ 		struct anon_vma *anon_vma = rmap_item->anon_vma;
+ 		struct anon_vma_chain *vmac;
+ 		struct vm_area_struct *vma;
++		unsigned long addr;
+ 
+ 		cond_resched();
+ 		if (!anon_vma_trylock_read(anon_vma)) {
+@@ -3180,16 +3181,16 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+ 			}
+ 			anon_vma_lock_read(anon_vma);
+ 		}
++
++		/* Ignore the stable/unstable/sqnr flags */
++		addr = rmap_item->address & PAGE_MASK;
++
+ 		anon_vma_interval_tree_foreach(vmac, &anon_vma->rb_root,
+ 					       0, ULONG_MAX) {
+-			unsigned long addr;
+ 
+ 			cond_resched();
+ 			vma = vmac->vma;
+ 
+-			/* Ignore the stable/unstable/sqnr flags */
+-			addr = rmap_item->address & PAGE_MASK;
+-
+ 			if (addr < vma->vm_start || addr >= vma->vm_end)
+ 				continue;
+ 			/*
+-- 
+2.47.3
+

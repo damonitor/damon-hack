@@ -1,0 +1,78 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Sun, 25 Jan 2026 17:07:36 +0100
+Subject: [PATCH] drm/amd: kill the outdated "Only the pthreads threading model
+ is supported" checks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Nowadays task->group_leader->mm != task->mm is only possible if a) task is
+not a group leader and b) task->group_leader->mm == NULL because
+task->group_leader has already exited using sys_exit().
+
+I don't think that drm/amd tries to detect/nack this case.
+
+Link: https://lkml.kernel.org/r/aXY_yLVHd63UlWtm@redhat.com
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Reviewed-by: Christan König <christian.koenig@amd.com>
+Acked-by: Felix Kuehling <felix.kuehling@amd.com>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Boris Brezillon <boris.brezillon@collabora.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@google.com>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Simon Horman <horms@kernel.org>
+Cc: Steven Price <steven.price@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c   |  3 ---
+ drivers/gpu/drm/amd/amdkfd/kfd_process.c | 10 ----------
+ 2 files changed, 13 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c
+index a0f8ba382b9ec..e44f158a11f0f 100644
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c
+@@ -2551,9 +2551,6 @@ void amdgpu_vm_set_task_info(struct amdgpu_vm *vm)
+ 	vm->task_info->task.pid = current->pid;
+ 	get_task_comm(vm->task_info->task.comm, current);
+ 
+-	if (current->group_leader->mm != current->mm)
+-		return;
+-
+ 	vm->task_info->tgid = current->tgid;
+ 	get_task_comm(vm->task_info->process_name, current->group_leader);
+ }
+diff --git a/drivers/gpu/drm/amd/amdkfd/kfd_process.c b/drivers/gpu/drm/amd/amdkfd/kfd_process.c
+index a085faac9fe1a..f8ef18a3aa71d 100644
+--- a/drivers/gpu/drm/amd/amdkfd/kfd_process.c
++++ b/drivers/gpu/drm/amd/amdkfd/kfd_process.c
+@@ -833,12 +833,6 @@ struct kfd_process *kfd_create_process(struct task_struct *thread)
+ 	if (!(thread->mm && mmget_not_zero(thread->mm)))
+ 		return ERR_PTR(-EINVAL);
+ 
+-	/* Only the pthreads threading model is supported. */
+-	if (thread->group_leader->mm != thread->mm) {
+-		mmput(thread->mm);
+-		return ERR_PTR(-EINVAL);
+-	}
+-
+ 	/* If the process just called exec(3), it is possible that the
+ 	 * cleanup of the kfd_process (following the release of the mm
+ 	 * of the old process image) is still in the cleanup work queue.
+@@ -918,10 +912,6 @@ struct kfd_process *kfd_get_process(const struct task_struct *thread)
+ 	if (!thread->mm)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	/* Only the pthreads threading model is supported. */
+-	if (thread->group_leader->mm != thread->mm)
+-		return ERR_PTR(-EINVAL);
+-
+ 	process = find_process(thread, false);
+ 	if (!process)
+ 		return ERR_PTR(-EINVAL);
+-- 
+2.47.3
+

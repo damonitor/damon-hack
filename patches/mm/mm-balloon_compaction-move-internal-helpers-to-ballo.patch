@@ -1,0 +1,154 @@
+From: "David Hildenbrand (Red Hat)" <david@kernel.org>
+Date: Tue, 20 Jan 2026 00:01:23 +0100
+Subject: [PATCH] mm/balloon_compaction: move internal helpers to
+ balloon_compaction.c
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Let's move the helpers that are not required by drivers anymore.
+
+While at it, drop the doc of balloon_page_device() as it is trivial.
+
+[david@kernel.org: move balloon_page_device() under CONFIG_BALLOON_COMPACTION]
+  Link: https://lkml.kernel.org/r/27f0adf1-54c1-4d99-8b7f-fd45574e7f41@kernel.org
+Link: https://lkml.kernel.org/r/20260119230133.3551867-16-david@kernel.org
+Signed-off-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Acked-by: Michael S. Tsirkin <mst@redhat.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: Jerrin Shaji George <jerrin.shaji-george@broadcom.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/balloon_compaction.h | 44 ------------------------------
+ mm/balloon_compaction.c            | 37 +++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+), 44 deletions(-)
+
+diff --git a/include/linux/balloon_compaction.h b/include/linux/balloon_compaction.h
+index d1d4739398978..eec8994056a44 100644
+--- a/include/linux/balloon_compaction.h
++++ b/include/linux/balloon_compaction.h
+@@ -75,48 +75,4 @@ static inline void balloon_devinfo_init(struct balloon_dev_info *balloon)
+ 	balloon->migratepage = NULL;
+ 	balloon->adjust_managed_page_count = false;
+ }
+-
+-#ifdef CONFIG_BALLOON_COMPACTION
+-/*
+- * balloon_page_device - get the b_dev_info descriptor for the balloon device
+- *			 that enqueues the given page.
+- */
+-static inline struct balloon_dev_info *balloon_page_device(struct page *page)
+-{
+-	return (struct balloon_dev_info *)page_private(page);
+-}
+-#endif /* CONFIG_BALLOON_COMPACTION */
+-
+-/*
+- * balloon_page_insert - insert a page into the balloon's page list and make
+- *			 the page->private assignment accordingly.
+- * @balloon : pointer to balloon device
+- * @page    : page to be assigned as a 'balloon page'
+- *
+- * Caller must ensure the balloon_pages_lock is held.
+- */
+-static inline void balloon_page_insert(struct balloon_dev_info *balloon,
+-				       struct page *page)
+-{
+-	__SetPageOffline(page);
+-	if (IS_ENABLED(CONFIG_BALLOON_COMPACTION)) {
+-		SetPageMovableOps(page);
+-		set_page_private(page, (unsigned long)balloon);
+-	}
+-	list_add(&page->lru, &balloon->pages);
+-}
+-
+-/*
+- * balloon_page_finalize - prepare a balloon page that was removed from the
+- *			   balloon list for release to the page allocator
+- * @page: page to be released to the page allocator
+- *
+- * Caller must ensure the balloon_pages_lock is held.
+- */
+-static inline void balloon_page_finalize(struct page *page)
+-{
+-	if (IS_ENABLED(CONFIG_BALLOON_COMPACTION))
+-		set_page_private(page, 0);
+-	/* PageOffline is sticky until the page is freed to the buddy. */
+-}
+ #endif /* _LINUX_BALLOON_COMPACTION_H */
+diff --git a/mm/balloon_compaction.c b/mm/balloon_compaction.c
+index 1843e168db3ca..30fa7ee8e1f3a 100644
+--- a/mm/balloon_compaction.c
++++ b/mm/balloon_compaction.c
+@@ -17,6 +17,39 @@
+  */
+ static DEFINE_SPINLOCK(balloon_pages_lock);
+ 
++/*
++ * balloon_page_insert - insert a page into the balloon's page list and make
++ *			 the page->private assignment accordingly.
++ * @balloon : pointer to balloon device
++ * @page    : page to be assigned as a 'balloon page'
++ *
++ * Caller must ensure the balloon_pages_lock is held.
++ */
++static void balloon_page_insert(struct balloon_dev_info *balloon,
++				       struct page *page)
++{
++	__SetPageOffline(page);
++	if (IS_ENABLED(CONFIG_BALLOON_COMPACTION)) {
++		SetPageMovableOps(page);
++		set_page_private(page, (unsigned long)balloon);
++	}
++	list_add(&page->lru, &balloon->pages);
++}
++
++/*
++ * balloon_page_finalize - prepare a balloon page that was removed from the
++ *			   balloon list for release to the page allocator
++ * @page: page to be released to the page allocator
++ *
++ * Caller must ensure the balloon_pages_lock is held.
++ */
++static void balloon_page_finalize(struct page *page)
++{
++	if (IS_ENABLED(CONFIG_BALLOON_COMPACTION))
++		set_page_private(page, 0);
++	/* PageOffline is sticky until the page is freed to the buddy. */
++}
++
+ static void balloon_page_enqueue_one(struct balloon_dev_info *b_dev_info,
+ 				     struct page *page)
+ {
+@@ -194,6 +227,10 @@ struct page *balloon_page_dequeue(struct balloon_dev_info *b_dev_info)
+ EXPORT_SYMBOL_GPL(balloon_page_dequeue);
+ 
+ #ifdef CONFIG_BALLOON_COMPACTION
++static struct balloon_dev_info *balloon_page_device(struct page *page)
++{
++	return (struct balloon_dev_info *)page_private(page);
++}
+ 
+ static bool balloon_page_isolate(struct page *page, isolate_mode_t mode)
+ 
+-- 
+2.47.3
+

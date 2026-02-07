@@ -1,0 +1,96 @@
+From: Dennis Zhou <dennis@kernel.org>
+Date: Fri, 23 Jan 2026 12:55:35 -0800
+Subject: [PATCH] percpu: add double free check to pcpu_free_area()
+
+Percpu memory provides access via offsets into the percpu address space.
+Offsets are essentially fixed for the lifetime of a chunk and therefore
+require all users be good samaritans.  If a user improperly handles the
+lifetime of the percpu object, it can result in corruption in a couple of
+ways:
+
+ - immediate double free - breaks percpu metadata accounting
+ - free after subsequent allocation
+    - corruption due to multiple owner problem (either prior owner still
+      writes or future allocation happens)
+    - potential for oops if the percpu pages are reclaimed as the
+      subsequent allocation isn't pinning the pages down
+    - can lead to page->private pointers pointing to freed chunks
+
+Sebastian noticed that if this happens, none of the memory debugging
+facilities add additional information [1].
+
+This patch aims to catch invalid free scenarios within valid chunks.  To
+better guard free_percpu(), we can either add a magic number or some
+tracking facility to the percpu subsystem in a separate patch.
+
+The invalid free check in pcpu_free_area() validates that the allocation's
+starting bit is set in both alloc_map and bound_map.  The alloc_map bit
+test ensures the area is allocated while the bound_map bit test checks we
+are freeing from the beginning of an allocation.  We choose not to check
+the validity of the offset as that is encoded in page->private being a
+valid chunk.
+
+pcpu_stats_area_dealloc() is moved later to only be on the happy path so
+stats are only updated on valid frees.
+
+Link: https://lkml.kernel.org/r/20260123205535.35267-1-dennis@kernel.org
+Link: https://lore.kernel.org/lkml/20260119074813.ecAFsGaT@linutronix.de/ [1]
+Signed-off-by: Dennis Zhou <dennis@kernel.org>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Cc: Chistoph Lameter <cl@linux.com>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/percpu.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/mm/percpu.c b/mm/percpu.c
+index 81462ce5866e1..a2107bdebf0b5 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -1279,12 +1279,16 @@ static int pcpu_free_area(struct pcpu_chunk *chunk, int off)
+ 	int bit_off, bits, end, oslot, freed;
+ 
+ 	lockdep_assert_held(&pcpu_lock);
+-	pcpu_stats_area_dealloc(chunk);
+ 
+ 	oslot = pcpu_chunk_slot(chunk);
+ 
+ 	bit_off = off / PCPU_MIN_ALLOC_SIZE;
+ 
++	/* check invalid free */
++	if (!test_bit(bit_off, chunk->alloc_map) ||
++	    !test_bit(bit_off, chunk->bound_map))
++		return 0;
++
+ 	/* find end index */
+ 	end = find_next_bit(chunk->bound_map, pcpu_chunk_map_bits(chunk),
+ 			    bit_off + 1);
+@@ -1303,6 +1307,8 @@ static int pcpu_free_area(struct pcpu_chunk *chunk, int off)
+ 
+ 	pcpu_chunk_relocate(chunk, oslot);
+ 
++	pcpu_stats_area_dealloc(chunk);
++
+ 	return freed;
+ }
+ 
+@@ -2242,6 +2248,13 @@ void free_percpu(void __percpu *ptr)
+ 
+ 	spin_lock_irqsave(&pcpu_lock, flags);
+ 	size = pcpu_free_area(chunk, off);
++	if (size == 0) {
++		spin_unlock_irqrestore(&pcpu_lock, flags);
++
++		/* invalid percpu free */
++		WARN_ON_ONCE(1);
++		return;
++	}
+ 
+ 	pcpu_alloc_tag_free_hook(chunk, off, size);
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,170 @@
+From: Rohan McLure <rmclure@linux.ibm.com>
+Date: Fri, 19 Dec 2025 04:09:38 +1100
+Subject: [PATCH] mm/page_table_check: reinstate address parameter in
+ [__]page_table_check_pud_clear()
+
+This reverts commit 931c38e16499 ("mm/page_table_check: remove unused
+parameter in [__]page_table_check_pud_clear").
+
+Reinstate previously unused parameters for the purpose of supporting
+powerpc platforms, as many do not encode user/kernel ownership of the page
+in the pte, but instead in the address of the access.
+
+[ajd@linux.ibm.com: rebase on arm64 changes]
+Link: https://lkml.kernel.org/r/20251219-pgtable_check_v18rebase-v18-6-755bc151a50b@linux.ibm.com
+Signed-off-by: Rohan McLure <rmclure@linux.ibm.com>
+Signed-off-by: Andrew Donnellan <ajd@linux.ibm.com>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Acked-by: Ingo Molnar <mingo@kernel.org>  # x86
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Alexandre Ghiti <alexghiti@rivosinc.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Guo Weikang <guoweikang.kernel@gmail.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Miehlbradt <nicholas@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Paul Mackerras <paulus@ozlabs.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Thomas Huth <thuth@redhat.com>
+Cc: "Vishal Moola (Oracle)" <vishal.moola@gmail.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h |  2 +-
+ arch/riscv/include/asm/pgtable.h |  2 +-
+ arch/x86/include/asm/pgtable.h   |  2 +-
+ include/linux/page_table_check.h | 11 +++++++----
+ include/linux/pgtable.h          |  2 +-
+ mm/page_table_check.c            |  5 +++--
+ 6 files changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index d1dd0266bb0c9..595405e6bfc73 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -1349,7 +1349,7 @@ static inline pte_t __ptep_get_and_clear_anysz(struct mm_struct *mm,
+ 		break;
+ #ifndef __PAGETABLE_PMD_FOLDED
+ 	case PUD_SIZE:
+-		page_table_check_pud_clear(mm, pte_pud(pte));
++		page_table_check_pud_clear(mm, address, pte_pud(pte));
+ 		break;
+ #endif
+ 	default:
+diff --git a/arch/riscv/include/asm/pgtable.h b/arch/riscv/include/asm/pgtable.h
+index 574a45a224540..e06727c975fee 100644
+--- a/arch/riscv/include/asm/pgtable.h
++++ b/arch/riscv/include/asm/pgtable.h
+@@ -1101,7 +1101,7 @@ static inline pud_t pudp_huge_get_and_clear(struct mm_struct *mm,
+ 	pud_clear(pudp);
+ #endif
+ 
+-	page_table_check_pud_clear(mm, pud);
++	page_table_check_pud_clear(mm, address, pud);
+ 
+ 	return pud;
+ }
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index 7fd876f8d828e..3eb36a36058fa 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1330,7 +1330,7 @@ static inline pud_t pudp_huge_get_and_clear(struct mm_struct *mm,
+ {
+ 	pud_t pud = native_pudp_get_and_clear(pudp);
+ 
+-	page_table_check_pud_clear(mm, pud);
++	page_table_check_pud_clear(mm, addr, pud);
+ 
+ 	return pud;
+ }
+diff --git a/include/linux/page_table_check.h b/include/linux/page_table_check.h
+index 66e1092384169..808cc3a48c28f 100644
+--- a/include/linux/page_table_check.h
++++ b/include/linux/page_table_check.h
+@@ -16,7 +16,8 @@ extern struct page_ext_operations page_table_check_ops;
+ void __page_table_check_zero(struct page *page, unsigned int order);
+ void __page_table_check_pte_clear(struct mm_struct *mm, pte_t pte);
+ void __page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd);
+-void __page_table_check_pud_clear(struct mm_struct *mm, pud_t pud);
++void __page_table_check_pud_clear(struct mm_struct *mm, unsigned long addr,
++				  pud_t pud);
+ void __page_table_check_ptes_set(struct mm_struct *mm, unsigned long addr,
+ 		pte_t *ptep, pte_t pte, unsigned int nr);
+ void __page_table_check_pmds_set(struct mm_struct *mm, unsigned long addr,
+@@ -59,12 +60,13 @@ static inline void page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd)
+ 	__page_table_check_pmd_clear(mm, pmd);
+ }
+ 
+-static inline void page_table_check_pud_clear(struct mm_struct *mm, pud_t pud)
++static inline void page_table_check_pud_clear(struct mm_struct *mm,
++					      unsigned long addr, pud_t pud)
+ {
+ 	if (static_branch_likely(&page_table_check_disabled))
+ 		return;
+ 
+-	__page_table_check_pud_clear(mm, pud);
++	__page_table_check_pud_clear(mm, addr, pud);
+ }
+ 
+ static inline void page_table_check_ptes_set(struct mm_struct *mm,
+@@ -123,7 +125,8 @@ static inline void page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd)
+ {
+ }
+ 
+-static inline void page_table_check_pud_clear(struct mm_struct *mm, pud_t pud)
++static inline void page_table_check_pud_clear(struct mm_struct *mm,
++					      unsigned long addr, pud_t pud)
+ {
+ }
+ 
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 496873f44f67b..ed3c28ebeb35b 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -801,7 +801,7 @@ static inline pud_t pudp_huge_get_and_clear(struct mm_struct *mm,
+ 	pud_t pud = *pudp;
+ 
+ 	pud_clear(pudp);
+-	page_table_check_pud_clear(mm, pud);
++	page_table_check_pud_clear(mm, address, pud);
+ 
+ 	return pud;
+ }
+diff --git a/mm/page_table_check.c b/mm/page_table_check.c
+index 2871d9c453682..2295bc9368ab9 100644
+--- a/mm/page_table_check.c
++++ b/mm/page_table_check.c
+@@ -167,7 +167,8 @@ void __page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd)
+ }
+ EXPORT_SYMBOL(__page_table_check_pmd_clear);
+ 
+-void __page_table_check_pud_clear(struct mm_struct *mm, pud_t pud)
++void __page_table_check_pud_clear(struct mm_struct *mm, unsigned long addr,
++				  pud_t pud)
+ {
+ 	if (&init_mm == mm)
+ 		return;
+@@ -253,7 +254,7 @@ void __page_table_check_puds_set(struct mm_struct *mm, unsigned long addr,
+ 		return;
+ 
+ 	for (i = 0; i < nr; i++)
+-		__page_table_check_pud_clear(mm, *(pudp + i));
++		__page_table_check_pud_clear(mm, addr + PUD_SIZE * i, *(pudp + i));
+ 	if (pud_user_accessible_page(pud))
+ 		page_table_check_set(pud_pfn(pud), stride * nr, pud_write(pud));
+ }
+-- 
+2.47.3
+

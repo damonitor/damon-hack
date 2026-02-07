@@ -1,0 +1,151 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Sun, 11 Jan 2026 10:21:02 +0200
+Subject: [PATCH] mm/hugetlb: drop hugetlb_cma_check()
+
+hugetlb_cma_check() was required when the ordering of
+hugetlb_cma_reserve() and hugetlb_bootmem_alloc() was architecture
+depended.
+
+Since hugetlb_cma_reserve() is always called before
+hugetlb_bootmem_alloc() there is no need to check whether
+hugetlb_cma_reserve() was already called.
+
+Drop unneeded hugetlb_cma_check() function.
+
+Link: https://lkml.kernel.org/r/20260111082105.290734-29-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alex Shi <alexs@kernel.org>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dinh Nguyen <dinguyen@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Klara Modin <klarasmodin@gmail.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Simek <monstr@monstr.eu>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Stafford Horne <shorne@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c     |  1 -
+ mm/hugetlb_cma.c | 16 +++-------------
+ mm/hugetlb_cma.h |  5 -----
+ 3 files changed, 3 insertions(+), 19 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index a1832da0f6236..fe4b9f2ebdb62 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -4159,7 +4159,6 @@ static int __init hugetlb_init(void)
+ 		}
+ 	}
+ 
+-	hugetlb_cma_check();
+ 	hugetlb_init_hstates();
+ 	gather_bootmem_prealloc();
+ 	report_hugepages();
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index b1eb5998282c5..f5e79103e110c 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -85,9 +85,6 @@ hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid, bool node_exact)
+ 	return m;
+ }
+ 
+-
+-static bool cma_reserve_called __initdata;
+-
+ static int __init cmdline_parse_hugetlb_cma(char *p)
+ {
+ 	int nid, count = 0;
+@@ -149,8 +146,10 @@ void __init hugetlb_cma_reserve(void)
+ 		return;
+ 
+ 	order = arch_hugetlb_cma_order();
+-	if (!order)
++	if (!order) {
++		pr_warn("hugetlb_cma: the option isn't supported by current arch\n");
+ 		return;
++	}
+ 
+ 	/*
+ 	 * HugeTLB CMA reservation is required for gigantic
+@@ -159,7 +158,6 @@ void __init hugetlb_cma_reserve(void)
+ 	 * breaking this assumption.
+ 	 */
+ 	VM_WARN_ON(order <= MAX_PAGE_ORDER);
+-	cma_reserve_called = true;
+ 
+ 	hugetlb_bootmem_set_nodes();
+ 
+@@ -253,14 +251,6 @@ void __init hugetlb_cma_reserve(void)
+ 		hugetlb_cma_size = 0;
+ }
+ 
+-void __init hugetlb_cma_check(void)
+-{
+-	if (!hugetlb_cma_size || cma_reserve_called)
+-		return;
+-
+-	pr_warn("hugetlb_cma: the option isn't supported by current arch\n");
+-}
+-
+ bool hugetlb_cma_exclusive_alloc(void)
+ {
+ 	return hugetlb_cma_only;
+diff --git a/mm/hugetlb_cma.h b/mm/hugetlb_cma.h
+index 2c2ec8a7e1340..78186839df3a7 100644
+--- a/mm/hugetlb_cma.h
++++ b/mm/hugetlb_cma.h
+@@ -8,7 +8,6 @@ struct folio *hugetlb_cma_alloc_folio(int order, gfp_t gfp_mask,
+ 				      int nid, nodemask_t *nodemask);
+ struct huge_bootmem_page *hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid,
+ 						    bool node_exact);
+-void hugetlb_cma_check(void);
+ bool hugetlb_cma_exclusive_alloc(void);
+ unsigned long hugetlb_cma_total_size(void);
+ void hugetlb_cma_validate_params(void);
+@@ -31,10 +30,6 @@ struct huge_bootmem_page *hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid,
+ 	return NULL;
+ }
+ 
+-static inline void hugetlb_cma_check(void)
+-{
+-}
+-
+ static inline bool hugetlb_cma_exclusive_alloc(void)
+ {
+ 	return false;
+-- 
+2.47.3
+

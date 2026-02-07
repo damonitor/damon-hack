@@ -1,0 +1,153 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Fri, 9 Jan 2026 17:31:31 +0800
+Subject: [PATCH] mm: debug_vm_pgtable: add debug_vm_pgtable_free_huge_page()
+
+Patch series "mm: hugetlb: allocate frozen gigantic folio", v6.
+
+Introduce alloc_contig_frozen_pages() and cma_alloc_frozen_compound()
+which avoid atomic operation about page refcount, and then convert to
+allocate frozen gigantic folio by the new helpers in hugetlb to cleanup
+the alloc_gigantic_folio().
+
+
+This patch (of 6):
+
+Add a new helper to free huge page to be consistency to
+debug_vm_pgtable_alloc_huge_page(), and use HPAGE_PUD_ORDER instead of
+open-code.
+
+Also move the free_contig_range() under CONFIG_ALLOC_CONTIG since all
+caller are built with CONFIG_ALLOC_CONTIG.
+
+Link: https://lkml.kernel.org/r/20260109093136.1491549-2-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Sidhartha Kumar <sidhartha.kumar@oracle.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Jane Chu <jane.chu@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Claudiu Beznea <claudiu.beznea.uj@bp.renesas.com>
+Cc: Mark Brown <broonie@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/gfp.h   |  2 +-
+ mm/debug_vm_pgtable.c | 38 +++++++++++++++++---------------------
+ mm/page_alloc.c       |  2 +-
+ 3 files changed, 19 insertions(+), 23 deletions(-)
+
+diff --git a/include/linux/gfp.h b/include/linux/gfp.h
+index f9fdc99ae594a..627157972f6ae 100644
+--- a/include/linux/gfp.h
++++ b/include/linux/gfp.h
+@@ -444,8 +444,8 @@ extern struct page *alloc_contig_pages_noprof(unsigned long nr_pages, gfp_t gfp_
+ 					      int nid, nodemask_t *nodemask);
+ #define alloc_contig_pages(...)			alloc_hooks(alloc_contig_pages_noprof(__VA_ARGS__))
+ 
+-#endif
+ void free_contig_range(unsigned long pfn, unsigned long nr_pages);
++#endif
+ 
+ #ifdef CONFIG_CONTIG_ALLOC
+ static inline struct folio *folio_alloc_gigantic_noprof(int order, gfp_t gfp,
+diff --git a/mm/debug_vm_pgtable.c b/mm/debug_vm_pgtable.c
+index ae9b9310d96fd..83cf07269f134 100644
+--- a/mm/debug_vm_pgtable.c
++++ b/mm/debug_vm_pgtable.c
+@@ -971,22 +971,26 @@ static unsigned long __init get_random_vaddr(void)
+ 	return random_vaddr;
+ }
+ 
+-static void __init destroy_args(struct pgtable_debug_args *args)
++static void __init
++debug_vm_pgtable_free_huge_page(struct pgtable_debug_args *args,
++		unsigned long pfn, int order)
+ {
+-	struct page *page = NULL;
++#ifdef CONFIG_CONTIG_ALLOC
++	if (args->is_contiguous_page) {
++		free_contig_range(pfn, 1 << order);
++		return;
++	}
++#endif
++	__free_pages(pfn_to_page(pfn), order);
++}
+ 
++static void __init destroy_args(struct pgtable_debug_args *args)
++{
+ 	/* Free (huge) page */
+ 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+ 	    has_transparent_pud_hugepage() &&
+ 	    args->pud_pfn != ULONG_MAX) {
+-		if (args->is_contiguous_page) {
+-			free_contig_range(args->pud_pfn,
+-					  (1 << (HPAGE_PUD_SHIFT - PAGE_SHIFT)));
+-		} else {
+-			page = pfn_to_page(args->pud_pfn);
+-			__free_pages(page, HPAGE_PUD_SHIFT - PAGE_SHIFT);
+-		}
+-
++		debug_vm_pgtable_free_huge_page(args, args->pud_pfn, HPAGE_PUD_ORDER);
+ 		args->pud_pfn = ULONG_MAX;
+ 		args->pmd_pfn = ULONG_MAX;
+ 		args->pte_pfn = ULONG_MAX;
+@@ -995,20 +999,13 @@ static void __init destroy_args(struct pgtable_debug_args *args)
+ 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+ 	    has_transparent_hugepage() &&
+ 	    args->pmd_pfn != ULONG_MAX) {
+-		if (args->is_contiguous_page) {
+-			free_contig_range(args->pmd_pfn, (1 << HPAGE_PMD_ORDER));
+-		} else {
+-			page = pfn_to_page(args->pmd_pfn);
+-			__free_pages(page, HPAGE_PMD_ORDER);
+-		}
+-
++		debug_vm_pgtable_free_huge_page(args, args->pmd_pfn, HPAGE_PMD_ORDER);
+ 		args->pmd_pfn = ULONG_MAX;
+ 		args->pte_pfn = ULONG_MAX;
+ 	}
+ 
+ 	if (args->pte_pfn != ULONG_MAX) {
+-		page = pfn_to_page(args->pte_pfn);
+-		__free_page(page);
++		__free_page(pfn_to_page(args->pte_pfn));
+ 
+ 		args->pte_pfn = ULONG_MAX;
+ 	}
+@@ -1242,8 +1239,7 @@ static int __init init_args(struct pgtable_debug_args *args)
+ 	 */
+ 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+ 	    has_transparent_pud_hugepage()) {
+-		page = debug_vm_pgtable_alloc_huge_page(args,
+-				HPAGE_PUD_SHIFT - PAGE_SHIFT);
++		page = debug_vm_pgtable_alloc_huge_page(args, HPAGE_PUD_ORDER);
+ 		if (page) {
+ 			args->pud_pfn = page_to_pfn(page);
+ 			args->pmd_pfn = args->pud_pfn;
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index f7d777921f05f..c0b0485847692 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -7255,7 +7255,6 @@ struct page *alloc_contig_pages_noprof(unsigned long nr_pages, gfp_t gfp_mask,
+ 	}
+ 	return NULL;
+ }
+-#endif /* CONFIG_CONTIG_ALLOC */
+ 
+ void free_contig_range(unsigned long pfn, unsigned long nr_pages)
+ {
+@@ -7282,6 +7281,7 @@ void free_contig_range(unsigned long pfn, unsigned long nr_pages)
+ 	WARN(count != 0, "%lu pages are still in use!\n", count);
+ }
+ EXPORT_SYMBOL(free_contig_range);
++#endif /* CONFIG_CONTIG_ALLOC */
+ 
+ /*
+  * Effectively disable pcplists for the zone by setting the high limit to 0
+-- 
+2.47.3
+

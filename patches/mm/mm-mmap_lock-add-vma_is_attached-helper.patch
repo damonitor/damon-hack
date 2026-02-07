@@ -1,0 +1,72 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Sun, 18 Jan 2026 14:50:43 +0000
+Subject: [PATCH] mm/mmap_lock: add vma_is_attached() helper
+
+This makes it easy to explicitly check for VMA detachment, which is useful
+for things like asserts.
+
+Note that we intentionally do not allow this function to be available
+should CONFIG_PER_VMA_LOCK be set - this is because vma_assert_attached()
+and vma_assert_detached() are no-ops if !CONFIG_PER_VMA_LOCK, so there is
+no correct state for vma_is_attached() to be in if this configuration
+option is not specified.
+
+Therefore users elsewhere must invoke this function only after checking
+for CONFIG_PER_VMA_LOCK.
+
+We rework the assert functions to utilise this.
+
+Link: https://lkml.kernel.org/r/0172d3bf527ca54ba27d8bce8f8476095b241ac7.1768746221.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Barry Song <v-songbaohua@oppo.com>
+Cc: Chris Li <chriscli@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Harry Yoo <harry.yoo@oracle.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmap_lock.h | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index d53f72dba7fee..b50416fbba207 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -251,6 +251,11 @@ static inline void vma_assert_locked(struct vm_area_struct *vma)
+ 		      !__is_vma_write_locked(vma, &mm_lock_seq), vma);
+ }
+ 
++static inline bool vma_is_attached(struct vm_area_struct *vma)
++{
++	return refcount_read(&vma->vm_refcnt);
++}
++
+ /*
+  * WARNING: to avoid racing with vma_mark_attached()/vma_mark_detached(), these
+  * assertions should be made either under mmap_write_lock or when the object
+@@ -258,12 +263,12 @@ static inline void vma_assert_locked(struct vm_area_struct *vma)
+  */
+ static inline void vma_assert_attached(struct vm_area_struct *vma)
+ {
+-	WARN_ON_ONCE(!refcount_read(&vma->vm_refcnt));
++	WARN_ON_ONCE(!vma_is_attached(vma));
+ }
+ 
+ static inline void vma_assert_detached(struct vm_area_struct *vma)
+ {
+-	WARN_ON_ONCE(refcount_read(&vma->vm_refcnt));
++	WARN_ON_ONCE(vma_is_attached(vma));
+ }
+ 
+ static inline void vma_mark_attached(struct vm_area_struct *vma)
+-- 
+2.47.3
+

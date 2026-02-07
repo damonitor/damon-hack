@@ -1,0 +1,68 @@
+From: Dmitry Antipov <dmantipov@yandex.ru>
+Date: Thu, 11 Dec 2025 18:59:49 +0300
+Subject: [PATCH] ocfs2: adjust ocfs2_xa_remove_entry() to match UBSAN boundary
+ checks
+
+After introducing 2f26f58df041 ("ocfs2: annotate flexible array members
+with __counted_by_le()"), syzbot has reported the following issue:
+
+UBSAN: array-index-out-of-bounds in fs/ocfs2/xattr.c:1955:3
+index 2 is out of range for type 'struct ocfs2_xattr_entry[]
+__counted_by(xh_count)' (aka 'struct ocfs2_xattr_entry[]')
+...
+Call Trace:
+ <TASK>
+ dump_stack_lvl+0x189/0x250 lib/dump_stack.c:120
+ ubsan_epilogue+0xa/0x40 lib/ubsan.c:233
+ __ubsan_handle_out_of_bounds+0xe9/0xf0 lib/ubsan.c:455
+ ocfs2_xa_remove_entry+0x36d/0x3e0 fs/ocfs2/xattr.c:1955
+ ...
+
+To address this issue, 'xh_entries[]' member removal should be performed
+before actually changing 'xh_count', thus making sure that all array
+accesses matches the boundary checks performed by UBSAN.
+
+Link: https://lkml.kernel.org/r/20251211155949.774485-1-dmantipov@yandex.ru
+Signed-off-by: Dmitry Antipov <dmantipov@yandex.ru>
+Reported-by: syzbot+cf96bc82a588a27346a8@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=cf96bc82a588a27346a8
+Reviewed-by: Heming Zhao <heming.zhao@suse.com>
+Acked-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Deepanshu Kartikey <kartikey406@gmail.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Joseph Qi <jiangqi903@gmail.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Jun Piao <piaojun@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/xattr.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/xattr.c b/fs/ocfs2/xattr.c
+index 1b21fbc16d73a..5fd85f5178689 100644
+--- a/fs/ocfs2/xattr.c
++++ b/fs/ocfs2/xattr.c
+@@ -1971,8 +1971,7 @@ static void ocfs2_xa_remove_entry(struct ocfs2_xa_loc *loc)
+ 	ocfs2_xa_wipe_namevalue(loc);
+ 	loc->xl_entry = NULL;
+ 
+-	le16_add_cpu(&xh->xh_count, -1);
+-	count = le16_to_cpu(xh->xh_count);
++	count = le16_to_cpu(xh->xh_count) - 1;
+ 
+ 	/*
+ 	 * Only zero out the entry if there are more remaining.  This is
+@@ -1987,6 +1986,8 @@ static void ocfs2_xa_remove_entry(struct ocfs2_xa_loc *loc)
+ 		memset(&xh->xh_entries[count], 0,
+ 		       sizeof(struct ocfs2_xattr_entry));
+ 	}
++
++	xh->xh_count = cpu_to_le16(count);
+ }
+ 
+ /*
+-- 
+2.47.3
+

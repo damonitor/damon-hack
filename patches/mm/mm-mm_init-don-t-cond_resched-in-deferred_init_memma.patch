@@ -1,0 +1,118 @@
+From: Waiman Long <longman@redhat.com>
+Date: Thu, 22 Jan 2026 13:43:43 -0500
+Subject: [PATCH] mm/mm_init: don't cond_resched() in
+ deferred_init_memmap_chunk() if called from deferred_grow_zone()
+
+Commit 3acb913c9d5b ("mm/mm_init: use deferred_init_memmap_chunk() in
+deferred_grow_zone()") made deferred_grow_zone() call
+deferred_init_memmap_chunk() within a pgdat_resize_lock() critical section
+with irqs disabled.  It did check for irqs_disabled() in
+deferred_init_memmap_chunk() to avoid calling cond_resched().  For a
+PREEMPT_RT kernel build, however, spin_lock_irqsave() does not disable
+interrupt but rcu_read_lock() is called.  This leads to the following bug
+report.
+
+  BUG: sleeping function called from invalid context at mm/mm_init.c:2091
+  in_atomic(): 0, irqs_disabled(): 0, non_block: 0, pid: 1, name: swapper/0
+  preempt_count: 0, expected: 0
+  RCU nest depth: 1, expected: 0
+  3 locks held by swapper/0/1:
+   #0: ffff80008471b7a0 (sched_domains_mutex){+.+.}-{4:4}, at: sched_domains_mutex_lock+0x28/0x40
+   #1: ffff003bdfffef48 (&pgdat->node_size_lock){+.+.}-{3:3}, at: deferred_grow_zone+0x140/0x278
+   #2: ffff800084acf600 (rcu_read_lock){....}-{1:3}, at: rt_spin_lock+0x1b4/0x408
+  CPU: 0 UID: 0 PID: 1 Comm: swapper/0 Tainted: G        W           6.19.0-rc6-test #1 PREEMPT_{RT,(full)
+}
+  Tainted: [W]=WARN
+  Call trace:
+   show_stack+0x20/0x38 (C)
+   dump_stack_lvl+0xdc/0xf8
+   dump_stack+0x1c/0x28
+   __might_resched+0x384/0x530
+   deferred_init_memmap_chunk+0x560/0x688
+   deferred_grow_zone+0x190/0x278
+   _deferred_grow_zone+0x18/0x30
+   get_page_from_freelist+0x780/0xf78
+   __alloc_frozen_pages_noprof+0x1dc/0x348
+   alloc_slab_page+0x30/0x110
+   allocate_slab+0x98/0x2a0
+   new_slab+0x4c/0x80
+   ___slab_alloc+0x5a4/0x770
+   __slab_alloc.constprop.0+0x88/0x1e0
+   __kmalloc_node_noprof+0x2c0/0x598
+   __sdt_alloc+0x3b8/0x728
+   build_sched_domains+0xe0/0x1260
+   sched_init_domains+0x14c/0x1c8
+   sched_init_smp+0x9c/0x1d0
+   kernel_init_freeable+0x218/0x358
+   kernel_init+0x28/0x208
+   ret_from_fork+0x10/0x20
+
+Fix it adding a new argument to deferred_init_memmap_chunk() to explicitly
+tell it if cond_resched() is allowed or not instead of relying on some
+current state information which may vary depending on the exact kernel
+configuration options that are enabled.
+
+Link: https://lkml.kernel.org/r/20260122184343.546627-1-longman@redhat.com
+Fixes: 3acb913c9d5b ("mm/mm_init: use deferred_init_memmap_chunk() in deferred_grow_zone()")
+Signed-off-by: Waiman Long <longman@redhat.com>
+Suggested-by: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Reviewed-by: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: "Paul E . McKenney" <paulmck@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: <stable@vger.kernrl.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index fc2a6f1e518f1..2a809cd8e7fae 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -2059,7 +2059,7 @@ static unsigned long __init deferred_init_pages(struct zone *zone,
+  */
+ static unsigned long __init
+ deferred_init_memmap_chunk(unsigned long start_pfn, unsigned long end_pfn,
+-			   struct zone *zone)
++			   struct zone *zone, bool can_resched)
+ {
+ 	int nid = zone_to_nid(zone);
+ 	unsigned long nr_pages = 0;
+@@ -2085,10 +2085,10 @@ deferred_init_memmap_chunk(unsigned long start_pfn, unsigned long end_pfn,
+ 
+ 			spfn = chunk_end;
+ 
+-			if (irqs_disabled())
+-				touch_nmi_watchdog();
+-			else
++			if (can_resched)
+ 				cond_resched();
++			else
++				touch_nmi_watchdog();
+ 		}
+ 	}
+ 
+@@ -2101,7 +2101,7 @@ deferred_init_memmap_job(unsigned long start_pfn, unsigned long end_pfn,
+ {
+ 	struct zone *zone = arg;
+ 
+-	deferred_init_memmap_chunk(start_pfn, end_pfn, zone);
++	deferred_init_memmap_chunk(start_pfn, end_pfn, zone, true);
+ }
+ 
+ static unsigned int __init
+@@ -2216,7 +2216,7 @@ bool __init deferred_grow_zone(struct zone *zone, unsigned int order)
+ 	for (spfn = first_deferred_pfn, epfn = SECTION_ALIGN_UP(spfn + 1);
+ 	     nr_pages < nr_pages_needed && spfn < zone_end_pfn(zone);
+ 	     spfn = epfn, epfn += PAGES_PER_SECTION) {
+-		nr_pages += deferred_init_memmap_chunk(spfn, epfn, zone);
++		nr_pages += deferred_init_memmap_chunk(spfn, epfn, zone, false);
+ 	}
+ 
+ 	/*
+-- 
+2.47.3
+

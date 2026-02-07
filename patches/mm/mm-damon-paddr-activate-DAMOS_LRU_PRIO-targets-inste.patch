@@ -1,0 +1,95 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 13 Jan 2026 07:27:09 -0800
+Subject: [PATCH] mm/damon/paddr: activate DAMOS_LRU_PRIO targets instead of
+ marking accessed
+
+DAMOS_LRU_DEPRIOD directly deactivates the pages, while DAMOS_LRU_PRIO
+calls folio_mark_accessed(), which does incremental activation.  The
+incremental activation was assumed to be useful for making sure the pages
+of the hot memory region are really hot.  After the introduction of
+DAMOS_LRU_PRIO, the young page filter has added.  Users can use the young
+page filter to make sure the page is eligible to be activated.  Meanwhile,
+the asymmetric behavior of DAMOS_LRU_[DE]PRIO can confuse users.
+
+Directly activate given pages for DAMOS_LRU_PRIO, to eliminate the
+unnecessary incremental activation steps, and be symmetric with
+DAMOS_LRU_DEPRIO for easier usages.
+
+Link: https://lkml.kernel.org/r/20260113152717.70459-5-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/paddr.c | 18 ++++++++----------
+ 1 file changed, 8 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 7d887a3c08665..4c2c935d82d67 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -206,9 +206,9 @@ static unsigned long damon_pa_pageout(struct damon_region *r,
+ 	return damon_pa_core_addr(applied * PAGE_SIZE, addr_unit);
+ }
+ 
+-static inline unsigned long damon_pa_mark_accessed_or_deactivate(
++static inline unsigned long damon_pa_de_activate(
+ 		struct damon_region *r, unsigned long addr_unit,
+-		struct damos *s, bool mark_accessed,
++		struct damos *s, bool activate,
+ 		unsigned long *sz_filter_passed)
+ {
+ 	phys_addr_t addr, applied = 0;
+@@ -227,8 +227,8 @@ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
+ 		else
+ 			*sz_filter_passed += folio_size(folio) / addr_unit;
+ 
+-		if (mark_accessed)
+-			folio_mark_accessed(folio);
++		if (activate)
++			folio_activate(folio);
+ 		else
+ 			folio_deactivate(folio);
+ 		applied += folio_nr_pages(folio);
+@@ -240,20 +240,18 @@ static inline unsigned long damon_pa_mark_accessed_or_deactivate(
+ 	return damon_pa_core_addr(applied * PAGE_SIZE, addr_unit);
+ }
+ 
+-static unsigned long damon_pa_mark_accessed(struct damon_region *r,
++static unsigned long damon_pa_activate_pages(struct damon_region *r,
+ 		unsigned long addr_unit, struct damos *s,
+ 		unsigned long *sz_filter_passed)
+ {
+-	return damon_pa_mark_accessed_or_deactivate(r, addr_unit, s, true,
+-			sz_filter_passed);
++	return damon_pa_de_activate(r, addr_unit, s, true, sz_filter_passed);
+ }
+ 
+ static unsigned long damon_pa_deactivate_pages(struct damon_region *r,
+ 		unsigned long addr_unit, struct damos *s,
+ 		unsigned long *sz_filter_passed)
+ {
+-	return damon_pa_mark_accessed_or_deactivate(r, addr_unit, s, false,
+-			sz_filter_passed);
++	return damon_pa_de_activate(r, addr_unit, s, false, sz_filter_passed);
+ }
+ 
+ static unsigned long damon_pa_migrate(struct damon_region *r,
+@@ -327,7 +325,7 @@ static unsigned long damon_pa_apply_scheme(struct damon_ctx *ctx,
+ 	case DAMOS_PAGEOUT:
+ 		return damon_pa_pageout(r, aunit, scheme, sz_filter_passed);
+ 	case DAMOS_LRU_PRIO:
+-		return damon_pa_mark_accessed(r, aunit, scheme,
++		return damon_pa_activate_pages(r, aunit, scheme,
+ 				sz_filter_passed);
+ 	case DAMOS_LRU_DEPRIO:
+ 		return damon_pa_deactivate_pages(r, aunit, scheme,
+-- 
+2.47.3
+

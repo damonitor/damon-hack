@@ -1,0 +1,94 @@
+From: "David Hildenbrand (Red Hat)" <david@kernel.org>
+Date: Tue, 20 Jan 2026 00:01:11 +0100
+Subject: [PATCH] powerpc/pseries/cmm: remove cmm_balloon_compaction_init()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Now that there is not a lot of logic left, let's just inline setting up
+the migration function.
+
+To avoid #ifdef in the caller we can instead use IS_ENABLED() and make the
+compiler happy by only providing the function declaration.
+
+Now that the function is gone, drop the "out_balloon_compaction" label.
+Note that before commit 68f2736a8583 ("mm: Convert all PageMovable users
+to movable_operations") we actually had to undo something, now not
+anymore.
+
+Link: https://lkml.kernel.org/r/20260119230133.3551867-4-david@kernel.org
+Signed-off-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Acked-by: Michael S. Tsirkin <mst@redhat.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: Jerrin Shaji George <jerrin.shaji-george@broadcom.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/platforms/pseries/cmm.c | 16 +++++-----------
+ 1 file changed, 5 insertions(+), 11 deletions(-)
+
+diff --git a/arch/powerpc/platforms/pseries/cmm.c b/arch/powerpc/platforms/pseries/cmm.c
+index 4cbbe2ee58aba..9a6efbc80d2ad 100644
+--- a/arch/powerpc/platforms/pseries/cmm.c
++++ b/arch/powerpc/platforms/pseries/cmm.c
+@@ -548,15 +548,9 @@ static int cmm_migratepage(struct balloon_dev_info *b_dev_info,
+ 
+ 	return 0;
+ }
+-
+-static void cmm_balloon_compaction_init(void)
+-{
+-	b_dev_info.migratepage = cmm_migratepage;
+-}
+ #else /* CONFIG_BALLOON_COMPACTION */
+-static void cmm_balloon_compaction_init(void)
+-{
+-}
++int cmm_migratepage(struct balloon_dev_info *b_dev_info, struct page *newpage,
++		    struct page *page, enum migrate_mode mode);
+ #endif /* CONFIG_BALLOON_COMPACTION */
+ 
+ /**
+@@ -573,11 +567,12 @@ static int cmm_init(void)
+ 		return -EOPNOTSUPP;
+ 
+ 	balloon_devinfo_init(&b_dev_info);
+-	cmm_balloon_compaction_init();
++	if (IS_ENABLED(CONFIG_BALLOON_COMPACTION))
++		b_dev_info.migratepage = cmm_migratepage;
+ 
+ 	rc = register_oom_notifier(&cmm_oom_nb);
+ 	if (rc < 0)
+-		goto out_balloon_compaction;
++		return rc;
+ 
+ 	if ((rc = register_reboot_notifier(&cmm_reboot_nb)))
+ 		goto out_oom_notifier;
+@@ -606,7 +601,6 @@ static int cmm_init(void)
+ 	unregister_reboot_notifier(&cmm_reboot_nb);
+ out_oom_notifier:
+ 	unregister_oom_notifier(&cmm_oom_nb);
+-out_balloon_compaction:
+ 	return rc;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,184 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Fri, 23 Jan 2026 20:12:13 +0000
+Subject: [PATCH] mm/vma: rename is_vma_write_only(), separate out shared
+ refcount put
+
+The is_vma_writer_only() function is misnamed - this isn't determining if
+there is only a write lock, as it checks for the presence of the
+VM_REFCNT_EXCLUDE_READERS_FLAG.
+
+Really, it is checking to see whether readers are excluded, with a
+possibility of a false positive in the case of a detachment (there we
+expect the vma->vm_refcnt to eventually be set to
+VM_REFCNT_EXCLUDE_READERS_FLAG, whereas for an attached VMA we expect it
+to eventually be set to VM_REFCNT_EXCLUDE_READERS_FLAG + 1).
+
+Rename the function accordingly.
+
+Relatedly, we use a __refcount_dec_and_test() primitive directly in
+vma_refcount_put(), using the old value to determine what the reference
+count ought to be after the operation is complete (ignoring racing
+reference count adjustments).
+
+Wrap this into a __vma_refcount_put_return() function, which we can then
+utilise in vma_mark_detached() and thus keep the refcount primitive usage
+abstracted.
+
+This function, as the name implies, returns the value after the reference
+count has been updated.
+
+This reduces duplication in the two invocations of this function.
+
+Also adjust comments, removing duplicative comments covered elsewhere and
+adding more to aid understanding.
+
+No functional change intended.
+
+Link: https://lkml.kernel.org/r/32053580bff460eb1092ef780b526cefeb748bad.1769198904.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmap_lock.h | 66 +++++++++++++++++++++++++++++++--------
+ mm/mmap_lock.c            | 17 +++++-----
+ 2 files changed, 63 insertions(+), 20 deletions(-)
+
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index a764439d02768..294fb282052d1 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -122,15 +122,22 @@ static inline void vma_lock_init(struct vm_area_struct *vma, bool reset_refcnt)
+ 	vma->vm_lock_seq = UINT_MAX;
+ }
+ 
+-static inline bool is_vma_writer_only(int refcnt)
++/*
++ * This function determines whether the input VMA reference count describes a
++ * VMA which has excluded all VMA read locks.
++ *
++ * In the case of a detached VMA, we may incorrectly indicate that readers are
++ * excluded when one remains, because in that scenario we target a refcount of
++ * VM_REFCNT_EXCLUDE_READERS_FLAG, rather than the attached target of
++ * VM_REFCNT_EXCLUDE_READERS_FLAG + 1.
++ *
++ * However, the race window for that is very small so it is unlikely.
++ *
++ * Returns: true if readers are excluded, false otherwise.
++ */
++static inline bool __vma_are_readers_excluded(int refcnt)
+ {
+ 	/*
+-	 * With a writer and no readers, refcnt is VM_REFCNT_EXCLUDE_READERS_FLAG
+-	 * if the vma is detached and (VM_REFCNT_EXCLUDE_READERS_FLAG + 1) if it is
+-	 * attached. Waiting on a detached vma happens only in
+-	 * vma_mark_detached() and is a rare case, therefore most of the time
+-	 * there will be no unnecessary wakeup.
+-	 *
+ 	 * See the comment describing the vm_area_struct->vm_refcnt field for
+ 	 * details of possible refcnt values.
+ 	 */
+@@ -138,18 +145,51 @@ static inline bool is_vma_writer_only(int refcnt)
+ 		refcnt <= VM_REFCNT_EXCLUDE_READERS_FLAG + 1;
+ }
+ 
++/*
++ * Actually decrement the VMA reference count.
++ *
++ * The function returns the reference count as it was immediately after the
++ * decrement took place. If it returns zero, the VMA is now detached.
++ */
++static inline __must_check unsigned int
++__vma_refcount_put_return(struct vm_area_struct *vma)
++{
++	int oldcnt;
++
++	if (__refcount_dec_and_test(&vma->vm_refcnt, &oldcnt))
++		return 0;
++
++	return oldcnt - 1;
++}
++
++/**
++ * vma_refcount_put() - Drop reference count in VMA vm_refcnt field due to a
++ * read-lock being dropped.
++ * @vma: The VMA whose reference count we wish to decrement.
++ *
++ * If we were the last reader, wake up threads waiting to obtain an exclusive
++ * lock.
++ */
+ static inline void vma_refcount_put(struct vm_area_struct *vma)
+ {
+-	/* Use a copy of vm_mm in case vma is freed after we drop vm_refcnt */
++	/* Use a copy of vm_mm in case vma is freed after we drop vm_refcnt. */
+ 	struct mm_struct *mm = vma->vm_mm;
+-	int oldcnt;
++	int newcnt;
+ 
+ 	rwsem_release(&vma->vmlock_dep_map, _RET_IP_);
+-	if (!__refcount_dec_and_test(&vma->vm_refcnt, &oldcnt)) {
+ 
+-		if (is_vma_writer_only(oldcnt - 1))
+-			rcuwait_wake_up(&mm->vma_writer_wait);
+-	}
++	newcnt = __vma_refcount_put_return(vma);
++	/*
++	 * __vma_enter_locked() may be sleeping waiting for readers to drop
++	 * their reference count, so wake it up if we were the last reader
++	 * blocking it from being acquired.
++	 *
++	 * We may be raced by other readers temporarily incrementing the
++	 * reference count, though the race window is very small, this might
++	 * cause spurious wakeups.
++	 */
++	if (newcnt && __vma_are_readers_excluded(newcnt))
++		rcuwait_wake_up(&mm->vma_writer_wait);
+ }
+ 
+ /*
+diff --git a/mm/mmap_lock.c b/mm/mmap_lock.c
+index 75dc098aea14c..6be1bbcde09ee 100644
+--- a/mm/mmap_lock.c
++++ b/mm/mmap_lock.c
+@@ -134,21 +134,24 @@ void vma_mark_detached(struct vm_area_struct *vma)
+ 	vma_assert_attached(vma);
+ 
+ 	/*
+-	 * We are the only writer, so no need to use vma_refcount_put().
+-	 * The condition below is unlikely because the vma has been already
+-	 * write-locked and readers can increment vm_refcnt only temporarily
+-	 * before they check vm_lock_seq, realize the vma is locked and drop
+-	 * back the vm_refcnt. That is a narrow window for observing a raised
+-	 * vm_refcnt.
++	 * This condition - that the VMA is still attached (refcnt > 0) - is
++	 * unlikely, because the vma has been already write-locked and readers
++	 * can increment vm_refcnt only temporarily before they check
++	 * vm_lock_seq, realize the vma is locked and drop back the
++	 * vm_refcnt. That is a narrow window for observing a raised vm_refcnt.
+ 	 *
+ 	 * See the comment describing the vm_area_struct->vm_refcnt field for
+ 	 * details of possible refcnt values.
+ 	 */
+-	if (unlikely(!refcount_dec_and_test(&vma->vm_refcnt))) {
++	if (unlikely(__vma_refcount_put_return(vma))) {
+ 		/* Wait until vma is detached with no readers. */
+ 		if (__vma_enter_locked(vma, true, TASK_UNINTERRUPTIBLE)) {
+ 			bool detached;
+ 
++			/*
++			 * Once this is complete, no readers can increment the
++			 * reference count, and the VMA is marked detached.
++			 */
+ 			__vma_exit_locked(vma, &detached);
+ 			WARN_ON_ONCE(!detached);
+ 		}
+-- 
+2.47.3
+

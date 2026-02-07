@@ -1,0 +1,82 @@
+From: Jiaqi Yan <jiaqiyan@google.com>
+Date: Wed, 4 Feb 2026 21:47:41 +0000
+Subject: [PATCH] fs: hugetlb: simplify remove_inode_hugepages() return type
+
+When remove_inode_hugepages() was introduced in commit c86272287bc6
+("hugetlb: create remove_inode_single_folio to remove single file folio")
+it used to return a boolean to indicate if it bailed out due to race with
+page faults.  However, since the race is already solved by [1],
+remove_inode_hugepages() doesn't have any path to return false anymore.
+
+Simplify remove_inode_hugepages() return type to void, remove the
+unnecessary ret variable, and adjust the call site in
+remove_inode_hugepages().  No functional change in this commit.
+
+Link: https://lkml.kernel.org/r/20260204214741.3161520-1-jiaqiyan@google.com
+Link: https://lore.kernel.org/all/20220914221810.95771-10-mike.kravetz@oracle.com [1]
+Signed-off-by: Jiaqi Yan <jiaqiyan@google.com>
+Suggested-by: Jane Chu <jane.chu@oracle.com>
+Reviewed-by: Jane Chu <jane.chu@oracle.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: David Hildenbrand (arm) <david@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/hugetlbfs/inode.c | 18 ++++++------------
+ 1 file changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/fs/hugetlbfs/inode.c b/fs/hugetlbfs/inode.c
+index 95a5b23b48084..863b848234185 100644
+--- a/fs/hugetlbfs/inode.c
++++ b/fs/hugetlbfs/inode.c
+@@ -513,15 +513,11 @@ hugetlb_vmdelete_list(struct rb_root_cached *root, pgoff_t start, pgoff_t end,
+ 
+ /*
+  * Called with hugetlb fault mutex held.
+- * Returns true if page was actually removed, false otherwise.
+  */
+-static bool remove_inode_single_folio(struct hstate *h, struct inode *inode,
+-					struct address_space *mapping,
+-					struct folio *folio, pgoff_t index,
+-					bool truncate_op)
++static void remove_inode_single_folio(struct hstate *h, struct inode *inode,
++		struct address_space *mapping, struct folio *folio,
++		pgoff_t index, bool truncate_op)
+ {
+-	bool ret = false;
+-
+ 	/*
+ 	 * If folio is mapped, it was faulted in after being
+ 	 * unmapped in caller or hugetlb_vmdelete_list() skips
+@@ -543,7 +539,6 @@ static bool remove_inode_single_folio(struct hstate *h, struct inode *inode,
+ 	 */
+ 	VM_BUG_ON_FOLIO(folio_test_hugetlb_restore_reserve(folio), folio);
+ 	hugetlb_delete_from_page_cache(folio);
+-	ret = true;
+ 	if (!truncate_op) {
+ 		if (unlikely(hugetlb_unreserve_pages(inode, index,
+ 							index + 1, 1)))
+@@ -551,7 +546,6 @@ static bool remove_inode_single_folio(struct hstate *h, struct inode *inode,
+ 	}
+ 
+ 	folio_unlock(folio);
+-	return ret;
+ }
+ 
+ /*
+@@ -599,9 +593,9 @@ static void remove_inode_hugepages(struct inode *inode, loff_t lstart,
+ 			/*
+ 			 * Remove folio that was part of folio_batch.
+ 			 */
+-			if (remove_inode_single_folio(h, inode, mapping, folio,
+-							index, truncate_op))
+-				freed++;
++			remove_inode_single_folio(h, inode, mapping, folio,
++						  index, truncate_op);
++			freed++;
+ 
+ 			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
+ 		}
+-- 
+2.47.3
+

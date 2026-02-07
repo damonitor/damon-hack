@@ -1,0 +1,55 @@
+From: Enze Li <lienze@kylinos.cn>
+Date: Wed, 10 Dec 2025 13:25:08 +0800
+Subject: [PATCH] mm/damon/core: fix wasteful CPU calls by skipping
+ non-existent targets
+
+Currently, DAMON does not proactively clean up invalid monitoring targets
+during its runtime.  When some monitored processes exit, DAMON continues
+to make the following unnecessary function calls,
+
+  --damon_for_each_target--
+  --damon_for_each_region--
+      damon_do_apply_schemes
+        damos_apply_scheme
+          damon_va_apply_scheme
+            damos_madvise
+              damon_get_mm
+
+it is only in the damon_get_mm() function that it may finally discover the
+target no longer exists, which wastes CPU resources.  A simple idea is to
+check for the existence of monitoring targets within the
+kdamond_need_stop() function and promptly clean up non-existent targets.
+
+However, SJ pointed out that this approach is problematic because the
+online commit logic incorrectly uses list indices to update the monitoring
+state.  This can lead to data loss if the target list is changed
+concurrently.  Meanwhile, SJ suggests checking for target existence at the
+damon_for_each_target level, and if a target does not exist, simply skip
+it and proceed to the next one.
+
+Link: https://lkml.kernel.org/r/20251210052508.264433-1-lienze@kylinos.cn
+Signed-off-by: Enze Li <lienze@kylinos.cn>
+Suggested-by: SeongJae Park <sj@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index c852cac4f82e9..2379a07c2f877 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2299,6 +2299,9 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 
+ 	mutex_lock(&c->walk_control_lock);
+ 	damon_for_each_target(t, c) {
++		if (c->ops.target_valid && c->ops.target_valid(t) == false)
++			continue;
++
+ 		damon_for_each_region_safe(r, next_r, t)
+ 			damon_do_apply_schemes(c, t, r);
+ 	}
+-- 
+2.47.3
+

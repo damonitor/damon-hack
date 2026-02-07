@@ -1,0 +1,155 @@
+From: Rohan McLure <rmclure@linux.ibm.com>
+Date: Fri, 19 Dec 2025 04:09:43 +1100
+Subject: [PATCH] powerpc/mm: use set_pte_at_unchecked() for internal usages
+
+In the new set_ptes() API, set_pte_at() (a special case of set_ptes()) is
+intended to be instrumented by the page table check facility.  There are
+however several other routines that constitute the API for setting page
+table entries, including set_pmd_at() among others.  Such routines are
+themselves implemented in terms of set_ptes_at().
+
+A future patch providing support for page table checking on powerpc must
+take care to avoid duplicate calls to page_table_check_p{te,md,ud}_set().
+Allow for assignment of pte entries without instrumentation through the
+set_pte_at_unchecked() routine introduced in this patch.
+
+Cause API-facing routines that call set_pte_at() to instead call
+set_pte_at_unchecked(), which will remain uninstrumented by page table
+check.  set_ptes() is itself implemented by calls to __set_pte_at(), so
+this eliminates redundant code.
+
+[ajd@linux.ibm.com: don't change to unchecked for early boot/kernel mappings]
+Link: https://lkml.kernel.org/r/20251219-pgtable_check_v18rebase-v18-11-755bc151a50b@linux.ibm.com
+Signed-off-by: Rohan McLure <rmclure@linux.ibm.com>
+Signed-off-by: Andrew Donnellan <ajd@linux.ibm.com>
+Acked-by: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Alexandre Ghiti <alexghiti@rivosinc.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Guo Weikang <guoweikang.kernel@gmail.com>
+Cc: Ingo Molnar <mingo@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Miehlbradt <nicholas@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Paul Mackerras <paulus@ozlabs.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Thomas Huth <thuth@redhat.com>
+Cc: "Vishal Moola (Oracle)" <vishal.moola@gmail.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/include/asm/pgtable.h       | 2 ++
+ arch/powerpc/mm/book3s64/pgtable.c       | 6 +++---
+ arch/powerpc/mm/book3s64/radix_pgtable.c | 6 +++---
+ arch/powerpc/mm/pgtable.c                | 8 ++++++++
+ 4 files changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/arch/powerpc/include/asm/pgtable.h b/arch/powerpc/include/asm/pgtable.h
+index 859cdbaa54a7f..dcd3a88caaf63 100644
+--- a/arch/powerpc/include/asm/pgtable.h
++++ b/arch/powerpc/include/asm/pgtable.h
+@@ -34,6 +34,8 @@ struct mm_struct;
+ void set_ptes(struct mm_struct *mm, unsigned long addr, pte_t *ptep,
+ 		pte_t pte, unsigned int nr);
+ #define set_ptes set_ptes
++void set_pte_at_unchecked(struct mm_struct *mm, unsigned long addr,
++			  pte_t *ptep, pte_t pte);
+ #define update_mmu_cache(vma, addr, ptep) \
+ 	update_mmu_cache_range(NULL, vma, addr, ptep, 1)
+ 
+diff --git a/arch/powerpc/mm/book3s64/pgtable.c b/arch/powerpc/mm/book3s64/pgtable.c
+index e3485db7de027..97db2f42ea3d3 100644
+--- a/arch/powerpc/mm/book3s64/pgtable.c
++++ b/arch/powerpc/mm/book3s64/pgtable.c
+@@ -127,7 +127,7 @@ void set_pmd_at(struct mm_struct *mm, unsigned long addr,
+ 	WARN_ON(!(pmd_leaf(pmd)));
+ #endif
+ 	trace_hugepage_set_pmd(addr, pmd_val(pmd));
+-	return set_pte_at(mm, addr, pmdp_ptep(pmdp), pmd_pte(pmd));
++	return set_pte_at_unchecked(mm, addr, pmdp_ptep(pmdp), pmd_pte(pmd));
+ }
+ 
+ void set_pud_at(struct mm_struct *mm, unsigned long addr,
+@@ -144,7 +144,7 @@ void set_pud_at(struct mm_struct *mm, unsigned long addr,
+ 	WARN_ON(!(pud_leaf(pud)));
+ #endif
+ 	trace_hugepage_set_pud(addr, pud_val(pud));
+-	return set_pte_at(mm, addr, pudp_ptep(pudp), pud_pte(pud));
++	return set_pte_at_unchecked(mm, addr, pudp_ptep(pudp), pud_pte(pud));
+ }
+ 
+ static void do_serialize(void *arg)
+@@ -550,7 +550,7 @@ void ptep_modify_prot_commit(struct vm_area_struct *vma, unsigned long addr,
+ 	if (radix_enabled())
+ 		return radix__ptep_modify_prot_commit(vma, addr,
+ 						      ptep, old_pte, pte);
+-	set_pte_at(vma->vm_mm, addr, ptep, pte);
++	set_pte_at_unchecked(vma->vm_mm, addr, ptep, pte);
+ }
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+diff --git a/arch/powerpc/mm/book3s64/radix_pgtable.c b/arch/powerpc/mm/book3s64/radix_pgtable.c
+index 73977dbabcf26..b2541bf33d01c 100644
+--- a/arch/powerpc/mm/book3s64/radix_pgtable.c
++++ b/arch/powerpc/mm/book3s64/radix_pgtable.c
+@@ -1606,7 +1606,7 @@ void radix__ptep_modify_prot_commit(struct vm_area_struct *vma,
+ 	    (atomic_read(&mm->context.copros) > 0))
+ 		radix__flush_tlb_page(vma, addr);
+ 
+-	set_pte_at(mm, addr, ptep, pte);
++	set_pte_at_unchecked(mm, addr, ptep, pte);
+ }
+ 
+ int pud_set_huge(pud_t *pud, phys_addr_t addr, pgprot_t prot)
+@@ -1617,7 +1617,7 @@ int pud_set_huge(pud_t *pud, phys_addr_t addr, pgprot_t prot)
+ 	if (!radix_enabled())
+ 		return 0;
+ 
+-	set_pte_at(&init_mm, 0 /* radix unused */, ptep, new_pud);
++	set_pte_at_unchecked(&init_mm, 0 /* radix unused */, ptep, new_pud);
+ 
+ 	return 1;
+ }
+@@ -1664,7 +1664,7 @@ int pmd_set_huge(pmd_t *pmd, phys_addr_t addr, pgprot_t prot)
+ 	if (!radix_enabled())
+ 		return 0;
+ 
+-	set_pte_at(&init_mm, 0 /* radix unused */, ptep, new_pmd);
++	set_pte_at_unchecked(&init_mm, 0 /* radix unused */, ptep, new_pmd);
+ 
+ 	return 1;
+ }
+diff --git a/arch/powerpc/mm/pgtable.c b/arch/powerpc/mm/pgtable.c
+index 56d7e8960e77d..7b69cd16e011c 100644
+--- a/arch/powerpc/mm/pgtable.c
++++ b/arch/powerpc/mm/pgtable.c
+@@ -224,6 +224,14 @@ void set_ptes(struct mm_struct *mm, unsigned long addr, pte_t *ptep,
+ 	}
+ }
+ 
++void set_pte_at_unchecked(struct mm_struct *mm, unsigned long addr,
++			  pte_t *ptep, pte_t pte)
++{
++	VM_WARN_ON(pte_hw_valid(*ptep) && !pte_protnone(*ptep));
++	pte = set_pte_filter(pte, addr);
++	__set_pte_at(mm, addr, ptep, pte, 0);
++}
++
+ void unmap_kernel_page(unsigned long va)
+ {
+ 	pmd_t *pmdp = pmd_off_k(va);
+-- 
+2.47.3
+

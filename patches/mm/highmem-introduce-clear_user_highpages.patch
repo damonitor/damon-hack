@@ -1,0 +1,109 @@
+From: Ankur Arora <ankur.a.arora@oracle.com>
+Date: Tue, 6 Jan 2026 23:20:04 -0800
+Subject: [PATCH] highmem: introduce clear_user_highpages()
+
+Define clear_user_highpages() which uses the range clearing primitive,
+clear_user_pages().  We can safely use this when CONFIG_HIGHMEM is
+disabled and if the architecture does not have clear_user_highpage.
+
+The first is needed to ensure that contiguous page ranges stay contiguous
+which precludes intermediate maps via HIGMEM.  The second, because if the
+architecture has clear_user_highpage(), it likely needs flushing magic
+when clearing the page, magic that we aren't privy to.
+
+For both of those cases, just fallback to a loop around
+clear_user_highpage().
+
+Link: https://lkml.kernel.org/r/20260107072009.1615991-4-ankur.a.arora@oracle.com
+Signed-off-by: Ankur Arora <ankur.a.arora@oracle.com>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Boris Ostrovsky <boris.ostrovsky@oracle.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Konrad Rzessutek Wilk <konrad.wilk@oracle.com>
+Cc: Lance Yang <ioworker0@gmail.com>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Li Zhe <lizhe.67@bytedance.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Raghavendra K T <raghavendra.kt@amd.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/highmem.h | 45 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/highmem.h b/include/linux/highmem.h
+index 019ab7d8c8418..af03db851a1d9 100644
+--- a/include/linux/highmem.h
++++ b/include/linux/highmem.h
+@@ -251,7 +251,14 @@ static inline void clear_user_pages(void *addr, unsigned long vaddr,
+ #endif
+ }
+ 
+-/* when CONFIG_HIGHMEM is not set these will be plain clear/copy_page */
++/**
++ * clear_user_highpage() - clear a page to be mapped to user space
++ * @page: start page
++ * @vaddr: start address of the user mapping
++ *
++ * With !CONFIG_HIGHMEM this (and the copy_user_highpage() below) will
++ * be plain clear_user_page() (and copy_user_page()).
++ */
+ static inline void clear_user_highpage(struct page *page, unsigned long vaddr)
+ {
+ 	void *addr = kmap_local_page(page);
+@@ -260,6 +267,42 @@ static inline void clear_user_highpage(struct page *page, unsigned long vaddr)
+ }
+ #endif /* clear_user_highpage */
+ 
++/**
++ * clear_user_highpages() - clear a page range to be mapped to user space
++ * @page: start page
++ * @vaddr: start address of the user mapping
++ * @npages: number of pages
++ *
++ * Assumes that all the pages in the region (@page, +@npages) are valid
++ * so this does no exception handling.
++ */
++static inline void clear_user_highpages(struct page *page, unsigned long vaddr,
++					unsigned int npages)
++{
++
++#if defined(clear_user_highpage) || defined(CONFIG_HIGHMEM)
++	/*
++	 * An architecture defined clear_user_highpage() implies special
++	 * handling is needed.
++	 *
++	 * So we use that or, the generic variant if CONFIG_HIGHMEM is
++	 * enabled.
++	 */
++	do {
++		clear_user_highpage(page, vaddr);
++		vaddr += PAGE_SIZE;
++		page++;
++	} while (--npages);
++#else
++
++	/*
++	 * Prefer clear_user_pages() to allow for architectural optimizations
++	 * when operating on contiguous page ranges.
++	 */
++	clear_user_pages(page_address(page), vaddr, page, npages);
++#endif
++}
++
+ #ifndef vma_alloc_zeroed_movable_folio
+ /**
+  * vma_alloc_zeroed_movable_folio - Allocate a zeroed page for a VMA.
+-- 
+2.47.3
+

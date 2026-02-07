@@ -1,0 +1,163 @@
+From: Jinjiang Tu <tujinjiang@huawei.com>
+Date: Fri, 30 Jan 2026 15:38:07 +0800
+Subject: [PATCH] arm64: mm: fix pass user prot to ioremap_prot in
+ generic_access_phys
+
+Here is a syzkaller error log:
+  [0000000020ffc000] pgd=080000010598d403, p4d=080000010598d403, pud=0800000125ddb403,
+                     pmd=080000007833c403, pte=01608000007fcfcf
+  Unable to handle kernel read from unreadable memory at virtual address ffff80008ea89000
+  KASAN: probably user-memory-access in range [0x0000000475448000-0x0000000475448007]
+  Mem abort info:
+    ESR = 0x000000009600000f
+    EC = 0x25: DABT (current EL), IL = 32 bits
+    SET = 0, FnV = 0
+    EA = 0, S1PTW = 0
+    FSC = 0x0f: level 3 permission fault
+  Data abort info:
+    ISV = 0, ISS = 0x0000000f, ISS2 = 0x00000000
+    CM = 0, WnR = 0, TnD = 0, TagAccess = 0
+    GCS = 0, Overlay = 0, DirtyBit = 0, Xs = 0
+  swapper pgtable: 4k pages, 48-bit VAs, pgdp=00000001244aa000
+  [ffff80008ea89000] pgd=100000013ffff403, p4d=100000013ffff403, pud=100000013fffe403,
+		     pmd=100000010a453403, pte=01608000007fcfcf
+  Internal error: Oops: 000000009600000f [#1] SMP
+  Modules linked in: team
+  CPU: 1 PID: 10840 Comm: syz.9.83 Kdump: loaded Tainted: G
+  Hardware name: QEMU KVM Virtual Machine, BIOS 0.0.0 02/06/2015
+  pstate: 20400005 (nzCv daif +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+  pc : __memcpy_fromio+0x80/0xf8
+  lr : generic_access_phys+0x20c/0x2b8
+  sp : ffff8000a0507960
+  x29: ffff8000a0507960 x28: 1ffff000140a0f44 x27: ffff00003833cfe0
+  x26: 0000000000000000 x25: 0000000000001000 x24: 0010000000000001
+  x23: ffff80008ea89000 x22: ffff00004ea63000 x21: 0000000000001000
+  x20: ffff80008ea89000 x19: ffff00004ea62000 x18: 0000000000000000
+  x17: 0000000000000000 x16: 0000000000000000 x15: ffff8000806f1e3c
+  x14: ffff8000806f1d44 x13: 0000000041b58ab3 x12: ffff7000140a0f23
+  x11: 1ffff000140a0f22 x10: ffff7000140a0f22 x9 : ffff800080579d24
+  x8 : 0000000000000004 x7 : 0000000000000003 x6 : 0000000000000001
+  x5 : ffff8000a0507910 x4 : ffff7000140a0f22 x3 : dfff800000000000
+  x2 : 0000000000001000 x1 : ffff80008ea89000 x0 : ffff00004ea62000
+  Call trace:
+    __memcpy_fromio+0x80/0xf8
+    generic_access_phys+0x20c/0x2b8
+    __access_remote_vm+0x46c/0x5b8
+    access_remote_vm+0x18/0x30
+    environ_read+0x238/0x3e8
+    vfs_read+0xe4/0x2b0
+    ksys_read+0xcc/0x178
+    __arm64_sys_read+0x4c/0x68
+    invoke_syscall+0x68/0x1a0
+    el0_svc_common.constprop.0+0x11c/0x150
+    do_el0_svc+0x38/0x50
+    el0_svc+0x50/0x258
+    el0t_64_sync_handler+0xc0/0xc8
+    el0t_64_sync+0x1a4/0x1a8
+  Code: 91002339 aa1403f7 8b190276 d503201f (f94002f8)
+
+This issue can be reproduced too with:
+
+1) open and mmap a device that implements generic_access_phys as
+   vm_operations_struct.acess callback.
+
+2) access the device by ptrace or /proc/$pid/mem.
+
+The local syzkaller first maps I/O address from /dev/mem to userspace,
+overiding the stack vma with MAP_FIXED flag.  As a result, when reading
+/proc/$pid/environ, generic_access_phys() is called to access the region,
+which triggers a PAN permission-check fault and causes a kernel access
+fault.
+
+The root cause is that generic_access_phys() passes a user pte to
+ioremap_prot(), the user pte sets PTE_USER and PTE_NG bits.  Consequently,
+any subsequent kernel-mode access to the remapped address raises a fault.
+
+To fix it, define arch_mk_kernel_prot() to convert user prot to kernel
+prot for arm64, and call arch_mk_kernel_prot() in generic_access_phys(),
+so that a user prot is passed to ioremap_prot().
+
+Catalin said "That's not urgent for 6.19, it's just misuse of /dev/mem
+(aren't they all) but it's worth fixing."
+
+Link: https://lkml.kernel.org/r/20260130073807.99474-1-tujinjiang@huawei.com
+Fixes: 893dea9ccd08 ("arm64: Add HAVE_IOREMAP_PROT support")
+Signed-off-by: Zeng Heng <zengheng4@huawei.com>
+Signed-off-by: Jinjiang Tu <tujinjiang@huawei.com>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/io.h |  8 ++++++++
+ mm/memory.c                 | 12 +++++++++++-
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/include/asm/io.h b/arch/arm64/include/asm/io.h
+index 83e03abbb2ca9..fe3040d59119d 100644
+--- a/arch/arm64/include/asm/io.h
++++ b/arch/arm64/include/asm/io.h
+@@ -267,6 +267,14 @@ int arm64_ioremap_prot_hook_register(const ioremap_prot_hook_t hook);
+ 
+ #define ioremap_prot ioremap_prot
+ 
++#define arch_mk_kernel_prot arch_mk_kernel_prot
++static inline pgprot_t arch_mk_kernel_prot(pgprot_t user_prot)
++{
++	ptdesc_t mem_type = pgprot_val(user_prot) & PTE_ATTRINDX_MASK;
++
++	return __pgprot_modify(PAGE_KERNEL, PTE_ATTRINDX_MASK, mem_type);
++}
++
+ #define _PAGE_IOREMAP PROT_DEVICE_nGnRE
+ 
+ #define ioremap_wc(addr, size)	\
+diff --git a/mm/memory.c b/mm/memory.c
+index 79ba525671c7d..d6d273eb2189a 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -6878,6 +6878,14 @@ void follow_pfnmap_end(struct follow_pfnmap_args *args)
+ EXPORT_SYMBOL_GPL(follow_pfnmap_end);
+ 
+ #ifdef CONFIG_HAVE_IOREMAP_PROT
++#ifndef arch_mk_kernel_prot
++#define arch_mk_kernel_prot arch_mk_kernel_prot
++static inline pgprot_t arch_mk_kernel_prot(pgprot_t user_prot)
++{
++	return user_prot;
++}
++#endif
++
+ /**
+  * generic_access_phys - generic implementation for iomem mmap access
+  * @vma: the vma to access
+@@ -6895,6 +6903,7 @@ int generic_access_phys(struct vm_area_struct *vma, unsigned long addr,
+ {
+ 	resource_size_t phys_addr;
+ 	pgprot_t prot = __pgprot(0);
++	pgprot_t kernel_prot;
+ 	void __iomem *maddr;
+ 	int offset = offset_in_page(addr);
+ 	int ret = -EINVAL;
+@@ -6912,7 +6921,8 @@ int generic_access_phys(struct vm_area_struct *vma, unsigned long addr,
+ 	if ((write & FOLL_WRITE) && !writable)
+ 		return -EINVAL;
+ 
+-	maddr = ioremap_prot(phys_addr, PAGE_ALIGN(len + offset), prot);
++	kernel_prot = arch_mk_kernel_prot(prot);
++	maddr = ioremap_prot(phys_addr, PAGE_ALIGN(len + offset), kernel_prot);
+ 	if (!maddr)
+ 		return -ENOMEM;
+ 
+-- 
+2.47.3
+

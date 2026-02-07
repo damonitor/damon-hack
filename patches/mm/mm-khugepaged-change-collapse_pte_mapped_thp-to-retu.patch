@@ -1,0 +1,145 @@
+From: Shivank Garg <shivankg@amd.com>
+Date: Sun, 18 Jan 2026 19:22:57 +0000
+Subject: [PATCH] mm/khugepaged: change collapse_pte_mapped_thp() to return
+ void
+
+The only external caller of collapse_pte_mapped_thp() is uprobe, which
+ignores the return value.  Change the external API to return void to
+simplify the interface.
+
+Introduce try_collapse_pte_mapped_thp() for internal use that preserves
+the return value.  This prepares for future patch that will convert the
+return type to use enum scan_result.
+
+Link: https://lkml.kernel.org/r/20260118192253.9263-10-shivankg@amd.com
+Signed-off-by: Shivank Garg <shivankg@amd.com>
+Suggested-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Acked-by: Lance Yang <lance.yang@linux.dev>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Tested-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Nico Pache <npache@redhat.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/khugepaged.h |  9 ++++-----
+ mm/khugepaged.c            | 40 ++++++++++++++++++++++----------------
+ 2 files changed, 27 insertions(+), 22 deletions(-)
+
+diff --git a/include/linux/khugepaged.h b/include/linux/khugepaged.h
+index eb1946a70cff7..d7a9053ff4fed 100644
+--- a/include/linux/khugepaged.h
++++ b/include/linux/khugepaged.h
+@@ -17,8 +17,8 @@ extern void khugepaged_enter_vma(struct vm_area_struct *vma,
+ 				 vm_flags_t vm_flags);
+ extern void khugepaged_min_free_kbytes_update(void);
+ extern bool current_is_khugepaged(void);
+-extern int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
+-				   bool install_pmd);
++void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
++		bool install_pmd);
+ 
+ static inline void khugepaged_fork(struct mm_struct *mm, struct mm_struct *oldmm)
+ {
+@@ -42,10 +42,9 @@ static inline void khugepaged_enter_vma(struct vm_area_struct *vma,
+ 					vm_flags_t vm_flags)
+ {
+ }
+-static inline int collapse_pte_mapped_thp(struct mm_struct *mm,
+-					  unsigned long addr, bool install_pmd)
++static inline void collapse_pte_mapped_thp(struct mm_struct *mm,
++		unsigned long addr, bool install_pmd)
+ {
+-	return 0;
+ }
+ 
+ static inline void khugepaged_min_free_kbytes_update(void)
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 984294a168615..d513375b4f390 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -1477,20 +1477,8 @@ static int set_huge_pmd(struct vm_area_struct *vma, unsigned long addr,
+ 	return SCAN_SUCCEED;
+ }
+ 
+-/**
+- * collapse_pte_mapped_thp - Try to collapse a pte-mapped THP for mm at
+- * address haddr.
+- *
+- * @mm: process address space where collapse happens
+- * @addr: THP collapse address
+- * @install_pmd: If a huge PMD should be installed
+- *
+- * This function checks whether all the PTEs in the PMD are pointing to the
+- * right THP. If so, retract the page table so the THP can refault in with
+- * as pmd-mapped. Possibly install a huge PMD mapping the THP.
+- */
+-int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
+-			    bool install_pmd)
++static int try_collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
++		bool install_pmd)
+ {
+ 	int nr_mapped_ptes = 0, result = SCAN_FAIL;
+ 	unsigned int nr_batch_ptes;
+@@ -1711,6 +1699,24 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
+ 	return result;
+ }
+ 
++/**
++ * collapse_pte_mapped_thp - Try to collapse a pte-mapped THP for mm at
++ * address haddr.
++ *
++ * @mm: process address space where collapse happens
++ * @addr: THP collapse address
++ * @install_pmd: If a huge PMD should be installed
++ *
++ * This function checks whether all the PTEs in the PMD are pointing to the
++ * right THP. If so, retract the page table so the THP can refault in with
++ * as pmd-mapped. Possibly install a huge PMD mapping the THP.
++ */
++void collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
++		bool install_pmd)
++{
++	try_collapse_pte_mapped_thp(mm, addr, install_pmd);
++}
++
+ /* Can we retract page tables for this file-backed VMA? */
+ static bool file_backed_vma_is_retractable(struct vm_area_struct *vma)
+ {
+@@ -2227,7 +2233,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
+ 
+ 	/*
+ 	 * Remove pte page tables, so we can re-fault the page as huge.
+-	 * If MADV_COLLAPSE, adjust result to call collapse_pte_mapped_thp().
++	 * If MADV_COLLAPSE, adjust result to call try_collapse_pte_mapped_thp().
+ 	 */
+ 	retract_page_tables(mapping, start);
+ 	if (cc && !cc->is_khugepaged)
+@@ -2479,7 +2485,7 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, int *result,
+ 					mmap_read_lock(mm);
+ 					if (hpage_collapse_test_exit_or_disable(mm))
+ 						goto breakouterloop;
+-					*result = collapse_pte_mapped_thp(mm,
++					*result = try_collapse_pte_mapped_thp(mm,
+ 						khugepaged_scan.address, false);
+ 					if (*result == SCAN_PMD_MAPPED)
+ 						*result = SCAN_SUCCEED;
+@@ -2844,7 +2850,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 		case SCAN_PTE_MAPPED_HUGEPAGE:
+ 			BUG_ON(mmap_locked);
+ 			mmap_read_lock(mm);
+-			result = collapse_pte_mapped_thp(mm, addr, true);
++			result = try_collapse_pte_mapped_thp(mm, addr, true);
+ 			mmap_read_unlock(mm);
+ 			goto handle_result;
+ 		/* Whitelisted set of results where continuing OK */
+-- 
+2.47.3
+

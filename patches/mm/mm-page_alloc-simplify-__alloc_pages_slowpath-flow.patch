@@ -1,0 +1,131 @@
+From: Vlastimil Babka <vbabka@suse.cz>
+Date: Tue, 6 Jan 2026 12:52:38 +0100
+Subject: [PATCH] mm/page_alloc: simplify __alloc_pages_slowpath() flow
+
+The actions done before entering the main retry loop include waking up
+kswapds and an allocation attempt with the precise alloc_flags.  Then in
+the loop we keep waking up kswapds, and we retry the allocation with flags
+potentially further adjusted by being allowed to use reserves (due to e.g.
+becoming an OOM killer victim).
+
+We can adjust the retry loop to keep only one instance of waking up
+kswapds and allocation attempt.  Introduce the can_retry_reserves variable
+for retrying once when we become eligible for reserves.  It is still
+useful not to evaluate reserve_flags immediately for the first allocation
+attempt, because it's better to first try succeed in a non-preferred zone
+above the min watermark before allocating immediately from the preferred
+zone below min watermark.
+
+Additionally move the cpuset update checks introduced by e05741fb10c3
+("mm/page_alloc.c: avoid infinite retries caused by cpuset race") further
+down the retry loop.  It's enough to do the checks only before reaching
+any potentially infinite 'goto retry;' loop.
+
+There should be no meaningful functional changes.  The change of exact
+moments the retry for reserves and cpuset updates are checked should not
+result in different outomes modulo races with concurrent allocator
+activity.
+
+Link: https://lkml.kernel.org/r/20260106-thp-thisnode-tweak-v3-3-f5d67c21a193@suse.cz
+Signed-off-by: Vlastimil Babka <vbabka@suse.cz>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 41 +++++++++++++++++++++++------------------
+ 1 file changed, 23 insertions(+), 18 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 848c5c93ccb5e..f7d777921f05f 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4708,6 +4708,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	unsigned int zonelist_iter_cookie;
+ 	int reserve_flags;
+ 	bool compact_first = false;
++	bool can_retry_reserves = true;
+ 
+ 	if (unlikely(nofail)) {
+ 		/*
+@@ -4775,6 +4776,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 			goto nopage;
+ 	}
+ 
++retry:
++	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
+ 	if (alloc_flags & ALLOC_KSWAPD)
+ 		wake_all_kswapds(order, gfp_mask, ac);
+ 
+@@ -4786,19 +4789,6 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	if (page)
+ 		goto got_pg;
+ 
+-retry:
+-	/*
+-	 * Deal with possible cpuset update races or zonelist updates to avoid
+-	 * infinite retries.
+-	 */
+-	if (check_retry_cpuset(cpuset_mems_cookie, ac) ||
+-	    check_retry_zonelist(zonelist_iter_cookie))
+-		goto restart;
+-
+-	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
+-	if (alloc_flags & ALLOC_KSWAPD)
+-		wake_all_kswapds(order, gfp_mask, ac);
+-
+ 	reserve_flags = __gfp_pfmemalloc_flags(gfp_mask);
+ 	if (reserve_flags)
+ 		alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) |
+@@ -4813,12 +4803,18 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 		ac->nodemask = NULL;
+ 		ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
+ 					ac->highest_zoneidx, ac->nodemask);
+-	}
+ 
+-	/* Attempt with potentially adjusted zonelist and alloc_flags */
+-	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+-	if (page)
+-		goto got_pg;
++		/*
++		 * The first time we adjust anything due to being allowed to
++		 * ignore memory policies or watermarks, retry immediately. This
++		 * allows us to keep the first allocation attempt optimistic so
++		 * it can succeed in a zone that is still above watermarks.
++		 */
++		if (can_retry_reserves) {
++			can_retry_reserves = false;
++			goto retry;
++		}
++	}
+ 
+ 	/* Caller is not willing to reclaim, we can't balance anything */
+ 	if (!can_direct_reclaim)
+@@ -4881,6 +4877,15 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 			     !(gfp_mask & __GFP_RETRY_MAYFAIL)))
+ 		goto nopage;
+ 
++	/*
++	 * Deal with possible cpuset update races or zonelist updates to avoid
++	 * infinite retries. No "goto retry;" can be placed above this check
++	 * unless it can execute just once.
++	 */
++	if (check_retry_cpuset(cpuset_mems_cookie, ac) ||
++	    check_retry_zonelist(zonelist_iter_cookie))
++		goto restart;
++
+ 	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
+ 				 did_some_progress > 0, &no_progress_loops))
+ 		goto retry;
+-- 
+2.47.3
+

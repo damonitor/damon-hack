@@ -1,0 +1,223 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Fri, 9 Jan 2026 17:31:36 +0800
+Subject: [PATCH] mm: hugetlb: allocate frozen pages for gigantic allocation
+
+alloc_gigantic_folio() allocates a folio with refcount increated and then
+freeze it, convert to allocate a frozen folio to remove the atomic
+operation about folio refcount, and saving atomic operation during
+__update_and_free_hugetlb_folio() too.
+
+Besides, rename hugetlb_cma_{alloc,free}_folio(), alloc_gigantic_folio()
+and alloc_buddy_hugetlb_folio() with frozen which make them more
+self-explanatory.
+
+Link: https://lkml.kernel.org/r/20260109093136.1491549-7-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jane Chu <jane.chu@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Sidhartha Kumar <sidhartha.kumar@oracle.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Claudiu Beznea <claudiu.beznea.uj@bp.renesas.com>
+Cc: Mark Brown <broonie@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c     | 75 +++++++++++++-----------------------------------
+ mm/hugetlb_cma.c |  9 ++----
+ mm/hugetlb_cma.h | 10 +++----
+ 3 files changed, 28 insertions(+), 66 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 762aeebf85d26..8c197307db0c4 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -121,16 +121,6 @@ static void hugetlb_unshare_pmds(struct vm_area_struct *vma,
+ 		unsigned long start, unsigned long end, bool take_locks);
+ static struct resv_map *vma_resv_map(struct vm_area_struct *vma);
+ 
+-static void hugetlb_free_folio(struct folio *folio)
+-{
+-	if (folio_test_hugetlb_cma(folio)) {
+-		hugetlb_cma_free_folio(folio);
+-		return;
+-	}
+-
+-	folio_put(folio);
+-}
+-
+ static inline bool subpool_is_free(struct hugepage_subpool *spool)
+ {
+ 	if (spool->count)
+@@ -1417,52 +1407,25 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+ 	return NULL;
+ }
+ 
+-#ifdef CONFIG_ARCH_HAS_GIGANTIC_PAGE
+-#ifdef CONFIG_CONTIG_ALLOC
+-static struct folio *alloc_gigantic_folio(int order, gfp_t gfp_mask,
++#if defined(CONFIG_ARCH_HAS_GIGANTIC_PAGE) && defined(CONFIG_CONTIG_ALLOC)
++static struct folio *alloc_gigantic_frozen_folio(int order, gfp_t gfp_mask,
+ 		int nid, nodemask_t *nodemask)
+ {
+ 	struct folio *folio;
+-	bool retried = false;
+ 
+-retry:
+-	folio = hugetlb_cma_alloc_folio(order, gfp_mask, nid, nodemask);
+-	if (!folio) {
+-		struct page *page;
+-
+-		if (hugetlb_cma_exclusive_alloc())
+-			return NULL;
+-
+-		page = alloc_contig_frozen_pages(1 << order, gfp_mask, nid, nodemask);
+-		if (!page)
+-			return NULL;
+-
+-		set_page_refcounted(page);
+-		folio = page_folio(page);
+-	}
+-
+-	if (folio_ref_freeze(folio, 1))
++	folio = hugetlb_cma_alloc_frozen_folio(order, gfp_mask, nid, nodemask);
++	if (folio)
+ 		return folio;
+ 
+-	pr_warn("HugeTLB: unexpected refcount on PFN %lu\n", folio_pfn(folio));
+-	hugetlb_free_folio(folio);
+-	if (!retried) {
+-		retried = true;
+-		goto retry;
+-	}
+-	return NULL;
+-}
++	if (hugetlb_cma_exclusive_alloc())
++		return NULL;
+ 
+-#else /* !CONFIG_CONTIG_ALLOC */
+-static struct folio *alloc_gigantic_folio(int order, gfp_t gfp_mask, int nid,
+-					  nodemask_t *nodemask)
+-{
+-	return NULL;
++	folio = (struct folio *)alloc_contig_frozen_pages(1 << order, gfp_mask,
++							  nid, nodemask);
++	return folio;
+ }
+-#endif /* CONFIG_CONTIG_ALLOC */
+-
+-#else /* !CONFIG_ARCH_HAS_GIGANTIC_PAGE */
+-static struct folio *alloc_gigantic_folio(int order, gfp_t gfp_mask, int nid,
++#else /* !CONFIG_ARCH_HAS_GIGANTIC_PAGE || !CONFIG_CONTIG_ALLOC */
++static struct folio *alloc_gigantic_frozen_folio(int order, gfp_t gfp_mask, int nid,
+ 					  nodemask_t *nodemask)
+ {
+ 	return NULL;
+@@ -1592,9 +1555,11 @@ static void __update_and_free_hugetlb_folio(struct hstate *h,
+ 	if (unlikely(folio_test_hwpoison(folio)))
+ 		folio_clear_hugetlb_hwpoison(folio);
+ 
+-	folio_ref_unfreeze(folio, 1);
+-
+-	hugetlb_free_folio(folio);
++	VM_BUG_ON_FOLIO(folio_ref_count(folio), folio);
++	if (folio_test_hugetlb_cma(folio))
++		hugetlb_cma_free_frozen_folio(folio);
++	else
++		free_frozen_pages(&folio->page, folio_order(folio));
+ }
+ 
+ /*
+@@ -1874,7 +1839,7 @@ struct address_space *hugetlb_folio_mapping_lock_write(struct folio *folio)
+ 	return NULL;
+ }
+ 
+-static struct folio *alloc_buddy_hugetlb_folio(int order, gfp_t gfp_mask,
++static struct folio *alloc_buddy_frozen_folio(int order, gfp_t gfp_mask,
+ 		int nid, nodemask_t *nmask, nodemask_t *node_alloc_noretry)
+ {
+ 	struct folio *folio;
+@@ -1930,10 +1895,10 @@ static struct folio *only_alloc_fresh_hugetlb_folio(struct hstate *h,
+ 		nid = numa_mem_id();
+ 
+ 	if (order_is_gigantic(order))
+-		folio = alloc_gigantic_folio(order, gfp_mask, nid, nmask);
++		folio = alloc_gigantic_frozen_folio(order, gfp_mask, nid, nmask);
+ 	else
+-		folio = alloc_buddy_hugetlb_folio(order, gfp_mask, nid, nmask,
+-						  node_alloc_noretry);
++		folio = alloc_buddy_frozen_folio(order, gfp_mask, nid, nmask,
++						 node_alloc_noretry);
+ 	if (folio)
+ 		init_new_hugetlb_folio(folio);
+ 	return folio;
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index 58ceb6c9e4105..0ddf9755c0905 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -18,16 +18,14 @@ static unsigned long hugetlb_cma_size_in_node[MAX_NUMNODES] __initdata;
+ static bool hugetlb_cma_only;
+ static unsigned long hugetlb_cma_size __initdata;
+ 
+-void hugetlb_cma_free_folio(struct folio *folio)
++void hugetlb_cma_free_frozen_folio(struct folio *folio)
+ {
+-	folio_ref_dec(folio);
+-
+ 	WARN_ON_ONCE(!cma_release_frozen(hugetlb_cma[folio_nid(folio)],
+ 					 &folio->page, folio_nr_pages(folio)));
+ }
+ 
+-struct folio *hugetlb_cma_alloc_folio(int order, gfp_t gfp_mask,
+-				      int nid, nodemask_t *nodemask)
++struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
++		int nid, nodemask_t *nodemask)
+ {
+ 	int node;
+ 	struct folio *folio;
+@@ -50,7 +48,6 @@ struct folio *hugetlb_cma_alloc_folio(int order, gfp_t gfp_mask,
+ 	if (!page)
+ 		return NULL;
+ 
+-	set_page_refcounted(page);
+ 	folio = page_folio(page);
+ 	folio_set_hugetlb_cma(folio);
+ 	return folio;
+diff --git a/mm/hugetlb_cma.h b/mm/hugetlb_cma.h
+index 78186839df3a7..c619c394b1ae2 100644
+--- a/mm/hugetlb_cma.h
++++ b/mm/hugetlb_cma.h
+@@ -3,8 +3,8 @@
+ #define _LINUX_HUGETLB_CMA_H
+ 
+ #ifdef CONFIG_CMA
+-void hugetlb_cma_free_folio(struct folio *folio);
+-struct folio *hugetlb_cma_alloc_folio(int order, gfp_t gfp_mask,
++void hugetlb_cma_free_frozen_folio(struct folio *folio);
++struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 				      int nid, nodemask_t *nodemask);
+ struct huge_bootmem_page *hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid,
+ 						    bool node_exact);
+@@ -13,12 +13,12 @@ unsigned long hugetlb_cma_total_size(void);
+ void hugetlb_cma_validate_params(void);
+ bool hugetlb_early_cma(struct hstate *h);
+ #else
+-static inline void hugetlb_cma_free_folio(struct folio *folio)
++static inline void hugetlb_cma_free_frozen_folio(struct folio *folio)
+ {
+ }
+ 
+-static inline struct folio *hugetlb_cma_alloc_folio(int order, gfp_t gfp_mask,
+-		int nid, nodemask_t *nodemask)
++static inline struct folio *hugetlb_cma_alloc_frozen_folio(int order,
++		gfp_t gfp_mask,	int nid, nodemask_t *nodemask)
+ {
+ 	return NULL;
+ }
+-- 
+2.47.3
+

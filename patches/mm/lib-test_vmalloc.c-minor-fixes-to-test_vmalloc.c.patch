@@ -1,0 +1,153 @@
+From: Audra Mitchell <audra@redhat.com>
+Date: Mon, 1 Dec 2025 13:18:48 -0500
+Subject: [PATCH] lib/test_vmalloc.c: minor fixes to test_vmalloc.c
+
+If PAGE_SIZE is larger than 4k and if you have a system with a large
+number of CPUs, this test can require a very large amount of memory
+leading to oom-killer firing.  Given the type of allocation, the kernel
+won't have anything to kill, causing the system to stall.
+
+Add a parameter to the test_vmalloc driver to represent the number of
+times a percpu object will be allocated.  Calculate this in
+test_vmalloc.sh to be 90% of available memory or the current default of
+35000, whichever is smaller.
+
+Link: https://lkml.kernel.org/r/20251201181848.1216197-1-audra@redhat.com
+Signed-off-by: Audra Mitchell <audra@redhat.com>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rafael Aquini <raquini@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/test_vmalloc.c                         | 11 +++++---
+ tools/testing/selftests/mm/test_vmalloc.sh | 31 +++++++++++++++++++---
+ 2 files changed, 35 insertions(+), 7 deletions(-)
+
+diff --git a/lib/test_vmalloc.c b/lib/test_vmalloc.c
+index 6521c05c78168..270b6f7ca8074 100644
+--- a/lib/test_vmalloc.c
++++ b/lib/test_vmalloc.c
+@@ -58,6 +58,9 @@ __param(int, run_test_mask, 7,
+ 		/* Add a new test case description here. */
+ );
+ 
++__param(int, nr_pcpu_objects, 35000,
++	"Number of pcpu objects to allocate for pcpu_alloc_test");
++
+ /*
+  * This is for synchronization of setup phase.
+  */
+@@ -317,24 +320,24 @@ pcpu_alloc_test(void)
+ 	size_t size, align;
+ 	int i;
+ 
+-	pcpu = vmalloc(sizeof(void __percpu *) * 35000);
++	pcpu = vmalloc(sizeof(void __percpu *) * nr_pcpu_objects);
+ 	if (!pcpu)
+ 		return -1;
+ 
+-	for (i = 0; i < 35000; i++) {
++	for (i = 0; i < nr_pcpu_objects; i++) {
+ 		size = get_random_u32_inclusive(1, PAGE_SIZE / 4);
+ 
+ 		/*
+ 		 * Maximum PAGE_SIZE
+ 		 */
+-		align = 1 << get_random_u32_inclusive(1, 11);
++		align = 1 << get_random_u32_inclusive(1, PAGE_SHIFT - 1);
+ 
+ 		pcpu[i] = __alloc_percpu(size, align);
+ 		if (!pcpu[i])
+ 			rv = -1;
+ 	}
+ 
+-	for (i = 0; i < 35000; i++)
++	for (i = 0; i < nr_pcpu_objects; i++)
+ 		free_percpu(pcpu[i]);
+ 
+ 	vfree(pcpu);
+diff --git a/tools/testing/selftests/mm/test_vmalloc.sh b/tools/testing/selftests/mm/test_vmalloc.sh
+index d39096723fca0..b23d705bf570f 100755
+--- a/tools/testing/selftests/mm/test_vmalloc.sh
++++ b/tools/testing/selftests/mm/test_vmalloc.sh
+@@ -13,6 +13,9 @@ TEST_NAME="vmalloc"
+ DRIVER="test_${TEST_NAME}"
+ NUM_CPUS=`grep -c ^processor /proc/cpuinfo`
+ 
++# Default number of times we allocate percpu objects:
++NR_PCPU_OBJECTS=35000
++
+ # 1 if fails
+ exitcode=1
+ 
+@@ -27,6 +30,8 @@ PERF_PARAM="sequential_test_order=1 test_repeat_count=3"
+ SMOKE_PARAM="test_loop_count=10000 test_repeat_count=10"
+ STRESS_PARAM="nr_threads=$NUM_CPUS test_repeat_count=20"
+ 
++PCPU_OBJ_PARAM="nr_pcpu_objects=$NR_PCPU_OBJECTS"
++
+ check_test_requirements()
+ {
+ 	uid=$(id -u)
+@@ -47,12 +52,30 @@ check_test_requirements()
+ 	fi
+ }
+ 
++check_memory_requirement()
++{
++	# The pcpu_alloc_test allocates nr_pcpu_objects per cpu. If the
++	# PAGE_SIZE is on the larger side it is easier to set a value
++	# that can cause oom events during testing. Since we are
++	# testing the functionality of vmalloc and not the oom-killer,
++	# calculate what is 90% of available memory and divide it by
++	# the number of online CPUs.
++	pages=$(($(getconf _AVPHYS_PAGES) * 90 / 100 / $NUM_CPUS))
++
++	if (($pages < $NR_PCPU_OBJECTS)); then
++		echo "Updated nr_pcpu_objects to 90% of available memory."
++		echo "nr_pcpu_objects is now set to: $pages."
++		PCPU_OBJ_PARAM="nr_pcpu_objects=$pages"
++	fi
++}
++
+ run_performance_check()
+ {
+ 	echo "Run performance tests to evaluate how fast vmalloc allocation is."
+ 	echo "It runs all test cases on one single CPU with sequential order."
+ 
+-	modprobe $DRIVER $PERF_PARAM > /dev/null 2>&1
++	check_memory_requirement
++	modprobe $DRIVER $PERF_PARAM $PCPU_OBJ_PARAM > /dev/null 2>&1
+ 	echo "Done."
+ 	echo "Check the kernel message buffer to see the summary."
+ }
+@@ -63,7 +86,8 @@ run_stability_check()
+ 	echo "available test cases are run by NUM_CPUS workers simultaneously."
+ 	echo "It will take time, so be patient."
+ 
+-	modprobe $DRIVER $STRESS_PARAM > /dev/null 2>&1
++	check_memory_requirement
++	modprobe $DRIVER $STRESS_PARAM $PCPU_OBJ_PARAM > /dev/null 2>&1
+ 	echo "Done."
+ 	echo "Check the kernel ring buffer to see the summary."
+ }
+@@ -74,7 +98,8 @@ run_smoke_check()
+ 	echo "Please check $0 output how it can be used"
+ 	echo "for deep performance analysis as well as stress testing."
+ 
+-	modprobe $DRIVER $SMOKE_PARAM > /dev/null 2>&1
++	check_memory_requirement
++	modprobe $DRIVER $SMOKE_PARAM $PCPU_OBJ_PARAM > /dev/null 2>&1
+ 	echo "Done."
+ 	echo "Check the kernel ring buffer to see the summary."
+ }
+-- 
+2.47.3
+

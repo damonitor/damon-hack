@@ -1,0 +1,175 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 7 Jan 2026 14:21:44 +0900
+Subject: [PATCH] zsmalloc: use actual object size to detect spans
+
+Using class->size to detect spanning objects is not entirely correct,
+because some size classes can hold a range of object sizes of up to
+class->size bytes in length, due to size-classes merge.  Such classes use
+padding for cases when actually written objects are smaller than
+class->size.  zs_obj_read_begin() can incorrectly hit the slow path and
+perform memcpy of such objects, basically copying padding bytes.  Instead
+of class->size zs_obj_read_begin() should use the actual compressed object
+length (both zram and zswap know it) so that it can correctly handle
+situations when a written object is small enough to fit into the first
+physical page.
+
+Link: https://lkml.kernel.org/r/20260107052145.3586917-1-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Reviewed-by: Yosry Ahmed <yosry.ahmed@linux.dev>	[zsmalloc & zswap]
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 14 ++++++++------
+ include/linux/zsmalloc.h      |  4 ++--
+ mm/zsmalloc.c                 | 16 +++++++++++-----
+ mm/zswap.c                    |  5 +++--
+ 4 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 1d6760b3b5574..f92845ef9192c 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2062,11 +2062,11 @@ static int read_incompressible_page(struct zram *zram, struct page *page,
+ 	void *src, *dst;
+ 
+ 	handle = get_slot_handle(zram, index);
+-	src = zs_obj_read_begin(zram->mem_pool, handle, NULL);
++	src = zs_obj_read_begin(zram->mem_pool, handle, PAGE_SIZE, NULL);
+ 	dst = kmap_local_page(page);
+ 	copy_page(dst, src);
+ 	kunmap_local(dst);
+-	zs_obj_read_end(zram->mem_pool, handle, src);
++	zs_obj_read_end(zram->mem_pool, handle, PAGE_SIZE, src);
+ 
+ 	return 0;
+ }
+@@ -2084,11 +2084,12 @@ static int read_compressed_page(struct zram *zram, struct page *page, u32 index)
+ 	prio = get_slot_comp_priority(zram, index);
+ 
+ 	zstrm = zcomp_stream_get(zram->comps[prio]);
+-	src = zs_obj_read_begin(zram->mem_pool, handle, zstrm->local_copy);
++	src = zs_obj_read_begin(zram->mem_pool, handle, size,
++				zstrm->local_copy);
+ 	dst = kmap_local_page(page);
+ 	ret = zcomp_decompress(zram->comps[prio], zstrm, src, size, dst);
+ 	kunmap_local(dst);
+-	zs_obj_read_end(zram->mem_pool, handle, src);
++	zs_obj_read_end(zram->mem_pool, handle, size, src);
+ 	zcomp_stream_put(zstrm);
+ 
+ 	return ret;
+@@ -2111,9 +2112,10 @@ static int read_from_zspool_raw(struct zram *zram, struct page *page, u32 index)
+ 	 * takes place here, as we read raw compressed data.
+ 	 */
+ 	zstrm = zcomp_stream_get(zram->comps[ZRAM_PRIMARY_COMP]);
+-	src = zs_obj_read_begin(zram->mem_pool, handle, zstrm->local_copy);
++	src = zs_obj_read_begin(zram->mem_pool, handle, size,
++				zstrm->local_copy);
+ 	memcpy_to_page(page, 0, src, size);
+-	zs_obj_read_end(zram->mem_pool, handle, src);
++	zs_obj_read_end(zram->mem_pool, handle, size, src);
+ 	zcomp_stream_put(zstrm);
+ 
+ 	return 0;
+diff --git a/include/linux/zsmalloc.h b/include/linux/zsmalloc.h
+index f3ccff2d966cd..5565c3171007c 100644
+--- a/include/linux/zsmalloc.h
++++ b/include/linux/zsmalloc.h
+@@ -40,9 +40,9 @@ unsigned int zs_lookup_class_index(struct zs_pool *pool, unsigned int size);
+ void zs_pool_stats(struct zs_pool *pool, struct zs_pool_stats *stats);
+ 
+ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+-			void *local_copy);
++			size_t mem_len, void *local_copy);
+ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+-		     void *handle_mem);
++		     size_t mem_len, void *handle_mem);
+ void zs_obj_write(struct zs_pool *pool, unsigned long handle,
+ 		  void *handle_mem, size_t mem_len);
+ 
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 84da164dcbc5b..119c196a287a7 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -1065,7 +1065,7 @@ unsigned long zs_get_total_pages(struct zs_pool *pool)
+ EXPORT_SYMBOL_GPL(zs_get_total_pages);
+ 
+ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+-			void *local_copy)
++			size_t mem_len, void *local_copy)
+ {
+ 	struct zspage *zspage;
+ 	struct zpdesc *zpdesc;
+@@ -1087,7 +1087,10 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ 	class = zspage_class(pool, zspage);
+ 	off = offset_in_page(class->size * obj_idx);
+ 
+-	if (off + class->size <= PAGE_SIZE) {
++	if (!ZsHugePage(zspage))
++		mem_len += ZS_HANDLE_SIZE;
++
++	if (off + mem_len <= PAGE_SIZE) {
+ 		/* this object is contained entirely within a page */
+ 		addr = kmap_local_zpdesc(zpdesc);
+ 		addr += off;
+@@ -1096,7 +1099,7 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ 
+ 		/* this object spans two pages */
+ 		sizes[0] = PAGE_SIZE - off;
+-		sizes[1] = class->size - sizes[0];
++		sizes[1] = mem_len - sizes[0];
+ 		addr = local_copy;
+ 
+ 		memcpy_from_page(addr, zpdesc_page(zpdesc),
+@@ -1115,7 +1118,7 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ EXPORT_SYMBOL_GPL(zs_obj_read_begin);
+ 
+ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+-		     void *handle_mem)
++		     size_t mem_len, void *handle_mem)
+ {
+ 	struct zspage *zspage;
+ 	struct zpdesc *zpdesc;
+@@ -1129,7 +1132,10 @@ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+ 	class = zspage_class(pool, zspage);
+ 	off = offset_in_page(class->size * obj_idx);
+ 
+-	if (off + class->size <= PAGE_SIZE) {
++	if (!ZsHugePage(zspage))
++		mem_len += ZS_HANDLE_SIZE;
++
++	if (off + mem_len <= PAGE_SIZE) {
+ 		if (!ZsHugePage(zspage))
+ 			off += ZS_HANDLE_SIZE;
+ 		handle_mem -= off;
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 6bf4f24419144..1f6c007310d8c 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -937,7 +937,8 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+ 	u8 *src, *obj;
+ 
+ 	acomp_ctx = acomp_ctx_get_cpu_lock(pool);
+-	obj = zs_obj_read_begin(pool->zs_pool, entry->handle, acomp_ctx->buffer);
++	obj = zs_obj_read_begin(pool->zs_pool, entry->handle, entry->length,
++				acomp_ctx->buffer);
+ 
+ 	/* zswap entries of length PAGE_SIZE are not compressed. */
+ 	if (entry->length == PAGE_SIZE) {
+@@ -966,7 +967,7 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+ 	dlen = acomp_ctx->req->dlen;
+ 
+ read_done:
+-	zs_obj_read_end(pool->zs_pool, entry->handle, obj);
++	zs_obj_read_end(pool->zs_pool, entry->handle, entry->length, obj);
+ 	acomp_ctx_put_unlock(acomp_ctx);
+ 
+ 	if (!decomp_ret && dlen == PAGE_SIZE)
+-- 
+2.47.3
+

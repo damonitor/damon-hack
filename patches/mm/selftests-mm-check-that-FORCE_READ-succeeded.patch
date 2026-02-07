@@ -1,0 +1,119 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Thu, 22 Jan 2026 17:02:20 +0000
+Subject: [PATCH] selftests/mm: check that FORCE_READ() succeeded
+
+Many cow tests rely on FORCE_READ() to populate pages.  Introduce a helper
+to make sure that the pages are actually populated, and fail otherwise.
+
+Link: https://lkml.kernel.org/r/20260122170224.4056513-6-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Suggested-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Usama Anjum <Usama.Anjum@arm.com>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: Yunsheng Lin <linyunsheng@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/cow.c | 43 ++++++++++++++++++++++++--------
+ 1 file changed, 33 insertions(+), 10 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/cow.c b/tools/testing/selftests/mm/cow.c
+index 83b3563be26b6..d9c69c04b67d8 100644
+--- a/tools/testing/selftests/mm/cow.c
++++ b/tools/testing/selftests/mm/cow.c
+@@ -75,6 +75,18 @@ static bool range_is_swapped(void *addr, size_t size)
+ 	return true;
+ }
+ 
++static bool populate_page_checked(char *addr)
++{
++	bool ret;
++
++	FORCE_READ(*addr);
++	ret = pagemap_is_populated(pagemap_fd, addr);
++	if (!ret)
++		ksft_print_msg("Failed to populate page\n");
++
++	return ret;
++}
++
+ struct comm_pipes {
+ 	int child_ready[2];
+ 	int parent_ready[2];
+@@ -1549,8 +1561,10 @@ static void run_with_zeropage(non_anon_test_fn fn, const char *desc)
+ 	}
+ 
+ 	/* Read from the page to populate the shared zeropage. */
+-	FORCE_READ(*mem);
+-	FORCE_READ(*smem);
++	if (!populate_page_checked(mem) || !populate_page_checked(smem)) {
++		log_test_result(KSFT_FAIL);
++		goto munmap;
++	}
+ 
+ 	fn(mem, smem, pagesize);
+ munmap:
+@@ -1612,8 +1626,11 @@ static void run_with_huge_zeropage(non_anon_test_fn fn, const char *desc)
+ 	 * the first sub-page and test if we get another sub-page populated
+ 	 * automatically.
+ 	 */
+-	FORCE_READ(*mem);
+-	FORCE_READ(*smem);
++	if (!populate_page_checked(mem) || !populate_page_checked(smem)) {
++		log_test_result(KSFT_FAIL);
++		goto munmap;
++	}
++
+ 	if (!pagemap_is_populated(pagemap_fd, mem + pagesize) ||
+ 	    !pagemap_is_populated(pagemap_fd, smem + pagesize)) {
+ 		ksft_test_result_skip("Did not get THPs populated\n");
+@@ -1663,8 +1680,10 @@ static void run_with_memfd(non_anon_test_fn fn, const char *desc)
+ 	}
+ 
+ 	/* Fault the page in. */
+-	FORCE_READ(*mem);
+-	FORCE_READ(*smem);
++	if (!populate_page_checked(mem) || !populate_page_checked(smem)) {
++		log_test_result(KSFT_FAIL);
++		goto munmap;
++	}
+ 
+ 	fn(mem, smem, pagesize);
+ munmap:
+@@ -1719,8 +1738,10 @@ static void run_with_tmpfile(non_anon_test_fn fn, const char *desc)
+ 	}
+ 
+ 	/* Fault the page in. */
+-	FORCE_READ(*mem);
+-	FORCE_READ(*smem);
++	if (!populate_page_checked(mem) || !populate_page_checked(smem)) {
++		log_test_result(KSFT_FAIL);
++		goto munmap;
++	}
+ 
+ 	fn(mem, smem, pagesize);
+ munmap:
+@@ -1773,8 +1794,10 @@ static void run_with_memfd_hugetlb(non_anon_test_fn fn, const char *desc,
+ 	}
+ 
+ 	/* Fault the page in. */
+-	FORCE_READ(*mem);
+-	FORCE_READ(*smem);
++	if (!populate_page_checked(mem) || !populate_page_checked(smem)) {
++		log_test_result(KSFT_FAIL);
++		goto munmap;
++	}
+ 
+ 	fn(mem, smem, hugetlbsize);
+ munmap:
+-- 
+2.47.3
+

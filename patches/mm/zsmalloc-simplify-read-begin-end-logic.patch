@@ -1,0 +1,68 @@
+From: Yosry Ahmed <yosry.ahmed@linux.dev>
+Date: Wed, 7 Jan 2026 14:21:45 +0900
+Subject: [PATCH] zsmalloc: simplify read begin/end logic
+
+zs_obj_read_begin() currently maps or copies the compressed object with
+the prefix handle for !ZsHugePage case.  Make the logic clearer and
+more efficient by moving the offset of the object in the page after the
+prefix handle instead, only copying the actual object and avoiding the
+need to adjust the returned address to account for the prefix.
+
+Adjust the logic to detect spanning objects in zs_obj_read_end()
+accordingly, slightly simplifying it by avoiding the need to account
+for the handle in both the offset and the object size.
+
+Link: https://lkml.kernel.org/r/20260107052145.3586917-2-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Co-developed-by: Yosry Ahmed <yosry.ahmed@linux.dev>
+Signed-off-by: Yosry Ahmed <yosry.ahmed@linux.dev>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 119c196a287a7..cc3d9501ae219 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -1088,7 +1088,7 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ 	off = offset_in_page(class->size * obj_idx);
+ 
+ 	if (!ZsHugePage(zspage))
+-		mem_len += ZS_HANDLE_SIZE;
++		off += ZS_HANDLE_SIZE;
+ 
+ 	if (off + mem_len <= PAGE_SIZE) {
+ 		/* this object is contained entirely within a page */
+@@ -1110,9 +1110,6 @@ void *zs_obj_read_begin(struct zs_pool *pool, unsigned long handle,
+ 				 0, sizes[1]);
+ 	}
+ 
+-	if (!ZsHugePage(zspage))
+-		addr += ZS_HANDLE_SIZE;
+-
+ 	return addr;
+ }
+ EXPORT_SYMBOL_GPL(zs_obj_read_begin);
+@@ -1133,11 +1130,9 @@ void zs_obj_read_end(struct zs_pool *pool, unsigned long handle,
+ 	off = offset_in_page(class->size * obj_idx);
+ 
+ 	if (!ZsHugePage(zspage))
+-		mem_len += ZS_HANDLE_SIZE;
++		off += ZS_HANDLE_SIZE;
+ 
+ 	if (off + mem_len <= PAGE_SIZE) {
+-		if (!ZsHugePage(zspage))
+-			off += ZS_HANDLE_SIZE;
+ 		handle_mem -= off;
+ 		kunmap_local(handle_mem);
+ 	}
+-- 
+2.47.3
+

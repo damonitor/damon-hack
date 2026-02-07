@@ -1,0 +1,125 @@
+From: Shivank Garg <shivankg@amd.com>
+Date: Sun, 18 Jan 2026 19:09:40 +0000
+Subject: [PATCH] mm/khugepaged: map dirty/writeback pages failures to EAGAIN
+
+Patch series "mm/khugepaged: fix dirty page handling for MADV_COLLAPSE",
+v5.
+
+MADV_COLLAPSE on file-backed mappings fails with -EINVAL when TEXT pages
+are dirty. This affects scenarios like package/container updates or
+executing binaries immediately after writing them, etc.
+
+The issue is that collapse_file() triggers async writeback and returns
+SCAN_FAIL (maps to -EINVAL), expecting khugepaged to revisit later. But
+MADV_COLLAPSE is synchronous and userspace expects immediate success or
+a clear retry signal.
+
+Reproduction:
+ - Compile or copy 2MB-aligned executable to XFS/ext4 FS
+ - Call MADV_COLLAPSE on .text section
+ - First call fails with -EINVAL (text pages dirty from copy)
+ - Second call succeeds (async writeback completed)
+
+Issue Report:
+https://lore.kernel.org/all/4e26fe5e-7374-467c-a333-9dd48f85d7cc@amd.com
+
+
+This patch (of 2):
+
+When collapse_file encounters dirty or writeback pages in file-backed
+mappings, it currently returns SCAN_FAIL which maps to -EINVAL.  This is
+misleading as EINVAL suggests invalid arguments, whereas dirty/writeback
+pages represent transient conditions that may resolve on retry.
+
+Introduce SCAN_PAGE_DIRTY_OR_WRITEBACK to cover both dirty and writeback
+states, mapping it to -EAGAIN.  For MADV_COLLAPSE, this provides userspace
+with a clear signal that retry may succeed after writeback completes.  For
+khugepaged, this is harmless as it will naturally revisit the range during
+periodic scans after async writeback completes.
+
+Link: https://lkml.kernel.org/r/20260118190939.8986-2-shivankg@amd.com
+Link: https://lkml.kernel.org/r/20260118190939.8986-4-shivankg@amd.com
+Fixes: 34488399fa08 ("mm/madvise: add file and shmem support to MADV_COLLAPSE")
+Signed-off-by: Shivank Garg <shivankg@amd.com>
+Reported-by: Branden Moore <Branden.Moore@amd.com>
+Closes: https://lore.kernel.org/all/4e26fe5e-7374-467c-a333-9dd48f85d7cc@amd.com
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: wang lian <lianux.mm@gmail.com>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/huge_memory.h | 3 ++-
+ mm/khugepaged.c                    | 8 +++++---
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/include/trace/events/huge_memory.h b/include/trace/events/huge_memory.h
+index 4cde53b45a859..4e41bff318888 100644
+--- a/include/trace/events/huge_memory.h
++++ b/include/trace/events/huge_memory.h
+@@ -37,7 +37,8 @@
+ 	EM( SCAN_PAGE_HAS_PRIVATE,	"page_has_private")		\
+ 	EM( SCAN_STORE_FAILED,		"store_failed")			\
+ 	EM( SCAN_COPY_MC,		"copy_poisoned_page")		\
+-	EMe(SCAN_PAGE_FILLED,		"page_filled")
++	EM( SCAN_PAGE_FILLED,		"page_filled")			\
++	EMe(SCAN_PAGE_DIRTY_OR_WRITEBACK, "page_dirty_or_writeback")
+ 
+ #undef EM
+ #undef EMe
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 97d1b2824386f..219dfa2e523c8 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -58,6 +58,7 @@ enum scan_result {
+ 	SCAN_STORE_FAILED,
+ 	SCAN_COPY_MC,
+ 	SCAN_PAGE_FILLED,
++	SCAN_PAGE_DIRTY_OR_WRITEBACK,
+ };
+ 
+ #define CREATE_TRACE_POINTS
+@@ -1967,11 +1968,11 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
+ 				 */
+ 				xas_unlock_irq(&xas);
+ 				filemap_flush(mapping);
+-				result = SCAN_FAIL;
++				result = SCAN_PAGE_DIRTY_OR_WRITEBACK;
+ 				goto xa_unlocked;
+ 			} else if (folio_test_writeback(folio)) {
+ 				xas_unlock_irq(&xas);
+-				result = SCAN_FAIL;
++				result = SCAN_PAGE_DIRTY_OR_WRITEBACK;
+ 				goto xa_unlocked;
+ 			} else if (folio_trylock(folio)) {
+ 				folio_get(folio);
+@@ -2018,7 +2019,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
+ 			 * folio is dirty because it hasn't been flushed
+ 			 * since first write.
+ 			 */
+-			result = SCAN_FAIL;
++			result = SCAN_PAGE_DIRTY_OR_WRITEBACK;
+ 			goto out_unlock;
+ 		}
+ 
+@@ -2747,6 +2748,7 @@ static int madvise_collapse_errno(enum scan_result r)
+ 	case SCAN_PAGE_LRU:
+ 	case SCAN_DEL_PAGE_LRU:
+ 	case SCAN_PAGE_FILLED:
++	case SCAN_PAGE_DIRTY_OR_WRITEBACK:
+ 		return -EAGAIN;
+ 	/*
+ 	 * Other: Trying again likely not to succeed / error intrinsic to
+-- 
+2.47.3
+

@@ -1,0 +1,83 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Fri, 26 Dec 2025 14:07:59 +0800
+Subject: [PATCH] mm: rmap: support batched unmapping for file large folios
+
+Similar to folio_referenced_one(), we can apply batched unmapping for file
+large folios to optimize the performance of file folios reclamation.
+
+Barry previously implemented batched unmapping for lazyfree anonymous
+large folios[1] and did not further optimize anonymous large folios or
+file-backed large folios at that stage.  As for file-backed large folios,
+the batched unmapping support is relatively straightforward, as we only
+need to clear the consecutive (present) PTE entries for file-backed large
+folios.
+
+Performance testing: Allocate 10G clean file-backed folios by mmap() in a
+memory cgroup, and try to reclaim 8G file-backed folios via the
+memory.reclaim interface.  I can observe 75% performance improvement on my
+Arm64 32-core server (and 50%+ improvement on my X86 machine) with this
+patch.
+
+W/o patch:
+real    0m1.018s
+user    0m0.000s
+sys     0m1.018s
+
+W/ patch:
+real	0m0.249s
+user	0m0.000s
+sys	0m0.249s
+
+Link: https://lkml.kernel.org/r/142919ac14d3cf70cba370808d85debe089df7b4.1766631066.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/all/20250214093015.51024-4-21cnbao@gmail.com/T/#u [1]
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
+Acked-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/rmap.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 0de3bce1accb4..11abdb7b9bf1c 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1948,9 +1948,10 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
+ 	end_addr = pmd_addr_end(addr, vma->vm_end);
+ 	max_nr = (end_addr - addr) >> PAGE_SHIFT;
+ 
+-	/* We only support lazyfree batching for now ... */
+-	if (!folio_test_anon(folio) || folio_test_swapbacked(folio))
++	/* We only support lazyfree or file folios batching for now ... */
++	if (folio_test_anon(folio) && folio_test_swapbacked(folio))
+ 		return 1;
++
+ 	if (pte_unused(pte))
+ 		return 1;
+ 
+@@ -2316,7 +2317,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 			 *
+ 			 * See Documentation/mm/mmu_notifier.rst
+ 			 */
+-			dec_mm_counter(mm, mm_counter_file(folio));
++			add_mm_counter(mm, mm_counter_file(folio), -nr_pages);
+ 		}
+ discard:
+ 		if (unlikely(folio_test_hugetlb(folio))) {
+-- 
+2.47.3
+

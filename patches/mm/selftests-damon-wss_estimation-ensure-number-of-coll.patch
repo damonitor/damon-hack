@@ -1,0 +1,56 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 16 Jan 2026 18:07:27 -0800
+Subject: [PATCH] selftests/damon/wss_estimation: ensure number of collected
+ wss
+
+DAMON selftest for working set size estimation collects DAMON's working
+set size measurements of the running artificial memory access generator
+program until the program is finished.  Depending on how quickly the
+program finishes, and how quickly DAMON starts, the number of collected
+working set size measurements may vary, and make the test results
+unreliable.  Ensure it collects 40 measurements by using the repeat mode
+of the artificial memory access generator program, and finish the
+measurements only after the desired number of collections are made.
+
+Link: https://lkml.kernel.org/r/20260117020731.226785-5-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../sysfs_update_schemes_tried_regions_wss_estimation.py    | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/sysfs_update_schemes_tried_regions_wss_estimation.py b/tools/testing/selftests/damon/sysfs_update_schemes_tried_regions_wss_estimation.py
+index bf48ef8e52410..cdccb9f0f8557 100755
+--- a/tools/testing/selftests/damon/sysfs_update_schemes_tried_regions_wss_estimation.py
++++ b/tools/testing/selftests/damon/sysfs_update_schemes_tried_regions_wss_estimation.py
+@@ -8,7 +8,8 @@ import _damon_sysfs
+ 
+ def pass_wss_estimation(sz_region):
+     # access two regions of given size, 2 seocnds per each region
+-    proc = subprocess.Popen(['./access_memory', '2', '%d' % sz_region, '2000'])
++    proc = subprocess.Popen(
++            ['./access_memory', '2', '%d' % sz_region, '2000', 'repeat'])
+     kdamonds = _damon_sysfs.Kdamonds([_damon_sysfs.Kdamond(
+             contexts=[_damon_sysfs.DamonCtx(
+                 ops='vaddr',
+@@ -26,7 +27,7 @@ def pass_wss_estimation(sz_region):
+         exit(1)
+ 
+     wss_collected = []
+-    while proc.poll() == None:
++    while proc.poll() is None and len(wss_collected) < 40:
+         time.sleep(0.1)
+         err = kdamonds.kdamonds[0].update_schemes_tried_bytes()
+         if err != None:
+@@ -35,6 +36,7 @@ def pass_wss_estimation(sz_region):
+ 
+         wss_collected.append(
+                 kdamonds.kdamonds[0].contexts[0].schemes[0].tried_bytes)
++    proc.terminate()
+     err = kdamonds.stop()
+     if err is not None:
+         print('kdamond stop failed: %s' % err)
+-- 
+2.47.3
+

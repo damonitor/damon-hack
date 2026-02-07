@@ -1,0 +1,67 @@
+From: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Date: Wed, 21 Jan 2026 11:49:45 -0500
+Subject: [PATCH] mm/vma: use unmap_region() in vms_clear_ptes()
+
+There is no need to open code the vms_clear_ptes() now that unmap_desc
+struct is used.
+
+Link: https://lkml.kernel.org/r/20260121164946.2093480-11-Liam.Howlett@oracle.com
+Signed-off-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 14 +-------------
+ 1 file changed, 1 insertion(+), 13 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index b46c869d4bb07..876d2db5329dd 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -1255,7 +1255,6 @@ int vma_shrink(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ static inline void vms_clear_ptes(struct vma_munmap_struct *vms,
+ 		    struct ma_state *mas_detach, bool mm_wr_locked)
+ {
+-	struct mmu_gather tlb;
+ 	struct unmap_desc unmap = {
+ 		.mas = mas_detach,
+ 		.first = vms->vma,
+@@ -1280,19 +1279,8 @@ static inline void vms_clear_ptes(struct vma_munmap_struct *vms,
+ 	if (!vms->clear_ptes) /* Nothing to do */
+ 		return;
+ 
+-	/*
+-	 * We can free page tables without write-locking mmap_lock because VMAs
+-	 * were isolated before we downgraded mmap_lock.
+-	 */
+ 	mas_set(mas_detach, 1);
+-	tlb_gather_mmu(&tlb, vms->vma->vm_mm);
+-	update_hiwater_rss(vms->vma->vm_mm);
+-	unmap_vmas(&tlb, &unmap);
+-	mas_set(mas_detach, 1);
+-	/* start and end may be different if there is no prev or next vma. */
+-	free_pgtables(&tlb, mas_detach, vms->vma, vms->unmap_start,
+-		      vms->unmap_end, vms->unmap_end, mm_wr_locked);
+-	tlb_finish_mmu(&tlb);
++	unmap_region(&unmap);
+ 	vms->clear_ptes = false;
+ }
+ 
+-- 
+2.47.3
+

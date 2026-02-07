@@ -1,0 +1,65 @@
+From: Pnina Feder <pnina.feder@mobileye.com>
+Date: Tue, 16 Dec 2025 15:28:01 +0200
+Subject: [PATCH] kernel/crash: handle multi-page vmcoreinfo in crash kernel
+ copy
+
+kimage_crash_copy_vmcoreinfo() currently assumes vmcoreinfo fits in a
+single page.  This breaks if VMCOREINFO_BYTES exceeds PAGE_SIZE.
+
+Allocate the required order of control pages and vmap all pages needed to
+safely copy vmcoreinfo into the crash kernel image.
+
+Link: https://lkml.kernel.org/r/20251216132801.807260-3-pnina.feder@mobileye.com
+Signed-off-by: Pnina Feder <pnina.feder@mobileye.com>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Dave Young <dyoung@redhat.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/crash_core.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/crash_core.c b/kernel/crash_core.c
+index 99dac1aa972af..3952b3e102e0d 100644
+--- a/kernel/crash_core.c
++++ b/kernel/crash_core.c
+@@ -44,9 +44,15 @@ note_buf_t __percpu *crash_notes;
+ 
+ int kimage_crash_copy_vmcoreinfo(struct kimage *image)
+ {
+-	struct page *vmcoreinfo_page;
++	struct page *vmcoreinfo_base;
++	struct page *vmcoreinfo_pages[DIV_ROUND_UP(VMCOREINFO_BYTES, PAGE_SIZE)];
++	unsigned int order, nr_pages;
++	int i;
+ 	void *safecopy;
+ 
++	nr_pages = DIV_ROUND_UP(VMCOREINFO_BYTES, PAGE_SIZE);
++	order = get_order(VMCOREINFO_BYTES);
++
+ 	if (!IS_ENABLED(CONFIG_CRASH_DUMP))
+ 		return 0;
+ 	if (image->type != KEXEC_TYPE_CRASH)
+@@ -61,12 +67,15 @@ int kimage_crash_copy_vmcoreinfo(struct kimage *image)
+ 	 * happens to generate vmcoreinfo note, hereby we rely on
+ 	 * vmap for this purpose.
+ 	 */
+-	vmcoreinfo_page = kimage_alloc_control_pages(image, 0);
+-	if (!vmcoreinfo_page) {
++	vmcoreinfo_base = kimage_alloc_control_pages(image, order);
++	if (!vmcoreinfo_base) {
+ 		pr_warn("Could not allocate vmcoreinfo buffer\n");
+ 		return -ENOMEM;
+ 	}
+-	safecopy = vmap(&vmcoreinfo_page, 1, VM_MAP, PAGE_KERNEL);
++	for (i = 0; i < nr_pages; i++)
++		vmcoreinfo_pages[i] = vmcoreinfo_base + i;
++
++	safecopy = vmap(vmcoreinfo_pages, nr_pages, VM_MAP, PAGE_KERNEL);
+ 	if (!safecopy) {
+ 		pr_warn("Could not vmap vmcoreinfo buffer\n");
+ 		return -ENOMEM;
+-- 
+2.47.3
+

@@ -1,0 +1,209 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Thu, 25 Dec 2025 15:21:16 -0800
+Subject: [PATCH] memcg: rename mem_cgroup_ino() to mem_cgroup_id()
+
+Rename mem_cgroup_ino() to mem_cgroup_id() and mem_cgroup_get_from_ino()
+to mem_cgroup_get_from_id().  These functions now use cgroup IDs (from
+cgroup_id()) rather than inode numbers, so the names should reflect that.
+
+[shakeel.butt@linux.dev: replace ino with id, per SeongJae]
+  Link: https://lkml.kernel.org/r/flkqanhyettp5uq22bjwg37rtmnpeg3mghznsylxcxxgaafpl4@nov2x7tagma7
+[akpm@linux-foundation.org: build fix]
+Link: https://lkml.kernel.org/r/20251225232116.294540-9-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h |  8 ++++----
+ mm/damon/core.c            |  2 +-
+ mm/damon/ops-common.c      |  2 +-
+ mm/damon/sysfs-schemes.c   |  2 +-
+ mm/memcontrol.c            |  4 ++--
+ mm/shrinker_debug.c        | 10 +++++-----
+ mm/vmscan.c                |  6 +++---
+ 7 files changed, 17 insertions(+), 17 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 3e7d69020b392..ed4764e1a30e3 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -830,12 +830,12 @@ static inline unsigned short mem_cgroup_private_id(struct mem_cgroup *memcg)
+ }
+ struct mem_cgroup *mem_cgroup_from_private_id(unsigned short id);
+ 
+-static inline u64 mem_cgroup_ino(struct mem_cgroup *memcg)
++static inline u64 mem_cgroup_id(struct mem_cgroup *memcg)
+ {
+ 	return memcg ? cgroup_id(memcg->css.cgroup) : 0;
+ }
+ 
+-struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino);
++struct mem_cgroup *mem_cgroup_get_from_id(u64 id);
+ 
+ static inline struct mem_cgroup *mem_cgroup_from_seq(struct seq_file *m)
+ {
+@@ -1288,12 +1288,12 @@ static inline struct mem_cgroup *mem_cgroup_from_private_id(unsigned short id)
+ 	return NULL;
+ }
+ 
+-static inline u64 mem_cgroup_ino(struct mem_cgroup *memcg)
++static inline u64 mem_cgroup_id(struct mem_cgroup *memcg)
+ {
+ 	return 0;
+ }
+ 
+-static inline struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino)
++static inline struct mem_cgroup *mem_cgroup_get_from_id(u64 id)
+ {
+ 	return NULL;
+ }
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 3edbff685534d..6888917c1a00f 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2094,7 +2094,7 @@ static unsigned long damos_get_node_memcg_used_bp(
+ 	unsigned long used_pages, numerator;
+ 	struct sysinfo i;
+ 
+-	memcg = mem_cgroup_get_from_ino(goal->memcg_id);
++	memcg = mem_cgroup_get_from_id(goal->memcg_id);
+ 	if (!memcg) {
+ 		if (goal->metric == DAMOS_QUOTA_NODE_MEMCG_USED_BP)
+ 			return 0;
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index dd81db95f9011..a218d99222342 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -274,7 +274,7 @@ bool damos_folio_filter_match(struct damos_filter *filter, struct folio *folio)
+ 		if (!memcg)
+ 			matched = false;
+ 		else
+-			matched = filter->memcg_id == mem_cgroup_ino(memcg);
++			matched = filter->memcg_id == mem_cgroup_id(memcg);
+ 		rcu_read_unlock();
+ 		break;
+ 	case DAMOS_FILTER_TYPE_YOUNG:
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 6125f259eceab..419d6e7ee945c 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2513,7 +2513,7 @@ static int damon_sysfs_memcg_path_to_id(char *memcg_path, u64 *id)
+ 		if (!mem_cgroup_online(memcg))
+ 			continue;
+ 		if (damon_sysfs_memcg_path_eq(memcg, path, memcg_path)) {
+-			*id = mem_cgroup_ino(memcg);
++			*id = mem_cgroup_id(memcg);
+ 			found = true;
+ 			break;
+ 		}
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index ede39dde05df9..7d6cf47e6d4cb 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3615,13 +3615,13 @@ struct mem_cgroup *mem_cgroup_from_private_id(unsigned short id)
+ 	return xa_load(&mem_cgroup_private_ids, id);
+ }
+ 
+-struct mem_cgroup *mem_cgroup_get_from_ino(u64 ino)
++struct mem_cgroup *mem_cgroup_get_from_id(u64 id)
+ {
+ 	struct cgroup *cgrp;
+ 	struct cgroup_subsys_state *css;
+ 	struct mem_cgroup *memcg = NULL;
+ 
+-	cgrp = cgroup_get_from_id(ino);
++	cgrp = cgroup_get_from_id(id);
+ 	if (IS_ERR(cgrp))
+ 		return NULL;
+ 
+diff --git a/mm/shrinker_debug.c b/mm/shrinker_debug.c
+index 7ef16a0b2959d..affa644373021 100644
+--- a/mm/shrinker_debug.c
++++ b/mm/shrinker_debug.c
+@@ -70,7 +70,7 @@ static int shrinker_debugfs_count_show(struct seq_file *m, void *v)
+ 					       memcg_aware ? memcg : NULL,
+ 					       count_per_node);
+ 		if (total) {
+-			seq_printf(m, "%llu", mem_cgroup_ino(memcg));
++			seq_printf(m, "%llu", mem_cgroup_id(memcg));
+ 			for_each_node(nid)
+ 				seq_printf(m, " %lu", count_per_node[nid]);
+ 			seq_putc(m, '\n');
+@@ -107,7 +107,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ {
+ 	struct shrinker *shrinker = file->private_data;
+ 	unsigned long nr_to_scan = 0, read_len;
+-	u64 ino;
++	u64 id;
+ 	struct shrink_control sc = {
+ 		.gfp_mask = GFP_KERNEL,
+ 	};
+@@ -120,7 +120,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 		return -EFAULT;
+ 	kbuf[read_len] = '\0';
+ 
+-	if (sscanf(kbuf, "%llu %d %lu", &ino, &nid, &nr_to_scan) != 3)
++	if (sscanf(kbuf, "%llu %d %lu", &id, &nid, &nr_to_scan) != 3)
+ 		return -EINVAL;
+ 
+ 	if (nid < 0 || nid >= nr_node_ids)
+@@ -130,7 +130,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 		return size;
+ 
+ 	if (shrinker->flags & SHRINKER_MEMCG_AWARE) {
+-		memcg = mem_cgroup_get_from_ino(ino);
++		memcg = mem_cgroup_get_from_id(id);
+ 		if (!memcg)
+ 			return -ENOENT;
+ 
+@@ -138,7 +138,7 @@ static ssize_t shrinker_debugfs_scan_write(struct file *file,
+ 			mem_cgroup_put(memcg);
+ 			return -ENOENT;
+ 		}
+-	} else if (ino != 0) {
++	} else if (id != 0) {
+ 		return -EINVAL;
+ 	}
+ 
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index b87baf3fc77f2..4aa47ab000c2f 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5416,7 +5416,7 @@ static int lru_gen_seq_show(struct seq_file *m, void *v)
+ 		if (memcg)
+ 			cgroup_path(memcg->css.cgroup, m->private, PATH_MAX);
+ #endif
+-		seq_printf(m, "memcg %llu %s\n", mem_cgroup_ino(memcg), path);
++		seq_printf(m, "memcg %llu %s\n", mem_cgroup_id(memcg), path);
+ 	}
+ 
+ 	seq_printf(m, " node %5d\n", nid);
+@@ -5512,12 +5512,12 @@ static int run_cmd(char cmd, u64 memcg_id, int nid, unsigned long seq,
+ 		return -EINVAL;
+ 
+ 	if (!mem_cgroup_disabled()) {
+-		memcg = mem_cgroup_get_from_ino(memcg_id);
++		memcg = mem_cgroup_get_from_id(memcg_id);
+ 		if (!memcg)
+ 			return -EINVAL;
+ 	}
+ 
+-	if (memcg_id != mem_cgroup_ino(memcg))
++	if (memcg_id != mem_cgroup_id(memcg))
+ 		goto done;
+ 
+ 	sc->target_mem_cgroup = memcg;
+-- 
+2.47.3
+

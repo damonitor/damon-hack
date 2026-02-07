@@ -1,0 +1,81 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Fri, 23 Jan 2026 20:12:15 +0000
+Subject: [PATCH] mm/vma: de-duplicate __vma_enter_locked() error path
+
+We're doing precisely the same thing that __vma_exit_locked() does, so
+de-duplicate this code and keep the refcount primitive in one place.
+
+No functional change intended.
+
+Link: https://lkml.kernel.org/r/c9759b593f6a158e984fa87abe2c3cbd368ef825.1769198904.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Vlastimil Babka <vbabka@suse.cz>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mmap_lock.c | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/mm/mmap_lock.c b/mm/mmap_lock.c
+index 85b2ae1d97208..1fabda07c922f 100644
+--- a/mm/mmap_lock.c
++++ b/mm/mmap_lock.c
+@@ -45,6 +45,14 @@ EXPORT_SYMBOL(__mmap_lock_do_trace_released);
+ 
+ #ifdef CONFIG_MMU
+ #ifdef CONFIG_PER_VMA_LOCK
++
++static inline void __vma_exit_locked(struct vm_area_struct *vma, bool *detached)
++{
++	*detached = refcount_sub_and_test(VM_REFCNT_EXCLUDE_READERS_FLAG,
++					  &vma->vm_refcnt);
++	__vma_lockdep_release_exclusive(vma);
++}
++
+ /*
+  * __vma_enter_locked() returns 0 immediately if the vma is not
+  * attached, otherwise it waits for any current readers to finish and
+@@ -77,7 +85,10 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 		   refcount_read(&vma->vm_refcnt) == tgt_refcnt,
+ 		   state);
+ 	if (err) {
+-		if (refcount_sub_and_test(VM_REFCNT_EXCLUDE_READERS_FLAG, &vma->vm_refcnt)) {
++		bool detached;
++
++		__vma_exit_locked(vma, &detached);
++		if (detached) {
+ 			/*
+ 			 * The wait failed, but the last reader went away
+ 			 * as well.  Tell the caller the VMA is detached.
+@@ -85,7 +96,6 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 			WARN_ON_ONCE(!detaching);
+ 			err = 0;
+ 		}
+-		__vma_lockdep_release_exclusive(vma);
+ 		return err;
+ 	}
+ 	__vma_lockdep_stat_mark_acquired(vma);
+@@ -93,13 +103,6 @@ static inline int __vma_enter_locked(struct vm_area_struct *vma,
+ 	return 1;
+ }
+ 
+-static inline void __vma_exit_locked(struct vm_area_struct *vma, bool *detached)
+-{
+-	*detached = refcount_sub_and_test(VM_REFCNT_EXCLUDE_READERS_FLAG,
+-					  &vma->vm_refcnt);
+-	__vma_lockdep_release_exclusive(vma);
+-}
+-
+ int __vma_start_write(struct vm_area_struct *vma, unsigned int mm_lock_seq,
+ 		int state)
+ {
+-- 
+2.47.3
+

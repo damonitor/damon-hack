@@ -1,0 +1,251 @@
+From: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Date: Sun, 18 Jan 2026 14:50:45 +0000
+Subject: [PATCH] mm/rmap: separate out fork-only logic on anon_vma_clone()
+
+Specify which operation is being performed to anon_vma_clone(), which
+allows us to do checks specific to each operation type, as well as to
+separate out and make clear that the anon_vma reuse logic is absolutely
+specific to fork only.
+
+This opens the door to further refactorings and refinements later as we
+have more information to work with.
+
+Link: https://lkml.kernel.org/r/cf7da7a2d973cdc72a1b80dd9a73260519e8fa9f.1768746221.git.lorenzo.stoakes@oracle.com
+Signed-off-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Barry Song <v-songbaohua@oppo.com>
+Cc: Chris Li <chriscli@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Harry Yoo <harry.yoo@oracle.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h                    | 11 ++++-
+ mm/rmap.c                        | 74 ++++++++++++++++++++++----------
+ mm/vma.c                         |  6 +--
+ tools/testing/vma/vma_internal.h | 11 ++++-
+ 4 files changed, 74 insertions(+), 28 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index aac4ec53fe156..5585059f0209e 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -244,7 +244,16 @@ static inline void anon_vma_unlock_read(struct anon_vma *anon_vma)
+ 
+ struct anon_vma *folio_get_anon_vma(const struct folio *folio);
+ 
+-int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src);
++/* Operations which modify VMAs. */
++enum vma_operation {
++	VMA_OP_SPLIT,
++	VMA_OP_MERGE_UNFAULTED,
++	VMA_OP_REMAP,
++	VMA_OP_FORK,
++};
++
++int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src,
++	enum vma_operation operation);
+ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma);
+ int  __anon_vma_prepare(struct vm_area_struct *vma);
+ void unlink_anon_vmas(struct vm_area_struct *vma);
+diff --git a/mm/rmap.c b/mm/rmap.c
+index a5ce9163454a4..6ddbf58111ff5 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -232,12 +232,13 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
+ }
+ 
+ static void check_anon_vma_clone(struct vm_area_struct *dst,
+-				 struct vm_area_struct *src)
++				 struct vm_area_struct *src,
++				 enum vma_operation operation)
+ {
+ 	/* The write lock must be held. */
+ 	mmap_assert_write_locked(src->vm_mm);
+-	/* If not a fork (implied by dst->anon_vma) then must be on same mm. */
+-	VM_WARN_ON_ONCE(dst->anon_vma && dst->vm_mm != src->vm_mm);
++	/* If not a fork then must be on same mm. */
++	VM_WARN_ON_ONCE(operation != VMA_OP_FORK && dst->vm_mm != src->vm_mm);
+ 
+ 	/* If we have anything to do src->anon_vma must be provided. */
+ 	VM_WARN_ON_ONCE(!src->anon_vma && !list_empty(&src->anon_vma_chain));
+@@ -249,6 +250,40 @@ static void check_anon_vma_clone(struct vm_area_struct *dst,
+ 	 * must be the same across dst and src.
+ 	 */
+ 	VM_WARN_ON_ONCE(dst->anon_vma && dst->anon_vma != src->anon_vma);
++	/*
++	 * Essentially equivalent to above - if not a no-op, we should expect
++	 * dst->anon_vma to be set for everything except a fork.
++	 */
++	VM_WARN_ON_ONCE(operation != VMA_OP_FORK && src->anon_vma &&
++			!dst->anon_vma);
++	/* For the anon_vma to be compatible, it can only be singular. */
++	VM_WARN_ON_ONCE(operation == VMA_OP_MERGE_UNFAULTED &&
++			!list_is_singular(&src->anon_vma_chain));
++#ifdef CONFIG_PER_VMA_LOCK
++	/* Only merging an unfaulted VMA leaves the destination attached. */
++	VM_WARN_ON_ONCE(operation != VMA_OP_MERGE_UNFAULTED &&
++			vma_is_attached(dst));
++#endif
++}
++
++static void maybe_reuse_anon_vma(struct vm_area_struct *dst,
++		struct anon_vma *anon_vma)
++{
++	/* If already populated, nothing to do.*/
++	if (dst->anon_vma)
++		return;
++
++	/*
++	 * We reuse an anon_vma if any linking VMAs were unmapped and it has
++	 * only a single child at most.
++	 */
++	if (anon_vma->num_active_vmas > 0)
++		return;
++	if (anon_vma->num_children > 1)
++		return;
++
++	dst->anon_vma = anon_vma;
++	anon_vma->num_active_vmas++;
+ }
+ 
+ static void cleanup_partial_anon_vmas(struct vm_area_struct *vma);
+@@ -258,6 +293,7 @@ static void cleanup_partial_anon_vmas(struct vm_area_struct *vma);
+  * all of the anon_vma objects contained within @src anon_vma_chain's.
+  * @dst: The destination VMA with an empty anon_vma_chain.
+  * @src: The source VMA we wish to duplicate.
++ * @operation: The type of operation which resulted in the clone.
+  *
+  * This is the heart of the VMA side of the anon_vma implementation - we invoke
+  * this function whenever we need to set up a new VMA's anon_vma state.
+@@ -280,17 +316,17 @@ static void cleanup_partial_anon_vmas(struct vm_area_struct *vma);
+  *
+  * Returns: 0 on success, -ENOMEM on failure.
+  */
+-int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
++int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src,
++		   enum vma_operation operation)
+ {
+ 	struct anon_vma_chain *avc, *pavc;
++	struct anon_vma *active_anon_vma = src->anon_vma;
+ 
+-	check_anon_vma_clone(dst, src);
++	check_anon_vma_clone(dst, src, operation);
+ 
+-	if (!src->anon_vma)
++	if (!active_anon_vma)
+ 		return 0;
+ 
+-	check_anon_vma_clone(dst, src);
+-
+ 	/*
+ 	 * Allocate AVCs. We don't need an anon_vma lock for this as we
+ 	 * are not updating the anon_vma rbtree nor are we changing
+@@ -318,22 +354,14 @@ int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
+ 		struct anon_vma *anon_vma = avc->anon_vma;
+ 
+ 		anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
+-
+-		/*
+-		 * Reuse existing anon_vma if it has no vma and only one
+-		 * anon_vma child.
+-		 *
+-		 * Root anon_vma is never reused:
+-		 * it has self-parent reference and at least one child.
+-		 */
+-		if (!dst->anon_vma && src->anon_vma &&
+-		    anon_vma->num_children < 2 &&
+-		    anon_vma->num_active_vmas == 0)
+-			dst->anon_vma = anon_vma;
++		if (operation == VMA_OP_FORK)
++			maybe_reuse_anon_vma(dst, anon_vma);
+ 	}
+-	if (dst->anon_vma)
++
++	if (operation != VMA_OP_FORK)
+ 		dst->anon_vma->num_active_vmas++;
+-	anon_vma_unlock_write(src->anon_vma);
++
++	anon_vma_unlock_write(active_anon_vma);
+ 	return 0;
+ 
+  enomem_failure:
+@@ -372,7 +400,7 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
+ 	 * First, attach the new VMA to the parent VMA's anon_vmas,
+ 	 * so rmap can find non-COWed pages in child processes.
+ 	 */
+-	rc = anon_vma_clone(vma, pvma);
++	rc = anon_vma_clone(vma, pvma, VMA_OP_FORK);
+ 	/* An error arose or an existing anon_vma was reused, all done then. */
+ 	if (rc || vma->anon_vma) {
+ 		put_anon_vma(anon_vma);
+diff --git a/mm/vma.c b/mm/vma.c
+index 6c458c8656b82..3dbe414eff894 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -530,7 +530,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 	if (err)
+ 		goto out_free_vmi;
+ 
+-	err = anon_vma_clone(new, vma);
++	err = anon_vma_clone(new, vma, VMA_OP_SPLIT);
+ 	if (err)
+ 		goto out_free_mpol;
+ 
+@@ -628,7 +628,7 @@ static int dup_anon_vma(struct vm_area_struct *dst,
+ 
+ 		vma_assert_write_locked(dst);
+ 		dst->anon_vma = src->anon_vma;
+-		ret = anon_vma_clone(dst, src);
++		ret = anon_vma_clone(dst, src, VMA_OP_MERGE_UNFAULTED);
+ 		if (ret)
+ 			return ret;
+ 
+@@ -1901,7 +1901,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
+ 		vma_set_range(new_vma, addr, addr + len, pgoff);
+ 		if (vma_dup_policy(vma, new_vma))
+ 			goto out_free_vma;
+-		if (anon_vma_clone(new_vma, vma))
++		if (anon_vma_clone(new_vma, vma, VMA_OP_REMAP))
+ 			goto out_free_mempol;
+ 		if (new_vma->vm_file)
+ 			get_file(new_vma->vm_file);
+diff --git a/tools/testing/vma/vma_internal.h b/tools/testing/vma/vma_internal.h
+index 93e5792306d92..7fa56dcc53a6b 100644
+--- a/tools/testing/vma/vma_internal.h
++++ b/tools/testing/vma/vma_internal.h
+@@ -600,6 +600,14 @@ struct mmap_action {
+ 	bool hide_from_rmap_until_complete :1;
+ };
+ 
++/* Operations which modify VMAs. */
++enum vma_operation {
++	VMA_OP_SPLIT,
++	VMA_OP_MERGE_UNFAULTED,
++	VMA_OP_REMAP,
++	VMA_OP_FORK,
++};
++
+ /*
+  * Describes a VMA that is about to be mmap()'ed. Drivers may choose to
+  * manipulate mutable fields which will cause those fields to be updated in the
+@@ -1157,7 +1165,8 @@ static inline int vma_dup_policy(struct vm_area_struct *src, struct vm_area_stru
+ 	return 0;
+ }
+ 
+-static inline int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
++static inline int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src,
++				 enum vma_operation operation)
+ {
+ 	/* For testing purposes. We indicate that an anon_vma has been cloned. */
+ 	if (src->anon_vma != NULL) {
+-- 
+2.47.3
+

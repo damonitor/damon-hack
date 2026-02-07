@@ -1,0 +1,98 @@
+From: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Date: Fri, 30 Jan 2026 15:59:06 -0500
+Subject: [PATCH] maple_tree: fix mas_dup_alloc() sparse warning
+
+Patch series "maple_tree: Replace big node with maple copy", v3.
+
+The big node struct was created for simplicity of splitting, rebalancing,
+and spanning store operations by using a copy buffer to create the data
+necessary prior to breaking it up into 256B nodes.  Certain operations
+were rather tricky due to the restriction of keeping NULL entries together
+and never at the end of a node (except the right-most node).
+
+The big node struct is incompatible with future features that are
+currently in development.  Specifically different node types and different
+data type sizes for pivots.
+
+The big node struct was also a stack variable, which caused issues with
+certain configurations of kernel build.
+
+This series removes big node by introducing another node type which will
+never be written to the tree: maple_copy.  The maple copy node operates
+more like a scatter/gather operation with a number of sources and
+destinations of allocated nodes.
+
+The sources are copied to the destinations, in turn, until the sources are
+exhausted.  The destination is changed if it is filled or the split
+location is reached prior to the source data end.
+
+New data is inserted by using the maple copy node itself as a source with
+up to 3 slots and pivots.  The data in the maple copy node is the data
+being written to the tree along with any fragment of the range(s) being
+overwritten.
+
+As with all nodes, the maple copy node is of size 256B.  Using a node type
+allows for the copy operation to treat the new data stored in the maple
+copy node the same as any other source node.
+
+Analysis of the runtime shows no regression or benefit of removing the
+larger stack structure.  The motivation is the ground work to use new node
+types and to help those with odd configurations that have had issues.
+
+The change was tested by myself using mm_tests on amd64 and by Suren on
+android (arm64).  Limited testing on s390 qemu was also performed using
+stress-ng on the virtual memory, which should cover many corner cases.
+
+
+This patch (of 30):
+
+Use RCU_INIT_POINTER to initialize an rcu pointer to an initial value
+since there are no readers within the tree being created during
+duplication.  There is no risk of readers seeing the initialized or
+uninitialized value until after the synchronization call in
+mas_dup_buld().
+
+Link: https://lkml.kernel.org/r/20260130205935.2559335-1-Liam.Howlett@oracle.com
+Link: https://lkml.kernel.org/r/20260130205935.2559335-2-Liam.Howlett@oracle.com
+Signed-off-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Christian Kujau <lists@nerdbynature.de>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Sidhartha Kumar <sidhartha.kumar@oracle.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/maple_tree.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/lib/maple_tree.c b/lib/maple_tree.c
+index 5aa4c95000188..0e0158ee7ba55 100644
+--- a/lib/maple_tree.c
++++ b/lib/maple_tree.c
+@@ -6260,8 +6260,15 @@ static inline void mas_dup_alloc(struct ma_state *mas, struct ma_state *new_mas,
+ 	for (i = 0; i < count; i++) {
+ 		val = (unsigned long)mt_slot_locked(mas->tree, slots, i);
+ 		val &= MAPLE_NODE_MASK;
+-		new_slots[i] = ma_mnode_ptr((unsigned long)mas_pop_node(mas) |
+-					    val);
++		/*
++		 * Warning, see rcu_assign_pointer() documentation.  Since this
++		 * is a duplication of a tree, there are no readers walking the
++		 * tree until after the rcu_assign_pointer() call in
++		 * mas_dup_build().
++		 */
++		RCU_INIT_POINTER(new_slots[i],
++				 ma_mnode_ptr((unsigned long)mas_pop_node(mas) |
++					      val));
+ 	}
+ }
+ 
+-- 
+2.47.3
+

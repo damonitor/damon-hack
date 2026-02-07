@@ -1,0 +1,198 @@
+From: Gregory Price <gourry@gourry.net>
+Date: Sun, 21 Dec 2025 07:56:03 -0500
+Subject: [PATCH] mm, hugetlb: implement movable_gigantic_pages sysctl
+
+This reintroduces a concept removed by: commit d6cb41cc44c6 ("mm, hugetlb:
+remove hugepages_treat_as_movable sysctl")
+
+This sysctl provides flexibility between ZONE_MOVABLE use cases:
+1) onlining memory in ZONE_MOVABLE to maintain hotplug compatibility
+2) onlining memory in ZONE_MOVABLE to make hugepage allocate reliable
+
+When ZONE_MOVABLE is used to make huge page allocation more reliable,
+disallowing gigantic pages memory in this region is pointless.  If hotplug
+is not a requirement, we can loosen the restrictions to allow 1GB gigantic
+pages in ZONE_MOVABLE.
+
+Since 1GB can be difficult to migrate / has impacts on compaction /
+defragmentation, we don't enable this by default.  Notably, 1GB pages can
+only be migrated if another 1GB page is available - so hot-unplug will
+fail if such a page cannot be found.
+
+However, since there are scenarios where gigantic pages are migratable, we
+should allow use of these on movable regions.
+
+When not valid 1GB is available for migration, hot-unplug will retry
+indefinitely (or until interrupted).  For example:
+
+  echo 0 > node0/hugepages/..-1GB/nr_hugepages  # clear node0 1GB pages
+  echo 1 > node1/hugepages/..-1GB/nr_hugepages  # reserve node1 1GB page
+  ./alloc_huge_node1 &    # Allocate a 1GB page on node1
+  ./node1_offline  &      # attempt to offline all node1 memory
+  echo 1 > node0/hugepages/..-1GB/nr_hugepages  # reserve node0 1GB page
+
+In this example, node1_offline will block indefinitely until the final
+step, when a node0 1GB page is made available.
+
+Note: Boot-time CMA is not possible for driver-managed hotplug memory, as
+CMA requires the memory to be registered as SystemRAM at boot time.
+Additionally, 1GB huge pages are not supported by THP.
+
+Link: https://lkml.kernel.org/r/20251221125603.2364174-1-gourry@gourry.net
+Signed-off-by: Gregory Price <gourry@gourry.net>
+Suggested-by: David Rientjes <rientjes@google.com>
+Link: https://lore.kernel.org/all/20180201193132.Hk7vI_xaU%25akpm@linux-foundation.org/
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Acked-by: David Rientjes <rientjes@google.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: "David Hildenbrand (Red Hat)" <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../admin-guide/mm/memory-hotplug.rst         | 14 ++++++++--
+ Documentation/admin-guide/sysctl/vm.rst       | 28 +++++++++++++++++++
+ include/linux/hugetlb.h                       |  3 +-
+ mm/hugetlb_sysctl.c                           | 11 ++++++++
+ 4 files changed, 53 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/admin-guide/mm/memory-hotplug.rst b/Documentation/admin-guide/mm/memory-hotplug.rst
+index 33c886f3d1983..6581558fd0d7a 100644
+--- a/Documentation/admin-guide/mm/memory-hotplug.rst
++++ b/Documentation/admin-guide/mm/memory-hotplug.rst
+@@ -612,8 +612,9 @@ ZONE_MOVABLE, especially when fine-tuning zone ratios:
+   allocations and silently create a zone imbalance, usually triggered by
+   inflation requests from the hypervisor.
+ 
+-- Gigantic pages are unmovable, resulting in user space consuming a
+-  lot of unmovable memory.
++- Gigantic pages are unmovable when an architecture does not support
++  huge page migration and/or the ``movable_gigantic_pages`` sysctl is false.
++  See Documentation/admin-guide/sysctl/vm.rst for more info on this sysctl.
+ 
+ - Huge pages are unmovable when an architectures does not support huge
+   page migration, resulting in a similar issue as with gigantic pages.
+@@ -672,6 +673,15 @@ block might fail:
+ - Concurrent activity that operates on the same physical memory area, such as
+   allocating gigantic pages, can result in temporary offlining failures.
+ 
++- When an admin sets the ``movable_gigantic_pages`` sysctl to true, gigantic
++  pages are allowed in ZONE_MOVABLE.  This only allows migratable gigantic
++  pages to be allocated; however, if there are no eligible destination gigantic
++  pages at offline, the offlining operation will fail.
++
++  Users leveraging ``movable_gigantic_pages`` should weigh the value of
++  ZONE_MOVABLE for increasing the reliability of gigantic page allocation
++  against the potential loss of hot-unplug reliability.
++
+ - Out of memory when dissolving huge pages, especially when HugeTLB Vmemmap
+   Optimization (HVO) is enabled.
+ 
+diff --git a/Documentation/admin-guide/sysctl/vm.rst b/Documentation/admin-guide/sysctl/vm.rst
+index ca6ebeb5171ca..b98ccb5cb2106 100644
+--- a/Documentation/admin-guide/sysctl/vm.rst
++++ b/Documentation/admin-guide/sysctl/vm.rst
+@@ -53,6 +53,7 @@ Currently, these files are in /proc/sys/vm:
+ - mmap_min_addr
+ - mmap_rnd_bits
+ - mmap_rnd_compat_bits
++- movable_gigantic_pages
+ - nr_hugepages
+ - nr_hugepages_mempolicy
+ - nr_overcommit_hugepages
+@@ -620,6 +621,33 @@ This value can be changed after boot using the
+ /proc/sys/vm/mmap_rnd_compat_bits tunable
+ 
+ 
++movable_gigantic_pages
++======================
++
++This parameter controls whether gigantic pages may be allocated from
++ZONE_MOVABLE. If set to non-zero, gigantic pages can be allocated
++from ZONE_MOVABLE. ZONE_MOVABLE memory may be created via the kernel
++boot parameter `kernelcore` or via memory hotplug as discussed in
++Documentation/admin-guide/mm/memory-hotplug.rst.
++
++Support may depend on specific architecture.
++
++Note that using ZONE_MOVABLE gigantic pages make memory hotremove unreliable.
++
++Memory hot-remove operations will block indefinitely until the admin reserves
++sufficient gigantic pages to service migration requests associated with the
++memory offlining process.  As HugeTLB gigantic page reservation is a manual
++process (via `nodeN/hugepages/.../nr_hugepages` interfaces) this may not be
++obvious when just attempting to offline a block of memory.
++
++Additionally, as multiple gigantic pages may be reserved on a single block,
++it may appear that gigantic pages are available for migration when in reality
++they are in the process of being removed. For example if `memoryN` contains
++two gigantic pages, one reserved and one allocated, and an admin attempts to
++offline that block, this operations may hang indefinitely unless another
++reserved gigantic page is available on another block `memoryM`.
++
++
+ nr_hugepages
+ ============
+ 
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index e51b8ef0cebd9..694f6e83c637b 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -171,6 +171,7 @@ bool hugetlbfs_pagecache_present(struct hstate *h,
+ 
+ struct address_space *hugetlb_folio_mapping_lock_write(struct folio *folio);
+ 
++extern int movable_gigantic_pages __read_mostly;
+ extern int sysctl_hugetlb_shm_group __read_mostly;
+ extern struct list_head huge_boot_pages[MAX_NUMNODES];
+ 
+@@ -929,7 +930,7 @@ static inline bool hugepage_movable_supported(struct hstate *h)
+ 	if (!hugepage_migration_supported(h))
+ 		return false;
+ 
+-	if (hstate_is_gigantic(h))
++	if (hstate_is_gigantic(h) && !movable_gigantic_pages)
+ 		return false;
+ 	return true;
+ }
+diff --git a/mm/hugetlb_sysctl.c b/mm/hugetlb_sysctl.c
+index bd30771505429..e74cf18ad4313 100644
+--- a/mm/hugetlb_sysctl.c
++++ b/mm/hugetlb_sysctl.c
+@@ -8,6 +8,8 @@
+ 
+ #include "hugetlb_internal.h"
+ 
++int movable_gigantic_pages;
++
+ #ifdef CONFIG_SYSCTL
+ static int proc_hugetlb_doulongvec_minmax(const struct ctl_table *table, int write,
+ 					  void *buffer, size_t *length,
+@@ -125,6 +127,15 @@ static const struct ctl_table hugetlb_table[] = {
+ 		.mode		= 0644,
+ 		.proc_handler	= hugetlb_overcommit_handler,
+ 	},
++#ifdef CONFIG_ARCH_ENABLE_HUGEPAGE_MIGRATION
++	{
++		.procname	= "movable_gigantic_pages",
++		.data		= &movable_gigantic_pages,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec,
++	},
++#endif
+ };
+ 
+ void __init hugetlb_sysctl_init(void)
+-- 
+2.47.3
+

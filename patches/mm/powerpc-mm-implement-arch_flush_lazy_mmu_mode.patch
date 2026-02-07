@@ -1,0 +1,93 @@
+From: Kevin Brodsky <kevin.brodsky@arm.com>
+Date: Mon, 15 Dec 2025 15:03:12 +0000
+Subject: [PATCH] powerpc/mm: implement arch_flush_lazy_mmu_mode()
+
+Upcoming changes to the lazy_mmu API will cause arch_flush_lazy_mmu_mode()
+to be called when leaving a nested lazy_mmu section.
+
+Move the relevant logic from arch_leave_lazy_mmu_mode() to
+arch_flush_lazy_mmu_mode() and have the former call the latter.  The
+radix_enabled() check is required in both as arch_flush_lazy_mmu_mode()
+will be called directly from the generic layer in a subsequent patch.
+
+Note: the additional this_cpu_ptr() and radix_enabled() calls on the
+arch_leave_lazy_mmu_mode() path will be removed in a subsequent patch.
+
+Link: https://lkml.kernel.org/r/20251215150323.2218608-4-kevin.brodsky@arm.com
+Signed-off-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Acked-by: David Hildenbrand <david@redhat.com>
+Tested-by: Venkat Rao Bagalkote <venkat88@linux.ibm.com>
+Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Borislav Betkov <bp@alien8.de>
+Cc: Boris Ostrovsky <boris.ostrovsky@oracle.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: David Hildenbrand (Red Hat) <david@kernel.org>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Juegren Gross <jgross@suse.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Gleinxer <tglx@linutronix.de>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../powerpc/include/asm/book3s/64/tlbflush-hash.h | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/arch/powerpc/include/asm/book3s/64/tlbflush-hash.h b/arch/powerpc/include/asm/book3s/64/tlbflush-hash.h
+index 146287d9580f4..2d45f57df1692 100644
+--- a/arch/powerpc/include/asm/book3s/64/tlbflush-hash.h
++++ b/arch/powerpc/include/asm/book3s/64/tlbflush-hash.h
+@@ -41,7 +41,7 @@ static inline void arch_enter_lazy_mmu_mode(void)
+ 	batch->active = 1;
+ }
+ 
+-static inline void arch_leave_lazy_mmu_mode(void)
++static inline void arch_flush_lazy_mmu_mode(void)
+ {
+ 	struct ppc64_tlb_batch *batch;
+ 
+@@ -51,12 +51,21 @@ static inline void arch_leave_lazy_mmu_mode(void)
+ 
+ 	if (batch->index)
+ 		__flush_tlb_pending(batch);
++}
++
++static inline void arch_leave_lazy_mmu_mode(void)
++{
++	struct ppc64_tlb_batch *batch;
++
++	if (radix_enabled())
++		return;
++	batch = this_cpu_ptr(&ppc64_tlb_batch);
++
++	arch_flush_lazy_mmu_mode();
+ 	batch->active = 0;
+ 	preempt_enable();
+ }
+ 
+-#define arch_flush_lazy_mmu_mode()      do {} while (0)
+-
+ extern void hash__tlbiel_all(unsigned int action);
+ 
+ extern void flush_hash_page(unsigned long vpn, real_pte_t pte, int psize,
+-- 
+2.47.3
+

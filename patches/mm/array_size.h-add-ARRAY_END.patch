@@ -1,0 +1,113 @@
+From: Alejandro Colomar <alx@kernel.org>
+Date: Thu, 11 Dec 2025 11:43:49 +0100
+Subject: [PATCH] array_size.h: add ARRAY_END()
+
+Patch series "Add ARRAY_END(), and use it to fix off-by-one bugs", v6.
+
+Add ARRAY_END(), and use it to fix off-by-one bugs
+
+ARRAY_END() is a macro to calculate a pointer to one past the last element
+of an array argument.  This is a very common pointer, which is used to
+iterate over all elements of an array:
+
+        for (T *p = a; p < ARRAY_END(a); p++)
+                ...
+
+Of course, this pointer should never be dereferenced.  A pointer one past
+the last element of an array should not be dereferenced; it's perfectly
+fine to hold such a pointer --and a good thing to do--, but the only thing
+it should be used for is comparing it with other pointers derived from the
+same array.
+
+Due to how special these pointers are, it would be good to use consistent
+naming.  It's common to name such a pointer 'end' --in fact, we have many
+such cases in the kernel--.  C++ even standardized this name with
+std::end().  Let's try naming such pointers 'end', and try also avoid
+using 'end' for pointers that are not the result of ARRAY_END().
+
+It has been incorrectly suggested that these pointers are dangerous, and
+that they should never be used, suggesting to use something like
+
+	#define ARRAY_LAST(a)  ((a) + ARRAY_SIZE(a) - 1)
+
+	for (T *p = a; p <= ARRAY_LAST(a); p++)
+		...
+
+This is bogus, as it doesn't scale down to arrays of 0 elements.  In the
+case of an array of 0 elements, ARRAY_LAST() would underflow the pointer,
+which not only it can't be dereferenced, it can't even be held (it
+produces Undefined Behavior).  That would be a footgun.  Such arrays don't
+exist per the ISO C standard; however, GCC supports them as an extension
+(with partial support, though; GCC has a few bugs which need to be fixed).
+
+This patch set fixes a few places where it was intended to use the array
+end (that is, one past the last element), but accidentally a pointer to
+the last element was used instead, thus wasting one byte.
+
+It also replaces other places where the array end was correctly calculated
+with ARRAY_SIZE(), by using the simpler ARRAY_END().
+
+Also, there was one drivers/ file that already defined this macro.  We
+remove that definition, to not conflict with this one.
+
+
+This patch (of 4):
+
+ARRAY_END() returns a pointer one past the end of the last element in the
+array argument.  This pointer is useful for iterating over the elements of
+an array:
+
+	for (T *p = a, p < ARRAY_END(a); p++)
+		...
+
+Link: https://lkml.kernel.org/r/cover.1765449750.git.alx@kernel.org
+Link: https://lkml.kernel.org/r/5973cfb674192bc8e533485dbfb54e3062896be1.1765449750.git.alx@kernel.org
+Signed-off-by: Alejandro Colomar <alx@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Christopher Bazley <chris.bazley.wg14@gmail.com>
+Cc: Rasmus Villemoes <linux@rasmusvillemoes.dk>
+Cc: Marco Elver <elver@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Linus Torvalds <torvalds@linux-foundation.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Dmitriy Vyukov <dvyukov@google.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Maciej W. Rozycki <macro@orcam.me.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/floppy.c     | 2 --
+ include/linux/array_size.h | 6 ++++++
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/block/floppy.c b/drivers/block/floppy.c
+index c28786e0fe1c8..92e446a643712 100644
+--- a/drivers/block/floppy.c
++++ b/drivers/block/floppy.c
+@@ -4802,8 +4802,6 @@ static void floppy_release_allocated_regions(int fdc, const struct io_region *p)
+ 	}
+ }
+ 
+-#define ARRAY_END(X) (&((X)[ARRAY_SIZE(X)]))
+-
+ static int floppy_request_regions(int fdc)
+ {
+ 	const struct io_region *p;
+diff --git a/include/linux/array_size.h b/include/linux/array_size.h
+index 06d7d83196ca3..0c4fec98822ee 100644
+--- a/include/linux/array_size.h
++++ b/include/linux/array_size.h
+@@ -10,4 +10,10 @@
+  */
+ #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
+ 
++/**
++ * ARRAY_END - get a pointer to one past the last element in array @arr
++ * @arr: array
++ */
++#define ARRAY_END(arr)  (&(arr)[ARRAY_SIZE(arr)])
++
+ #endif  /* _LINUX_ARRAY_SIZE_H */
+-- 
+2.47.3
+

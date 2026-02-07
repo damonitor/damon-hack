@@ -1,0 +1,148 @@
+From: Rohan McLure <rmclure@linux.ibm.com>
+Date: Fri, 19 Dec 2025 04:09:37 +1100
+Subject: [PATCH] mm/page_table_check: provide addr parameter to
+ page_table_check_ptes_set()
+
+To provide support for powerpc platforms, provide an addr parameter to the
+__page_table_check_ptes_set() and page_table_check_ptes_set() routines.
+This parameter is needed on some powerpc platforms which do not encode
+whether a mapping is for user or kernel in the pte.  On such platforms,
+this can be inferred from the addr parameter.
+
+[ajd@linux.ibm.com: rebase on arm64 + riscv changes, update commit message]
+Link: https://lkml.kernel.org/r/20251219-pgtable_check_v18rebase-v18-5-755bc151a50b@linux.ibm.com
+Signed-off-by: Rohan McLure <rmclure@linux.ibm.com>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Acked-by: Alexandre Ghiti <alexghiti@rivosinc.com> # riscv
+Signed-off-by: Andrew Donnellan <ajd@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Christophe Leroy <christophe.leroy@csgroup.eu>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Guo Weikang <guoweikang.kernel@gmail.com>
+Cc: Ingo Molnar <mingo@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Miehlbradt <nicholas@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Paul Mackerras <paulus@ozlabs.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Thomas Huth <thuth@redhat.com>
+Cc: "Vishal Moola (Oracle)" <vishal.moola@gmail.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h |  2 +-
+ arch/riscv/include/asm/pgtable.h |  2 +-
+ include/linux/page_table_check.h | 12 +++++++-----
+ include/linux/pgtable.h          |  2 +-
+ mm/page_table_check.c            |  4 ++--
+ 5 files changed, 12 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index 4b580d6246f5a..d1dd0266bb0c9 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -681,7 +681,7 @@ static inline void __set_ptes_anysz(struct mm_struct *mm, unsigned long addr,
+ 
+ 	switch (pgsize) {
+ 	case PAGE_SIZE:
+-		page_table_check_ptes_set(mm, ptep, pte, nr);
++		page_table_check_ptes_set(mm, addr, ptep, pte, nr);
+ 		break;
+ 	case PMD_SIZE:
+ 		page_table_check_pmds_set(mm, addr, (pmd_t *)ptep,
+diff --git a/arch/riscv/include/asm/pgtable.h b/arch/riscv/include/asm/pgtable.h
+index 82b1c79bc2dd5..574a45a224540 100644
+--- a/arch/riscv/include/asm/pgtable.h
++++ b/arch/riscv/include/asm/pgtable.h
+@@ -627,7 +627,7 @@ static inline void __set_pte_at(struct mm_struct *mm, pte_t *ptep, pte_t pteval)
+ static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
+ 		pte_t *ptep, pte_t pteval, unsigned int nr)
+ {
+-	page_table_check_ptes_set(mm, ptep, pteval, nr);
++	page_table_check_ptes_set(mm, addr, ptep, pteval, nr);
+ 
+ 	for (;;) {
+ 		__set_pte_at(mm, ptep, pteval);
+diff --git a/include/linux/page_table_check.h b/include/linux/page_table_check.h
+index cf7c28d8d468c..66e1092384169 100644
+--- a/include/linux/page_table_check.h
++++ b/include/linux/page_table_check.h
+@@ -17,8 +17,8 @@ void __page_table_check_zero(struct page *page, unsigned int order);
+ void __page_table_check_pte_clear(struct mm_struct *mm, pte_t pte);
+ void __page_table_check_pmd_clear(struct mm_struct *mm, pmd_t pmd);
+ void __page_table_check_pud_clear(struct mm_struct *mm, pud_t pud);
+-void __page_table_check_ptes_set(struct mm_struct *mm, pte_t *ptep, pte_t pte,
+-		unsigned int nr);
++void __page_table_check_ptes_set(struct mm_struct *mm, unsigned long addr,
++		pte_t *ptep, pte_t pte, unsigned int nr);
+ void __page_table_check_pmds_set(struct mm_struct *mm, unsigned long addr,
+ 		pmd_t *pmdp, pmd_t pmd, unsigned int nr);
+ void __page_table_check_puds_set(struct mm_struct *mm, unsigned long addr,
+@@ -68,12 +68,13 @@ static inline void page_table_check_pud_clear(struct mm_struct *mm, pud_t pud)
+ }
+ 
+ static inline void page_table_check_ptes_set(struct mm_struct *mm,
+-		pte_t *ptep, pte_t pte, unsigned int nr)
++					     unsigned long addr, pte_t *ptep,
++					     pte_t pte, unsigned int nr)
+ {
+ 	if (static_branch_likely(&page_table_check_disabled))
+ 		return;
+ 
+-	__page_table_check_ptes_set(mm, ptep, pte, nr);
++	__page_table_check_ptes_set(mm, addr, ptep, pte, nr);
+ }
+ 
+ static inline void page_table_check_pmds_set(struct mm_struct *mm,
+@@ -127,7 +128,8 @@ static inline void page_table_check_pud_clear(struct mm_struct *mm, pud_t pud)
+ }
+ 
+ static inline void page_table_check_ptes_set(struct mm_struct *mm,
+-		pte_t *ptep, pte_t pte, unsigned int nr)
++					     unsigned long addr, pte_t *ptep,
++					     pte_t pte, unsigned int nr)
+ {
+ }
+ 
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 2f0dd3a4ace1a..496873f44f67b 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -429,7 +429,7 @@ static inline pte_t pte_advance_pfn(pte_t pte, unsigned long nr)
+ static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
+ 		pte_t *ptep, pte_t pte, unsigned int nr)
+ {
+-	page_table_check_ptes_set(mm, ptep, pte, nr);
++	page_table_check_ptes_set(mm, addr, ptep, pte, nr);
+ 
+ 	for (;;) {
+ 		set_pte(ptep, pte);
+diff --git a/mm/page_table_check.c b/mm/page_table_check.c
+index 86dc4e4d1dad1..2871d9c453682 100644
+--- a/mm/page_table_check.c
++++ b/mm/page_table_check.c
+@@ -196,8 +196,8 @@ static void page_table_check_pte_flags(pte_t pte)
+ 	}
+ }
+ 
+-void __page_table_check_ptes_set(struct mm_struct *mm, pte_t *ptep, pte_t pte,
+-		unsigned int nr)
++void __page_table_check_ptes_set(struct mm_struct *mm, unsigned long addr,
++				 pte_t *ptep, pte_t pte, unsigned int nr)
+ {
+ 	unsigned int i;
+ 
+-- 
+2.47.3
+

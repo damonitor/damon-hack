@@ -1,0 +1,86 @@
+From: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Date: Wed, 24 Dec 2025 12:38:10 -0500
+Subject: [PATCH] tsacct: skip all kernel threads
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This patch is a preparation step for HPCC, for the OOM killer
+improvements.  I suspect that this patch is useful on its own, because it
+really makes no sense to sum up accounting statistics of use_mm within
+kernel threads which are only temporarily using those mm.
+
+When we hit acct_account_cputime within a irq handler over a kthread that
+happens to use a userspace mm, we end up summing up the mm's RSS into the
+tsk acct_rss_mem1, which eventually decays.
+
+I don't see a good rationale behind tracking the mm's rss in that way when
+a kthread use a userspace mm temporarily through use_mm.
+
+It causes issues with init_mm and efi_mm which only partially initialize
+their mm_struct when introducing the new hierarchical percpu counters to
+replace RSS counters, which requires a pointer dereference when reading
+the approximate counter sum.  The current percpu counters simply load a
+zeroed atomic counter, which happen to work.
+
+Skip all kernel threads in acct_account_cputime(), not just those that
+happen to have a NULL mm.
+
+This is a preparation step before introducing the hierarchical percpu
+counters.
+
+Link: https://lkml.kernel.org/r/20251224173810.648699-2-mathieu.desnoyers@efficios.com
+Signed-off-by: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Aboorva Devarajan <aboorvad@linux.ibm.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Christan König <christian.koenig@amd.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: "Liam R . Howlett" <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Martin Liu <liumartin@google.com>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: "Paul E. McKenney" <paulmck@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/tsacct.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/tsacct.c b/kernel/tsacct.c
+index 6ea2f6363b908..5c153106e6427 100644
+--- a/kernel/tsacct.c
++++ b/kernel/tsacct.c
+@@ -125,7 +125,7 @@ static void __acct_update_integrals(struct task_struct *tsk,
+ {
+ 	u64 time, delta;
+ 
+-	if (!likely(tsk->mm))
++	if (unlikely(!tsk->mm || (tsk->flags & PF_KTHREAD)))
+ 		return;
+ 
+ 	time = stime + utime;
+-- 
+2.47.3
+

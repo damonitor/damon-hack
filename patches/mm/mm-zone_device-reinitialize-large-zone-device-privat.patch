@@ -1,0 +1,209 @@
+From: Matthew Brost <matthew.brost@intel.com>
+Date: Fri, 16 Jan 2026 12:10:16 +0100
+Subject: [PATCH] mm/zone_device: reinitialize large zone device private folios
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Reinitialize metadata for large zone device private folios in
+zone_device_page_init prior to creating a higher-order zone device private
+folio.  This step is necessary when the folio's order changes dynamically
+between zone_device_page_init calls to avoid building a corrupt folio.  As
+part of the metadata reinitialization, the dev_pagemap must be passed in
+from the caller because the pgmap stored in the folio page may have been
+overwritten with a compound head.
+
+Without this fix, individual pages could have invalid pgmap fields and
+flags (with PG_locked being notably problematic) due to prior different
+order allocations, which can, and will, result in kernel crashes.
+
+Link: https://lkml.kernel.org/r/20260116111325.1736137-2-francois.dugast@intel.com
+Fixes: d245f9b4ab80 ("mm/zone_device: support large zone device private folios")
+Signed-off-by: Matthew Brost <matthew.brost@intel.com>
+Signed-off-by: Francois Dugast <francois.dugast@intel.com>
+Acked-by: Felix Kuehling <felix.kuehling@amd.com>
+Reviewed-by: Balbir Singh <balbirs@nvidia.com>
+Acked-by: Vlastimil Babka <vbabka@suse.cz>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: Alex Deucher <alexander.deucher@amd.com>
+Cc: "Christian König" <christian.koenig@amd.com>
+Cc: David Airlie <airlied@gmail.com>
+Cc: Simona Vetter <simona@ffwll.ch>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Lyude Paul <lyude@redhat.com>
+Cc: Danilo Krummrich <dakr@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/kvm/book3s_hv_uvmem.c       |  2 +-
+ drivers/gpu/drm/amd/amdkfd/kfd_migrate.c |  2 +-
+ drivers/gpu/drm/drm_pagemap.c            |  2 +-
+ drivers/gpu/drm/nouveau/nouveau_dmem.c   |  2 +-
+ include/linux/memremap.h                 |  9 ++++--
+ lib/test_hmm.c                           |  4 ++-
+ mm/memremap.c                            | 35 +++++++++++++++++++++++-
+ 7 files changed, 47 insertions(+), 9 deletions(-)
+
+diff --git a/arch/powerpc/kvm/book3s_hv_uvmem.c b/arch/powerpc/kvm/book3s_hv_uvmem.c
+index e5000bef90f2a..7cf9310de0ec1 100644
+--- a/arch/powerpc/kvm/book3s_hv_uvmem.c
++++ b/arch/powerpc/kvm/book3s_hv_uvmem.c
+@@ -723,7 +723,7 @@ static struct page *kvmppc_uvmem_get_page(unsigned long gpa, struct kvm *kvm)
+ 
+ 	dpage = pfn_to_page(uvmem_pfn);
+ 	dpage->zone_device_data = pvt;
+-	zone_device_page_init(dpage, 0);
++	zone_device_page_init(dpage, &kvmppc_uvmem_pgmap, 0);
+ 	return dpage;
+ out_clear:
+ 	spin_lock(&kvmppc_uvmem_bitmap_lock);
+diff --git a/drivers/gpu/drm/amd/amdkfd/kfd_migrate.c b/drivers/gpu/drm/amd/amdkfd/kfd_migrate.c
+index af53e796ea1ba..6ada7b4af7c68 100644
+--- a/drivers/gpu/drm/amd/amdkfd/kfd_migrate.c
++++ b/drivers/gpu/drm/amd/amdkfd/kfd_migrate.c
+@@ -217,7 +217,7 @@ svm_migrate_get_vram_page(struct svm_range *prange, unsigned long pfn)
+ 	page = pfn_to_page(pfn);
+ 	svm_range_bo_ref(prange->svm_bo);
+ 	page->zone_device_data = prange->svm_bo;
+-	zone_device_page_init(page, 0);
++	zone_device_page_init(page, page_pgmap(page), 0);
+ }
+ 
+ static void
+diff --git a/drivers/gpu/drm/drm_pagemap.c b/drivers/gpu/drm/drm_pagemap.c
+index 06c1bd8fc4d17..704f2f9450190 100644
+--- a/drivers/gpu/drm/drm_pagemap.c
++++ b/drivers/gpu/drm/drm_pagemap.c
+@@ -197,7 +197,7 @@ static void drm_pagemap_get_devmem_page(struct page *page,
+ 					struct drm_pagemap_zdd *zdd)
+ {
+ 	page->zone_device_data = drm_pagemap_zdd_get(zdd);
+-	zone_device_page_init(page, 0);
++	zone_device_page_init(page, page_pgmap(page), 0);
+ }
+ 
+ /**
+diff --git a/drivers/gpu/drm/nouveau/nouveau_dmem.c b/drivers/gpu/drm/nouveau/nouveau_dmem.c
+index 58071652679d8..3d8031296eed6 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_dmem.c
++++ b/drivers/gpu/drm/nouveau/nouveau_dmem.c
+@@ -425,7 +425,7 @@ nouveau_dmem_page_alloc_locked(struct nouveau_drm *drm, bool is_large)
+ 			order = ilog2(DMEM_CHUNK_NPAGES);
+ 	}
+ 
+-	zone_device_folio_init(folio, order);
++	zone_device_folio_init(folio, page_pgmap(folio_page(folio, 0)), order);
+ 	return page;
+ }
+ 
+diff --git a/include/linux/memremap.h b/include/linux/memremap.h
+index 713ec0435b48a..e3c2ccf872a8a 100644
+--- a/include/linux/memremap.h
++++ b/include/linux/memremap.h
+@@ -224,7 +224,8 @@ static inline bool is_fsdax_page(const struct page *page)
+ }
+ 
+ #ifdef CONFIG_ZONE_DEVICE
+-void zone_device_page_init(struct page *page, unsigned int order);
++void zone_device_page_init(struct page *page, struct dev_pagemap *pgmap,
++			   unsigned int order);
+ void *memremap_pages(struct dev_pagemap *pgmap, int nid);
+ void memunmap_pages(struct dev_pagemap *pgmap);
+ void *devm_memremap_pages(struct device *dev, struct dev_pagemap *pgmap);
+@@ -234,9 +235,11 @@ bool pgmap_pfn_valid(struct dev_pagemap *pgmap, unsigned long pfn);
+ 
+ unsigned long memremap_compat_align(void);
+ 
+-static inline void zone_device_folio_init(struct folio *folio, unsigned int order)
++static inline void zone_device_folio_init(struct folio *folio,
++					  struct dev_pagemap *pgmap,
++					  unsigned int order)
+ {
+-	zone_device_page_init(&folio->page, order);
++	zone_device_page_init(&folio->page, pgmap, order);
+ 	if (order)
+ 		folio_set_large_rmappable(folio);
+ }
+diff --git a/lib/test_hmm.c b/lib/test_hmm.c
+index 8af169d3873ae..455a6862ae503 100644
+--- a/lib/test_hmm.c
++++ b/lib/test_hmm.c
+@@ -662,7 +662,9 @@ static struct page *dmirror_devmem_alloc_page(struct dmirror *dmirror,
+ 			goto error;
+ 	}
+ 
+-	zone_device_folio_init(page_folio(dpage), order);
++	zone_device_folio_init(page_folio(dpage),
++			       page_pgmap(folio_page(page_folio(dpage), 0)),
++			       order);
+ 	dpage->zone_device_data = rpage;
+ 	return dpage;
+ 
+diff --git a/mm/memremap.c b/mm/memremap.c
+index 63c6ab4fdf082..ac7be07e3361a 100644
+--- a/mm/memremap.c
++++ b/mm/memremap.c
+@@ -477,10 +477,43 @@ void free_zone_device_folio(struct folio *folio)
+ 	}
+ }
+ 
+-void zone_device_page_init(struct page *page, unsigned int order)
++void zone_device_page_init(struct page *page, struct dev_pagemap *pgmap,
++			   unsigned int order)
+ {
++	struct page *new_page = page;
++	unsigned int i;
++
+ 	VM_WARN_ON_ONCE(order > MAX_ORDER_NR_PAGES);
+ 
++	for (i = 0; i < (1UL << order); ++i, ++new_page) {
++		struct folio *new_folio = (struct folio *)new_page;
++
++		/*
++		 * new_page could have been part of previous higher order folio
++		 * which encodes the order, in page + 1, in the flags bits. We
++		 * blindly clear bits which could have set my order field here,
++		 * including page head.
++		 */
++		new_page->flags.f &= ~0xffUL;	/* Clear possible order, page head */
++
++#ifdef NR_PAGES_IN_LARGE_FOLIO
++		/*
++		 * This pointer math looks odd, but new_page could have been
++		 * part of a previous higher order folio, which sets _nr_pages
++		 * in page + 1 (new_page). Therefore, we use pointer casting to
++		 * correctly locate the _nr_pages bits within new_page which
++		 * could have modified by previous higher order folio.
++		 */
++		((struct folio *)(new_page - 1))->_nr_pages = 0;
++#endif
++
++		new_folio->mapping = NULL;
++		new_folio->pgmap = pgmap;	/* Also clear compound head */
++		new_folio->share = 0;   /* fsdax only, unused for device private */
++		VM_WARN_ON_FOLIO(folio_ref_count(new_folio), new_folio);
++		VM_WARN_ON_FOLIO(!folio_is_zone_device(new_folio), new_folio);
++	}
++
+ 	/*
+ 	 * Drivers shouldn't be allocating pages after calling
+ 	 * memunmap_pages().
+-- 
+2.47.3
+
