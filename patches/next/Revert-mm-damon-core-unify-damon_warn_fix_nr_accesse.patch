@@ -1,0 +1,67 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 9 Feb 2026 07:08:45 -0800
+Subject: [PATCH] Revert "mm/damon/core: unify
+ damon_warn_fix_nr_accesses_corruption() with damon_verify_reset_aggregated()"
+
+This reverts commit 7fdffc23ed84ea44a9f15f71d15b00a94f326acd.
+
+The verifying function need context.
+
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202602092126.d6pfqcbG-lkp@intel.com/
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index c4862ccfa2304..45cc0c56f98cc 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1852,11 +1852,17 @@ static void damon_warn_fix_nr_accesses_corruption(struct damon_region *r)
+ {
+ 	if (r->nr_accesses_bp == r->nr_accesses * 10000)
+ 		return;
+-#ifndef CONFIG_DAMON_HARDENED
+ 	WARN_ONCE(true, "invalid nr_accesses_bp at reset: %u %u\n",
+ 			r->nr_accesses_bp, r->nr_accesses);
+ 	r->nr_accesses_bp = r->nr_accesses * 10000;
+-#else
++}
++
++#ifdef CONFIG_DAMON_HARDENED
++static void damon_verify_reset_aggregated(struct damon_region *r,
++		struct damon_ctx *c)
++{
++	if (r->nr_accesses_bp == r->last_nr_accesses * 10000)
++		return;
+ 	pr_err("reset time invalid region found!\n");
+ 	pr_err("nr_accesses_bp %u last_nr_acceses %u\n",
+ 			r->nr_accesses_bp, r->last_nr_accesses);
+@@ -1864,8 +1870,14 @@ static void damon_warn_fix_nr_accesses_corruption(struct damon_region *r)
+ 			c->passed_sample_intervals,
+ 			c->next_aggregation_sis);
+ 	BUG();
+-#endif
+ }
++#else
++static void damon_verify_reset_aggregated(struct damon_region *r,
++		struct damon_ctx *c)
++{
++}
++#endif
++
+ 
+ /*
+  * Reset the aggregated monitoring results ('nr_accesses' of each region).
+@@ -1883,6 +1895,7 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 			damon_warn_fix_nr_accesses_corruption(r);
+ 			r->last_nr_accesses = r->nr_accesses;
+ 			r->nr_accesses = 0;
++			damon_verify_reset_aggregated(r, c);
+ 		}
+ 		ti++;
+ 	}
+-- 
+2.47.3
+
