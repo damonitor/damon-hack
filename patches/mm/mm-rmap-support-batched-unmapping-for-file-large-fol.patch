@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 26 Dec 2025 14:07:59 +0800
+Date: Mon, 9 Feb 2026 22:07:28 +0800
 Subject: [PATCH] mm: rmap: support batched unmapping for file large folios
 
 Similar to folio_referenced_one(), we can apply batched unmapping for file
@@ -12,11 +12,14 @@ the batched unmapping support is relatively straightforward, as we only
 need to clear the consecutive (present) PTE entries for file-backed large
 folios.
 
-Performance testing: Allocate 10G clean file-backed folios by mmap() in a
-memory cgroup, and try to reclaim 8G file-backed folios via the
-memory.reclaim interface.  I can observe 75% performance improvement on my
-Arm64 32-core server (and 50%+ improvement on my X86 machine) with this
-patch.
+Note that it's not ready to support batched unmapping for uffd case, so
+let's still fallback to per-page unmapping for the uffd case.
+
+Performance testing:
+Allocate 10G clean file-backed folios by mmap() in a memory cgroup, and
+try to reclaim 8G file-backed folios via the memory.reclaim interface.  I
+can observe 75% performance improvement on my Arm64 32-core server (and
+50%+ improvement on my X86 machine) with this patch.
 
 W/o patch:
 real    0m1.018s
@@ -28,15 +31,14 @@ real	0m0.249s
 user	0m0.000s
 sys	0m0.249s
 
-Link: https://lkml.kernel.org/r/142919ac14d3cf70cba370808d85debe089df7b4.1766631066.git.baolin.wang@linux.alibaba.com
-Link: https://lore.kernel.org/all/20250214093015.51024-4-21cnbao@gmail.com/T/#u [1]
+[1] https://lore.kernel.org/all/20250214093015.51024-4-21cnbao@gmail.com/T/#u
+Link: https://lkml.kernel.org/r/b53a16f67c93a3fe65e78092069ad135edf00eff.1770645603.git.baolin.wang@linux.alibaba.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
 Acked-by: Barry Song <baohua@kernel.org>
 Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: David Hildenbrand (Red Hat) <david@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
 Cc: Jann Horn <jannh@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
@@ -49,14 +51,14 @@ Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Will Deacon <will@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/rmap.c | 7 ++++---
- 1 file changed, 4 insertions(+), 3 deletions(-)
+ mm/rmap.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
 
 diff --git a/mm/rmap.c b/mm/rmap.c
-index 0de3bce1accb4..11abdb7b9bf1c 100644
+index 3dbc2c4e02dc8..0f00570d1b9e9 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
-@@ -1948,9 +1948,10 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
+@@ -1945,12 +1945,16 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
  	end_addr = pmd_addr_end(addr, vma->vm_end);
  	max_nr = (end_addr - addr) >> PAGE_SHIFT;
  
@@ -69,7 +71,13 @@ index 0de3bce1accb4..11abdb7b9bf1c 100644
  	if (pte_unused(pte))
  		return 1;
  
-@@ -2316,7 +2317,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
++	if (userfaultfd_wp(vma))
++		return 1;
++
+ 	return folio_pte_batch(folio, pvmw->pte, pte, max_nr);
+ }
+ 
+@@ -2313,7 +2317,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
  			 *
  			 * See Documentation/mm/mmu_notifier.rst
  			 */

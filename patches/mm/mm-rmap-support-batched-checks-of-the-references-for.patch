@@ -1,10 +1,11 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 26 Dec 2025 14:07:55 +0800
+Date: Mon, 9 Feb 2026 22:07:24 +0800
 Subject: [PATCH] mm: rmap: support batched checks of the references for large
  folios
 
 Patch series "support batch checking of references and unmapping for large
-folios", v5.
+folios", v6.
+
 
 Currently, folio_referenced_one() always checks the young flag for each
 PTE sequentially, which is inefficient for large folios.  This
@@ -50,15 +51,13 @@ While we are at it, rename ptep_clear_flush_young_notify() to
 clear_flush_young_ptes_notify() to indicate that this is a batch
 operation.
 
-Link: https://lkml.kernel.org/r/cover.1766631066.git.baolin.wang@linux.alibaba.com
-Link: https://lkml.kernel.org/r/18b3eb9c730d16756e5d23c7be22efe2f6219911.1766631066.git.baolin.wang@linux.alibaba.com
+Link: https://lkml.kernel.org/r/cover.1770645603.git.baolin.wang@linux.alibaba.com
+Link: https://lkml.kernel.org/r/12132694536834262062d1fb304f8f8a064b6750.1770645603.git.baolin.wang@linux.alibaba.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
-Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
 Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
-Cc: Barry Song <baohua@kernel.org>
+Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: David Hildenbrand (Red Hat) <david@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
 Cc: Jann Horn <jannh@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
@@ -69,12 +68,13 @@ Cc: Rik van Riel <riel@surriel.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Will Deacon <will@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/mmu_notifier.h |  9 +++++----
- include/linux/pgtable.h      | 31 +++++++++++++++++++++++++++++++
- mm/rmap.c                    | 31 ++++++++++++++++++++++++++++---
- 3 files changed, 64 insertions(+), 7 deletions(-)
+ include/linux/pgtable.h      | 35 +++++++++++++++++++++++++++++++++++
+ mm/rmap.c                    | 28 +++++++++++++++++++++++++---
+ 3 files changed, 65 insertions(+), 7 deletions(-)
 
 diff --git a/include/linux/mmu_notifier.h b/include/linux/mmu_notifier.h
 index d1094c2d5fb61..07a2bbaf86e90 100644
@@ -111,17 +111,17 @@ index d1094c2d5fb61..07a2bbaf86e90 100644
  #define ptep_clear_young_notify ptep_test_and_clear_young
  #define pmdp_clear_young_notify pmdp_test_and_clear_young
 diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
-index 21b67d9375558..4f063438a4fc9 100644
+index 21b67d9375558..a50df42a893fb 100644
 --- a/include/linux/pgtable.h
 +++ b/include/linux/pgtable.h
-@@ -1068,6 +1068,37 @@ static inline void wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
+@@ -1068,6 +1068,41 @@ static inline void wrprotect_ptes(struct mm_struct *mm, unsigned long addr,
  }
  #endif
  
 +#ifndef clear_flush_young_ptes
 +/**
-+ * clear_flush_young_ptes - Clear the access bit and perform a TLB flush for PTEs
-+ *			    that map consecutive pages of the same folio.
++ * clear_flush_young_ptes - Mark PTEs that map consecutive pages of the same
++ *			    folio as old and flush the TLB.
 + * @vma: The virtual memory area the pages are mapped into.
 + * @addr: Address the first page is mapped at.
 + * @ptep: Page table pointer for the first entry.
@@ -137,13 +137,17 @@ index 21b67d9375558..4f063438a4fc9 100644
 + * pages that belong to the same folio.  The PTEs are all in the same PMD.
 + */
 +static inline int clear_flush_young_ptes(struct vm_area_struct *vma,
-+					 unsigned long addr, pte_t *ptep,
-+					 unsigned int nr)
++		unsigned long addr, pte_t *ptep, unsigned int nr)
 +{
-+	int i, young = 0;
++	int young = 0;
 +
-+	for (i = 0; i < nr; ++i, ++ptep, addr += PAGE_SIZE)
++	for (;;) {
 +		young |= ptep_clear_flush_young(vma, addr, ptep);
++		if (--nr == 0)
++			break;
++		ptep++;
++		addr += PAGE_SIZE;
++	}
 +
 +	return young;
 +}
@@ -153,7 +157,7 @@ index 21b67d9375558..4f063438a4fc9 100644
   * On some architectures hardware does not set page access bit when accessing
   * memory page, it is responsibility of software setting this bit. It brings
 diff --git a/mm/rmap.c b/mm/rmap.c
-index ab099405151ff..0de3bce1accb4 100644
+index ab099405151ff..3dbc2c4e02dc8 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
 @@ -913,9 +913,11 @@ static bool folio_referenced_one(struct folio *folio,
@@ -168,17 +172,15 @@ index ab099405151ff..0de3bce1accb4 100644
  
  		if (vma->vm_flags & VM_LOCKED) {
  			ptes++;
-@@ -960,9 +962,24 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -960,9 +962,21 @@ static bool folio_referenced_one(struct folio *folio,
  			if (lru_gen_look_around(&pvmw))
  				referenced++;
  		} else if (pvmw.pte) {
 -			if (ptep_clear_flush_young_notify(vma, address,
 -						pvmw.pte))
 +			if (folio_test_large(folio)) {
-+				unsigned long end_addr =
-+					pmd_addr_end(address, vma->vm_end);
-+				unsigned int max_nr =
-+					(end_addr - address) >> PAGE_SHIFT;
++				unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
++				unsigned int max_nr = (end_addr - address) >> PAGE_SHIFT;
 +				pte_t pteval = ptep_get(pvmw.pte);
 +
 +				nr = folio_pte_batch(folio, pvmw.pte,
@@ -186,8 +188,7 @@ index ab099405151ff..0de3bce1accb4 100644
 +			}
 +
 +			ptes += nr;
-+			if (clear_flush_young_ptes_notify(vma, address,
-+						pvmw.pte, nr))
++			if (clear_flush_young_ptes_notify(vma, address, pvmw.pte, nr))
  				referenced++;
 +			/* Skip the batched PTEs */
 +			pvmw.pte += nr - 1;
@@ -195,7 +196,7 @@ index ab099405151ff..0de3bce1accb4 100644
  		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
  			if (pmdp_clear_flush_young_notify(vma, address,
  						pvmw.pmd))
-@@ -972,7 +989,15 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -972,7 +986,15 @@ static bool folio_referenced_one(struct folio *folio,
  			WARN_ON_ONCE(1);
  		}
  
