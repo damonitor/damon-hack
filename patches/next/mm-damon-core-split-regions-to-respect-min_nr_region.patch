@@ -1,0 +1,67 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 27 Jan 2026 20:52:05 -0800
+Subject: [PATCH] mm/damon/core: split regions to respect min_nr_regions
+
+DAMON respects min_nr_regions in the following way.  First, it
+calculates the maximum size of each region as the total size of
+monitoring requested memory address space divided by the min_nr_regions.
+Then, it restricts regions merging end up having a region of a size that
+larger than the maximum size.
+
+This means that the real number of regions of a context could be lower
+than the min_nr_regions, until sufficient number of region split is
+made.  Strictly speaking, this is a violation of the parmeter's promise,
+and confusing users at minimum.  There was actually a real problem
+report for this.  The reporter wanted to do a fixed granularity
+monitoring by setting the min_nr_regions and max_nr_regions same, while
+having a long aggregation interval.  The time to wait until the region
+splits are done was problematically long for the reporter.
+
+Fix the issue by splitting regions before starting kdamond main loop,
+based on the maximum size of each region.
+
+Reported-by: Akinobu Mita <akinobu.mita@gmail.com>
+Closes: https://lore.kernel.org/CAC5umyhVW+Rh2YfUCZCPu_7NuBh8FSGrsK23_EopDv2ixAe36w@mail.gmail.com
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 97cbcc77e5dc8..a6628f5cbe62b 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2941,6 +2941,22 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
+ 	last_nr_regions = nr_regions;
+ }
+ 
++static void kdamond_ensure_sz_limit(struct damon_ctx *ctx,
++		unsigned long max_region_sz)
++{
++	struct damon_target *t;
++	struct damon_region *r, *next;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region_safe(r, next, t) {
++			while (damon_sz_region(r) > max_region_sz) {
++				damon_split_region_at(t, r, max_region_sz);
++				r = damon_next_region(r);
++			}
++		}
++	}
++}
++
+ /*
+  * Check whether current monitoring should be stopped
+  *
+@@ -3245,6 +3261,7 @@ static int kdamond_fn(void *data)
+ 		goto done;
+ 
+ 	sz_limit = damon_region_sz_limit(ctx);
++	kdamond_ensure_sz_limit(ctx, sz_limit);
+ 
+ 	while (!kdamond_need_stop(ctx)) {
+ 		/*
+-- 
+2.47.3
+
