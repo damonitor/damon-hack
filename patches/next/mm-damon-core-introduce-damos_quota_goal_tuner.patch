@@ -2,7 +2,21 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sun, 8 Feb 2026 13:42:30 -0800
 Subject: [PATCH] mm/damon/core: introduce damos_quota_goal_tuner
 
-No functional change.
+Currently DAMOS quota goal feature utilizes a single feedback loop based
+algorithm for automatic tuning of the effective quota.  It is proven to
+be useful on dynamic environments that operate systems with only
+kernels.  But, no one fits all, and we got multiple reports [1,2] of
+cases that the algorithm is not optimum.
+
+Introduce a new field of 'struct damos_quotas', namely 'goal_tuner'.  It
+specifies what tuning algorithm the given scheme should use, and allows
+DAMON API callers to set it as they want.  Nonetheless, this commit does
+not introduce a new tuning algorithm but only the interface.  This
+commit hence makes no behavioral change.  A new algorithm will be added
+by the following commit.
+
+[1] https://lore.kernel.org/CALa+Y17__d=ZsM1yX+MXx0ozVdsXnFqF4p0g+kATEitrWyZFfg@mail.gmail.com
+[2] https://lore.kernel.org/20260204022537.814-1-yunjeong.mun@sk.com
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -11,10 +25,10 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  2 files changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 74277255f809c..de42904ab6fd1 100644
+index a4fea23da8576..25345b5f821b9 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
-@@ -247,6 +247,14 @@ struct damos_quota_goal {
+@@ -213,6 +213,14 @@ struct damos_quota_goal {
  	struct list_head list;
  };
  
@@ -29,7 +43,7 @@ index 74277255f809c..de42904ab6fd1 100644
  /**
   * struct damos_quota - Controls the aggressiveness of the given scheme.
   * @reset_interval:	Charge reset interval in milliseconds.
-@@ -294,6 +302,7 @@ struct damos_quota {
+@@ -260,6 +268,7 @@ struct damos_quota {
  	unsigned long ms;
  	unsigned long sz;
  	struct list_head goals;
@@ -38,10 +52,10 @@ index 74277255f809c..de42904ab6fd1 100644
  
  	unsigned int weight_sz;
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 8fa4192905b77..7de63199b744b 100644
+index 0ff190ed8a599..1c126d910fe62 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -447,8 +447,9 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
+@@ -405,8 +405,9 @@ struct damos *damon_new_scheme(struct damos_access_pattern *pattern,
  	INIT_LIST_HEAD(&scheme->list);
  
  	scheme->quota = *(damos_quota_init(quota));
@@ -52,7 +66,7 @@ index 8fa4192905b77..7de63199b744b 100644
  
  	scheme->wmarks = *wmarks;
  	scheme->wmarks.activated = true;
-@@ -1010,6 +1011,7 @@ static int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
+@@ -860,6 +861,7 @@ static int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
  	err = damos_commit_quota_goals(dst, src);
  	if (err)
  		return err;
