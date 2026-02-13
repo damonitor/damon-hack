@@ -1,5 +1,5 @@
 From: xu xin <xu.xin16@zte.com.cn>
-Date: Mon, 12 Jan 2026 22:01:43 +0800
+Date: Thu, 12 Feb 2026 19:30:45 +0800
 Subject: [PATCH] ksm: optimize rmap_walk_ksm by passing a suitable address
  range
 
@@ -7,8 +7,8 @@ Problem
 =======
 When available memory is extremely tight, causing KSM pages to be swapped
 out, or when there is significant memory fragmentation and THP triggers
-memory compaction, the system will invoke rmap_walk_ksm() to perform
-reverse mapping.  However, we observed that this function becomes
+memory compaction, the system will invoke the rmap_walk_ksm function to
+perform reverse mapping.  However, we observed that this function becomes
 particularly time-consuming when a large number of VMAs (e.g., 20,000)
 share the same anon_vma.  Through debug trace analysis, we found that most
 of the latency occurs within anon_vma_interval_tree_foreach, leading to an
@@ -16,8 +16,8 @@ excessively long hold time on the anon_vma lock (even reaching 500ms or
 more), which in turn causes upper-layer applications (waiting for the
 anon_vma lock) to be blocked for extended periods.
 
-Root Reason
-===========
+Root Cause
+==========
 Further investigation revealed that 99.9% of iterations inside the
 anon_vma_interval_tree_foreach loop are skipped due to the first check "if
 (addr < vma->vm_start || addr >= vma->vm_end)), indicating that a large
@@ -28,18 +28,18 @@ ULONG_MAX, resulting in very poor loop efficiency.
 
 Solution
 ========
-In fact, we can significantly improve performance by passing a more
-precise range based on the given addr.  Since the original pages merged by
-KSM correspond to anonymous VMAs, the page offset can be calculated as
-pgoff = address >> PAGE_SHIFT.  Therefore, we can optimize the call by
+In fact, we can significantly improve performance by passing a more precise
+range based on the given addr. Since the original pages merged by KSM
+correspond to anonymous VMAs, the page offset can be calculated as
+pgoff = address >> PAGE_SHIFT. Therefore, we can optimize the call by
 defining:
 
-	pgoff_start = rmap_item->address >> PAGE_SHIFT;
-	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+	pgoff = rmap_item->address >> PAGE_SHIFT;
 
 Performance
 ===========
-In our real embedded Linux environment, the measured metrics were as follows:
+In our real embedded Linux environment, the measured metrcis were as
+follows:
 
 1) Time_ms: Max time for holding anon_vma lock in a single
    rmap_walk_ksm.
@@ -57,44 +57,49 @@ In our real embedded Linux environment, the measured metrics were as follows:
 
 The result is as follows:
 
-                 Time_ms      Nr_iteration_total    Skip_addr_out_of_range   Skip_mm_mismatch
-Before patch:    228.65       22169                 22168                    0
-After patch:     0.396        3                     0                        2
+         Time_ms      Nr_iteration_total    Skip_addr_out_of_range   Skip_mm_mismatch
+Before:  228.65       22169                 22168                    0
+After :   0.396        3                     0                       2
 
-Link: https://lkml.kernel.org/r/20260112220143497dgs9w3S7sfdTUNRbflDtb@zte.com.cn
+The referenced reproducer of rmap_walk_ksm can be found at:
+https://lore.kernel.org/all/20260206151424734QIyWL_pA-1QeJPbJlUxsO@zte.com.cn/
+
+Link: https://lkml.kernel.org/r/20260212193045556CbzCX8p9gDu73tQ2nvHEI@zte.com.cn
 Co-developed-by: Wang Yaxin <wang.yaxin@zte.com.cn>
+Signed-off-by: Wang Yaxin <wang.yaxin@zte.com.cn>
 Signed-off-by: xu xin <xu.xin16@zte.com.cn>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Chengming Zhou <chengming.zhou@linux.dev>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: Yang Yang <yang.yang29@zte.com.cn>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/ksm.c | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
+ mm/ksm.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/mm/ksm.c b/mm/ksm.c
-index 5d9c51acec9af..031c17e4ada6c 100644
+index 950e122bcbf46..7b974f3333916 100644
 --- a/mm/ksm.c
 +++ b/mm/ksm.c
-@@ -3172,6 +3172,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+@@ -3170,6 +3170,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+ 	hlist_for_each_entry(rmap_item, &stable_node->hlist, hlist) {
+ 		/* Ignore the stable/unstable/sqnr flags */
+ 		const unsigned long addr = rmap_item->address & PAGE_MASK;
++		const pgoff_t pgoff = rmap_item->address >> PAGE_SHIFT;
+ 		struct anon_vma *anon_vma = rmap_item->anon_vma;
  		struct anon_vma_chain *vmac;
  		struct vm_area_struct *vma;
- 		unsigned long addr;
-+		pgoff_t pgoff_start, pgoff_end;
+@@ -3183,8 +3184,12 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+ 			anon_vma_lock_read(anon_vma);
+ 		}
  
- 		cond_resched();
- 		if (!anon_vma_trylock_read(anon_vma)) {
-@@ -3185,8 +3186,11 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
- 		/* Ignore the stable/unstable/sqnr flags */
- 		addr = rmap_item->address & PAGE_MASK;
- 
-+		pgoff_start = rmap_item->address >> PAGE_SHIFT;
-+		pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
-+
++		/*
++		 * Currently KSM folios are order-0 normal pages, so pgoff_end
++		 * should be the same as pgoff_start.
++		 */
  		anon_vma_interval_tree_foreach(vmac, &anon_vma->rb_root,
 -					       0, ULONG_MAX) {
-+					       pgoff_start, pgoff_end) {
++					       pgoff, pgoff) {
  
  			cond_resched();
  			vma = vmac->vma;

@@ -1,5 +1,5 @@
 From: Cui Chao <cuichao1753@phytium.com.cn>
-Date: Tue, 6 Jan 2026 11:10:42 +0800
+Date: Wed, 11 Feb 2026 18:33:20 +0800
 Subject: [PATCH] mm: numa_memblks: identify the accurate NUMA ID of CFMW
 
 In some physical memory layout designs, the address space of CFMW (CXL
@@ -9,12 +9,11 @@ segments of system memory are merged into a larger numa_memblk.  When
 identifying which NUMA node the CFMW belongs to, it may be incorrectly
 assigned to the NUMA node of the merged system memory.
 
-When a CXL RAM region is created in userspace, the memory capacity of
-the newly created region is not added to the CFMW-dedicated NUMA node.
+When a CXL RAM region is created in userspace, the memory capacity of the
+newly created region is not added to the CFMW-dedicated NUMA node.
 Instead, it is accumulated into an existing NUMA node (e.g., NUMA0
-containing RAM).  This makes it impossible to clearly distinguish
-between the two types of memory, which may affect memory-tiering
-applications.
+containing RAM).  This makes it impossible to clearly distinguish between
+the two types of memory, which may affect memory-tiering applications.
 
 Example memory layout:
 
@@ -30,17 +29,23 @@ After numa_cleanup_meminfo, the two node0 segments are merged into one:
 
 So the CFMW (0x20000000-0x2FFFFFFF) will be incorrectly assigned to node0.
 
-To address this scenario, accurately identifying the correct NUMA node
-can be achieved by checking whether the region belongs to both
-numa_meminfo and numa_reserved_meminfo.
+To address this scenario, accurately identifying the correct NUMA node can
+be achieved by checking whether the region belongs to both numa_meminfo
+and numa_reserved_meminfo.
 
+While this issue is only observed in a QEMU configuration, and no known
+end users are impacted by this problem, it is likely that some firmware
+implementation is leaving memory map holes in a CXL Fixed Memory Window.
+CXL hotplug depends on mapping free window capacity, and it seems to be
+only a coincidence to have not hit this problem yet.
 
 1. Issue Impact and Backport Recommendation:
 
-This patch fixes an issue on hardware platforms (not QEMU emulation)
-where, during the dynamic creation of a CXL RAM region, the memory
-capacity is not assigned to the correct CFMW-dedicated NUMA node.  This
-issue leads to:
+This patch fixes an issue observed in QEMU emulation where, during the
+dynamic creation of a CXL RAM region, the memory capacity is not assigned
+to the correct CFMW-dedicated NUMA node.  While hardware platforms could
+potentially have such memory configurations, we are not currently aware of
+any such hardware.  This issue leads to:
 
     Failure of the memory tiering mechanism: The system is designed to
     treat System RAM as fast memory and CXL memory as slow memory. For
@@ -62,47 +67,44 @@ issue leads to:
     memory capacities that do not match the actual physical hardware
     layout, impacting operations and monitoring.
 
-This issue affects all users utilizing the CXL RAM functionality who
-rely on memory tiering or NUMA-aware scheduling.  Such configurations
-are becoming increasingly common in data centers, cloud computing, and
-high-performance computing scenarios.
+This issue affects all users utilizing the CXL RAM functionality who rely
+on memory tiering or NUMA-aware scheduling.
 
-Therefore, I recommend backporting this patch to all stable kernel
-series that support dynamic CXL region creation.
+Therefore, I recommend backporting this patch to all stable kernel series
+that support dynamic CXL region creation.
 
 2. Why a Kernel Update is Recommended Over a Firmware Update:
 
 In the scenario of dynamic CXL region creation, the association between
-the memory's HPA range and its corresponding NUMA node is established
-when the kernel driver performs the commit operation.  This is a
-runtime, OS-managed operation where the platform firmware cannot
-intervene to provide a fix.
+the memory's HPA range and its corresponding NUMA node is established when
+the kernel driver performs the commit operation.  This is a runtime,
+OS-managed operation where the platform firmware cannot intervene to
+provide a fix.
 
-Considering factors like hardware platform architecture, memory
-resources, and others, such a physical address layout can indeed occur.
-This patch does not introduce risk; it simply correctly handles the
-NUMA node assignment for CXL RAM regions within such a physical address
-layout.
+Considering factors like hardware platform architecture, memory resources,
+and others, such a physical address layout can indeed occur.  This patch
+does not introduce risk; it simply correctly handles the NUMA node
+assignment for CXL RAM regions within such a physical address layout.
 
 Thus, I believe a kernel fix is necessary.
 
-Link: https://lkml.kernel.org/r/20260106031042.1606729-2-cuichao1753@phytium.com.cn
+Link: https://lkml.kernel.org/r/20260211103320.2064211-2-cuichao1753@phytium.com.cn
 Fixes: 779dd20cfb56 ("cxl/region: Add region creation support")
 Signed-off-by: Cui Chao <cuichao1753@phytium.com.cn>
 Reviewed-by: Jonathan Cameron <jonathan.cameron@huawei.com>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Reviewed-by: Dan Williams <dan.j.williams@intel.com>
+Cc: David Hildenbrand <david@kernel.org>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Wang Yinfeng <wangyinfeng@phytium.com.cn>
-Cc: Dan Williams <dan.j.williams@intel.com>
-Cc: Gregory Price <gourry@gourry.net>
-Cc: Joanthan Cameron <Jonathan.Cameron@huawei.com>
-Cc: Wang Yinfeng <wangyinfeng@phytium.com.cn>
+Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/numa_memblks.c | 5 +++--
- 1 file changed, 3 insertions(+), 2 deletions(-)
+ mm/numa_memblks.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
 
 diff --git a/mm/numa_memblks.c b/mm/numa_memblks.c
-index 391f53e63ea34..32595b616f73c 100644
+index 391f53e63ea34..3c3c4eac3514d 100644
 --- a/mm/numa_memblks.c
 +++ b/mm/numa_memblks.c
 @@ -570,15 +570,16 @@ static int meminfo_to_nid(struct numa_meminfo *mi, u64 start)
@@ -112,8 +114,10 @@ index 391f53e63ea34..32595b616f73c 100644
 +	int reserved_nid = meminfo_to_nid(&numa_reserved_meminfo, start);
  
  	/*
- 	 * Prefer online nodes, but if reserved memory might be
- 	 * hot-added continue the search with reserved ranges.
+-	 * Prefer online nodes, but if reserved memory might be
+-	 * hot-added continue the search with reserved ranges.
++	 * Prefer online nodes unless the address is also described
++	 * by reserved ranges, in which case use the reserved nid.
  	 */
 -	if (nid != NUMA_NO_NODE)
 +	if (nid != NUMA_NO_NODE && reserved_nid == NUMA_NO_NODE)
