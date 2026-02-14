@@ -1,0 +1,117 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Fri, 13 Feb 2026 13:38:56 +0100
+Subject: [PATCH] mm/vmscan: avoid false-positive -Wuninitialized warning
+
+When the -fsanitize=bounds sanitizer is enabled, gcc-16 sometimes runs
+into a corner case in the read_ctrl_pos() pos function, where it sees
+possible undefined behavior from the 'tier' index overflowing, presumably
+in the case that this was called with a negative tier:
+
+In function 'get_tier_idx',
+    inlined from 'isolate_folios' at mm/vmscan.c:4671:14:
+mm/vmscan.c: In function 'isolate_folios':
+mm/vmscan.c:4645:29: error: 'pv.refaulted' is used uninitialized [-Werror=uninitialized]
+
+This can happen with CONFIG_UBSAN_ARRAY_BOUNDS=y.  The actual warning
+only shows up in some configurations with that, so either there is some
+other dependency, or an element of chance based on gcc optimizations.
+
+Part of the problem seems to be that read_ctrl_pos() has unusual calling
+conventions since commit 37a260870f2c ("mm/mglru: rework type selection")
+where passing MAX_NR_TIERS makes it accumulate all tiers but passing a
+smaller positive number makes it read a single tier instead.
+
+Avoid this case by splitting read_ctrl_pos() into two separate helpers
+that each only do one of the two cases.  This avoids the warning as far as
+I can tell, and seems a bit easier to understand to me.
+
+Link: https://lkml.kernel.org/r/20260213123902.3466040-1-arnd@kernel.org
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Koichiro Den <koichiro.den@canonical.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 37 +++++++++++++++++++++++++------------
+ 1 file changed, 25 insertions(+), 12 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 44e4fcd6463c7..5fa6e6bd6540b 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3159,20 +3159,15 @@ struct ctrl_pos {
+ static void read_ctrl_pos(struct lruvec *lruvec, int type, int tier, int gain,
+ 			  struct ctrl_pos *pos)
+ {
+-	int i;
+ 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+ 	int hist = lru_hist_from_seq(lrugen->min_seq[type]);
+ 
+ 	pos->gain = gain;
+-	pos->refaulted = pos->total = 0;
+-
+-	for (i = tier % MAX_NR_TIERS; i <= min(tier, MAX_NR_TIERS - 1); i++) {
+-		pos->refaulted += lrugen->avg_refaulted[type][i] +
+-				  atomic_long_read(&lrugen->refaulted[hist][type][i]);
+-		pos->total += lrugen->avg_total[type][i] +
+-			      lrugen->protected[hist][type][i] +
+-			      atomic_long_read(&lrugen->evicted[hist][type][i]);
+-	}
++	pos->refaulted = lrugen->avg_refaulted[type][tier] +
++			 atomic_long_read(&lrugen->refaulted[hist][type][tier]);
++	pos->total = lrugen->avg_total[type][tier] +
++		     lrugen->protected[hist][type][tier] +
++		     atomic_long_read(&lrugen->evicted[hist][type][tier]);
+ }
+ 
+ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
+@@ -4640,6 +4635,24 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
+ 	return tier - 1;
+ }
+ 
++static void aggregate_ctrl_pos(struct lruvec *lruvec, int type, int gain,
++			       struct ctrl_pos *pos)
++{
++	struct lru_gen_folio *lrugen = &lruvec->lrugen;
++	int hist = lru_hist_from_seq(lrugen->min_seq[type]);
++
++	pos->gain = gain;
++	pos->refaulted = pos->total = 0;
++
++	for (int i = 0; i < MAX_NR_TIERS; i++) {
++		pos->refaulted += lrugen->avg_refaulted[type][i] +
++				  atomic_long_read(&lrugen->refaulted[hist][type][i]);
++		pos->total += lrugen->avg_total[type][i] +
++			      lrugen->protected[hist][type][i] +
++			      atomic_long_read(&lrugen->evicted[hist][type][i]);
++	}
++}
++
+ static int get_type_to_scan(struct lruvec *lruvec, int swappiness)
+ {
+ 	struct ctrl_pos sp, pv;
+@@ -4653,8 +4666,8 @@ static int get_type_to_scan(struct lruvec *lruvec, int swappiness)
+ 	 * Compare the sum of all tiers of anon with that of file to determine
+ 	 * which type to scan.
+ 	 */
+-	read_ctrl_pos(lruvec, LRU_GEN_ANON, MAX_NR_TIERS, swappiness, &sp);
+-	read_ctrl_pos(lruvec, LRU_GEN_FILE, MAX_NR_TIERS, MAX_SWAPPINESS - swappiness, &pv);
++	aggregate_ctrl_pos(lruvec, LRU_GEN_ANON, swappiness, &sp);
++	aggregate_ctrl_pos(lruvec, LRU_GEN_FILE, MAX_SWAPPINESS - swappiness, &pv);
+ 
+ 	return positive_ctrl_err(&sp, &pv);
+ }
+-- 
+2.47.3
+
