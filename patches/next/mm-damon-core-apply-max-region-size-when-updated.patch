@@ -1,0 +1,101 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 14 Feb 2026 10:54:39 -0800
+Subject: [PATCH] mm/damon/core: apply max region size when updated
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 46 +++++++++++++++++++++++-----------------------
+ 1 file changed, 23 insertions(+), 23 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index ede3964d081cd..089faf1b696b5 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1551,6 +1551,26 @@ static unsigned long damon_region_sz_limit(struct damon_ctx *ctx)
+ 	return sz;
+ }
+ 
++static void damon_split_region_at(struct damon_target *t,
++				  struct damon_region *r, unsigned long sz_r);
++
++static unsigned long kdamond_get_apply_max_region_sz(struct damon_ctx *ctx)
++{
++	unsigned long max_region_sz = damon_region_sz_limit(ctx);
++	struct damon_target *t;
++	struct damon_region *r, *next;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region_safe(r, next, t) {
++			while (damon_sz_region(r) > max_region_sz) {
++				damon_split_region_at(t, r, max_region_sz);
++				r = damon_next_region(r);
++			}
++		}
++	}
++	return max_region_sz;
++}
++
+ static int kdamond_fn(void *data);
+ 
+ /*
+@@ -1983,9 +2003,6 @@ static void kdamond_tune_intervals(struct damon_ctx *c)
+ 	damon_set_attrs(c, &new_attrs);
+ }
+ 
+-static void damon_split_region_at(struct damon_target *t,
+-				  struct damon_region *r, unsigned long sz_r);
+-
+ static bool __damos_valid_target(struct damon_region *r, struct damos *s)
+ {
+ 	unsigned long sz;
+@@ -2963,22 +2980,6 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
+ 	last_nr_regions = nr_regions;
+ }
+ 
+-static void kdamond_split_large_regions(struct damon_ctx *ctx,
+-		unsigned long max_region_sz)
+-{
+-	struct damon_target *t;
+-	struct damon_region *r, *next;
+-
+-	damon_for_each_target(t, ctx) {
+-		damon_for_each_region_safe(r, next, t) {
+-			while (damon_sz_region(r) > max_region_sz) {
+-				damon_split_region_at(t, r, max_region_sz);
+-				r = damon_next_region(r);
+-			}
+-		}
+-	}
+-}
+-
+ /*
+  * Check whether current monitoring should be stopped
+  *
+@@ -3282,8 +3283,7 @@ static int kdamond_fn(void *data)
+ 	if (!ctx->regions_score_histogram)
+ 		goto done;
+ 
+-	sz_limit = damon_region_sz_limit(ctx);
+-	kdamond_split_large_regions(ctx, sz_limit);
++	sz_limit = kdamond_get_apply_max_region_sz(ctx);
+ 
+ 	while (!kdamond_need_stop(ctx)) {
+ 		/*
+@@ -3373,12 +3373,12 @@ static int kdamond_fn(void *data)
+ 				sample_interval;
+ 			if (ctx->ops.update)
+ 				ctx->ops.update(ctx);
+-			sz_limit = damon_region_sz_limit(ctx);
++			sz_limit = kdamond_get_apply_max_region_sz(ctx);
+ 		}
+ 
+ 		/* damon_call() callers could updated min_nr_regions */
+ 		if (ctx->attrs.min_nr_regions != old_min_nr_regions)
+-			sz_limit = damon_region_sz_limit(ctx);
++			sz_limit = kdamond_get_apply_max_region_sz(ctx);
+ 	}
+ done:
+ 	damon_destroy_targets(ctx);
+-- 
+2.47.3
+
