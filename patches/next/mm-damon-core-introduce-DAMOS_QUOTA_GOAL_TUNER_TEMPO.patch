@@ -1,0 +1,83 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 8 Feb 2026 13:43:06 -0800
+Subject: [PATCH] mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL
+
+Introduce a new goal-based DAMOS quota auto-tuning algorithm, namely
+DAMOS_QUOTA_GOAL_TUNER_TEMPORAL (temporal in short).  The algorithm aims
+to trigger the DAMOS action only for a temporal time, until the goal is
+achieved.  For the temporal period, it uses as much quota as allowed.
+Once the goal is achieved, it sets the quota zero, so effectively make
+the scheme be deactivated.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 29 ++++++++++++++++++++++++-----
+ 2 files changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 63f1e3fdd3866..c4095b34f7929 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -216,9 +216,11 @@ struct damos_quota_goal {
+ /**
+  * enum damos_quota_goal_tuner - Goal-based quota tuning logic.
+  * @DAMOS_QUOTA_GOAL_TUNER_CONSIST:	Aim long term consistent quota.
++ * @DAMOS_QUOTA_GOAL_TUNER_TEMPORAL:	Aim zero quota asap.
+  */
+ enum damos_quota_goal_tuner {
+ 	DAMOS_QUOTA_GOAL_TUNER_CONSIST,
++	DAMOS_QUOTA_GOAL_TUNER_TEMPORAL,
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 199df379a0c47..1cfa08ad641ad 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2217,6 +2217,26 @@ static unsigned long damos_quota_score(struct damos_quota *quota)
+ 	return highest_score;
+ }
+ 
++static void damos_goal_tune_esz_bp_consist(struct damos_quota *quota)
++{
++	unsigned long score = damos_quota_score(quota);
++
++	quota->esz_bp = damon_feed_loop_next_input(
++			max(quota->esz_bp, 10000UL), score);
++}
++
++static void damos_goal_tune_esz_bp_temporal(struct damos_quota *quota)
++{
++	unsigned long score = damos_quota_score(quota);
++
++	if (score >= 10000)
++		quota->esz_bp = 0;
++	else if (quota->sz)
++		quota->esz_bp = quota->sz * 10000;
++	else
++		quota->esz_bp = ULONG_MAX;
++}
++
+ /*
+  * Called only if quota->ms, or quota->sz are set, or quota->goals is not empty
+  */
+@@ -2231,11 +2251,10 @@ static void damos_set_effective_quota(struct damos_quota *quota)
+ 	}
+ 
+ 	if (!list_empty(&quota->goals)) {
+-		unsigned long score = damos_quota_score(quota);
+-
+-		quota->esz_bp = damon_feed_loop_next_input(
+-				max(quota->esz_bp, 10000UL),
+-				score);
++		if (quota->goal_tuner == DAMOS_QUOTA_GOAL_TUNER_CONSIST)
++			damos_goal_tune_esz_bp_consist(quota);
++		else if (quota->goal_tuner == DAMOS_QUOTA_GOAL_TUNER_TEMPORAL)
++			damos_goal_tune_esz_bp_temporal(quota);
+ 		esz = quota->esz_bp / 10000;
+ 	}
+ 
+-- 
+2.47.3
+

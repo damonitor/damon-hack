@@ -9,10 +9,12 @@ Updates testing code as necessary.
 
 No functional changes intended.
 
+[Liam.Howlett@oracle.com: fix up unmap desc use on exit_mmap()]
+  Link: https://lkml.kernel.org/r/20260210214214.364856-1-Liam.Howlett@oracle.com
 Link: https://lkml.kernel.org/r/20260121164946.2093480-12-Liam.Howlett@oracle.com
 Signed-off-by: Liam R. Howlett <Liam.Howlett@oracle.com>
 Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
-Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Baoquan He <bhe@redhat.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Chris Li <chrisl@kernel.org>
@@ -31,11 +33,12 @@ Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  mm/internal.h                    |  5 +----
- mm/memory.c                      | 37 ++++++++++++++------------------
+ mm/memory.c                      | 33 +++++++++++++-------------------
  mm/mmap.c                        |  6 +++---
  mm/vma.c                         |  6 ++----
- tools/testing/vma/vma_internal.h |  7 +++---
- 5 files changed, 25 insertions(+), 36 deletions(-)
+ mm/vma.h                         | 23 ++++++++++++++++++++++
+ tools/testing/vma/vma_internal.h |  7 +++----
+ 6 files changed, 45 insertions(+), 35 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
 index 0f3ad8665d95e..ef71a1d9991f2 100644
@@ -54,7 +57,7 @@ index 0f3ad8665d95e..ef71a1d9991f2 100644
  void pmd_install(struct mm_struct *mm, pmd_t *pmd, pgtable_t *pte);
  
 diff --git a/mm/memory.c b/mm/memory.c
-index 07793e1a08fa4..3a432b214d2d7 100644
+index d68f8f082b1c3..136b80ca357bb 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
 @@ -373,12 +373,7 @@ void free_pgd_range(struct mmu_gather *tlb,
@@ -71,7 +74,7 @@ index 07793e1a08fa4..3a432b214d2d7 100644
   *
   * Note: pg_start and pg_end are provided to indicate the absolute range of the
   * page tables that should be removed.  This can differ from the vma mappings on
-@@ -388,21 +383,21 @@ void free_pgd_range(struct mmu_gather *tlb,
+@@ -388,21 +383,19 @@ void free_pgd_range(struct mmu_gather *tlb,
   * The vma_end differs from the pg_end when a dup_mmap() failed and the tree has
   * unrelated data to the mm_struct being torn down.
   */
@@ -87,22 +90,19 @@ index 07793e1a08fa4..3a432b214d2d7 100644
  
  	/*
  	 * Note: USER_PGTABLES_CEILING may be passed as the value of pg_end and
--	 * may be 0.  Underflow is expected in this case.  Otherwise the
+ 	 * may be 0.  Underflow is expected in this case.  Otherwise the
 -	 * pagetable end is exclusive.
 -	 * vma_end is exclusive.
 -	 * The last vma address should never be larger than the pagetable end.
-+	 * may be 0.  The underflow here is fine and expected.
-+	 * The vma_end is exclusive, which is fine until we use the mas_ instead
-+	 * of the vma iterators.
-+	 * For freeing the page tables to make sense, the vma_end must be larger
-+	 * than the pg_end, so check that after the potential underflow.
++	 * pagetable end is exclusive.  vma_end is exclusive.  The last vma
++	 * address should never be larger than the pagetable end.
  	 */
 -	WARN_ON_ONCE(vma_end - 1 > pg_end - 1);
 +	WARN_ON_ONCE(unmap->vma_end - 1 > unmap->pg_end - 1);
  
  	tlb_free_vmas(tlb);
  
-@@ -410,13 +405,13 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+@@ -410,13 +403,13 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
  		unsigned long addr = vma->vm_start;
  		struct vm_area_struct *next;
  
@@ -118,7 +118,7 @@ index 07793e1a08fa4..3a432b214d2d7 100644
  			vma_start_write(vma);
  		unlink_anon_vmas(vma);
  
-@@ -428,16 +423,16 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
+@@ -428,16 +421,16 @@ void free_pgtables(struct mmu_gather *tlb, struct ma_state *mas,
  		 */
  		while (next && next->vm_start <= vma->vm_end + PMD_SIZE) {
  			vma = next;
@@ -140,7 +140,7 @@ index 07793e1a08fa4..3a432b214d2d7 100644
  	} while (vma);
  }
 diff --git a/mm/mmap.c b/mm/mmap.c
-index 042b6b4b6ab86..8771b276d63db 100644
+index 042b6b4b6ab86..a03b7681e13c2 100644
 --- a/mm/mmap.c
 +++ b/mm/mmap.c
 @@ -1307,10 +1307,10 @@ void exit_mmap(struct mm_struct *mm)
@@ -152,7 +152,7 @@ index 042b6b4b6ab86..8771b276d63db 100644
 -	vma_iter_set(&vmi, vma->vm_end);
 -	free_pgtables(&tlb, &vmi.mas, vma, FIRST_USER_ADDRESS,
 -		      USER_PGTABLES_CEILING, USER_PGTABLES_CEILING, true);
-+	vma_iter_set(&vmi, unmap.tree_reset);
++	unmap_pgtable_init(&unmap, &vmi);
 +	free_pgtables(&tlb, &unmap);
  	tlb_finish_mmu(&tlb);
  
@@ -179,6 +179,47 @@ index 876d2db5329dd..f352d5c722126 100644
  	tlb_finish_mmu(&tlb);
  }
  
+diff --git a/mm/vma.h b/mm/vma.h
+index bb7fa5d2bde25..de30c69bceaf7 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -167,6 +167,10 @@ struct unmap_desc {
+ 	bool mm_wr_locked;            /* If the mmap write lock is held */
+ };
+ 
++/*
++ * unmap_all_init() - Initialize unmap_desc to remove all vmas, point the
++ * pg_start and pg_end to a safe location.
++ */
+ static inline void unmap_all_init(struct unmap_desc *unmap,
+ 		struct vma_iterator *vmi, struct vm_area_struct *vma)
+ {
+@@ -181,6 +185,25 @@ static inline void unmap_all_init(struct unmap_desc *unmap,
+ 	unmap->mm_wr_locked = false;
+ }
+ 
++/*
++ * unmap_pgtable_init() - Initialize unmap_desc to remove all page tables within
++ * the user range.
++ *
++ * ARM can have mappings outside of vmas.
++ * See: e2cdef8c847b4 ("[PATCH] freepgt: free_pgtables from FIRST_USER_ADDRESS")
++ *
++ * ARM LPAE uses page table mappings beyond the USER_PGTABLES_CEILING
++ * See: CONFIG_ARM_LPAE in arch/arm/include/asm/pgtable.h
++ */
++static inline void unmap_pgtable_init(struct unmap_desc *unmap,
++				      struct vma_iterator *vmi)
++{
++	vma_iter_set(vmi, unmap->tree_reset);
++	unmap->vma_start = FIRST_USER_ADDRESS;
++	unmap->vma_end = USER_PGTABLES_CEILING;
++	unmap->tree_end = USER_PGTABLES_CEILING;
++}
++
+ #define UNMAP_STATE(name, _vmi, _vma, _vma_start, _vma_end, _prev, _next)      \
+ 	struct unmap_desc name = {                                             \
+ 		.mas = &(_vmi)->mas,                                           \
 diff --git a/tools/testing/vma/vma_internal.h b/tools/testing/vma/vma_internal.h
 index 0b4918aac8d6d..ca4eb563b29ba 100644
 --- a/tools/testing/vma/vma_internal.h
