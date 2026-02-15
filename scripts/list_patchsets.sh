@@ -24,6 +24,9 @@ versions=(
 	v6.14
 	v6.15
 	v6.16
+	v6.17
+	v6.18
+	v6.19
 	akpm.korg.mm/mm-stable
 	akpm.korg.mm/mm-unstable
 	akpm.korg.mm/mm-new
