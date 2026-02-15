@@ -56,5 +56,11 @@ do
 	fi
 
 	echo "$to"
-	git log "$from..$to" --author sj@kernel.org --author sjpark@amazon.de | grep "Patch series"
+	git log "$from..$to" -- mm/damon/ include/linux/damon.h \
+		Documentation/vm/damon/ Documentation/admin-guide/vm/damon/ \
+		Documentation/mm/damon/ Documentation/admin-guide/mm/damon/ \
+		Documentation/ABI/testing/sysfs-kernel-mm-damon \
+		include/trace/events/damon.h \
+		samples/damon/ \
+		tools/testing/selftests/damon | grep "Patch series"
 done
