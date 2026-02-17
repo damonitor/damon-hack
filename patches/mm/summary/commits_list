@@ -227,7 +227,7 @@
   - author/reviewer role stat
     - no role, maintainer: 1 commits
   - full commits list
-    - f05d45033846 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+    - b2c1d4c7570d "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
