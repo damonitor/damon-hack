@@ -1,0 +1,216 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 16 Feb 2026 14:47:42 -0800
+Subject: [RFC PATCH 2/3] mm/damon/vaddr: do not split regions for min_nr_regions
+
+The previous commit made DAMON core split regions at the beginning for
+min_nr_regions.  The virtual address space operation set (vaddr) does
+similar work on its own, for a case user delegates entire initial
+monitoring regions setup to vaddr.  It is unnecessary now, as DAMON core
+will do similar work for any case.  Remove the duplicated work in vaddr.
+
+Also, remove a helper function that was being used only for the work,
+and the test code of the helper function.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/tests/vaddr-kunit.h | 76 ------------------------------------
+ mm/damon/vaddr.c             | 70 +--------------------------------
+ 2 files changed, 2 insertions(+), 144 deletions(-)
+
+diff --git a/mm/damon/tests/vaddr-kunit.h b/mm/damon/tests/vaddr-kunit.h
+index cfae870178bfd..98e734d77d517 100644
+--- a/mm/damon/tests/vaddr-kunit.h
++++ b/mm/damon/tests/vaddr-kunit.h
+@@ -252,88 +252,12 @@ static void damon_test_apply_three_regions4(struct kunit *test)
+ 			new_three_regions, expected, ARRAY_SIZE(expected));
+ }
+ 
+-static void damon_test_split_evenly_fail(struct kunit *test,
+-		unsigned long start, unsigned long end, unsigned int nr_pieces)
+-{
+-	struct damon_target *t = damon_new_target();
+-	struct damon_region *r;
+-
+-	if (!t)
+-		kunit_skip(test, "target alloc fail");
+-
+-	r = damon_new_region(start, end);
+-	if (!r) {
+-		damon_free_target(t);
+-		kunit_skip(test, "region alloc fail");
+-	}
+-
+-	damon_add_region(r, t);
+-	KUNIT_EXPECT_EQ(test,
+-			damon_va_evenly_split_region(t, r, nr_pieces), -EINVAL);
+-	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1u);
+-
+-	damon_for_each_region(r, t) {
+-		KUNIT_EXPECT_EQ(test, r->ar.start, start);
+-		KUNIT_EXPECT_EQ(test, r->ar.end, end);
+-	}
+-
+-	damon_free_target(t);
+-}
+-
+-static void damon_test_split_evenly_succ(struct kunit *test,
+-	unsigned long start, unsigned long end, unsigned int nr_pieces)
+-{
+-	struct damon_target *t = damon_new_target();
+-	struct damon_region *r;
+-	unsigned long expected_width = (end - start) / nr_pieces;
+-	unsigned long i = 0;
+-
+-	if (!t)
+-		kunit_skip(test, "target alloc fail");
+-	r = damon_new_region(start, end);
+-	if (!r) {
+-		damon_free_target(t);
+-		kunit_skip(test, "region alloc fail");
+-	}
+-	damon_add_region(r, t);
+-	KUNIT_EXPECT_EQ(test,
+-			damon_va_evenly_split_region(t, r, nr_pieces), 0);
+-	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), nr_pieces);
+-
+-	damon_for_each_region(r, t) {
+-		if (i == nr_pieces - 1) {
+-			KUNIT_EXPECT_EQ(test,
+-				r->ar.start, start + i * expected_width);
+-			KUNIT_EXPECT_EQ(test, r->ar.end, end);
+-			break;
+-		}
+-		KUNIT_EXPECT_EQ(test,
+-				r->ar.start, start + i++ * expected_width);
+-		KUNIT_EXPECT_EQ(test, r->ar.end, start + i * expected_width);
+-	}
+-	damon_free_target(t);
+-}
+-
+-static void damon_test_split_evenly(struct kunit *test)
+-{
+-	KUNIT_EXPECT_EQ(test, damon_va_evenly_split_region(NULL, NULL, 5),
+-			-EINVAL);
+-
+-	damon_test_split_evenly_fail(test, 0, 100, 0);
+-	damon_test_split_evenly_succ(test, 0, 100, 10);
+-	damon_test_split_evenly_succ(test, 5, 59, 5);
+-	damon_test_split_evenly_succ(test, 4, 6, 1);
+-	damon_test_split_evenly_succ(test, 0, 3, 2);
+-	damon_test_split_evenly_fail(test, 5, 6, 2);
+-}
+-
+ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_three_regions_in_vmas),
+ 	KUNIT_CASE(damon_test_apply_three_regions1),
+ 	KUNIT_CASE(damon_test_apply_three_regions2),
+ 	KUNIT_CASE(damon_test_apply_three_regions3),
+ 	KUNIT_CASE(damon_test_apply_three_regions4),
+-	KUNIT_CASE(damon_test_split_evenly),
+ 	{},
+ };
+ 
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 4e3430d4191d1..400247d96eecc 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -53,52 +53,6 @@ static struct mm_struct *damon_get_mm(struct damon_target *t)
+ 	return mm;
+ }
+ 
+-/*
+- * Functions for the initial monitoring target regions construction
+- */
+-
+-/*
+- * Size-evenly split a region into 'nr_pieces' small regions
+- *
+- * Returns 0 on success, or negative error code otherwise.
+- */
+-static int damon_va_evenly_split_region(struct damon_target *t,
+-		struct damon_region *r, unsigned int nr_pieces)
+-{
+-	unsigned long sz_orig, sz_piece, orig_end;
+-	struct damon_region *n = NULL, *next;
+-	unsigned long start;
+-	unsigned int i;
+-
+-	if (!r || !nr_pieces)
+-		return -EINVAL;
+-
+-	if (nr_pieces == 1)
+-		return 0;
+-
+-	orig_end = r->ar.end;
+-	sz_orig = damon_sz_region(r);
+-	sz_piece = ALIGN_DOWN(sz_orig / nr_pieces, DAMON_MIN_REGION_SZ);
+-
+-	if (!sz_piece)
+-		return -EINVAL;
+-
+-	r->ar.end = r->ar.start + sz_piece;
+-	next = damon_next_region(r);
+-	for (start = r->ar.end, i = 1; i < nr_pieces; start += sz_piece, i++) {
+-		n = damon_new_region(start, start + sz_piece);
+-		if (!n)
+-			return -ENOMEM;
+-		damon_insert_region(n, r, next, t);
+-		r = n;
+-	}
+-	/* complement last region for possible rounding error */
+-	if (n)
+-		n->ar.end = orig_end;
+-
+-	return 0;
+-}
+-
+ static unsigned long sz_range(struct damon_addr_range *r)
+ {
+ 	return r->end - r->start;
+@@ -240,10 +194,8 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
+ 				     struct damon_target *t)
+ {
+ 	struct damon_target *ti;
+-	struct damon_region *r;
+ 	struct damon_addr_range regions[3];
+-	unsigned long sz = 0, nr_pieces;
+-	int i, tidx = 0;
++	int tidx = 0;
+ 
+ 	if (damon_va_three_regions(t, regions)) {
+ 		damon_for_each_target(ti, ctx) {
+@@ -255,25 +207,7 @@ static void __damon_va_init_regions(struct damon_ctx *ctx,
+ 		return;
+ 	}
+ 
+-	for (i = 0; i < 3; i++)
+-		sz += regions[i].end - regions[i].start;
+-	if (ctx->attrs.min_nr_regions)
+-		sz /= ctx->attrs.min_nr_regions;
+-	if (sz < DAMON_MIN_REGION_SZ)
+-		sz = DAMON_MIN_REGION_SZ;
+-
+-	/* Set the initial three regions of the target */
+-	for (i = 0; i < 3; i++) {
+-		r = damon_new_region(regions[i].start, regions[i].end);
+-		if (!r) {
+-			pr_err("%d'th init region creation failed\n", i);
+-			return;
+-		}
+-		damon_add_region(r, t);
+-
+-		nr_pieces = (regions[i].end - regions[i].start) / sz;
+-		damon_va_evenly_split_region(t, r, nr_pieces);
+-	}
++	damon_set_regions(t, regions, 3, DAMON_MIN_REGION_SZ);
+ }
+ 
+ /* Initialize '->regions_list' of every target (task) */
+-- 
+2.47.3
