@@ -1,28 +1,44 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Mon, 16 Feb 2026 14:47:42 -0800
-Subject: [PATCH] mm/damon/core: split regions for min_nr_regions at beginning
+Subject: [PATCH] mm/damon/core: split regions for min_nr_regions
 
 DAMON core layer respects the min_nr_regions parameter by setting the
 maximum size of each region as total monitoring region size divided by
 the parameter value.  And the limit is applied by preventing merge of
-regions that result in a region larger than the maximum size.
+regions that result in a region larger than the maximum size.  The limit
+is updated per ops update interval, because vaddr updates the monitoring
+regions on the ops update callback.
 
 It does nothing for the beginning state.  That's because the users can
 set the initial monitoring regions as they want.  That is, if the users
 really care about the min_nr_regions, they are supposed to set the
 initial monitoring regions to have more than min_nr_regions regions.
+The virtual address space operation set, vaddr, has an exceptional case.
+Users can ask the ops set to configure the initial regions on its own.
+For the case, vaddr sets up the initial regions to meet the
+min_nr_regions.  So, vaddr has exceptional support, but basically users
+are required to set the regions on their own if they want min_nr_regions
+to be respected.
 
-When 'min_nr_regions' is high, such initial setup is difficult.  Even in
-the case, DAMON will eventually make more than min_nr_regions regions,
-but it will take time.  If the aggregation interval is long, the delay
-could be problematic.  There was actually a report [1] of the case.
+When 'min_nr_regions' is high, such initial setup is difficult.  If
+DAMON sysfs interface is used for that, the memory for saving the
+initial setup is also a waste.
+
+Even if the user forgives the setup, DAMON will eventually make more
+than min_nr_regions regions by splitting operations.  But it will take
+time.  If the aggregation interval is long, the delay could be
+problematic.  There was actually a report [1] of the case.  The reporter
+wanted to do page granular monitoring with a large aggregation interval.
+
+Also, DAMON is doing nothing for online changes on monitoring regions
+and min_nr_regions.  For example, the user can remove a monitoring
+region or increase min_nr_regions while DAMON is running.
 
 Split regions larger than the size at the beginning of the kdamond main
-loop, to fix the problem.  This means the behavior is slightly changed.
-That is, the initial monitoring regions that the user set ain't be
-strictly respected, in terms of the number of the regions.  It is
-difficult to imagine a use case that actually depends on the behavior,
-though, so this change should be fine.
+loop, to fix the initial setup issue.  Also do the split every
+aggregation interval, for online changes.  This means the behavior is
+slightly changed.  It is difficult to imagine a use case that actually
+depends on the old behavior, though.  So this change is arguably fine.
 
 Note that the size limit is aligned by damon_ctx->min_region_sz and
 cannot be zero.  That is, if min_nr_region is larger than the total size
@@ -33,11 +49,11 @@ respected.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 39 +++++++++++++++++++++++++++++++++++----
- 1 file changed, 35 insertions(+), 4 deletions(-)
+ mm/damon/core.c | 45 +++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 39 insertions(+), 6 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 8e4cf71e2a3ed..fd1b2cbfe2c80 100644
+index 8e4cf71e2a3ed..602b85ef23597 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1316,6 +1316,40 @@ static unsigned long damon_region_sz_limit(struct damon_ctx *ctx)
@@ -100,6 +116,29 @@ index 8e4cf71e2a3ed..fd1b2cbfe2c80 100644
  
  	while (!kdamond_need_stop(ctx)) {
  		/*
+@@ -2803,10 +2834,13 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 
+-		if (ctx->passed_sample_intervals >= next_aggregation_sis)
++		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
+ 			kdamond_merge_regions(ctx,
+ 					max_nr_accesses / 10,
+ 					sz_limit);
++			/* online updates might be made */
++			sz_limit = damon_apply_min_nr_regions(ctx);
++		}
+ 
+ 		/*
+ 		 * do kdamond_call() and kdamond_apply_schemes() after
+@@ -2863,7 +2897,6 @@ static int kdamond_fn(void *data)
+ 				sample_interval;
+ 			if (ctx->ops.update)
+ 				ctx->ops.update(ctx);
+-			sz_limit = damon_region_sz_limit(ctx);
+ 		}
+ 	}
+ done:
 -- 
 2.47.3
 
