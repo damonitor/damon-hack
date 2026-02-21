@@ -1,0 +1,245 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Wed, 11 Feb 2026 12:31:39 +0200
+Subject: [PATCH] mm: rename my_zero_pfn() to zero_pfn()
+
+my_zero_pfn() is a silly name.
+
+Rename zero_pfn variable to zero_page_pfn and my_zero_pfn() function to
+zero_pfn().
+
+While on it, move extern declarations of zero_page_pfn outside the
+functions that use it and add a comment about what ZERO_PAGE is.
+
+Link: https://lkml.kernel.org/r/20260211103141.3215197-3-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Vlastimil Babka <vbabka@suse.cz>
+Reviewed-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christophe Leroy (CS GROUP) <chleroy@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dinh Nguyen <dinguyen@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Simek <monstr@monstr.eu>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Stafford Horne <shorne@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/kvm/mmu/spte.h |  2 +-
+ fs/dax.c                |  2 +-
+ fs/proc/vmcore.c        |  2 +-
+ include/linux/pgtable.h | 28 ++++++++++++++++++++--------
+ mm/huge_memory.c        |  2 +-
+ mm/memory.c             |  2 +-
+ mm/migrate.c            |  2 +-
+ mm/mm_init.c            | 10 +++++-----
+ mm/userfaultfd.c        |  4 ++--
+ 9 files changed, 33 insertions(+), 21 deletions(-)
+
+diff --git a/arch/x86/kvm/mmu/spte.h b/arch/x86/kvm/mmu/spte.h
+index 91ce29fd6f1b2..8c0ffa2cded69 100644
+--- a/arch/x86/kvm/mmu/spte.h
++++ b/arch/x86/kvm/mmu/spte.h
+@@ -248,7 +248,7 @@ extern u64 __read_mostly shadow_nonpresent_or_rsvd_lower_gfn_mask;
+ 
+ static inline hpa_t kvm_mmu_get_dummy_root(void)
+ {
+-	return my_zero_pfn(0) << PAGE_SHIFT;
++	return zero_pfn(0) << PAGE_SHIFT;
+ }
+ 
+ static inline bool kvm_mmu_is_dummy_root(hpa_t shadow_page)
+diff --git a/fs/dax.c b/fs/dax.c
+index 289e6254aa30b..b78cff9c91b39 100644
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1360,7 +1360,7 @@ static vm_fault_t dax_load_hole(struct xa_state *xas, struct vm_fault *vmf,
+ {
+ 	struct inode *inode = iter->inode;
+ 	unsigned long vaddr = vmf->address;
+-	unsigned long pfn = my_zero_pfn(vaddr);
++	unsigned long pfn = zero_pfn(vaddr);
+ 	vm_fault_t ret;
+ 
+ 	*entry = dax_insert_entry(xas, vmf, iter, *entry, pfn, DAX_ZERO_PAGE);
+diff --git a/fs/proc/vmcore.c b/fs/proc/vmcore.c
+index f188bd900eb2d..44d15436439fd 100644
+--- a/fs/proc/vmcore.c
++++ b/fs/proc/vmcore.c
+@@ -525,7 +525,7 @@ static int remap_oldmem_pfn_checked(struct vm_area_struct *vma,
+ {
+ 	unsigned long map_size;
+ 	unsigned long pos_start, pos_end, pos;
+-	unsigned long zeropage_pfn = my_zero_pfn(0);
++	unsigned long zeropage_pfn = zero_pfn(0);
+ 	size_t len = 0;
+ 
+ 	pos_start = pfn;
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 5e772599d9a5c..c3a56f6b1ea51 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -1917,27 +1917,39 @@ static inline void pfnmap_setup_cachemode_pfn(unsigned long pfn, pgprot_t *prot)
+ 	pfnmap_setup_cachemode(pfn, PAGE_SIZE, prot);
+ }
+ 
++/*
++ * ZERO_PAGE() is global shared page(s) that is always zero. It is used for
++ * zero-mapped memory areas, CoW etc.
++ *
++ * On architectures that __HAVE_COLOR_ZERO_PAGE there are several such pages
++ * for different ranges in the virtual address space.
++ *
++ * zero_page_pfn identifies the first (or the only) pfn for these pages.
++ */
+ #ifdef __HAVE_COLOR_ZERO_PAGE
+ static inline int is_zero_pfn(unsigned long pfn)
+ {
+-	extern unsigned long zero_pfn;
+-	unsigned long offset_from_zero_pfn = pfn - zero_pfn;
++	extern unsigned long zero_page_pfn;
++	unsigned long offset_from_zero_pfn = pfn - zero_page_pfn;
++
+ 	return offset_from_zero_pfn <= (zero_page_mask >> PAGE_SHIFT);
+ }
+ 
+-#define my_zero_pfn(addr)	page_to_pfn(ZERO_PAGE(addr))
++#define zero_pfn(addr)	page_to_pfn(ZERO_PAGE(addr))
+ 
+ #else
+ static inline int is_zero_pfn(unsigned long pfn)
+ {
+-	extern unsigned long zero_pfn;
+-	return pfn == zero_pfn;
++	extern unsigned long zero_page_pfn;
++
++	return pfn == zero_page_pfn;
+ }
+ 
+-static inline unsigned long my_zero_pfn(unsigned long addr)
++static inline unsigned long zero_pfn(unsigned long addr)
+ {
+-	extern unsigned long zero_pfn;
+-	return zero_pfn;
++	extern unsigned long zero_page_pfn;
++
++	return zero_page_pfn;
+ }
+ #endif /* __HAVE_COLOR_ZERO_PAGE */
+ 
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 31d3a4aa1f396..27316d7419275 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2971,7 +2971,7 @@ static void __split_huge_zero_page_pmd(struct vm_area_struct *vma,
+ 	for (i = 0, addr = haddr; i < HPAGE_PMD_NR; i++, addr += PAGE_SIZE) {
+ 		pte_t entry;
+ 
+-		entry = pfn_pte(my_zero_pfn(addr), vma->vm_page_prot);
++		entry = pfn_pte(zero_pfn(addr), vma->vm_page_prot);
+ 		entry = pte_mkspecial(entry);
+ 		if (pmd_uffd_wp(old_pmd))
+ 			entry = pte_mkuffd_wp(entry);
+diff --git a/mm/memory.c b/mm/memory.c
+index 262f62cada0d4..fecfd4d96511b 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -5223,7 +5223,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
+ 	/* Use the zero-page for reads */
+ 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
+ 			!mm_forbids_zeropage(vma->vm_mm)) {
+-		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
++		entry = pte_mkspecial(pfn_pte(zero_pfn(vmf->address),
+ 						vma->vm_page_prot));
+ 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
+ 				vmf->address, &vmf->ptl);
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 1bf2cf8c44dd4..739c4e03769b7 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -321,7 +321,7 @@ static bool try_to_map_unused_to_zeropage(struct page_vma_mapped_walk *pvmw,
+ 	if (!pages_identical(page, ZERO_PAGE(0)))
+ 		return false;
+ 
+-	newpte = pte_mkspecial(pfn_pte(my_zero_pfn(pvmw->address),
++	newpte = pte_mkspecial(pfn_pte(zero_pfn(pvmw->address),
+ 					pvmw->vma->vm_page_prot));
+ 
+ 	if (pte_swp_soft_dirty(old_pte))
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index efd4fa9641b25..106183b647c3b 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -53,8 +53,8 @@ EXPORT_SYMBOL(mem_map);
+ void *high_memory;
+ EXPORT_SYMBOL(high_memory);
+ 
+-unsigned long zero_pfn __ro_after_init;
+-EXPORT_SYMBOL(zero_pfn);
++unsigned long zero_page_pfn __ro_after_init;
++EXPORT_SYMBOL(zero_page_pfn);
+ 
+ #ifdef CONFIG_DEBUG_MEMORY_INIT
+ int __meminitdata mminit_loglevel;
+@@ -2671,12 +2671,12 @@ static void __init mem_init_print_info(void)
+ 		);
+ }
+ 
+-static int __init init_zero_pfn(void)
++static int __init init_zero_page_pfn(void)
+ {
+-	zero_pfn = page_to_pfn(ZERO_PAGE(0));
++	zero_page_pfn = page_to_pfn(ZERO_PAGE(0));
+ 	return 0;
+ }
+-early_initcall(init_zero_pfn);
++early_initcall(init_zero_page_pfn);
+ 
+ void __init __weak arch_mm_preinit(void)
+ {
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 927086bb4a3c2..e19872e518785 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -357,7 +357,7 @@ static int mfill_atomic_pte_zeropage(pmd_t *dst_pmd,
+ 	if (mm_forbids_zeropage(dst_vma->vm_mm))
+ 		return mfill_atomic_pte_zeroed_folio(dst_pmd, dst_vma, dst_addr);
+ 
+-	_dst_pte = pte_mkspecial(pfn_pte(my_zero_pfn(dst_addr),
++	_dst_pte = pte_mkspecial(pfn_pte(zero_pfn(dst_addr),
+ 					 dst_vma->vm_page_prot));
+ 	ret = -EAGAIN;
+ 	dst_pte = pte_offset_map_lock(dst_vma->vm_mm, dst_pmd, dst_addr, &ptl);
+@@ -1229,7 +1229,7 @@ static int move_zeropage_pte(struct mm_struct *mm,
+ 		return -EAGAIN;
+ 	}
+ 
+-	zero_pte = pte_mkspecial(pfn_pte(my_zero_pfn(dst_addr),
++	zero_pte = pte_mkspecial(pfn_pte(zero_pfn(dst_addr),
+ 					 dst_vma->vm_page_prot));
+ 	ptep_clear_flush(src_vma, src_addr, src_pte);
+ 	set_pte_at(mm, dst_addr, dst_pte, zero_pte);
+-- 
+2.47.3
+

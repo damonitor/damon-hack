@@ -1,0 +1,102 @@
+From: Dmitry Antipov <dmantipov@yandex.ru>
+Date: Thu, 12 Feb 2026 19:44:09 +0300
+Subject: [PATCH] lib: fix _parse_integer_limit() to handle overflow
+
+Patch series "lib and lib/cmdline enhancements", v8.
+
+Adjust '_parse_integer_limit()' and 'memparse()' to not ignore overflows,
+extend string to 64-bit integer conversion tests, add KUnit-based test for
+'memparse()' and fix kernel-doc glitches found in lib/cmdline.c.
+
+
+This patch (of 5):
+
+In '_parse_integer_limit()', adjust native integer arithmetic with
+near-to-overflow branch where 'check_mul_overflow()' and
+'check_add_overflow()' are used to check whether an intermediate result
+goes out of range, and denote such a case with ULLONG_MAX, thus making the
+function more similar to standard C library's 'strtoull()'.  Adjust
+comment to kernel-doc style as well.
+
+Link: https://lkml.kernel.org/r/20260212164413.889625-1-dmantipov@yandex.ru
+Link: https://lkml.kernel.org/r/20260212164413.889625-2-dmantipov@yandex.ru
+Signed-off-by: Dmitry Antipov <dmantipov@yandex.ru>
+Reviewed-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/kstrtox.c | 37 ++++++++++++++++++++++---------------
+ 1 file changed, 22 insertions(+), 15 deletions(-)
+
+diff --git a/lib/kstrtox.c b/lib/kstrtox.c
+index 97be2a39f5371..edc4eb7c1bca1 100644
+--- a/lib/kstrtox.c
++++ b/lib/kstrtox.c
+@@ -39,25 +39,30 @@ const char *_parse_integer_fixup_radix(const char *s, unsigned int *base)
+ 	return s;
+ }
+ 
+-/*
+- * Convert non-negative integer string representation in explicitly given radix
+- * to an integer. A maximum of max_chars characters will be converted.
++/**
++ * _parse_integer_limit - Convert integer string representation to an integer
++ * @s: Integer string representation
++ * @base: Radix
++ * @p: Where to store result
++ * @max_chars: Maximum amount of characters to convert
++ *
++ * Convert non-negative integer string representation in explicitly given
++ * radix to an integer. If overflow occurs, value at @p is set to ULLONG_MAX.
+  *
+- * Return number of characters consumed maybe or-ed with overflow bit.
+- * If overflow occurs, result integer (incorrect) is still returned.
++ * This function is the workhorse of other string conversion functions and it
++ * is discouraged to use it explicitly. Consider kstrto*() family instead.
+  *
+- * Don't you dare use this function.
++ * Return: Number of characters consumed, maybe ORed with overflow bit
+  */
+ noinline
+ unsigned int _parse_integer_limit(const char *s, unsigned int base, unsigned long long *p,
+ 				  size_t max_chars)
+ {
++	unsigned int rv, overflow = 0;
+ 	unsigned long long res;
+-	unsigned int rv;
+ 
+ 	res = 0;
+-	rv = 0;
+-	while (max_chars--) {
++	for (rv = 0; rv < max_chars; rv++, s++) {
+ 		unsigned int c = *s;
+ 		unsigned int lc = _tolower(c);
+ 		unsigned int val;
+@@ -76,15 +81,17 @@ unsigned int _parse_integer_limit(const char *s, unsigned int base, unsigned lon
+ 		 * it in the max base we support (16)
+ 		 */
+ 		if (unlikely(res & (~0ull << 60))) {
+-			if (res > div_u64(ULLONG_MAX - val, base))
+-				rv |= KSTRTOX_OVERFLOW;
++			if (check_mul_overflow(res, base, &res) ||
++			    check_add_overflow(res, val, &res)) {
++				res = ULLONG_MAX;
++				overflow = KSTRTOX_OVERFLOW;
++			}
++		} else {
++			res = res * base + val;
+ 		}
+-		res = res * base + val;
+-		rv++;
+-		s++;
+ 	}
+ 	*p = res;
+-	return rv;
++	return rv | overflow;
+ }
+ 
+ noinline
+-- 
+2.47.3
+

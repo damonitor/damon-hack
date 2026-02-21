@@ -1,0 +1,42 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Tue, 17 Feb 2026 23:15:37 +0000
+Subject: [PATCH] Squashfs: check xz dictionary size isn't zero
+
+Syzkaller reports a "UBSAN: shift-out-of-bounds in squashfs_xz_comp_opts"
+
+This is caused by a zero dict_size value read from disk, which produces a
+negative shift.
+
+The fix is to check that the dict_size is not zero.
+
+Link: https://lkml.kernel.org/r/20260217231537.206436-1-phillip@squashfs.org.uk
+Fixes: ff750311d30a ("Squashfs: add compression options support to xz decompressor")
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Reported-by: syzbot+99fc070a2affcd27784b@syzkaller.appspotmail.com
+Closes: https://lore.kernel.org/all/6994c60f.a70a0220.2c38d7.0108.GAE@google.com/
+Cc: Christian Brauner <brauner@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/squashfs/xz_wrapper.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/fs/squashfs/xz_wrapper.c b/fs/squashfs/xz_wrapper.c
+index 6c49481a2f8c4..71eeec9970ec8 100644
+--- a/fs/squashfs/xz_wrapper.c
++++ b/fs/squashfs/xz_wrapper.c
+@@ -58,9 +58,9 @@ static void *squashfs_xz_comp_opts(struct squashfs_sb_info *msblk,
+ 		opts->dict_size = le32_to_cpu(comp_opts->dictionary_size);
+ 
+ 		/* the dictionary size should be 2^n or 2^n+2^(n+1) */
+-		n = ffs(opts->dict_size) - 1;
+-		if (opts->dict_size != (1 << n) && opts->dict_size != (1 << n) +
+-						(1 << (n + 1))) {
++		n = ffs(opts->dict_size);
++		if (n-- == 0 || (opts->dict_size != (1 << n) &&
++				opts->dict_size != (1 << n) + (1 << (n + 1)))) {
+ 			err = -EIO;
+ 			goto out;
+ 		}
+-- 
+2.47.3
+

@@ -1,0 +1,68 @@
+From: "Pratyush Yadav (Google)" <pratyush@kernel.org>
+Date: Fri, 13 Feb 2026 09:59:12 +0100
+Subject: [PATCH] kho: move alloc tag init to kho_init_{folio,pages}()
+
+Commit 8f1081892d62 ("kho: simplify page initialization in
+kho_restore_page()") cleaned up the page initialization logic by moving
+the folio and 0-order-page paths into separate functions.  It missed
+moving the alloc tag initialization.
+
+Do it now to keep the two paths cleanly separated.  While at it, touch up
+the comments to be a tiny bit shorter (mainly so it doesn't end up
+splitting into a multiline comment).  This is purely a cosmetic change and
+there should be no change in behaviour.
+
+Link: https://lkml.kernel.org/r/20260213085914.2778107-1-pratyush@kernel.org
+Signed-off-by: Pratyush Yadav (Google) <pratyush@kernel.org>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/kexec_handover.c | 15 ++++++---------
+ 1 file changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/kernel/liveupdate/kexec_handover.c b/kernel/liveupdate/kexec_handover.c
+index 95601623b4d63..7e5d805fa1fe7 100644
+--- a/kernel/liveupdate/kexec_handover.c
++++ b/kernel/liveupdate/kexec_handover.c
+@@ -219,8 +219,11 @@ static int __kho_preserve_order(struct kho_mem_track *track, unsigned long pfn,
+ /* For physically contiguous 0-order pages. */
+ static void kho_init_pages(struct page *page, unsigned long nr_pages)
+ {
+-	for (unsigned long i = 0; i < nr_pages; i++)
++	for (unsigned long i = 0; i < nr_pages; i++) {
+ 		set_page_count(page + i, 1);
++		/* Clear each page's codetag to avoid accounting mismatch. */
++		clear_page_tag_ref(page + i);
++	}
+ }
+ 
+ static void kho_init_folio(struct page *page, unsigned int order)
+@@ -229,6 +232,8 @@ static void kho_init_folio(struct page *page, unsigned int order)
+ 
+ 	/* Head page gets refcount of 1. */
+ 	set_page_count(page, 1);
++	/* Clear head page's codetag to avoid accounting mismatch. */
++	clear_page_tag_ref(page);
+ 
+ 	/* For higher order folios, tail pages get a page count of zero. */
+ 	for (unsigned long i = 1; i < nr_pages; i++)
+@@ -265,14 +270,6 @@ static struct page *kho_restore_page(phys_addr_t phys, bool is_folio)
+ 	else
+ 		kho_init_pages(page, nr_pages);
+ 
+-	/* Always mark headpage's codetag as empty to avoid accounting mismatch */
+-	clear_page_tag_ref(page);
+-	if (!is_folio) {
+-		/* Also do that for the non-compound tail pages */
+-		for (unsigned int i = 1; i < nr_pages; i++)
+-			clear_page_tag_ref(page + i);
+-	}
+-
+ 	adjust_managed_page_count(page, nr_pages);
+ 	return page;
+ }
+-- 
+2.47.3
+

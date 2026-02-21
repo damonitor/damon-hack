@@ -1,0 +1,113 @@
+From: Chengkaitao <chengkaitao@kylinos.cn>
+Date: Sun, 1 Feb 2026 14:35:31 +0800
+Subject: [PATCH] sparc: use vmemmap_populate_hugepages for vmemmap_populate
+
+Change sparc's implementation of vmemmap_populate() using
+vmemmap_populate_hugepages() to streamline the code.  Another benefit is
+that it allows us to eliminate the external declarations of
+vmemmap_p?d_populate functions and convert them to static functions.
+
+Since vmemmap_populate_hugepages may fallback to vmemmap_populate-
+_basepages, which differs from sparc's original implementation.  During
+the v1 discussion with Mike Rapoport, sparc uses base pages in the kernel
+page tables, so it should be able to use them in vmemmap as well.
+Consequently, no additional special handling is required.
+
+1. In the SPARC architecture, reimplement vmemmap_populate using
+   vmemmap_populate_hugepages.
+
+2. Allow the SPARC arch to fallback to vmemmap_populate_basepages(),
+   when vmemmap_alloc_block returns NULL.
+
+Link: https://lkml.kernel.org/r/20260201063532.44807-2-pilgrimtao@gmail.com
+Signed-off-by: Chengkaitao <chengkaitao@kylinos.cn>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/sparc/mm/init_64.c | 47 ++++++++++++++---------------------------
+ 1 file changed, 16 insertions(+), 31 deletions(-)
+
+diff --git a/arch/sparc/mm/init_64.c b/arch/sparc/mm/init_64.c
+index 0620aa41eddd9..7eccd07834be1 100644
+--- a/arch/sparc/mm/init_64.c
++++ b/arch/sparc/mm/init_64.c
+@@ -2562,8 +2562,8 @@ unsigned long _PAGE_CACHE __read_mostly;
+ EXPORT_SYMBOL(_PAGE_CACHE);
+ 
+ #ifdef CONFIG_SPARSEMEM_VMEMMAP
+-int __meminit vmemmap_populate(unsigned long vstart, unsigned long vend,
+-			       int node, struct vmem_altmap *altmap)
++void __meminit vmemmap_set_pmd(pmd_t *pmd, void *p, int node,
++			       unsigned long addr, unsigned long next)
+ {
+ 	unsigned long pte_base;
+ 
+@@ -2576,39 +2576,24 @@ int __meminit vmemmap_populate(unsigned long vstart, unsigned long vend,
+ 
+ 	pte_base |= _PAGE_PMD_HUGE;
+ 
+-	vstart = vstart & PMD_MASK;
+-	vend = ALIGN(vend, PMD_SIZE);
+-	for (; vstart < vend; vstart += PMD_SIZE) {
+-		pgd_t *pgd = vmemmap_pgd_populate(vstart, node);
+-		unsigned long pte;
+-		p4d_t *p4d;
+-		pud_t *pud;
+-		pmd_t *pmd;
+-
+-		if (!pgd)
+-			return -ENOMEM;
+-
+-		p4d = vmemmap_p4d_populate(pgd, vstart, node);
+-		if (!p4d)
+-			return -ENOMEM;
+-
+-		pud = vmemmap_pud_populate(p4d, vstart, node);
+-		if (!pud)
+-			return -ENOMEM;
++	pmd_val(*pmd) = pte_base | __pa(p);
++}
+ 
+-		pmd = pmd_offset(pud, vstart);
+-		pte = pmd_val(*pmd);
+-		if (!(pte & _PAGE_VALID)) {
+-			void *block = vmemmap_alloc_block(PMD_SIZE, node);
++int __meminit vmemmap_check_pmd(pmd_t *pmdp, int node,
++				unsigned long addr, unsigned long next)
++{
++	int large = pmd_leaf(*pmdp);
+ 
+-			if (!block)
+-				return -ENOMEM;
++	if (large)
++		vmemmap_verify((pte_t *)pmdp, node, addr, next);
+ 
+-			pmd_val(*pmd) = pte_base | __pa(block);
+-		}
+-	}
++	return large;
++}
+ 
+-	return 0;
++int __meminit vmemmap_populate(unsigned long vstart, unsigned long vend,
++			       int node, struct vmem_altmap *altmap)
++{
++	return vmemmap_populate_hugepages(vstart, vend, node, NULL);
+ }
+ #endif /* CONFIG_SPARSEMEM_VMEMMAP */
+ 
+-- 
+2.47.3
+

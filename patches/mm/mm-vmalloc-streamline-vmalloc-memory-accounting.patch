@@ -1,0 +1,164 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Fri, 20 Feb 2026 14:10:34 -0500
+Subject: [PATCH] mm: vmalloc: streamline vmalloc memory accounting
+
+Use a vmstat counter instead of a custom, open-coded atomic.  This has the
+added benefit of making the data available per-node, and prepares for
+cleaning up the memcg accounting as well.
+
+Link: https://lkml.kernel.org/r/20260220191035.3703800-1-hannes@cmpxchg.org
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Uladzislau Rezki <urezki@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/proc/meminfo.c       |  3 ++-
+ include/linux/mmzone.h  |  1 +
+ include/linux/vmalloc.h |  3 ---
+ mm/vmalloc.c            | 19 ++++++++++---------
+ mm/vmstat.c             |  1 +
+ 5 files changed, 14 insertions(+), 13 deletions(-)
+
+diff --git a/fs/proc/meminfo.c b/fs/proc/meminfo.c
+index a458f1e112fdb..549793f447264 100644
+--- a/fs/proc/meminfo.c
++++ b/fs/proc/meminfo.c
+@@ -126,7 +126,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
+ 	show_val_kb(m, "Committed_AS:   ", committed);
+ 	seq_printf(m, "VmallocTotal:   %8lu kB\n",
+ 		   (unsigned long)VMALLOC_TOTAL >> 10);
+-	show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());
++	show_val_kb(m, "VmallocUsed:    ",
++		    global_node_page_state(NR_VMALLOC));
+ 	show_val_kb(m, "VmallocChunk:   ", 0ul);
+ 	show_val_kb(m, "Percpu:         ", pcpu_nr_pages());
+ 
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 546bca95ca40c..db41b18a919d6 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -220,6 +220,7 @@ enum node_stat_item {
+ 	NR_KERNEL_MISC_RECLAIMABLE,	/* reclaimable non-slab kernel pages */
+ 	NR_FOLL_PIN_ACQUIRED,	/* via: pin_user_page(), gup flag: FOLL_PIN */
+ 	NR_FOLL_PIN_RELEASED,	/* pages returned via unpin_user_page() */
++	NR_VMALLOC,
+ 	NR_KERNEL_STACK_KB,	/* measured in KiB */
+ #if IS_ENABLED(CONFIG_SHADOW_CALL_STACK)
+ 	NR_KERNEL_SCS_KB,	/* measured in KiB */
+diff --git a/include/linux/vmalloc.h b/include/linux/vmalloc.h
+index e8e94f90d6866..3b02c0c6b3718 100644
+--- a/include/linux/vmalloc.h
++++ b/include/linux/vmalloc.h
+@@ -286,8 +286,6 @@ int unregister_vmap_purge_notifier(struct notifier_block *nb);
+ #ifdef CONFIG_MMU
+ #define VMALLOC_TOTAL (VMALLOC_END - VMALLOC_START)
+ 
+-unsigned long vmalloc_nr_pages(void);
+-
+ int vm_area_map_pages(struct vm_struct *area, unsigned long start,
+ 		      unsigned long end, struct page **pages);
+ void vm_area_unmap_pages(struct vm_struct *area, unsigned long start,
+@@ -304,7 +302,6 @@ static inline void set_vm_flush_reset_perms(void *addr)
+ #else  /* !CONFIG_MMU */
+ #define VMALLOC_TOTAL 0UL
+ 
+-static inline unsigned long vmalloc_nr_pages(void) { return 0; }
+ static inline void set_vm_flush_reset_perms(void *addr) {}
+ #endif /* CONFIG_MMU */
+ 
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index d397712c4e932..9ad45aeb57623 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -1068,14 +1068,8 @@ static BLOCKING_NOTIFIER_HEAD(vmap_notify_list);
+ static void drain_vmap_area_work(struct work_struct *work);
+ static DECLARE_WORK(drain_vmap_work, drain_vmap_area_work);
+ 
+-static __cacheline_aligned_in_smp atomic_long_t nr_vmalloc_pages;
+ static __cacheline_aligned_in_smp atomic_long_t vmap_lazy_nr;
+ 
+-unsigned long vmalloc_nr_pages(void)
+-{
+-	return atomic_long_read(&nr_vmalloc_pages);
+-}
+-
+ static struct vmap_area *__find_vmap_area(unsigned long addr, struct rb_root *root)
+ {
+ 	struct rb_node *n = root->rb_node;
+@@ -3476,11 +3470,11 @@ void vfree(const void *addr)
+ 		 * High-order allocs for huge vmallocs are split, so
+ 		 * can be freed as an array of order-0 allocations
+ 		 */
++		if (!(vm->flags & VM_MAP_PUT_PAGES))
++			dec_node_page_state(page, NR_VMALLOC);
+ 		__free_page(page);
+ 		cond_resched();
+ 	}
+-	if (!(vm->flags & VM_MAP_PUT_PAGES))
+-		atomic_long_sub(vm->nr_pages, &nr_vmalloc_pages);
+ 	kvfree(vm->pages);
+ 	kfree(vm);
+ }
+@@ -3668,6 +3662,8 @@ vm_area_alloc_pages(gfp_t gfp, int nid,
+ 			continue;
+ 		}
+ 
++		mod_node_page_state(page, NR_VMALLOC, 1 << large_order);
++
+ 		split_page(page, large_order);
+ 		for (i = 0; i < (1U << large_order); i++)
+ 			pages[nr_allocated + i] = page + i;
+@@ -3688,6 +3684,7 @@ vm_area_alloc_pages(gfp_t gfp, int nid,
+ 	if (!order) {
+ 		while (nr_allocated < nr_pages) {
+ 			unsigned int nr, nr_pages_request;
++			int i;
+ 
+ 			/*
+ 			 * A maximum allowed request is hard-coded and is 100
+@@ -3711,6 +3708,9 @@ vm_area_alloc_pages(gfp_t gfp, int nid,
+ 							nr_pages_request,
+ 							pages + nr_allocated);
+ 
++			for (i = nr_allocated; i < nr_allocated + nr; i++)
++				inc_node_page_state(pages[i], NR_VMALLOC);
++
+ 			nr_allocated += nr;
+ 
+ 			/*
+@@ -3735,6 +3735,8 @@ vm_area_alloc_pages(gfp_t gfp, int nid,
+ 		if (unlikely(!page))
+ 			break;
+ 
++		mod_node_page_state(page, NR_VMALLOC, 1 << order);
++
+ 		/*
+ 		 * High-order allocations must be able to be treated as
+ 		 * independent small pages by callers (as they can with
+@@ -3877,7 +3879,6 @@ static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
+ 			vmalloc_gfp_adjust(gfp_mask, page_order), node,
+ 			page_order, nr_small_pages, area->pages);
+ 
+-	atomic_long_add(area->nr_pages, &nr_vmalloc_pages);
+ 	/* All pages of vm should be charged to same memcg, so use first one. */
+ 	if (gfp_mask & __GFP_ACCOUNT && area->nr_pages)
+ 		mod_memcg_page_state(area->pages[0], MEMCG_VMALLOC,
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index 667474773dbc7..2370c6fb1fcd6 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -1255,6 +1255,7 @@ const char * const vmstat_text[] = {
+ 	[I(NR_KERNEL_MISC_RECLAIMABLE)]		= "nr_kernel_misc_reclaimable",
+ 	[I(NR_FOLL_PIN_ACQUIRED)]		= "nr_foll_pin_acquired",
+ 	[I(NR_FOLL_PIN_RELEASED)]		= "nr_foll_pin_released",
++	[I(NR_VMALLOC)]				= "nr_vmalloc",
+ 	[I(NR_KERNEL_STACK_KB)]			= "nr_kernel_stack",
+ #if IS_ENABLED(CONFIG_SHADOW_CALL_STACK)
+ 	[I(NR_KERNEL_SCS_KB)]			= "nr_shadow_call_stack",
+-- 
+2.47.3
+

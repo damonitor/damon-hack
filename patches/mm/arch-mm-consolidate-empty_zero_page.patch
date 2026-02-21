@@ -1,0 +1,1153 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Wed, 11 Feb 2026 12:31:40 +0200
+Subject: [PATCH] arch, mm: consolidate empty_zero_page
+
+Reduce 22 declarations of empty_zero_page to 3 and 23 declarations of
+ZERO_PAGE() to 4.
+
+Every architecture defines empty_zero_page that way or another, but for the
+most of them it is always a page aligned page in BSS and most definitions
+of ZERO_PAGE do virt_to_page(empty_zero_page).
+
+Move Linus vetted x86 definition of empty_zero_page and ZERO_PAGE() to the
+core MM and drop these definitions in architectures that do not implement
+colored zero page (MIPS and s390).
+
+ZERO_PAGE() remains a macro because turning it to a wrapper for a static
+inline causes severe pain in header dependencies.
+
+For the most part the change is mechanical, with these being noteworthy:
+
+* alpha: aliased empty_zero_page with ZERO_PGE that was also used for boot
+  parameters. Switching to a generic empty_zero_page removes the aliasing
+  and keeps ZERO_PGE for boot parameters only
+* arm64: uses __pa_symbol() in ZERO_PAGE() so that definition of
+  ZERO_PAGE() is kept intact.
+* m68k/parisc/um: allocated empty_zero_page from memblock,
+  although they do not support zero page coloring and having it in BSS
+  will work fine.
+* sparc64 can have empty_zero_page in BSS rather allocate it, but it
+  can't use virt_to_page() for BSS. Keep it's definition of ZERO_PAGE()
+  but instead of allocating it, make mem_map_zero point to
+  empty_zero_page.
+* sh: used empty_zero_page for boot parameters at the very early boot.
+  Rename the parameters page to boot_params_page and let sh use the generic
+  empty_zero_page.
+* hexagon: had an amusing comment about empty_zero_page
+
+	/* A handy thing to have if one has the RAM. Declared in head.S */
+
+  that unfortunately had to go :)
+
+Link: https://lkml.kernel.org/r/20260211103141.3215197-4-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Helge Deller <deller@gmx.de>		[parisc]
+Tested-by: Helge Deller <deller@gmx.de>		[parisc]
+Reviewed-by: Christophe Leroy (CS GROUP) <chleroy@kernel.org>
+Acked-by: Dave Hansen <dave.hansen@linux.intel.com>
+Acked-by: Catalin Marinas <catalin.marinas@arm.com>
+Acked-by: Magnus Lindholm <linmag7@gmail.com>	[alpha]
+Acked-by: Dinh Nguyen <dinguyen@kernel.org>	[nios2]
+Acked-by: Andreas Larsson <andreas@gaisler.com>	[sparc]
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Simek <monstr@monstr.eu>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Stafford Horne <shorne@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/alpha/include/asm/pgtable.h          |  6 ------
+ arch/arc/include/asm/pgtable.h            |  3 ---
+ arch/arc/mm/init.c                        |  2 --
+ arch/arm/include/asm/pgtable.h            |  9 ---------
+ arch/arm/mm/mmu.c                         |  7 -------
+ arch/arm/mm/nommu.c                       |  7 -------
+ arch/arm64/include/asm/pgtable.h          |  1 -
+ arch/arm64/mm/mmu.c                       |  7 -------
+ arch/csky/include/asm/pgtable.h           |  3 ---
+ arch/csky/mm/init.c                       |  3 ---
+ arch/hexagon/include/asm/pgtable.h        |  6 ------
+ arch/hexagon/kernel/head.S                |  5 -----
+ arch/hexagon/kernel/hexagon_ksyms.c       |  1 -
+ arch/loongarch/include/asm/pgtable.h      |  9 ---------
+ arch/loongarch/mm/init.c                  |  3 ---
+ arch/m68k/include/asm/pgtable_mm.h        |  9 ---------
+ arch/m68k/include/asm/pgtable_no.h        |  7 -------
+ arch/m68k/mm/init.c                       |  9 ---------
+ arch/m68k/mm/mcfmmu.c                     |  2 --
+ arch/m68k/mm/motorola.c                   |  6 ------
+ arch/m68k/mm/sun3mmu.c                    |  2 --
+ arch/microblaze/include/asm/pgtable.h     | 10 ----------
+ arch/microblaze/kernel/head.S             |  4 ----
+ arch/microblaze/kernel/microblaze_ksyms.c |  2 --
+ arch/nios2/include/asm/pgtable.h          |  7 -------
+ arch/nios2/kernel/head.S                  | 10 ----------
+ arch/nios2/kernel/nios2_ksyms.c           |  1 -
+ arch/openrisc/include/asm/pgtable.h       |  4 ----
+ arch/openrisc/kernel/head.S               |  3 ---
+ arch/openrisc/kernel/or32_ksyms.c         |  1 -
+ arch/openrisc/mm/init.c                   |  3 ---
+ arch/parisc/include/asm/pgtable.h         | 11 -----------
+ arch/parisc/mm/init.c                     |  6 ------
+ arch/powerpc/include/asm/pgtable.h        |  6 ------
+ arch/powerpc/mm/mem.c                     |  3 ---
+ arch/riscv/include/asm/pgtable.h          |  7 -------
+ arch/riscv/mm/init.c                      |  4 ----
+ arch/sh/include/asm/pgtable.h             |  8 --------
+ arch/sh/include/asm/setup.h               |  3 ++-
+ arch/sh/kernel/head_32.S                  |  4 ++--
+ arch/sh/kernel/sh_ksyms_32.c              |  1 -
+ arch/sh/mm/init.c                         |  1 -
+ arch/sparc/include/asm/pgtable_32.h       |  8 --------
+ arch/sparc/include/asm/setup.h            |  2 --
+ arch/sparc/kernel/head_32.S               |  7 -------
+ arch/sparc/mm/init_32.c                   |  4 ----
+ arch/sparc/mm/init_64.c                   | 11 ++++-------
+ arch/um/include/asm/pgtable.h             |  9 ---------
+ arch/um/include/shared/kern_util.h        |  1 -
+ arch/um/kernel/mem.c                      | 16 ----------------
+ arch/um/kernel/um_arch.c                  |  1 -
+ arch/x86/include/asm/pgtable.h            |  8 --------
+ arch/x86/kernel/head_32.S                 |  4 ----
+ arch/x86/kernel/head_64.S                 |  7 -------
+ arch/xtensa/include/asm/pgtable.h         |  4 ----
+ arch/xtensa/kernel/head.S                 |  3 ---
+ arch/xtensa/kernel/xtensa_ksyms.c         |  2 --
+ include/linux/pgtable.h                   | 10 ++++++++++
+ mm/mm_init.c                              |  5 +++++
+ 59 files changed, 23 insertions(+), 285 deletions(-)
+
+diff --git a/arch/alpha/include/asm/pgtable.h b/arch/alpha/include/asm/pgtable.h
+index e9368c54be452..268ddde336171 100644
+--- a/arch/alpha/include/asm/pgtable.h
++++ b/arch/alpha/include/asm/pgtable.h
+@@ -126,12 +126,6 @@ struct vm_area_struct;
+  */
+ #define pgprot_noncached(prot)	(prot)
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero:  used
+- * for zero-mapped memory areas etc..
+- */
+-#define ZERO_PAGE(vaddr)	(virt_to_page(ZERO_PGE))
+-
+ /*
+  * On certain platforms whose physical address space can overlap KSEG,
+  * namely EV6 and above, we must re-twiddle the physaddr to restore the
+diff --git a/arch/arc/include/asm/pgtable.h b/arch/arc/include/asm/pgtable.h
+index bd580e2b62d7c..0fdaea81b5fa5 100644
+--- a/arch/arc/include/asm/pgtable.h
++++ b/arch/arc/include/asm/pgtable.h
+@@ -21,9 +21,6 @@
+ 
+ #ifndef __ASSEMBLER__
+ 
+-extern char empty_zero_page[PAGE_SIZE];
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-
+ extern pgd_t swapper_pg_dir[] __aligned(PAGE_SIZE);
+ 
+ /* to cope with aliasing VIPT cache */
+diff --git a/arch/arc/mm/init.c b/arch/arc/mm/init.c
+index a5e92f46e5d13..d6b5c27a0098f 100644
+--- a/arch/arc/mm/init.c
++++ b/arch/arc/mm/init.c
+@@ -19,8 +19,6 @@
+ #include <asm/arcregs.h>
+ 
+ pgd_t swapper_pg_dir[PTRS_PER_PGD] __aligned(PAGE_SIZE);
+-char empty_zero_page[PAGE_SIZE] __aligned(PAGE_SIZE);
+-EXPORT_SYMBOL(empty_zero_page);
+ 
+ static const unsigned long low_mem_start = CONFIG_LINUX_RAM_BASE;
+ static unsigned long low_mem_sz;
+diff --git a/arch/arm/include/asm/pgtable.h b/arch/arm/include/asm/pgtable.h
+index 6fa9acd6a7f5d..982795cf45637 100644
+--- a/arch/arm/include/asm/pgtable.h
++++ b/arch/arm/include/asm/pgtable.h
+@@ -10,15 +10,6 @@
+ #include <linux/const.h>
+ #include <asm/proc-fns.h>
+ 
+-#ifndef __ASSEMBLY__
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-#endif
+-
+ #include <asm-generic/pgtable-nopud.h>
+ 
+ #ifndef CONFIG_MMU
+diff --git a/arch/arm/mm/mmu.c b/arch/arm/mm/mmu.c
+index 518def8314e77..23b87b5ef7f1b 100644
+--- a/arch/arm/mm/mmu.c
++++ b/arch/arm/mm/mmu.c
+@@ -41,13 +41,6 @@
+ 
+ extern unsigned long __atags_pointer;
+ 
+-/*
+- * empty_zero_page is a special page that is used for
+- * zero-initialized data and COW.
+- */
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ /*
+  * The pmd table for the upper-most set of pages.
+  */
+diff --git a/arch/arm/mm/nommu.c b/arch/arm/mm/nommu.c
+index 7e42d8accec6b..040ea43cce32e 100644
+--- a/arch/arm/mm/nommu.c
++++ b/arch/arm/mm/nommu.c
+@@ -27,13 +27,6 @@
+ 
+ unsigned long vectors_base;
+ 
+-/*
+- * empty_zero_page is a special page that is used for
+- * zero-initialized data and COW.
+- */
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ #ifdef CONFIG_ARM_MPU
+ struct mpu_rgn_info mpu_rgn_info;
+ #endif
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index a17eb8a767884..516147f06fe81 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -110,7 +110,6 @@ static inline void arch_leave_lazy_mmu_mode(void)
+  * ZERO_PAGE is a global shared page that is always zero: used
+  * for zero-mapped memory areas etc..
+  */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+ #define ZERO_PAGE(vaddr)	phys_to_page(__pa_symbol(empty_zero_page))
+ 
+ #define pte_ERROR(e)	\
+diff --git a/arch/arm64/mm/mmu.c b/arch/arm64/mm/mmu.c
+index a12ea8776c329..ec932f6ccddca 100644
+--- a/arch/arm64/mm/mmu.c
++++ b/arch/arm64/mm/mmu.c
+@@ -64,13 +64,6 @@ static bool rodata_is_rw __ro_after_init = true;
+  */
+ long __section(".mmuoff.data.write") __early_cpu_boot_status;
+ 
+-/*
+- * Empty_zero_page is a special page that is used for zero-initialized data
+- * and COW.
+- */
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ static DEFINE_SPINLOCK(swapper_pgdir_lock);
+ static DEFINE_MUTEX(fixmap_lock);
+ 
+diff --git a/arch/csky/include/asm/pgtable.h b/arch/csky/include/asm/pgtable.h
+index d606afbabce19..bafcd5823531a 100644
+--- a/arch/csky/include/asm/pgtable.h
++++ b/arch/csky/include/asm/pgtable.h
+@@ -76,9 +76,6 @@
+ #define MAX_SWAPFILES_CHECK() \
+ 		BUILD_BUG_ON(MAX_SWAPFILES_SHIFT != 5)
+ 
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-
+ extern void load_pgd(unsigned long pg_dir);
+ extern pte_t invalid_pte_table[PTRS_PER_PTE];
+ 
+diff --git a/arch/csky/mm/init.c b/arch/csky/mm/init.c
+index 573da66b25438..fa16015ea1c04 100644
+--- a/arch/csky/mm/init.c
++++ b/arch/csky/mm/init.c
+@@ -38,9 +38,6 @@ pte_t invalid_pte_table[PTRS_PER_PTE] __page_aligned_bss;
+ pte_t kernel_pte_tables[PTRS_KERN_TABLE] __page_aligned_bss;
+ 
+ EXPORT_SYMBOL(invalid_pte_table);
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)]
+-						__page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+ 
+ void free_initmem(void)
+ {
+diff --git a/arch/hexagon/include/asm/pgtable.h b/arch/hexagon/include/asm/pgtable.h
+index fbf24d1d1ca6a..27b269e2870d3 100644
+--- a/arch/hexagon/include/asm/pgtable.h
++++ b/arch/hexagon/include/asm/pgtable.h
+@@ -14,9 +14,6 @@
+ #include <asm/page.h>
+ #include <asm-generic/pgtable-nopmd.h>
+ 
+-/* A handy thing to have if one has the RAM. Declared in head.S */
+-extern unsigned long empty_zero_page;
+-
+ /*
+  * The PTE model described here is that of the Hexagon Virtual Machine,
+  * which autonomously walks 2-level page tables.  At a lower level, we
+@@ -348,9 +345,6 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
+ 	return (unsigned long)__va(pmd_val(pmd) & PAGE_MASK);
+ }
+ 
+-/* ZERO_PAGE - returns the globally shared zero page */
+-#define ZERO_PAGE(vaddr) (virt_to_page(&empty_zero_page))
+-
+ /*
+  * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
+  * are !pte_none() && !pte_present().
+diff --git a/arch/hexagon/kernel/head.S b/arch/hexagon/kernel/head.S
+index 0b016308cc79f..908ffece91324 100644
+--- a/arch/hexagon/kernel/head.S
++++ b/arch/hexagon/kernel/head.S
+@@ -216,8 +216,3 @@ __head_s_vaddr_target:
+ .p2align PAGE_SHIFT
+ ENTRY(external_cmdline_buffer)
+         .fill _PAGE_SIZE,1,0
+-
+-.data
+-.p2align PAGE_SHIFT
+-ENTRY(empty_zero_page)
+-        .fill _PAGE_SIZE,1,0
+diff --git a/arch/hexagon/kernel/hexagon_ksyms.c b/arch/hexagon/kernel/hexagon_ksyms.c
+index 36a80e31d1879..81bc6f81e2009 100644
+--- a/arch/hexagon/kernel/hexagon_ksyms.c
++++ b/arch/hexagon/kernel/hexagon_ksyms.c
+@@ -17,7 +17,6 @@ EXPORT_SYMBOL(raw_copy_to_user);
+ EXPORT_SYMBOL(__vmgetie);
+ EXPORT_SYMBOL(__vmsetie);
+ EXPORT_SYMBOL(__vmyield);
+-EXPORT_SYMBOL(empty_zero_page);
+ EXPORT_SYMBOL(memcpy);
+ EXPORT_SYMBOL(memset);
+ 
+diff --git a/arch/loongarch/include/asm/pgtable.h b/arch/loongarch/include/asm/pgtable.h
+index c33b3bcb733e3..a244de27a03e7 100644
+--- a/arch/loongarch/include/asm/pgtable.h
++++ b/arch/loongarch/include/asm/pgtable.h
+@@ -74,15 +74,6 @@
+ struct mm_struct;
+ struct vm_area_struct;
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero; used
+- * for zero-mapped memory areas etc..
+- */
+-
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-
+-#define ZERO_PAGE(vaddr)	virt_to_page(empty_zero_page)
+-
+ #ifdef CONFIG_32BIT
+ 
+ #define VMALLOC_START	(vm_map_base + PCI_IOSIZE + (2 * PAGE_SIZE))
+diff --git a/arch/loongarch/mm/init.c b/arch/loongarch/mm/init.c
+index c331bf69d2ec1..00f3822b6e47c 100644
+--- a/arch/loongarch/mm/init.c
++++ b/arch/loongarch/mm/init.c
+@@ -36,9 +36,6 @@
+ #include <asm/pgalloc.h>
+ #include <asm/tlb.h>
+ 
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ void copy_user_highpage(struct page *to, struct page *from,
+ 	unsigned long vaddr, struct vm_area_struct *vma)
+ {
+diff --git a/arch/m68k/include/asm/pgtable_mm.h b/arch/m68k/include/asm/pgtable_mm.h
+index bba64a9c49acd..7501ff030c633 100644
+--- a/arch/m68k/include/asm/pgtable_mm.h
++++ b/arch/m68k/include/asm/pgtable_mm.h
+@@ -110,15 +110,6 @@ extern unsigned long m68k_vmalloc_end;
+ #define VMALLOC_END KMAP_START
+ #endif
+ 
+-/* zero page used for uninitialized stuff */
+-extern void *empty_zero_page;
+-
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-
+ extern void kernel_set_cachemode(void *addr, unsigned long size, int cmode);
+ 
+ /*
+diff --git a/arch/m68k/include/asm/pgtable_no.h b/arch/m68k/include/asm/pgtable_no.h
+index 1a86c15b9008f..11751807a3f3b 100644
+--- a/arch/m68k/include/asm/pgtable_no.h
++++ b/arch/m68k/include/asm/pgtable_no.h
+@@ -30,13 +30,6 @@
+ 
+ #define swapper_pg_dir ((pgd_t *) 0)
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern void *empty_zero_page;
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-
+ /*
+  * All 32bit addresses are effectively valid for vmalloc...
+  * Sort of meaningless for non-VM targets.
+diff --git a/arch/m68k/mm/init.c b/arch/m68k/mm/init.c
+index 53b71f786c27e..3b88c0dd1616d 100644
+--- a/arch/m68k/mm/init.c
++++ b/arch/m68k/mm/init.c
+@@ -33,13 +33,6 @@
+ #include <asm/sections.h>
+ #include <asm/tlb.h>
+ 
+-/*
+- * ZERO_PAGE is a special page that is used for zero-initialized
+- * data and COW.
+- */
+-void *empty_zero_page;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ void __init arch_zone_limits_init(unsigned long *max_zone_pfns)
+ {
+ 	max_zone_pfns[ZONE_DMA] = PFN_DOWN(memblock_end_of_DRAM());
+@@ -71,8 +64,6 @@ void __init paging_init(void)
+ 	unsigned long end_mem = memory_end & PAGE_MASK;
+ 
+ 	high_memory = (void *) end_mem;
+-
+-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+ }
+ 
+ #endif /* CONFIG_MMU */
+diff --git a/arch/m68k/mm/mcfmmu.c b/arch/m68k/mm/mcfmmu.c
+index 3418fd8642377..4924f2ff8ef87 100644
+--- a/arch/m68k/mm/mcfmmu.c
++++ b/arch/m68k/mm/mcfmmu.c
+@@ -41,8 +41,6 @@ void __init paging_init(void)
+ 	unsigned long next_pgtable;
+ 	int i;
+ 
+-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+-
+ 	pg_dir = swapper_pg_dir;
+ 	memset(swapper_pg_dir, 0, sizeof(swapper_pg_dir));
+ 
+diff --git a/arch/m68k/mm/motorola.c b/arch/m68k/mm/motorola.c
+index 127a3fa69f4c1..b30aa69a73a6a 100644
+--- a/arch/m68k/mm/motorola.c
++++ b/arch/m68k/mm/motorola.c
+@@ -498,12 +498,6 @@ void __init paging_init(void)
+ 
+ 	early_memtest(min_addr, max_addr);
+ 
+-	/*
+-	 * initialize the bad page table and bad page to point
+-	 * to a couple of allocated pages
+-	 */
+-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+-
+ 	/*
+ 	 * Set up SFC/DFC registers
+ 	 */
+diff --git a/arch/m68k/mm/sun3mmu.c b/arch/m68k/mm/sun3mmu.c
+index c801677f7df87..f139cc15753a7 100644
+--- a/arch/m68k/mm/sun3mmu.c
++++ b/arch/m68k/mm/sun3mmu.c
+@@ -43,8 +43,6 @@ void __init paging_init(void)
+ 	unsigned long bootmem_end;
+ 	unsigned long size;
+ 
+-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+-
+ 	address = PAGE_OFFSET;
+ 	pg_dir = swapper_pg_dir;
+ 	memset (swapper_pg_dir, 0, sizeof (swapper_pg_dir));
+diff --git a/arch/microblaze/include/asm/pgtable.h b/arch/microblaze/include/asm/pgtable.h
+index 4eb76de6be4ac..ea72291de5531 100644
+--- a/arch/microblaze/include/asm/pgtable.h
++++ b/arch/microblaze/include/asm/pgtable.h
+@@ -207,16 +207,6 @@ extern pte_t *va_to_pte(unsigned long address);
+  * Also, write permissions imply read permissions.
+  */
+ 
+-#ifndef __ASSEMBLER__
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[1024];
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+-#endif /* __ASSEMBLER__ */
+-
+ #define pte_none(pte)		((pte_val(pte) & ~_PTE_NONE_MASK) == 0)
+ #define pte_present(pte)	(pte_val(pte) & _PAGE_PRESENT)
+ #define pte_clear(mm, addr, ptep) \
+diff --git a/arch/microblaze/kernel/head.S b/arch/microblaze/kernel/head.S
+index ec2fcb545e646..808019c3b7ac2 100644
+--- a/arch/microblaze/kernel/head.S
++++ b/arch/microblaze/kernel/head.S
+@@ -39,10 +39,6 @@
+ #include <asm/processor.h>
+ 
+ .section .data
+-.global empty_zero_page
+-.align 12
+-empty_zero_page:
+-	.space	PAGE_SIZE
+ .global swapper_pg_dir
+ swapper_pg_dir:
+ 	.space	PAGE_SIZE
+diff --git a/arch/microblaze/kernel/microblaze_ksyms.c b/arch/microblaze/kernel/microblaze_ksyms.c
+index a8553f54152b7..ad7596d7ba076 100644
+--- a/arch/microblaze/kernel/microblaze_ksyms.c
++++ b/arch/microblaze/kernel/microblaze_ksyms.c
+@@ -33,8 +33,6 @@ EXPORT_SYMBOL(memcpy);
+ EXPORT_SYMBOL(memmove);
+ #endif
+ 
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ EXPORT_SYMBOL(mbc);
+ 
+ extern void __divsi3(void);
+diff --git a/arch/nios2/include/asm/pgtable.h b/arch/nios2/include/asm/pgtable.h
+index 844dce55569f3..d389aa9ca57ce 100644
+--- a/arch/nios2/include/asm/pgtable.h
++++ b/arch/nios2/include/asm/pgtable.h
+@@ -65,13 +65,6 @@ struct mm_struct;
+ #define PGDIR_SIZE	(1UL << PGDIR_SHIFT)
+ #define PGDIR_MASK	(~(PGDIR_SIZE-1))
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-#define ZERO_PAGE(vaddr)	(virt_to_page(empty_zero_page))
+-
+ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
+ extern pte_t invalid_pte_table[PAGE_SIZE/sizeof(pte_t)];
+ 
+diff --git a/arch/nios2/kernel/head.S b/arch/nios2/kernel/head.S
+index 372ce4a33018b..613212e1a63ac 100644
+--- a/arch/nios2/kernel/head.S
++++ b/arch/nios2/kernel/head.S
+@@ -23,16 +23,6 @@
+ #include <asm/asm-offsets.h>
+ #include <asm/asm-macros.h>
+ 
+-/*
+- * ZERO_PAGE is a special page that is used for zero-initialized
+- * data and COW.
+- */
+-.data
+-.global empty_zero_page
+-.align 12
+-empty_zero_page:
+-	.space	PAGE_SIZE
+-
+ /*
+  * This global variable is used as an extension to the nios'
+  * STATUS register to emulate a user/supervisor mode.
+diff --git a/arch/nios2/kernel/nios2_ksyms.c b/arch/nios2/kernel/nios2_ksyms.c
+index 54f7b23df1bf5..c40aa39e86587 100644
+--- a/arch/nios2/kernel/nios2_ksyms.c
++++ b/arch/nios2/kernel/nios2_ksyms.c
+@@ -20,7 +20,6 @@ EXPORT_SYMBOL(memmove);
+ 
+ /* memory management */
+ 
+-EXPORT_SYMBOL(empty_zero_page);
+ EXPORT_SYMBOL(flush_icache_range);
+ 
+ /*
+diff --git a/arch/openrisc/include/asm/pgtable.h b/arch/openrisc/include/asm/pgtable.h
+index b218050e2f6dd..6b89996d0b628 100644
+--- a/arch/openrisc/include/asm/pgtable.h
++++ b/arch/openrisc/include/asm/pgtable.h
+@@ -179,10 +179,6 @@ extern void paging_init(void);
+ 	__pgprot(_PAGE_ALL | _PAGE_SRE | _PAGE_SWE \
+ 		 | _PAGE_SHARED | _PAGE_DIRTY | _PAGE_EXEC | _PAGE_CI)
+ 
+-/* zero page used for uninitialized stuff */
+-extern unsigned long empty_zero_page[2048];
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ #define pte_none(x)	(!pte_val(x))
+ #define pte_present(x)	(pte_val(x) & _PAGE_PRESENT)
+ #define pte_clear(mm, addr, xp)	do { pte_val(*(xp)) = 0; } while (0)
+diff --git a/arch/openrisc/kernel/head.S b/arch/openrisc/kernel/head.S
+index bd760066f1cdc..45890393947d8 100644
+--- a/arch/openrisc/kernel/head.S
++++ b/arch/openrisc/kernel/head.S
+@@ -1563,9 +1563,6 @@ _string_nl:
+  */
+ 	.section .data,"aw"
+ 	.align	8192
+-	.global  empty_zero_page
+-empty_zero_page:
+-	.space  8192
+ 
+ 	.global  swapper_pg_dir
+ swapper_pg_dir:
+diff --git a/arch/openrisc/kernel/or32_ksyms.c b/arch/openrisc/kernel/or32_ksyms.c
+index 212e5f85004cc..84a937a64e2a7 100644
+--- a/arch/openrisc/kernel/or32_ksyms.c
++++ b/arch/openrisc/kernel/or32_ksyms.c
+@@ -40,7 +40,6 @@ DECLARE_EXPORT(__ashldi3);
+ DECLARE_EXPORT(__lshrdi3);
+ DECLARE_EXPORT(__ucmpdi2);
+ 
+-EXPORT_SYMBOL(empty_zero_page);
+ EXPORT_SYMBOL(__copy_tofrom_user);
+ EXPORT_SYMBOL(__clear_user);
+ EXPORT_SYMBOL(memset);
+diff --git a/arch/openrisc/mm/init.c b/arch/openrisc/mm/init.c
+index 78fb0734cdbc2..89d8c6df88551 100644
+--- a/arch/openrisc/mm/init.c
++++ b/arch/openrisc/mm/init.c
+@@ -188,9 +188,6 @@ void __init mem_init(void)
+ {
+ 	BUG_ON(!mem_map);
+ 
+-	/* clear the zero-page */
+-	memset((void *)empty_zero_page, 0, PAGE_SIZE);
+-
+ 	printk("mem_init_done ...........................................\n");
+ 	mem_init_done = 1;
+ 	return;
+diff --git a/arch/parisc/include/asm/pgtable.h b/arch/parisc/include/asm/pgtable.h
+index 2c139a4dbf4b8..cbdc01a26ea04 100644
+--- a/arch/parisc/include/asm/pgtable.h
++++ b/arch/parisc/include/asm/pgtable.h
+@@ -262,17 +262,6 @@ extern pgd_t swapper_pg_dir[]; /* declared in init_task.c */
+ 
+ extern pte_t pg0[];
+ 
+-/* zero page used for uninitialized stuff */
+-
+-extern unsigned long *empty_zero_page;
+-
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ #define pte_none(x)     (pte_val(x) == 0)
+ #define pte_present(x)	(pte_val(x) & _PAGE_PRESENT)
+ #define pte_user(x)	(pte_val(x) & _PAGE_USER)
+diff --git a/arch/parisc/mm/init.c b/arch/parisc/mm/init.c
+index 6a39e031e5ff7..be3380c9bcdae 100644
+--- a/arch/parisc/mm/init.c
++++ b/arch/parisc/mm/init.c
+@@ -604,9 +604,6 @@ void __init mem_init(void)
+ #endif
+ }
+ 
+-unsigned long *empty_zero_page __ro_after_init;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ /*
+  * pagetable_init() sets up the page tables
+  *
+@@ -639,9 +636,6 @@ static void __init pagetable_init(void)
+ 			  initrd_end - initrd_start, PAGE_KERNEL, 0);
+ 	}
+ #endif
+-
+-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+-
+ }
+ 
+ static void __init gateway_init(void)
+diff --git a/arch/powerpc/include/asm/pgtable.h b/arch/powerpc/include/asm/pgtable.h
+index dcd3a88caaf63..b27d94c06d0e7 100644
+--- a/arch/powerpc/include/asm/pgtable.h
++++ b/arch/powerpc/include/asm/pgtable.h
+@@ -76,12 +76,6 @@ static inline const void *pmd_page_vaddr(pmd_t pmd)
+ }
+ #define pmd_page_vaddr pmd_page_vaddr
+ #endif
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[];
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+ 
+ extern pgd_t swapper_pg_dir[];
+ 
+diff --git a/arch/powerpc/mm/mem.c b/arch/powerpc/mm/mem.c
+index 29bf347f60121..055416d0ad1ec 100644
+--- a/arch/powerpc/mm/mem.c
++++ b/arch/powerpc/mm/mem.c
+@@ -34,9 +34,6 @@
+ 
+ unsigned long long memory_limit __initdata;
+ 
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ pgprot_t __phys_mem_access_prot(unsigned long pfn, unsigned long size,
+ 				pgprot_t vma_prot)
+ {
+diff --git a/arch/riscv/include/asm/pgtable.h b/arch/riscv/include/asm/pgtable.h
+index 08d1ca0471046..ab4ce1cc9d9c1 100644
+--- a/arch/riscv/include/asm/pgtable.h
++++ b/arch/riscv/include/asm/pgtable.h
+@@ -1284,13 +1284,6 @@ extern u64 satp_mode;
+ void paging_init(void);
+ void misc_mem_init(void);
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero,
+- * used for zero-mapped memory areas, etc.
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ /*
+  * Use set_p*_safe(), and elide TLB flushing, when confident that *no*
+  * TLB flush will be required as a result of the "set". For example, use
+diff --git a/arch/riscv/mm/init.c b/arch/riscv/mm/init.c
+index 811e03786c560..017bad735d47e 100644
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -69,10 +69,6 @@ unsigned long vmemmap_start_pfn __ro_after_init;
+ EXPORT_SYMBOL(vmemmap_start_pfn);
+ #endif
+ 
+-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)]
+-							__page_aligned_bss;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ extern char _start[];
+ void *_dtb_early_va __initdata;
+ uintptr_t _dtb_early_pa __initdata;
+diff --git a/arch/sh/include/asm/pgtable.h b/arch/sh/include/asm/pgtable.h
+index 10fa8f2bb8d1f..d5ce0950a3231 100644
+--- a/arch/sh/include/asm/pgtable.h
++++ b/arch/sh/include/asm/pgtable.h
+@@ -20,14 +20,6 @@
+ #ifndef __ASSEMBLER__
+ #include <asm/addrspace.h>
+ #include <asm/fixmap.h>
+-
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ #endif /* !__ASSEMBLER__ */
+ 
+ /*
+diff --git a/arch/sh/include/asm/setup.h b/arch/sh/include/asm/setup.h
+index 84bb23a771f35..63c9efc063486 100644
+--- a/arch/sh/include/asm/setup.h
++++ b/arch/sh/include/asm/setup.h
+@@ -7,7 +7,8 @@
+ /*
+  * This is set up by the setup-routine at boot-time
+  */
+-#define PARAM	((unsigned char *)empty_zero_page)
++extern unsigned char *boot_params_page;
++#define PARAM boot_params_page
+ 
+ #define MOUNT_ROOT_RDONLY (*(unsigned long *) (PARAM+0x000))
+ #define RAMDISK_FLAGS (*(unsigned long *) (PARAM+0x004))
+diff --git a/arch/sh/kernel/head_32.S b/arch/sh/kernel/head_32.S
+index b603b7968b388..0b91bb85d40a0 100644
+--- a/arch/sh/kernel/head_32.S
++++ b/arch/sh/kernel/head_32.S
+@@ -26,7 +26,7 @@
+ #endif
+ 
+ 	.section	.empty_zero_page, "aw"
+-ENTRY(empty_zero_page)
++ENTRY(boot_params_page)
+ 	.long	1		/* MOUNT_ROOT_RDONLY */
+ 	.long	0		/* RAMDISK_FLAGS */
+ 	.long	0x0200		/* ORIG_ROOT_DEV */
+@@ -39,7 +39,7 @@ ENTRY(empty_zero_page)
+ 	.long	0x53453f00 + 29	/* "SE?" = 29 bit */
+ #endif
+ 1:
+-	.skip	PAGE_SIZE - empty_zero_page - 1b
++	.skip	PAGE_SIZE - boot_params_page - 1b
+ 
+ 	__HEAD
+ 
+diff --git a/arch/sh/kernel/sh_ksyms_32.c b/arch/sh/kernel/sh_ksyms_32.c
+index 5858936cb4311..041191002e2e2 100644
+--- a/arch/sh/kernel/sh_ksyms_32.c
++++ b/arch/sh/kernel/sh_ksyms_32.c
+@@ -20,7 +20,6 @@ EXPORT_SYMBOL(csum_partial);
+ EXPORT_SYMBOL(csum_partial_copy_generic);
+ EXPORT_SYMBOL(copy_page);
+ EXPORT_SYMBOL(__clear_user);
+-EXPORT_SYMBOL(empty_zero_page);
+ #ifdef CONFIG_FLATMEM
+ /* need in pfn_valid macro */
+ EXPORT_SYMBOL(min_low_pfn);
+diff --git a/arch/sh/mm/init.c b/arch/sh/mm/init.c
+index 464a3a63e2fa5..4e40d5e96be9d 100644
+--- a/arch/sh/mm/init.c
++++ b/arch/sh/mm/init.c
+@@ -332,7 +332,6 @@ void __init mem_init(void)
+ 	cpu_cache_init();
+ 
+ 	/* clear the zero-page */
+-	memset(empty_zero_page, 0, PAGE_SIZE);
+ 	__flush_wback_region(empty_zero_page, PAGE_SIZE);
+ 
+ 	vsyscall_init();
+diff --git a/arch/sparc/include/asm/pgtable_32.h b/arch/sparc/include/asm/pgtable_32.h
+index a9f802d1dd64f..f89b1250661df 100644
+--- a/arch/sparc/include/asm/pgtable_32.h
++++ b/arch/sparc/include/asm/pgtable_32.h
+@@ -71,14 +71,6 @@ extern unsigned long ptr_in_current_pgd;
+ extern unsigned long phys_base;
+ extern unsigned long pfn_base;
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ /*
+  * In general all page table modifications should use the V8 atomic
+  * swap instruction.  This insures the mmu and the cpu are in sync
+diff --git a/arch/sparc/include/asm/setup.h b/arch/sparc/include/asm/setup.h
+index 72205684e51ea..21bed55140288 100644
+--- a/arch/sparc/include/asm/setup.h
++++ b/arch/sparc/include/asm/setup.h
+@@ -17,8 +17,6 @@ extern char reboot_command[];
+  */
+ extern unsigned char boot_cpu_id;
+ 
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+-
+ extern int serial_console;
+ static inline int con_is_present(void)
+ {
+diff --git a/arch/sparc/kernel/head_32.S b/arch/sparc/kernel/head_32.S
+index 38345460d5420..8c320fa25a670 100644
+--- a/arch/sparc/kernel/head_32.S
++++ b/arch/sparc/kernel/head_32.S
+@@ -57,13 +57,6 @@ sun4e_notsup:
+ 
+ 	.align PAGE_SIZE
+ 
+-/* This was the only reasonable way I could think of to properly align
+- * these page-table data structures.
+- */
+-	.globl empty_zero_page
+-empty_zero_page:	.skip PAGE_SIZE
+-EXPORT_SYMBOL(empty_zero_page)
+-
+ 	.global root_flags
+ 	.global ram_flags
+ 	.global root_dev
+diff --git a/arch/sparc/mm/init_32.c b/arch/sparc/mm/init_32.c
+index fdc93dd12c3e3..e0e66f91ceebc 100644
+--- a/arch/sparc/mm/init_32.c
++++ b/arch/sparc/mm/init_32.c
+@@ -246,10 +246,6 @@ void __init arch_mm_preinit(void)
+ 		prom_halt();
+ 	}
+ 
+-
+-	/* Saves us work later. */
+-	memset((void *)empty_zero_page, 0, PAGE_SIZE);
+-
+ 	i = last_valid_pfn >> ((20 - PAGE_SHIFT) + 5);
+ 	i += 1;
+ 	sparc_valid_addr_bitmap = (unsigned long *)
+diff --git a/arch/sparc/mm/init_64.c b/arch/sparc/mm/init_64.c
+index 3c3a6607fa512..72277517288bf 100644
+--- a/arch/sparc/mm/init_64.c
++++ b/arch/sparc/mm/init_64.c
+@@ -2492,6 +2492,9 @@ static void __init register_page_bootmem_info(void)
+ }
+ void __init mem_init(void)
+ {
++	phys_addr_t zero_page_pa = kern_base +
++		((unsigned long)&empty_zero_page[0] - KERNBASE);
++
+ 	/*
+ 	 * Must be done after boot memory is put on freelist, because here we
+ 	 * might set fields in deferred struct pages that have not yet been
+@@ -2504,13 +2507,7 @@ void __init mem_init(void)
+ 	 * Set up the zero page, mark it reserved, so that page count
+ 	 * is not manipulated when freeing the page from user ptes.
+ 	 */
+-	mem_map_zero = alloc_pages(GFP_KERNEL|__GFP_ZERO, 0);
+-	if (mem_map_zero == NULL) {
+-		prom_printf("paging_init: Cannot alloc zero page.\n");
+-		prom_halt();
+-	}
+-	mark_page_reserved(mem_map_zero);
+-
++	mem_map_zero = pfn_to_page(PHYS_PFN(zero_page_pa));
+ 
+ 	if (tlb_type == cheetah || tlb_type == cheetah_plus)
+ 		cheetah_ecache_flush_init();
+diff --git a/arch/um/include/asm/pgtable.h b/arch/um/include/asm/pgtable.h
+index 3b42b0f45bf6c..19e0608fb6497 100644
+--- a/arch/um/include/asm/pgtable.h
++++ b/arch/um/include/asm/pgtable.h
+@@ -34,9 +34,6 @@
+ 
+ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
+ 
+-/* zero page used for uninitialized stuff */
+-extern unsigned long *empty_zero_page;
+-
+ /* Just any arbitrary offset to the start of the vmalloc VM area: the
+  * current 8MB value just means that there will be a 8MB "hole" after the
+  * physical memory until the kernel virtual memory starts.  That means that
+@@ -74,12 +71,6 @@ extern unsigned long *empty_zero_page;
+  * get..
+  */
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-#define ZERO_PAGE(vaddr) virt_to_page(empty_zero_page)
+-
+ #define pte_clear(mm, addr, xp) pte_set_val(*(xp), (phys_t) 0, __pgprot(_PAGE_NEEDSYNC))
+ 
+ #define pmd_none(x)	(!((unsigned long)pmd_val(x) & ~_PAGE_NEEDSYNC))
+diff --git a/arch/um/include/shared/kern_util.h b/arch/um/include/shared/kern_util.h
+index 38321188c04c4..9812efd14ec0e 100644
+--- a/arch/um/include/shared/kern_util.h
++++ b/arch/um/include/shared/kern_util.h
+@@ -38,7 +38,6 @@ extern void timer_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs
+ extern void uml_pm_wake(void);
+ 
+ extern int start_uml(void);
+-extern void paging_init(void);
+ 
+ extern void uml_cleanup(void);
+ extern void do_uml_exitcalls(void);
+diff --git a/arch/um/kernel/mem.c b/arch/um/kernel/mem.c
+index 89c8c8b94a796..1eef0e42ef5db 100644
+--- a/arch/um/kernel/mem.c
++++ b/arch/um/kernel/mem.c
+@@ -44,10 +44,6 @@ __section(".kasan_init") __used
+ = kasan_init;
+ #endif
+ 
+-/* allocated in paging_init, zeroed in mem_init, and unchanged thereafter */
+-unsigned long *empty_zero_page = NULL;
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ /*
+  * Initialized during boot, and readonly for initializing page tables
+  * afterwards
+@@ -65,9 +61,6 @@ void __init arch_mm_preinit(void)
+ 	/* Safe to call after jump_label_init(). Enables KASAN. */
+ 	kasan_init_generic();
+ 
+-	/* clear the zero-page */
+-	memset(empty_zero_page, 0, PAGE_SIZE);
+-
+ 	/* Map in the area just after the brk now that kmalloc is about
+ 	 * to be turned on.
+ 	 */
+@@ -89,15 +82,6 @@ void __init arch_zone_limits_init(unsigned long *max_zone_pfns)
+ 	max_zone_pfns[ZONE_NORMAL] = high_physmem >> PAGE_SHIFT;
+ }
+ 
+-void __init paging_init(void)
+-{
+-	empty_zero_page = (unsigned long *) memblock_alloc_low(PAGE_SIZE,
+-							       PAGE_SIZE);
+-	if (!empty_zero_page)
+-		panic("%s: Failed to allocate %lu bytes align=%lx\n",
+-		      __func__, PAGE_SIZE, PAGE_SIZE);
+-}
+-
+ /*
+  * This can't do anything because nothing in the kernel image can be freed
+  * since it's not in kernel physical memory.
+diff --git a/arch/um/kernel/um_arch.c b/arch/um/kernel/um_arch.c
+index e2b24e1ecfa64..2141f5f1f5a20 100644
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -413,7 +413,6 @@ void __init setup_arch(char **cmdline_p)
+ 	uml_dtb_init();
+ 	read_initrd();
+ 
+-	paging_init();
+ 	strscpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+ 	*cmdline_p = command_line;
+ 	setup_hostinfo(host_info, sizeof host_info);
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index 1662c5a8f445f..54289f4587a4c 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -47,14 +47,6 @@ void ptdump_walk_user_pgd_level_checkwx(void);
+ #define debug_checkwx_user()	do { } while (0)
+ #endif
+ 
+-/*
+- * ZERO_PAGE is a global shared page that is always zero: used
+- * for zero-mapped memory areas etc..
+- */
+-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)]
+-	__visible;
+-#define ZERO_PAGE(vaddr) ((void)(vaddr),virt_to_page(empty_zero_page))
+-
+ extern spinlock_t pgd_lock;
+ extern struct list_head pgd_list;
+ 
+diff --git a/arch/x86/kernel/head_32.S b/arch/x86/kernel/head_32.S
+index 80ef5d386b03d..5171cb746444e 100644
+--- a/arch/x86/kernel/head_32.S
++++ b/arch/x86/kernel/head_32.S
+@@ -441,10 +441,6 @@ initial_pg_fixmap:
+ swapper_pg_dir:
+ 	.fill 1024,4,0
+ 	.fill PTI_USER_PGD_FILL,4,0
+-.globl empty_zero_page
+-empty_zero_page:
+-	.fill 4096,1,0
+-EXPORT_SYMBOL(empty_zero_page)
+ 
+ /*
+  * This starts the data section.
+diff --git a/arch/x86/kernel/head_64.S b/arch/x86/kernel/head_64.S
+index 21816b48537c3..cbf7647a25d85 100644
+--- a/arch/x86/kernel/head_64.S
++++ b/arch/x86/kernel/head_64.S
+@@ -712,10 +712,3 @@ SYM_PIC_ALIAS(phys_base);
+ EXPORT_SYMBOL(phys_base)
+ 
+ #include "../xen/xen-head.S"
+-
+-	__PAGE_ALIGNED_BSS
+-SYM_DATA_START_PAGE_ALIGNED(empty_zero_page)
+-	.skip PAGE_SIZE
+-SYM_DATA_END(empty_zero_page)
+-EXPORT_SYMBOL(empty_zero_page)
+-
+diff --git a/arch/xtensa/include/asm/pgtable.h b/arch/xtensa/include/asm/pgtable.h
+index 50a136213b2bf..61f07d981a94d 100644
+--- a/arch/xtensa/include/asm/pgtable.h
++++ b/arch/xtensa/include/asm/pgtable.h
+@@ -209,10 +209,6 @@
+ #define pgd_ERROR(e) \
+ 	printk("%s:%d: bad pgd entry %08lx.\n", __FILE__, __LINE__, pgd_val(e))
+ 
+-extern unsigned long empty_zero_page[1024];
+-
+-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+-
+ #ifdef CONFIG_MMU
+ extern pgd_t swapper_pg_dir[PAGE_SIZE/sizeof(pgd_t)];
+ extern void paging_init(void);
+diff --git a/arch/xtensa/kernel/head.S b/arch/xtensa/kernel/head.S
+index 8484294bc623f..4b0c5c5e685af 100644
+--- a/arch/xtensa/kernel/head.S
++++ b/arch/xtensa/kernel/head.S
+@@ -381,6 +381,3 @@ ENTRY(swapper_pg_dir)
+ 	.fill	PAGE_SIZE, 1, 0
+ END(swapper_pg_dir)
+ #endif
+-ENTRY(empty_zero_page)
+-	.fill	PAGE_SIZE, 1, 0
+-END(empty_zero_page)
+diff --git a/arch/xtensa/kernel/xtensa_ksyms.c b/arch/xtensa/kernel/xtensa_ksyms.c
+index 62d81e76e18e2..ced335b4df5fa 100644
+--- a/arch/xtensa/kernel/xtensa_ksyms.c
++++ b/arch/xtensa/kernel/xtensa_ksyms.c
+@@ -15,8 +15,6 @@
+ #include <linux/module.h>
+ #include <asm/pgtable.h>
+ 
+-EXPORT_SYMBOL(empty_zero_page);
+-
+ unsigned int __sync_fetch_and_and_4(volatile void *p, unsigned int v)
+ {
+ 	BUG();
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index c3a56f6b1ea51..2a05c3885f85b 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -1925,6 +1925,9 @@ static inline void pfnmap_setup_cachemode_pfn(unsigned long pfn, pgprot_t *prot)
+  * for different ranges in the virtual address space.
+  *
+  * zero_page_pfn identifies the first (or the only) pfn for these pages.
++ *
++ * For architectures that don't __HAVE_COLOR_ZERO_PAGE the zero page lives in
++ * empty_zero_page in BSS.
+  */
+ #ifdef __HAVE_COLOR_ZERO_PAGE
+ static inline int is_zero_pfn(unsigned long pfn)
+@@ -1951,6 +1954,13 @@ static inline unsigned long zero_pfn(unsigned long addr)
+ 
+ 	return zero_page_pfn;
+ }
++
++extern uint8_t empty_zero_page[PAGE_SIZE];
++
++#ifndef ZERO_PAGE
++#define ZERO_PAGE(vaddr) ((void)(vaddr),virt_to_page(empty_zero_page))
++#endif
++
+ #endif /* __HAVE_COLOR_ZERO_PAGE */
+ 
+ #ifdef CONFIG_MMU
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 106183b647c3b..e28f7f756b3a2 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -56,6 +56,11 @@ EXPORT_SYMBOL(high_memory);
+ unsigned long zero_page_pfn __ro_after_init;
+ EXPORT_SYMBOL(zero_page_pfn);
+ 
++#ifndef __HAVE_COLOR_ZERO_PAGE
++uint8_t empty_zero_page[PAGE_SIZE] __page_aligned_bss;
++EXPORT_SYMBOL(empty_zero_page);
++#endif
++
+ #ifdef CONFIG_DEBUG_MEMORY_INIT
+ int __meminitdata mminit_loglevel;
+ 
+-- 
+2.47.3
+

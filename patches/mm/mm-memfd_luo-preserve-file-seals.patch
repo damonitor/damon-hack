@@ -1,0 +1,172 @@
+From: "Pratyush Yadav (Google)" <pratyush@kernel.org>
+Date: Mon, 16 Feb 2026 19:59:33 +0100
+Subject: [PATCH] mm: memfd_luo: preserve file seals
+
+File seals are used on memfd for making shared memory communication with
+untrusted peers safer and simpler.  Seals provide a guarantee that certain
+operations won't be allowed on the file such as writes or truncations.
+Maintaining these guarantees across a live update will help keeping such
+use cases secure.
+
+These guarantees will also be needed for IOMMUFD preservation with LUO.
+Normally when IOMMUFD maps a memfd, it pins all its pages to make sure any
+truncation operations on the memfd don't lead to IOMMUFD using freed
+memory.  This doesn't work with LUO since the preserved memfd might have
+completely different pages after a live update, and mapping them back to
+the IOMMUFD will cause all sorts of problems.  Using and preserving the
+seals allows IOMMUFD preservation logic to trust the memfd.
+
+Since the uABI defines seals as an int, preserve them by introducing a new
+u32 field.  There are currently only 6 possible seals, so the extra bits
+are unused and provide room for future expansion.  Since the seals are
+uABI, it is safe to use them directly in the ABI.  While at it, also add a
+u32 flags field.  It makes sure the struct is nicely aligned, and can be
+used later to support things like MFD_CLOEXEC.
+
+Since the serialization structure is changed, bump the version number to
+"memfd-v2".
+
+It is important to note that the memfd-v2 version only supports seals that
+existed when this version was defined.  This set is defined by
+MEMFD_LUO_ALL_SEALS.  Any new seal might bring a completely different
+semantic with it and the parser for memfd-v2 cannot be expected to deal
+with that.  If there are any future seals added, they will need another
+version bump.
+
+Link: https://lkml.kernel.org/r/20260216185946.1215770-3-pratyush@kernel.org
+Signed-off-by: Pratyush Yadav (Google) <pratyush@kernel.org>
+Tested-by: Samiullah Khawaja <skhawaja@google.com>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/kho/abi/memfd.h | 18 +++++++++++++++++-
+ mm/memfd_luo.c                | 35 +++++++++++++++++++++++++++++++++--
+ 2 files changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/kho/abi/memfd.h b/include/linux/kho/abi/memfd.h
+index 68cb6303b846e..08b10fea2afc8 100644
+--- a/include/linux/kho/abi/memfd.h
++++ b/include/linux/kho/abi/memfd.h
+@@ -56,10 +56,24 @@ struct memfd_luo_folio_ser {
+ 	u64 index;
+ } __packed;
+ 
++/*
++ * The set of seals this version supports preserving. If support for any new
++ * seals is needed, add it here and bump version.
++ */
++#define MEMFD_LUO_ALL_SEALS (F_SEAL_SEAL | \
++			     F_SEAL_SHRINK | \
++			     F_SEAL_GROW | \
++			     F_SEAL_WRITE | \
++			     F_SEAL_FUTURE_WRITE | \
++			     F_SEAL_EXEC)
++
+ /**
+  * struct memfd_luo_ser - Main serialization structure for a memfd.
+  * @pos:       The file's current position (f_pos).
+  * @size:      The total size of the file in bytes (i_size).
++ * @seals:     The seals present on the memfd. The seals are uABI so it is safe
++ *             to directly use them in the ABI.
++ * @flags:     Flags for the file. Unused flag bits must be set to 0.
+  * @nr_folios: Number of folios in the folios array.
+  * @folios:    KHO vmalloc descriptor pointing to the array of
+  *             struct memfd_luo_folio_ser.
+@@ -67,11 +81,13 @@ struct memfd_luo_folio_ser {
+ struct memfd_luo_ser {
+ 	u64 pos;
+ 	u64 size;
++	u32 seals;
++	u32 flags;
+ 	u64 nr_folios;
+ 	struct kho_vmalloc folios;
+ } __packed;
+ 
+ /* The compatibility string for memfd file handler */
+-#define MEMFD_LUO_FH_COMPATIBLE	"memfd-v1"
++#define MEMFD_LUO_FH_COMPATIBLE	"memfd-v2"
+ 
+ #endif /* _LINUX_KHO_ABI_MEMFD_H */
+diff --git a/mm/memfd_luo.c b/mm/memfd_luo.c
+index 785f26aa58c0d..2e28036a05993 100644
+--- a/mm/memfd_luo.c
++++ b/mm/memfd_luo.c
+@@ -79,6 +79,8 @@
+ #include <linux/shmem_fs.h>
+ #include <linux/vmalloc.h>
+ #include <linux/memfd.h>
++#include <uapi/linux/memfd.h>
++
+ #include "internal.h"
+ 
+ static int memfd_luo_preserve_folios(struct file *file,
+@@ -222,7 +224,7 @@ static int memfd_luo_preserve(struct liveupdate_file_op_args *args)
+ 	struct memfd_luo_folio_ser *folios_ser;
+ 	struct memfd_luo_ser *ser;
+ 	u64 nr_folios;
+-	int err = 0;
++	int err = 0, seals;
+ 
+ 	inode_lock(inode);
+ 	shmem_freeze(inode, true);
+@@ -234,8 +236,21 @@ static int memfd_luo_preserve(struct liveupdate_file_op_args *args)
+ 		goto err_unlock;
+ 	}
+ 
++	seals = memfd_get_seals(args->file);
++	if (seals < 0) {
++		err = seals;
++		goto err_free_ser;
++	}
++
++	/* Make sure the file only has the seals supported by this version. */
++	if (seals & ~MEMFD_LUO_ALL_SEALS) {
++		err = -EOPNOTSUPP;
++		goto err_free_ser;
++	}
++
+ 	ser->pos = args->file->f_pos;
+ 	ser->size = i_size_read(inode);
++	ser->seals = seals;
+ 
+ 	err = memfd_luo_preserve_folios(args->file, &ser->folios,
+ 					&folios_ser, &nr_folios);
+@@ -449,13 +464,29 @@ static int memfd_luo_retrieve(struct liveupdate_file_op_args *args)
+ 	if (!ser)
+ 		return -EINVAL;
+ 
+-	file = memfd_alloc_file("", 0);
++	/* Make sure the file only has seals supported by this version. */
++	if (ser->seals & ~MEMFD_LUO_ALL_SEALS) {
++		err = -EOPNOTSUPP;
++		goto free_ser;
++	}
++
++	/*
++	 * The seals are preserved. Allow sealing here so they can be added
++	 * later.
++	 */
++	file = memfd_alloc_file("", MFD_ALLOW_SEALING);
+ 	if (IS_ERR(file)) {
+ 		pr_err("failed to setup file: %pe\n", file);
+ 		err = PTR_ERR(file);
+ 		goto free_ser;
+ 	}
+ 
++	err = memfd_add_seals(file, ser->seals);
++	if (err) {
++		pr_err("failed to add seals: %pe\n", ERR_PTR(err));
++		goto put_file;
++	}
++
+ 	vfs_setpos(file, ser->pos, MAX_LFS_FILESIZE);
+ 	file->f_inode->i_size = ser->size;
+ 
+-- 
+2.47.3
+

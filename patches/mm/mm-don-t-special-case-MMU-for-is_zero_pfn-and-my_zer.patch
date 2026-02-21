@@ -1,0 +1,153 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Wed, 11 Feb 2026 12:31:38 +0200
+Subject: [PATCH] mm: don't special case !MMU for is_zero_pfn() and
+ my_zero_pfn()
+
+Patch series "arch, mm: consolidate empty_zero_page", v3.
+
+These patches cleanup handling of ZERO_PAGE() and zero_pfn.
+
+
+This patch (of 4):
+
+nommu architectures have empty_zero_page and define ZERO_PAGE() and
+although they don't really use it to populate page tables, there is no
+reason to hardwire !MMU implementation of is_zero_pfn() and my_zero_pfn()
+to 0.
+
+Drop #ifdef CONFIG_MMU around implementations of is_zero_pfn() and
+my_zero_pfn() and remove !MMU version.
+
+While on it, make zero_pfn __ro_after_init.
+
+Link: https://lkml.kernel.org/r/20260211103141.3215197-1-rppt@kernel.org
+Link: https://lkml.kernel.org/r/20260211103141.3215197-2-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Liam R. Howlett <Liam.Howlett@oracle.com>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dinh Nguyen <dinguyen@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Simek <monstr@monstr.eu>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Stafford Horne <shorne@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Cc: Christophe Leroy (CS GROUP) <chleroy@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/pgtable.h | 14 +-------------
+ mm/memory.c             | 13 -------------
+ mm/mm_init.c            | 10 ++++++++++
+ 3 files changed, 11 insertions(+), 26 deletions(-)
+
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index a50df42a893fb..5e772599d9a5c 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -1917,7 +1917,6 @@ static inline void pfnmap_setup_cachemode_pfn(unsigned long pfn, pgprot_t *prot)
+ 	pfnmap_setup_cachemode(pfn, PAGE_SIZE, prot);
+ }
+ 
+-#ifdef CONFIG_MMU
+ #ifdef __HAVE_COLOR_ZERO_PAGE
+ static inline int is_zero_pfn(unsigned long pfn)
+ {
+@@ -1940,18 +1939,7 @@ static inline unsigned long my_zero_pfn(unsigned long addr)
+ 	extern unsigned long zero_pfn;
+ 	return zero_pfn;
+ }
+-#endif
+-#else
+-static inline int is_zero_pfn(unsigned long pfn)
+-{
+-	return 0;
+-}
+-
+-static inline unsigned long my_zero_pfn(unsigned long addr)
+-{
+-	return 0;
+-}
+-#endif /* CONFIG_MMU */
++#endif /* __HAVE_COLOR_ZERO_PAGE */
+ 
+ #ifdef CONFIG_MMU
+ 
+diff --git a/mm/memory.c b/mm/memory.c
+index 21bf2517fbce6..262f62cada0d4 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -162,21 +162,8 @@ static int __init disable_randmaps(char *s)
+ }
+ __setup("norandmaps", disable_randmaps);
+ 
+-unsigned long zero_pfn __read_mostly;
+-EXPORT_SYMBOL(zero_pfn);
+-
+ unsigned long highest_memmap_pfn __read_mostly;
+ 
+-/*
+- * CONFIG_MMU architectures set up ZERO_PAGE in their paging_init()
+- */
+-static int __init init_zero_pfn(void)
+-{
+-	zero_pfn = page_to_pfn(ZERO_PAGE(0));
+-	return 0;
+-}
+-early_initcall(init_zero_pfn);
+-
+ void mm_trace_rss_stat(struct mm_struct *mm, int member)
+ {
+ 	trace_rss_stat(mm, member);
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 61d983d23f553..efd4fa9641b25 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -53,6 +53,9 @@ EXPORT_SYMBOL(mem_map);
+ void *high_memory;
+ EXPORT_SYMBOL(high_memory);
+ 
++unsigned long zero_pfn __ro_after_init;
++EXPORT_SYMBOL(zero_pfn);
++
+ #ifdef CONFIG_DEBUG_MEMORY_INIT
+ int __meminitdata mminit_loglevel;
+ 
+@@ -2668,6 +2671,13 @@ static void __init mem_init_print_info(void)
+ 		);
+ }
+ 
++static int __init init_zero_pfn(void)
++{
++	zero_pfn = page_to_pfn(ZERO_PAGE(0));
++	return 0;
++}
++early_initcall(init_zero_pfn);
++
+ void __init __weak arch_mm_preinit(void)
+ {
+ }
+-- 
+2.47.3
+

@@ -1,0 +1,82 @@
+From: Dmitry Antipov <dmantipov@yandex.ru>
+Date: Thu, 12 Feb 2026 19:44:10 +0300
+Subject: [PATCH] lib: fix memparse() to handle overflow
+
+Since '_parse_integer_limit()' (and so 'simple_strtoull()') is now capable
+to handle overflow, adjust 'memparse()' to handle overflow (denoted by
+ULLONG_MAX) returned from 'simple_strtoull()'.  Also use
+'check_shl_overflow()' to catch an overflow possibly caused by processing
+size suffix and denote it with ULLONG_MAX as well.
+
+Link: https://lkml.kernel.org/r/20260212164413.889625-3-dmantipov@yandex.ru
+Signed-off-by: Dmitry Antipov <dmantipov@yandex.ru>
+Reviewed-by: Andy Shevchenko <andriy.shevchenko@intel.com>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/cmdline.c | 23 +++++++++++++++--------
+ 1 file changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/lib/cmdline.c b/lib/cmdline.c
+index 90ed997d95701..f6e4b113ca9f8 100644
+--- a/lib/cmdline.c
++++ b/lib/cmdline.c
+@@ -150,39 +150,46 @@ EXPORT_SYMBOL(get_options);
+ unsigned long long memparse(const char *ptr, char **retptr)
+ {
+ 	char *endptr;	/* local pointer to end of parsed string */
+-
+ 	unsigned long long ret = simple_strtoull(ptr, &endptr, 0);
++	unsigned int shl = 0;
+ 
++	/* Consume valid suffix even in case of overflow. */
+ 	switch (*endptr) {
+ 	case 'E':
+ 	case 'e':
+-		ret <<= 10;
++		shl += 10;
+ 		fallthrough;
+ 	case 'P':
+ 	case 'p':
+-		ret <<= 10;
++		shl += 10;
+ 		fallthrough;
+ 	case 'T':
+ 	case 't':
+-		ret <<= 10;
++		shl += 10;
+ 		fallthrough;
+ 	case 'G':
+ 	case 'g':
+-		ret <<= 10;
++		shl += 10;
+ 		fallthrough;
+ 	case 'M':
+ 	case 'm':
+-		ret <<= 10;
++		shl += 10;
+ 		fallthrough;
+ 	case 'K':
+ 	case 'k':
+-		ret <<= 10;
+-		endptr++;
++		shl += 10;
+ 		fallthrough;
+ 	default:
+ 		break;
+ 	}
+ 
++	if (shl && likely(ptr != endptr)) {
++		/* Have valid suffix with preceding number. */
++		if (unlikely(check_shl_overflow(ret, shl, &ret)))
++			ret = ULLONG_MAX;
++		endptr++;
++	}
++
+ 	if (retptr)
+ 		*retptr = endptr;
+ 
+-- 
+2.47.3
+
