@@ -1,0 +1,52 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 20 Feb 2026 17:35:21 -0800
+Subject: [PATCH] mm/damon/core: introduce damon_ctx->paused
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 2 ++
+ mm/damon/core.c       | 8 ++++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index cbcce78566229..ab19e9eca398e 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -940,6 +940,8 @@ struct damon_ctx {
+ 	 * intervals tuning
+ 	 */
+ 	unsigned long next_intervals_tune_sis;
++	/* pause kdamond main loop */
++	bool paused;
+ 	/* for waiting until the execution of the kdamond_fn is started */
+ 	struct completion kdamond_started;
+ 	/* for scheme quotas prioritization */
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index a9f8923f62dc1..46b0ff04afd9e 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1548,6 +1548,7 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 		if (err)
+ 			return err;
+ 	}
++	dst->paused = src->paused;
+ 	dst->ops = src->ops;
+ 	err = damon_commit_sample_control(&dst->sample_control,
+ 			&src->sample_control);
+@@ -3350,6 +3351,13 @@ static int kdamond_fn(void *data)
+ 		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
+ 		unsigned long sample_interval = ctx->attrs.sample_interval;
+ 
++		if (ctx->paused) {
++			kdamond_usleep(sample_interval);
++			/* allow caller resetting paused via damon_call() */
++			kdamond_call(ctx, false);
++			continue;
++		}
++
+ 		if (kdamond_wait_activation(ctx))
+ 			break;
+ 
+-- 
+2.47.3
+
