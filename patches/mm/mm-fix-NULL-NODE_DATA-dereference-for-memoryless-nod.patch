@@ -1,0 +1,78 @@
+From: Ming Lei <ming.lei@redhat.com>
+Date: Sun, 22 Feb 2026 19:57:02 +0800
+Subject: [PATCH] mm: fix NULL NODE_DATA dereference for memoryless nodes on
+ boot
+
+Commit d49004c5f0c1 ("arch, mm: consolidate initialization of nodes, zones
+and memory map") moved free_area_init() from setup_arch() to
+mm_core_init_early(), which runs after setup_arch() returns.
+
+This changed the ordering relative to init_cpu_to_node() on x86.  Before
+the commit, free_area_init() ran during paging_init() (called from
+setup_arch()) *before* init_cpu_to_node().  After the commit, it runs
+*after* init_cpu_to_node().
+
+On machines with memoryless NUMA nodes (e.g., node 0 has CPUs but no
+memory), this causes a NULL pointer dereference:
+
+ 1. numa_register_nodes() skips memoryless nodes: no alloc_node_data()
+    and no node_set_online() for them.
+ 2. init_cpu_to_node() sets memoryless nodes online (they have CPUs)
+    but does not allocate NODE_DATA.
+ 3. free_area_init() checks "if (!node_online(nid))" to decide whether
+    to call alloc_offline_node_data(). Since the memoryless node is now
+    online, the allocation is skipped, leaving NODE_DATA(nid) == NULL.
+ 4. The immediate "pgdat = NODE_DATA(nid)" dereferences NULL.
+
+The crash happens before console_init(), so no output is visible without
+earlyprintk.  With earlyprintk enabled, the following panic is observed:
+
+ BUG: unable to handle page fault for address: 000000000002a1e0
+ Oops: Oops: 0000 [#1] SMP NOPTI
+ RIP: 0010:free_area_init_node+0x3a/0x540
+ Call Trace:
+  <TASK>
+  free_area_init+0x331/0x4e0
+  start_kernel+0x69/0x4a0
+  x86_64_start_reservations+0x24/0x30
+  x86_64_start_kernel+0x125/0x130
+  common_startup_64+0x13e/0x148
+  </TASK>
+ Kernel panic - not syncing: Attempted to kill the idle task!
+
+Fix this by checking "if (!NODE_DATA(nid))" instead of "if
+(!node_online(nid))".  This directly tests whether the per-node data
+structure needs to be allocated, regardless of the node's online status.
+This change is also safe for non-x86 architectures as they all allocate
+NODE_DATA for every node including memoryless ones, so the check simply
+evaluates to false with no change in behavior.
+
+Link: https://lkml.kernel.org/r/20260222115702.3659-1-ming.lei@redhat.com
+Fixes: d49004c5f0c1 ("arch, mm: consolidate initialization of nodes, zones and memory map")
+Signed-off-by: Ming Lei <ming.lei@redhat.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 61d983d23f553..df34797691bda 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1896,7 +1896,11 @@ static void __init free_area_init(void)
+ 	for_each_node(nid) {
+ 		pg_data_t *pgdat;
+ 
+-		if (!node_online(nid))
++		/*
++		 * If an architecture has not allocated node data for
++		 * this node, presume the node is memoryless or offline.
++		 */
++		if (!NODE_DATA(nid))
+ 			alloc_offline_node_data(nid);
+ 
+ 		pgdat = NODE_DATA(nid);
+-- 
+2.47.3
+

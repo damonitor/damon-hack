@@ -1,0 +1,61 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Sun, 22 Feb 2026 16:23:37 +0100
+Subject: [PATCH] exit: kill unnecessary thread_group_leader() checks in
+ exit_notify() and do_notify_parent()
+
+thread_group_empty(tsk) is only possible if tsk is a group leader, and
+thread_group_empty() already does the thread_group_leader() check.
+
+So it makes no sense to check "thread_group_leader() &&
+thread_group_empty()"; thread_group_empty() alone is enough.
+
+Link: https://lkml.kernel.org/r/aZsfeegKZPZZszJh@redhat.com
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Mateusz Guzik <mjguzik@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/exit.c   | 8 +++-----
+ kernel/signal.c | 3 +--
+ 2 files changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 8a87021211ae7..79976baaff010 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -748,14 +748,12 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
+ 	tsk->exit_state = EXIT_ZOMBIE;
+ 
+ 	if (unlikely(tsk->ptrace)) {
+-		int sig = thread_group_leader(tsk) &&
+-				thread_group_empty(tsk) &&
+-				!ptrace_reparented(tsk) ?
+-			tsk->exit_signal : SIGCHLD;
++		int sig = thread_group_empty(tsk) && !ptrace_reparented(tsk)
++			  ? tsk->exit_signal : SIGCHLD;
+ 		autoreap = do_notify_parent(tsk, sig);
+ 	} else if (thread_group_leader(tsk)) {
+ 		autoreap = thread_group_empty(tsk) &&
+-			do_notify_parent(tsk, tsk->exit_signal);
++			   do_notify_parent(tsk, tsk->exit_signal);
+ 	} else {
+ 		autoreap = true;
+ 		/* untraced sub-thread */
+diff --git a/kernel/signal.c b/kernel/signal.c
+index d65d0fe24bfb8..ca23059a947dc 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -2178,8 +2178,7 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
+ 	/* do_notify_parent_cldstop should have been called instead.  */
+ 	WARN_ON_ONCE(task_is_stopped_or_traced(tsk));
+ 
+-	WARN_ON_ONCE(!tsk->ptrace &&
+-	       (tsk->group_leader != tsk || !thread_group_empty(tsk)));
++	WARN_ON_ONCE(!tsk->ptrace && !thread_group_empty(tsk));
+ 
+ 	/* ptraced, or group-leader without sub-threads */
+ 	do_notify_pidfd(tsk);
+-- 
+2.47.3
+

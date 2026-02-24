@@ -1,23 +1,23 @@
-- baseline: v6.19-11773-g8bf22c33e7a17
+- baseline: v7.0-rc1
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-hotfixes-unstable: 1 total, 0 (0) series, 1 non-series commits
   - author/reviewer role stat
     - maintainer, nobody: 1 commits
   - full commits list
-    - c560722958da "mm/damon/core: disallow non-power of two min_region_sz"
+    - f34fe45f3842 "mm/damon/core: disallow non-power of two min_region_sz"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260214214124.87689-1-sj@kernel.org
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 0 total, 0 (0) series, 0 non-series commits
-- mm-new: 2 total, 0 (0) series, 2 non-series commits
+- mm-unstable: 2 total, 0 (0) series, 2 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 2 commits
   - full commits list
-    - 493877ea98e6 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+    - 53b6e7c3090e "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - 0e8c34bb3e60 "mm/damon: remove unused target param of get_scheme_score()"
+    - 1dc463a54f13 "mm/damon: remove unused target param of get_scheme_score()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
+- mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

@@ -1,0 +1,84 @@
+From: Vernon Yang <yanglincheng@kylinos.cn>
+Date: Sat, 21 Feb 2026 17:39:17 +0800
+Subject: [PATCH] mm: add folio_test_lazyfree helper
+
+Add folio_test_lazyfree() function to identify lazy-free folios to improve
+code readability.
+
+Link: https://lkml.kernel.org/r/20260221093918.1456187-4-vernon2gm@gmail.com
+Signed-off-by: Vernon Yang <yanglincheng@kylinos.cn>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam Howlett <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/page-flags.h | 5 +++++
+ mm/rmap.c                  | 2 +-
+ mm/vmscan.c                | 5 ++---
+ 3 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index fb6a83fe88b06..0426cac91c0bb 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -724,6 +724,11 @@ static __always_inline bool folio_test_anon(const struct folio *folio)
+ 	return ((unsigned long)folio->mapping & FOLIO_MAPPING_ANON) != 0;
+ }
+ 
++static __always_inline bool folio_test_lazyfree(const struct folio *folio)
++{
++	return folio_test_anon(folio) && !folio_test_swapbacked(folio);
++}
++
+ static __always_inline bool PageAnonNotKsm(const struct page *page)
+ {
+ 	unsigned long flags = (unsigned long)page_folio(page)->mapping;
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 0f00570d1b9e9..bff8f222004e4 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -2046,7 +2046,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 		}
+ 
+ 		if (!pvmw.pte) {
+-			if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
++			if (folio_test_lazyfree(folio)) {
+ 				if (unmap_huge_pmd_locked(vma, pvmw.address, pvmw.pmd, folio))
+ 					goto walk_done;
+ 				/*
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index ce11935754ebd..7effd01a78287 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -963,8 +963,7 @@ static void folio_check_dirty_writeback(struct folio *folio,
+ 	 * They could be mistakenly treated as file lru. So further anon
+ 	 * test is needed.
+ 	 */
+-	if (!folio_is_file_lru(folio) ||
+-	    (folio_test_anon(folio) && !folio_test_swapbacked(folio))) {
++	if (!folio_is_file_lru(folio) || folio_test_lazyfree(folio)) {
+ 		*dirty = false;
+ 		*writeback = false;
+ 		return;
+@@ -1508,7 +1507,7 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 			}
+ 		}
+ 
+-		if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
++		if (folio_test_lazyfree(folio)) {
+ 			/* follow __remove_mapping for reference */
+ 			if (!folio_ref_freeze(folio, 1))
+ 				goto keep_locked;
+-- 
+2.47.3
+

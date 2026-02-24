@@ -1,22 +1,24 @@
-- baseline: v6.19-11773-g8bf22c33e7a17 -> v6.19-11773-g8bf22c33e7a17 (no change)
+- baseline: v6.19-11773-g8bf22c33e7a17 -> v7.0-rc1
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 1 commits
+- mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - c560722958da "mm/damon/core: disallow non-power of two min_region_sz"
-      - Link: https://lkml.kernel.org/r/20260214214124.87689-1-sj@kernel.org
+    - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 0 -> 0 commits (no change)
+- mm-unstable: 0 -> 2 commits
   - series: 0 (0) -> 0 (0) (no change)
-- mm-new: 1 -> 2 commits
-  - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 2 commits
-  - new commits
-    - 0e8c34bb3e60 "mm/damon: remove unused target param of get_scheme_score()"
+    - no role, maintainer: 0 -> 2 commits
+  - changed commits
+    - 53b6e7c3090e "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+      - branch: mm-new -> mm-unstable
+      - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
+    - 1dc463a54f13 "mm/damon: remove unused target param of get_scheme_score()"
+      - branch: mm-new -> mm-unstable
       - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
+- mm-new: 2 -> 0 commits
+  - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 2 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

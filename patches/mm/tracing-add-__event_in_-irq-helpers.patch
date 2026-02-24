@@ -1,0 +1,91 @@
+From: Steven Rostedt <rostedt@goodmis.org>
+Date: Mon, 23 Feb 2026 09:15:42 -0800
+Subject: [PATCH] tracing: add __event_in_*irq() helpers
+
+Patch series "mm: vmscan: add PID and cgroup ID to vmscan tracepoints",
+v7.
+
+
+This patch (of 3):
+
+Some trace events want to expose in their output if they were triggered in
+an interrupt or softirq context.  Instead of recording this in the event
+structure itself, as this information is stored in the flags portion of
+the event header, add helper macros that can be used in the print format:
+
+  TP_printk("val=%d %s", __entry->val, __event_in_irq() ? "(in-irq)" : "")
+
+This will output "(in-irq)" for the event in the trace data if the event
+was triggered in hard or soft interrupt context.
+
+Link: https://lkml.kernel.org/r/20260223171544.4750-1-tballasi@linux.microsoft.com
+Link: https://lore.kernel.org/all/20251229132942.31a2b583@gandalf.local.home/
+Link: https://lkml.kernel.org/r/20260223171544.4750-2-tballasi@linux.microsoft.com
+Signed-off-by: Steven Rostedt (Google) <rostedt@goodmis.org>
+Signed-off-by: Thomas Ballasi <tballasi@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/stages/stage3_trace_output.h |  8 ++++++++
+ include/trace/stages/stage7_class_define.h | 19 +++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/include/trace/stages/stage3_trace_output.h b/include/trace/stages/stage3_trace_output.h
+index fce85ea2df1c8..56ec0c0595b10 100644
+--- a/include/trace/stages/stage3_trace_output.h
++++ b/include/trace/stages/stage3_trace_output.h
+@@ -150,3 +150,11 @@
+ 
+ #undef __get_buf
+ #define __get_buf(len)		trace_seq_acquire(p, (len))
++
++#undef __event_in_hardirq
++#undef __event_in_softirq
++#undef __event_in_irq
++
++#define __event_in_hardirq()	(__entry->ent.flags & TRACE_FLAG_HARDIRQ)
++#define __event_in_softirq()	(__entry->ent.flags & TRACE_FLAG_SOFTIRQ)
++#define __event_in_irq()	(__entry->ent.flags & (TRACE_FLAG_HARDIRQ | TRACE_FLAG_SOFTIRQ))
+diff --git a/include/trace/stages/stage7_class_define.h b/include/trace/stages/stage7_class_define.h
+index fcd564a590f43..47008897a7956 100644
+--- a/include/trace/stages/stage7_class_define.h
++++ b/include/trace/stages/stage7_class_define.h
+@@ -26,6 +26,25 @@
+ #undef __print_hex_dump
+ #undef __get_buf
+ 
++#undef __event_in_hardirq
++#undef __event_in_softirq
++#undef __event_in_irq
++
++/*
++ * The TRACE_FLAG_* are enums. Instead of using TRACE_DEFINE_ENUM(),
++ * use their hardcoded values. These values are parsed by user space
++ * tooling elsewhere so they will never change.
++ *
++ * See "enum trace_flag_type" in linux/trace_events.h:
++ *   TRACE_FLAG_HARDIRQ
++ *   TRACE_FLAG_SOFTIRQ
++ */
++
++/* This is what is displayed in the format files */
++#define __event_in_hardirq()	(REC->common_flags & 0x8)
++#define __event_in_softirq()	(REC->common_flags & 0x10)
++#define __event_in_irq()	(REC->common_flags & 0x18)
++
+ /*
+  * The below is not executed in the kernel. It is only what is
+  * displayed in the print format for userspace to parse.
+-- 
+2.47.3
+

@@ -1,0 +1,225 @@
+From: Vernon Yang <yanglincheng@kylinos.cn>
+Date: Sat, 21 Feb 2026 17:39:16 +0800
+Subject: [PATCH] mm: khugepaged: refine scan progress number
+
+Currently, each scan always increases "progress" by HPAGE_PMD_NR,
+even if only scanning a single PTE/PMD entry.
+
+- When only scanning a sigle PTE entry, let me provide a detailed
+  example:
+
+static int hpage_collapse_scan_pmd()
+{
+	for (addr = start_addr, _pte = pte; _pte < pte + HPAGE_PMD_NR;
+	     _pte++, addr += PAGE_SIZE) {
+		pte_t pteval = ptep_get(_pte);
+		...
+		if (pte_uffd_wp(pteval)) { <-- first scan hit
+			result = SCAN_PTE_UFFD_WP;
+			goto out_unmap;
+		}
+	}
+}
+
+During the first scan, if pte_uffd_wp(pteval) is true, the loop exits
+directly.  In practice, only one PTE is scanned before termination.  Here,
+"progress += 1" reflects the actual number of PTEs scanned, but previously
+"progress += HPAGE_PMD_NR" always.
+
+- When the memory has been collapsed to PMD, let me provide a detailed
+  example:
+
+The following data is traced by bpftrace on a desktop system.  After the
+system has been left idle for 10 minutes upon booting, a lot of
+SCAN_PMD_MAPPED or SCAN_NO_PTE_TABLE are observed during a full scan by
+khugepaged.
+
+From trace_mm_khugepaged_scan_pmd and trace_mm_khugepaged_scan_file, the
+following statuses were observed, with frequency mentioned next to them:
+
+SCAN_SUCCEED          : 1
+SCAN_EXCEED_SHARED_PTE: 2
+SCAN_PMD_MAPPED       : 142
+SCAN_NO_PTE_TABLE     : 178
+total progress size   : 674 MB
+Total time            : 419 seconds, include khugepaged_scan_sleep_millisecs
+
+The khugepaged_scan list save all task that support collapse into
+hugepage, as long as the task is not destroyed, khugepaged will not remove
+it from the khugepaged_scan list.  This exist a phenomenon where task has
+already collapsed all memory regions into hugepage, but khugepaged
+continues to scan it, which wastes CPU time and invalid, and due to
+khugepaged_scan_sleep_millisecs (default 10s) causes a long wait for
+scanning a large number of invalid task, so scanning really valid task is
+later.
+
+After applying this patch, when the memory is either SCAN_PMD_MAPPED or
+SCAN_NO_PTE_TABLE, just skip it, as follow:
+
+SCAN_EXCEED_SHARED_PTE: 2
+SCAN_PMD_MAPPED       : 147
+SCAN_NO_PTE_TABLE     : 173
+total progress size   : 45 MB
+Total time            : 20 seconds
+
+SCAN_PTE_MAPPED_HUGEPAGE is the same, for detailed data, refer to
+https://lore.kernel.org/linux-mm/4qdu7owpmxfh3ugsue775fxarw5g2gcggbxdf5psj75nnu7z2u@cv2uu2yocaxq
+
+Link: https://lkml.kernel.org/r/20260221093918.1456187-3-vernon2gm@gmail.com
+Signed-off-by: Vernon Yang <yanglincheng@kylinos.cn>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand (arm) <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 42 ++++++++++++++++++++++++++++++++----------
+ 1 file changed, 32 insertions(+), 10 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 4d7baf220ad9d..fcdd7b341786f 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -68,7 +68,10 @@ enum scan_result {
+ static struct task_struct *khugepaged_thread __read_mostly;
+ static DEFINE_MUTEX(khugepaged_mutex);
+ 
+-/* default scan 8*HPAGE_PMD_NR ptes (or vmas) every 10 second */
++/*
++ * default scan 8*HPAGE_PMD_NR ptes, pmd_mapped, no_pte_table or vmas
++ * every 10 second.
++ */
+ static unsigned int khugepaged_pages_to_scan __read_mostly;
+ static unsigned int khugepaged_pages_collapsed;
+ static unsigned int khugepaged_full_scans;
+@@ -1231,7 +1234,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+ }
+ 
+ static enum scan_result hpage_collapse_scan_pmd(struct mm_struct *mm,
+-		struct vm_area_struct *vma, unsigned long start_addr, bool *mmap_locked,
++		struct vm_area_struct *vma, unsigned long start_addr,
++		bool *mmap_locked, unsigned int *cur_progress,
+ 		struct collapse_control *cc)
+ {
+ 	pmd_t *pmd;
+@@ -1247,19 +1251,27 @@ static enum scan_result hpage_collapse_scan_pmd(struct mm_struct *mm,
+ 	VM_BUG_ON(start_addr & ~HPAGE_PMD_MASK);
+ 
+ 	result = find_pmd_or_thp_or_none(mm, start_addr, &pmd);
+-	if (result != SCAN_SUCCEED)
++	if (result != SCAN_SUCCEED) {
++		if (cur_progress)
++			*cur_progress = 1;
+ 		goto out;
++	}
+ 
+ 	memset(cc->node_load, 0, sizeof(cc->node_load));
+ 	nodes_clear(cc->alloc_nmask);
+ 	pte = pte_offset_map_lock(mm, pmd, start_addr, &ptl);
+ 	if (!pte) {
++		if (cur_progress)
++			*cur_progress = 1;
+ 		result = SCAN_NO_PTE_TABLE;
+ 		goto out;
+ 	}
+ 
+ 	for (addr = start_addr, _pte = pte; _pte < pte + HPAGE_PMD_NR;
+ 	     _pte++, addr += PAGE_SIZE) {
++		if (cur_progress)
++			*cur_progress += 1;
++
+ 		pte_t pteval = ptep_get(_pte);
+ 		if (pte_none_or_zero(pteval)) {
+ 			++none_or_zero;
+@@ -2279,8 +2291,9 @@ static enum scan_result collapse_file(struct mm_struct *mm, unsigned long addr,
+ 	return result;
+ }
+ 
+-static enum scan_result hpage_collapse_scan_file(struct mm_struct *mm, unsigned long addr,
+-		struct file *file, pgoff_t start, struct collapse_control *cc)
++static enum scan_result hpage_collapse_scan_file(struct mm_struct *mm,
++		unsigned long addr, struct file *file, pgoff_t start,
++		unsigned int *cur_progress, struct collapse_control *cc)
+ {
+ 	struct folio *folio = NULL;
+ 	struct address_space *mapping = file->f_mapping;
+@@ -2370,6 +2383,12 @@ static enum scan_result hpage_collapse_scan_file(struct mm_struct *mm, unsigned
+ 		}
+ 	}
+ 	rcu_read_unlock();
++	if (cur_progress) {
++		if (result == SCAN_PTE_MAPPED_HUGEPAGE)
++			*cur_progress = 1;
++		else
++			*cur_progress = HPAGE_PMD_NR;
++	}
+ 
+ 	if (result == SCAN_SUCCEED) {
+ 		if (cc->is_khugepaged &&
+@@ -2448,6 +2467,7 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, enum scan_result
+ 
+ 		while (khugepaged_scan.address < hend) {
+ 			bool mmap_locked = true;
++			unsigned int cur_progress = 0;
+ 
+ 			cond_resched();
+ 			if (unlikely(hpage_collapse_test_exit_or_disable(mm)))
+@@ -2464,7 +2484,8 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, enum scan_result
+ 				mmap_read_unlock(mm);
+ 				mmap_locked = false;
+ 				*result = hpage_collapse_scan_file(mm,
+-					khugepaged_scan.address, file, pgoff, cc);
++					khugepaged_scan.address, file, pgoff,
++					&cur_progress, cc);
+ 				fput(file);
+ 				if (*result == SCAN_PTE_MAPPED_HUGEPAGE) {
+ 					mmap_read_lock(mm);
+@@ -2478,7 +2499,8 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, enum scan_result
+ 				}
+ 			} else {
+ 				*result = hpage_collapse_scan_pmd(mm, vma,
+-					khugepaged_scan.address, &mmap_locked, cc);
++					khugepaged_scan.address, &mmap_locked,
++					&cur_progress, cc);
+ 			}
+ 
+ 			if (*result == SCAN_SUCCEED)
+@@ -2486,7 +2508,7 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, enum scan_result
+ 
+ 			/* move to next address */
+ 			khugepaged_scan.address += HPAGE_PMD_SIZE;
+-			progress += HPAGE_PMD_NR;
++			progress += cur_progress;
+ 			if (!mmap_locked)
+ 				/*
+ 				 * We released mmap_lock so break loop.  Note
+@@ -2809,7 +2831,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 			mmap_locked = false;
+ 			*lock_dropped = true;
+ 			result = hpage_collapse_scan_file(mm, addr, file, pgoff,
+-							  cc);
++							  NULL, cc);
+ 
+ 			if (result == SCAN_PAGE_DIRTY_OR_WRITEBACK && !triggered_wb &&
+ 			    mapping_can_writeback(file->f_mapping)) {
+@@ -2824,7 +2846,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 			fput(file);
+ 		} else {
+ 			result = hpage_collapse_scan_pmd(mm, vma, addr,
+-							 &mmap_locked, cc);
++							 &mmap_locked, NULL, cc);
+ 		}
+ 		if (!mmap_locked)
+ 			*lock_dropped = true;
+-- 
+2.47.3
+
