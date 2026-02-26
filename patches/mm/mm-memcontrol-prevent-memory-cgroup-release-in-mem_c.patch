@@ -1,0 +1,96 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:52:58 +0800
+Subject: [PATCH] mm: memcontrol: prevent memory cgroup release in
+ mem_cgroup_swap_full()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the near future, a folio will no longer pin its corresponding memory
+cgroup.  To ensure safety, it will only be appropriate to hold the rcu
+read lock or acquire a reference to the memory cgroup returned by
+folio_memcg(), thereby preventing it from being released.
+
+In the current patch, the rcu read lock is employed to safeguard against
+the release of the memory cgroup in mem_cgroup_swap_full().
+
+This serves as a preparatory measure for the reparenting of the LRU pages.
+
+Link: https://lkml.kernel.org/r/21d1abab7342615745ea4c18a88237335ab44d13.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index bfd1e5fc1654b..8a76b4b9cdec4 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5345,27 +5345,29 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
+ bool mem_cgroup_swap_full(struct folio *folio)
+ {
+ 	struct mem_cgroup *memcg;
++	bool ret = false;
+ 
+ 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+ 
+ 	if (vm_swap_full())
+ 		return true;
+-	if (do_memsw_account())
+-		return false;
++	if (do_memsw_account() || !folio_memcg_charged(folio))
++		return ret;
+ 
++	rcu_read_lock();
+ 	memcg = folio_memcg(folio);
+-	if (!memcg)
+-		return false;
+-
+ 	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
+ 		unsigned long usage = page_counter_read(&memcg->swap);
+ 
+ 		if (usage * 2 >= READ_ONCE(memcg->swap.high) ||
+-		    usage * 2 >= READ_ONCE(memcg->swap.max))
+-			return true;
++		    usage * 2 >= READ_ONCE(memcg->swap.max)) {
++			ret = true;
++			break;
++		}
+ 	}
++	rcu_read_unlock();
+ 
+-	return false;
++	return ret;
+ }
+ 
+ static int __init setup_swap_account(char *s)
+-- 
+2.47.3
+

@@ -1,0 +1,55 @@
+From: =?UTF-8?q?Michal=20Koutn=C3=BD?= <mkoutny@suse.com>
+Date: Wed, 25 Feb 2026 19:38:44 +0100
+Subject: [PATCH] mm: Do not allocate shrinker info with cgroup.memory=nokmem
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There'd be no work for memcg-aware shrinkers when kernel memory is not
+accounted per cgroup, so we can skip allocating per memcg shrinker data.
+This saves some memory, avoids holding shrinker_mutex with O(nr_memcgs)
+and saves work in shrink_slab_memcg().
+
+Then there are SHRINKER_NONSLAB shrinkers which handle non-kernel memory
+so nokmem should not disable their per-memcg behavior.  Such shrinkers
+(e.g.  deferred_split_shrinker) still need access to per-memcg data (see
+also commit 0a432dcbeb32e ("mm: shrinker: make shrinker not depend on
+memcg kmem")).
+
+The savings with this patch come on container hosts that create many
+superblocks (each with own shrinker) but tracking and processing per-memcg
+data is pointless with nokmem (shrink_slab_memcg() is partially guarded
+with !memcg_kmem_online already).
+
+The patch uses "boottime" predicate mem_cgroup_kmem_disabled() (not
+memcg_kmem_online()) to avoid mistakenly un-MEMCG_AWARE-ing shrinkers
+registered before first non-root memcg is mkdir'd.
+
+Link: https://lkml.kernel.org/r/20260225-cgroup-ml-nokmem-shrinker-v1-1-d703899bdda4@suse.com
+Signed-off-by: Michal Koutný <mkoutny@suse.com>
+Reviewed-by: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shrinker.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/shrinker.c b/mm/shrinker.c
+index 0f90d63afdeb7..a7849c558b4c0 100644
+--- a/mm/shrinker.c
++++ b/mm/shrinker.c
+@@ -219,6 +219,8 @@ static int shrinker_memcg_alloc(struct shrinker *shrinker)
+ 
+ 	if (mem_cgroup_disabled())
+ 		return -ENOSYS;
++	if (mem_cgroup_kmem_disabled() && !(shrinker->flags & SHRINKER_NONSLAB))
++		return -ENOSYS;
+ 
+ 	mutex_lock(&shrinker_mutex);
+ 	id = idr_alloc(&shrinker_idr, shrinker, 0, 0, GFP_KERNEL);
+-- 
+2.47.3
+

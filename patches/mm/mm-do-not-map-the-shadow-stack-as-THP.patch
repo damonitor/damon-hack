@@ -1,0 +1,71 @@
+From: Catalin Marinas <catalin.marinas@arm.com>
+Date: Wed, 25 Feb 2026 16:14:02 +0000
+Subject: [PATCH] mm: do not map the shadow stack as THP
+
+The default shadow stack size allocated on first prctl() for the main
+thread or subsequently on clone() is either half of RLIMIT_STACK or half
+of a thread's stack size (for arm64).  Both of these are likely to be
+suitable for a THP allocation and the kernel is more aggressive in
+creating such mappings.  However, it does not make much sense to use a
+huge page.  It didn't make sense for the normal stacks either, see commit
+c4608d1bf7c6 ("mm: mmap: map MAP_STACK to VM_NOHUGEPAGE").
+
+Force VM_NOHUGEPAGE when allocating/mapping the shadow stack.  As per
+commit 7190b3c8bd2b ("mm: mmap: map MAP_STACK to VM_NOHUGEPAGE only if THP
+is enabled"), only pass this flag if TRANSPARENT_HUGEPAGE is enabled as
+not to confuse CRIU tools.
+
+Link: https://lkml.kernel.org/r/20260225161404.3157851-6-catalin.marinas@arm.com
+Signed-off-by: Catalin Marinas <catalin.marinas@arm.com>
+Tested-by: Deepak Gupta <debug@rivosinc.com>
+Reviewed-by: Mark Brown <broonie@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/util.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/util.c b/mm/util.c
+index 51f7f417e91f8..419cb81ab3537 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -629,14 +629,18 @@ unsigned long vm_mmap_shadow_stack(unsigned long addr, unsigned long len,
+ {
+ 	struct mm_struct *mm = current->mm;
+ 	unsigned long ret, unused;
++	vm_flags_t vm_flags = VM_SHADOW_STACK;
+ 
+ 	flags |= MAP_ANONYMOUS | MAP_PRIVATE;
+ 	if (addr)
+ 		flags |= MAP_FIXED_NOREPLACE;
+ 
++	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
++		vm_flags |= VM_NOHUGEPAGE;
++
+ 	mmap_write_lock(mm);
+ 	ret = do_mmap(NULL, addr, len, PROT_READ | PROT_WRITE, flags,
+-		      VM_SHADOW_STACK, 0, &unused, NULL);
++		      vm_flags, 0, &unused, NULL);
+ 	mmap_write_unlock(mm);
+ 
+ 	return ret;
+-- 
+2.47.3
+

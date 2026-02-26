@@ -1,0 +1,81 @@
+From: Coiby Xu <coxu@redhat.com>
+Date: Wed, 25 Feb 2026 14:03:44 +0800
+Subject: [PATCH] crash_dump/dm-crypt: don't print in arch-specific code
+
+When the vmcore dumping target is not a LUKS-encrypted target, it's
+expected that there is no dm-crypt key thus no need to return -ENOENT.
+Also print more logs in crash_load_dm_crypt_keys.  The benefit is
+arch-specific code can be more succinct.
+
+Link: https://lkml.kernel.org/r/20260225060347.718905-2-coxu@redhat.com
+Suggested-by: Will Deacon <will@kernel.org>
+Signed-off-by: Coiby Xu <coxu@redhat.com>
+Cc: Arnaud Lefebvre <arnaud.lefebvre@clever-cloud.com>
+Cc: Baoquan he <bhe@redhat.com>
+Cc: Christophe Leroy (CS GROUP) <chleroy@kernel.org>
+Cc: Dave Young <dyoung@redhat.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: kernel test robot <lkp@intel.com>
+Cc: Krzysztof Kozlowski <krzk@kernel.org>
+Cc: Pingfan Liu <kernelfans@gmail.com>
+Cc: Rob Herring <robh@kernel.org>
+Cc: Sourabh Jain <sourabhjain@linux.ibm.com>
+Cc: Thomas Staudt <tstaudt@de.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/kernel/kexec-bzimage64.c | 6 +-----
+ kernel/crash_dump_dm_crypt.c      | 7 +++++--
+ 2 files changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/arch/x86/kernel/kexec-bzimage64.c b/arch/x86/kernel/kexec-bzimage64.c
+index 5630c7dca1f3d..7e980ea49d8d6 100644
+--- a/arch/x86/kernel/kexec-bzimage64.c
++++ b/arch/x86/kernel/kexec-bzimage64.c
+@@ -525,12 +525,8 @@ static void *bzImage64_load(struct kimage *image, char *kernel,
+ 		if (ret)
+ 			return ERR_PTR(ret);
+ 		ret = crash_load_dm_crypt_keys(image);
+-		if (ret == -ENOENT) {
+-			kexec_dprintk("No dm crypt key to load\n");
+-		} else if (ret) {
+-			pr_err("Failed to load dm crypt keys\n");
++		if (ret)
+ 			return ERR_PTR(ret);
+-		}
+ 		if (image->dm_crypt_keys_addr &&
+ 		    cmdline_len + MAX_ELFCOREHDR_STR_LEN + MAX_DMCRYPTKEYS_STR_LEN >
+ 			    header->cmdline_size) {
+diff --git a/kernel/crash_dump_dm_crypt.c b/kernel/crash_dump_dm_crypt.c
+index 1f4067fbdb943..2f7b42b096736 100644
+--- a/kernel/crash_dump_dm_crypt.c
++++ b/kernel/crash_dump_dm_crypt.c
+@@ -414,14 +414,16 @@ int crash_load_dm_crypt_keys(struct kimage *image)
+ 
+ 	if (key_count <= 0) {
+ 		kexec_dprintk("No dm-crypt keys\n");
+-		return -ENOENT;
++		return 0;
+ 	}
+ 
+ 	if (!is_dm_key_reused) {
+ 		image->dm_crypt_keys_addr = 0;
+ 		r = build_keys_header();
+-		if (r)
++		if (r) {
++			pr_err("Failed to build dm-crypt keys header, ret=%d\n", r);
+ 			return r;
++		}
+ 	}
+ 
+ 	kbuf.buffer = keys_header;
+@@ -432,6 +434,7 @@ int crash_load_dm_crypt_keys(struct kimage *image)
+ 	kbuf.mem = KEXEC_BUF_MEM_UNKNOWN;
+ 	r = kexec_add_buffer(&kbuf);
+ 	if (r) {
++		pr_err("Failed to call kexec_add_buffer, ret=%d\n", r);
+ 		kvfree((void *)kbuf.buffer);
+ 		return r;
+ 	}
+-- 
+2.47.3
+

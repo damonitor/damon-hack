@@ -1,0 +1,166 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 25 Feb 2026 15:53:08 +0800
+Subject: [PATCH] mm: vmscan: prepare for reparenting traditional LRU folios
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+To resolve the dying memcg issue, we need to reparent LRU folios of child
+memcg to its parent memcg.  For traditional LRU list, each lruvec of every
+memcg comprises four LRU lists.  Due to the symmetry of the LRU lists, it
+is feasible to transfer the LRU lists from a memcg to its parent memcg
+during the reparenting process.
+
+This commit implements the specific function, which will be used during
+the reparenting process.
+
+Link: https://lkml.kernel.org/r/a92d217a9fc82bd0c401210204a095caaf615b1c.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/swap.h | 21 +++++++++++++++++++++
+ mm/swap.c            | 33 +++++++++++++++++++++++++++++++++
+ mm/vmscan.c          | 19 -------------------
+ 3 files changed, 54 insertions(+), 19 deletions(-)
+
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 00ce4c5e6e714..64af9462ae8af 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -548,6 +548,8 @@ static inline int mem_cgroup_swappiness(struct mem_cgroup *memcg)
+ 
+ 	return READ_ONCE(memcg->swappiness);
+ }
++
++void lru_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid);
+ #else
+ static inline int mem_cgroup_swappiness(struct mem_cgroup *mem)
+ {
+@@ -612,5 +614,24 @@ static inline bool mem_cgroup_swap_full(struct folio *folio)
+ }
+ #endif
+ 
++/* for_each_managed_zone_pgdat - helper macro to iterate over all managed zones in a pgdat up to
++ * and including the specified highidx
++ * @zone: The current zone in the iterator
++ * @pgdat: The pgdat which node_zones are being iterated
++ * @idx: The index variable
++ * @highidx: The index of the highest zone to return
++ *
++ * This macro iterates through all managed zones up to and including the specified highidx.
++ * The zone iterator enters an invalid state after macro call and must be reinitialized
++ * before it can be used again.
++ */
++#define for_each_managed_zone_pgdat(zone, pgdat, idx, highidx)	\
++	for ((idx) = 0, (zone) = (pgdat)->node_zones;		\
++	    (idx) <= (highidx);					\
++	    (idx)++, (zone)++)					\
++		if (!managed_zone(zone))			\
++			continue;				\
++		else
++
+ #endif /* __KERNEL__*/
+ #endif /* _LINUX_SWAP_H */
+diff --git a/mm/swap.c b/mm/swap.c
+index d5bfe6a76ca45..e255be6a0f34f 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -1090,6 +1090,39 @@ void folio_batch_remove_exceptionals(struct folio_batch *fbatch)
+ 	fbatch->nr = j;
+ }
+ 
++#ifdef CONFIG_MEMCG
++static void lruvec_reparent_lru(struct lruvec *child_lruvec,
++				struct lruvec *parent_lruvec,
++				enum lru_list lru, int nid)
++{
++	int zid;
++	struct zone *zone;
++
++	if (lru != LRU_UNEVICTABLE)
++		list_splice_tail_init(&child_lruvec->lists[lru], &parent_lruvec->lists[lru]);
++
++	for_each_managed_zone_pgdat(zone, NODE_DATA(nid), zid, MAX_NR_ZONES - 1) {
++		unsigned long size = mem_cgroup_get_zone_lru_size(child_lruvec, lru, zid);
++
++		mem_cgroup_update_lru_size(parent_lruvec, lru, zid, size);
++	}
++}
++
++void lru_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid)
++{
++	enum lru_list lru;
++	struct lruvec *child_lruvec, *parent_lruvec;
++
++	child_lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
++	parent_lruvec = mem_cgroup_lruvec(parent, NODE_DATA(nid));
++	parent_lruvec->anon_cost += child_lruvec->anon_cost;
++	parent_lruvec->file_cost += child_lruvec->file_cost;
++
++	for_each_lru(lru)
++		lruvec_reparent_lru(child_lruvec, parent_lruvec, lru, nid);
++}
++#endif
++
+ static const struct ctl_table swap_sysctl_table[] = {
+ 	{
+ 		.procname	= "page-cluster",
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 9eec7d17f6df7..93e6bf4492e36 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -269,25 +269,6 @@ static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
+ }
+ #endif
+ 
+-/* for_each_managed_zone_pgdat - helper macro to iterate over all managed zones in a pgdat up to
+- * and including the specified highidx
+- * @zone: The current zone in the iterator
+- * @pgdat: The pgdat which node_zones are being iterated
+- * @idx: The index variable
+- * @highidx: The index of the highest zone to return
+- *
+- * This macro iterates through all managed zones up to and including the specified highidx.
+- * The zone iterator enters an invalid state after macro call and must be reinitialized
+- * before it can be used again.
+- */
+-#define for_each_managed_zone_pgdat(zone, pgdat, idx, highidx)	\
+-	for ((idx) = 0, (zone) = (pgdat)->node_zones;		\
+-	    (idx) <= (highidx);					\
+-	    (idx)++, (zone)++)					\
+-		if (!managed_zone(zone))			\
+-			continue;				\
+-		else
+-
+ static void set_task_reclaim_state(struct task_struct *task,
+ 				   struct reclaim_state *rs)
+ {
+-- 
+2.47.3
+

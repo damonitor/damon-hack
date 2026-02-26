@@ -1,0 +1,89 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:53:02 +0800
+Subject: [PATCH] mm: workingset: prevent lruvec release in
+ workingset_refault()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the near future, a folio will no longer pin its corresponding memory
+cgroup.  So an lruvec returned by folio_lruvec() could be released without
+the rcu read lock or a reference to its memory cgroup.
+
+In the current patch, the rcu read lock is employed to safeguard against
+the release of the lruvec in workingset_refault().
+
+This serves as a preparatory measure for the reparenting of the LRU pages.
+
+Link: https://lkml.kernel.org/r/e3a8c19a9b18422b43213f6c89c451c5b6ca1577.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/workingset.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/mm/workingset.c b/mm/workingset.c
+index 6971aa163e466..2de2a355f0f86 100644
+--- a/mm/workingset.c
++++ b/mm/workingset.c
+@@ -546,6 +546,7 @@ bool workingset_test_recent(void *shadow, bool file, bool *workingset,
+ void workingset_refault(struct folio *folio, void *shadow)
+ {
+ 	bool file = folio_is_file_lru(folio);
++	struct mem_cgroup *memcg;
+ 	struct lruvec *lruvec;
+ 	bool workingset;
+ 	long nr;
+@@ -567,11 +568,12 @@ void workingset_refault(struct folio *folio, void *shadow)
+ 	 * locked to guarantee folio_memcg() stability throughout.
+ 	 */
+ 	nr = folio_nr_pages(folio);
+-	lruvec = folio_lruvec(folio);
++	memcg = get_mem_cgroup_from_folio(folio);
++	lruvec = mem_cgroup_lruvec(memcg, folio_pgdat(folio));
+ 	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + file, nr);
+ 
+ 	if (!workingset_test_recent(shadow, file, &workingset, true))
+-		return;
++		goto out;
+ 
+ 	folio_set_active(folio);
+ 	workingset_age_nonresident(lruvec, nr);
+@@ -587,6 +589,8 @@ void workingset_refault(struct folio *folio, void *shadow)
+ 		lru_note_cost_refault(folio);
+ 		mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file, nr);
+ 	}
++out:
++	mem_cgroup_put(memcg);
+ }
+ 
+ /**
+-- 
+2.47.3
+

@@ -1,0 +1,270 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:48:36 +0800
+Subject: [PATCH] mm: rename unlock_page_lruvec_irq and its variants
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+It is inappropriate to use folio_lruvec_lock() variants in conjunction
+with unlock_page_lruvec() variants, as this involves the inconsistent
+operation of locking a folio while unlocking a page.  To rectify this, the
+functions unlock_page_lruvec{_irq, _irqrestore} are renamed to
+lruvec_unlock{_irq,_irqrestore}.
+
+Link: https://lkml.kernel.org/r/4e5e05271a250df4d1812e1832be65636a78c957.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Reviewed-by: Chen Ridong <chenridong@huawei.com>
+Acked-by: David Hildenbrand (Red Hat) <david@kernel.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 10 +++++-----
+ mm/compaction.c            | 14 +++++++-------
+ mm/huge_memory.c           |  2 +-
+ mm/mlock.c                 |  2 +-
+ mm/swap.c                  | 12 ++++++------
+ mm/vmscan.c                |  4 ++--
+ 6 files changed, 22 insertions(+), 22 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 5173a9f167212..6e88288e90d82 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -1479,17 +1479,17 @@ static inline struct lruvec *parent_lruvec(struct lruvec *lruvec)
+ 	return mem_cgroup_lruvec(memcg, lruvec_pgdat(lruvec));
+ }
+ 
+-static inline void unlock_page_lruvec(struct lruvec *lruvec)
++static inline void lruvec_unlock(struct lruvec *lruvec)
+ {
+ 	spin_unlock(&lruvec->lru_lock);
+ }
+ 
+-static inline void unlock_page_lruvec_irq(struct lruvec *lruvec)
++static inline void lruvec_unlock_irq(struct lruvec *lruvec)
+ {
+ 	spin_unlock_irq(&lruvec->lru_lock);
+ }
+ 
+-static inline void unlock_page_lruvec_irqrestore(struct lruvec *lruvec,
++static inline void lruvec_unlock_irqrestore(struct lruvec *lruvec,
+ 		unsigned long flags)
+ {
+ 	spin_unlock_irqrestore(&lruvec->lru_lock, flags);
+@@ -1511,7 +1511,7 @@ static inline struct lruvec *folio_lruvec_relock_irq(struct folio *folio,
+ 		if (folio_matches_lruvec(folio, locked_lruvec))
+ 			return locked_lruvec;
+ 
+-		unlock_page_lruvec_irq(locked_lruvec);
++		lruvec_unlock_irq(locked_lruvec);
+ 	}
+ 
+ 	return folio_lruvec_lock_irq(folio);
+@@ -1525,7 +1525,7 @@ static inline void folio_lruvec_relock_irqsave(struct folio *folio,
+ 		if (folio_matches_lruvec(folio, *lruvecp))
+ 			return;
+ 
+-		unlock_page_lruvec_irqrestore(*lruvecp, *flags);
++		lruvec_unlock_irqrestore(*lruvecp, *flags);
+ 	}
+ 
+ 	*lruvecp = folio_lruvec_lock_irqsave(folio, flags);
+diff --git a/mm/compaction.c b/mm/compaction.c
+index 1e8f8eca318c6..c3e338aaa0ffb 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -913,7 +913,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 		 */
+ 		if (!(low_pfn % COMPACT_CLUSTER_MAX)) {
+ 			if (locked) {
+-				unlock_page_lruvec_irqrestore(locked, flags);
++				lruvec_unlock_irqrestore(locked, flags);
+ 				locked = NULL;
+ 			}
+ 
+@@ -964,7 +964,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 			}
+ 			/* for alloc_contig case */
+ 			if (locked) {
+-				unlock_page_lruvec_irqrestore(locked, flags);
++				lruvec_unlock_irqrestore(locked, flags);
+ 				locked = NULL;
+ 			}
+ 
+@@ -1053,7 +1053,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 			if (unlikely(page_has_movable_ops(page)) &&
+ 			    !PageMovableOpsIsolated(page)) {
+ 				if (locked) {
+-					unlock_page_lruvec_irqrestore(locked, flags);
++					lruvec_unlock_irqrestore(locked, flags);
+ 					locked = NULL;
+ 				}
+ 
+@@ -1158,7 +1158,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 		/* If we already hold the lock, we can skip some rechecking */
+ 		if (lruvec != locked) {
+ 			if (locked)
+-				unlock_page_lruvec_irqrestore(locked, flags);
++				lruvec_unlock_irqrestore(locked, flags);
+ 
+ 			compact_lock_irqsave(&lruvec->lru_lock, &flags, cc);
+ 			locked = lruvec;
+@@ -1226,7 +1226,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ isolate_fail_put:
+ 		/* Avoid potential deadlock in freeing page under lru_lock */
+ 		if (locked) {
+-			unlock_page_lruvec_irqrestore(locked, flags);
++			lruvec_unlock_irqrestore(locked, flags);
+ 			locked = NULL;
+ 		}
+ 		folio_put(folio);
+@@ -1242,7 +1242,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 		 */
+ 		if (nr_isolated) {
+ 			if (locked) {
+-				unlock_page_lruvec_irqrestore(locked, flags);
++				lruvec_unlock_irqrestore(locked, flags);
+ 				locked = NULL;
+ 			}
+ 			putback_movable_pages(&cc->migratepages);
+@@ -1274,7 +1274,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
+ 
+ isolate_abort:
+ 	if (locked)
+-		unlock_page_lruvec_irqrestore(locked, flags);
++		lruvec_unlock_irqrestore(locked, flags);
+ 	if (folio) {
+ 		folio_set_lru(folio);
+ 		folio_put(folio);
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 8003d3a498220..f6c0a86055bdc 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3902,7 +3902,7 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+ 		folio_ref_unfreeze(folio, folio_cache_ref_count(folio) + 1);
+ 
+ 		if (do_lru)
+-			unlock_page_lruvec(lruvec);
++			lruvec_unlock(lruvec);
+ 
+ 		if (ci)
+ 			swap_cluster_unlock(ci);
+diff --git a/mm/mlock.c b/mm/mlock.c
+index 2f699c3497a57..66740e16679c3 100644
+--- a/mm/mlock.c
++++ b/mm/mlock.c
+@@ -205,7 +205,7 @@ static void mlock_folio_batch(struct folio_batch *fbatch)
+ 	}
+ 
+ 	if (lruvec)
+-		unlock_page_lruvec_irq(lruvec);
++		lruvec_unlock_irq(lruvec);
+ 	folios_put(fbatch);
+ }
+ 
+diff --git a/mm/swap.c b/mm/swap.c
+index bb19ccbece464..245ba159e01d7 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -91,7 +91,7 @@ static void page_cache_release(struct folio *folio)
+ 
+ 	__page_cache_release(folio, &lruvec, &flags);
+ 	if (lruvec)
+-		unlock_page_lruvec_irqrestore(lruvec, flags);
++		lruvec_unlock_irqrestore(lruvec, flags);
+ }
+ 
+ void __folio_put(struct folio *folio)
+@@ -175,7 +175,7 @@ static void folio_batch_move_lru(struct folio_batch *fbatch, move_fn_t move_fn)
+ 	}
+ 
+ 	if (lruvec)
+-		unlock_page_lruvec_irqrestore(lruvec, flags);
++		lruvec_unlock_irqrestore(lruvec, flags);
+ 	folios_put(fbatch);
+ }
+ 
+@@ -349,7 +349,7 @@ void folio_activate(struct folio *folio)
+ 
+ 	lruvec = folio_lruvec_lock_irq(folio);
+ 	lru_activate(lruvec, folio);
+-	unlock_page_lruvec_irq(lruvec);
++	lruvec_unlock_irq(lruvec);
+ 	folio_set_lru(folio);
+ }
+ #endif
+@@ -963,7 +963,7 @@ void folios_put_refs(struct folio_batch *folios, unsigned int *refs)
+ 
+ 		if (folio_is_zone_device(folio)) {
+ 			if (lruvec) {
+-				unlock_page_lruvec_irqrestore(lruvec, flags);
++				lruvec_unlock_irqrestore(lruvec, flags);
+ 				lruvec = NULL;
+ 			}
+ 			if (folio_ref_sub_and_test(folio, nr_refs))
+@@ -977,7 +977,7 @@ void folios_put_refs(struct folio_batch *folios, unsigned int *refs)
+ 		/* hugetlb has its own memcg */
+ 		if (folio_test_hugetlb(folio)) {
+ 			if (lruvec) {
+-				unlock_page_lruvec_irqrestore(lruvec, flags);
++				lruvec_unlock_irqrestore(lruvec, flags);
+ 				lruvec = NULL;
+ 			}
+ 			free_huge_folio(folio);
+@@ -991,7 +991,7 @@ void folios_put_refs(struct folio_batch *folios, unsigned int *refs)
+ 		j++;
+ 	}
+ 	if (lruvec)
+-		unlock_page_lruvec_irqrestore(lruvec, flags);
++		lruvec_unlock_irqrestore(lruvec, flags);
+ 	if (!j) {
+ 		folio_batch_reinit(folios);
+ 		return;
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index de62225b381a1..8189d223fd95c 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -1835,7 +1835,7 @@ bool folio_isolate_lru(struct folio *folio)
+ 		folio_get(folio);
+ 		lruvec = folio_lruvec_lock_irq(folio);
+ 		lruvec_del_folio(lruvec, folio);
+-		unlock_page_lruvec_irq(lruvec);
++		lruvec_unlock_irq(lruvec);
+ 		ret = true;
+ 	}
+ 
+@@ -7862,7 +7862,7 @@ void check_move_unevictable_folios(struct folio_batch *fbatch)
+ 	if (lruvec) {
+ 		__count_vm_events(UNEVICTABLE_PGRESCUED, pgrescued);
+ 		__count_vm_events(UNEVICTABLE_PGSCANNED, pgscanned);
+-		unlock_page_lruvec_irq(lruvec);
++		lruvec_unlock_irq(lruvec);
+ 	} else if (pgscanned) {
+ 		count_vm_events(UNEVICTABLE_PGSCANNED, pgscanned);
+ 	}
+-- 
+2.47.3
+

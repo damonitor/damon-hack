@@ -1,0 +1,98 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 25 Feb 2026 15:53:10 +0800
+Subject: [PATCH] mm: memcontrol: refactor memcg_reparent_objcgs()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Refactor the memcg_reparent_objcgs() to facilitate subsequent reparenting
+LRU folios here.
+
+Link: https://lkml.kernel.org/r/2e5696db1993e593a51004c1dacedbc261689629.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 03625ce3624fa..93681b84b538c 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -209,15 +209,12 @@ static struct obj_cgroup *obj_cgroup_alloc(void)
+ 	return objcg;
+ }
+ 
+-static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
++static inline struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memcg,
++							 struct mem_cgroup *parent)
+ {
+ 	struct obj_cgroup *objcg, *iter;
+-	struct mem_cgroup *parent = parent_mem_cgroup(memcg);
+ 
+ 	objcg = rcu_replace_pointer(memcg->objcg, NULL, true);
+-
+-	spin_lock_irq(&objcg_lock);
+-
+ 	/* 1) Ready to reparent active objcg. */
+ 	list_add(&objcg->list, &memcg->objcg_list);
+ 	/* 2) Reparent active objcg and already reparented objcgs to parent. */
+@@ -226,7 +223,29 @@ static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
+ 	/* 3) Move already reparented objcgs to the parent's list */
+ 	list_splice(&memcg->objcg_list, &parent->objcg_list);
+ 
++	return objcg;
++}
++
++static inline void reparent_locks(struct mem_cgroup *memcg, struct mem_cgroup *parent)
++{
++	spin_lock_irq(&objcg_lock);
++}
++
++static inline void reparent_unlocks(struct mem_cgroup *memcg, struct mem_cgroup *parent)
++{
+ 	spin_unlock_irq(&objcg_lock);
++}
++
++static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
++{
++	struct obj_cgroup *objcg;
++	struct mem_cgroup *parent = parent_mem_cgroup(memcg);
++
++	reparent_locks(memcg, parent);
++
++	objcg = __memcg_reparent_objcgs(memcg, parent);
++
++	reparent_unlocks(memcg, parent);
+ 
+ 	percpu_ref_kill(&objcg->refcnt);
+ }
+-- 
+2.47.3
+

@@ -1,0 +1,279 @@
+From: Marco Elver <elver@google.com>
+Date: Wed, 25 Feb 2026 21:36:05 +0100
+Subject: [PATCH] kfence: add kfence.fault parameter
+
+Add kfence.fault parameter to control the behavior when a KFENCE error is
+detected (similar in spirit to kasan.fault=<mode>).
+
+The supported modes for kfence.fault=<mode> are:
+
+  - report: print the error report and continue (default).
+  - oops: print the error report and oops.
+  - panic: print the error report and panic.
+
+In particular, the 'oops' mode offers a trade-off between no mitigation
+on report and panicking outright (if panic_on_oops is not set).
+
+Link: https://lkml.kernel.org/r/20260225203639.3159463-1-elver@google.com
+Signed-off-by: Marco Elver <elver@google.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../admin-guide/kernel-parameters.txt         |  6 +++
+ Documentation/dev-tools/kfence.rst            |  7 +++
+ mm/kfence/core.c                              | 23 ++++++---
+ mm/kfence/kfence.h                            | 16 +++++-
+ mm/kfence/report.c                            | 49 +++++++++++++++++--
+ 5 files changed, 89 insertions(+), 12 deletions(-)
+
+diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
+index cb850e5290c2b..05acdea306b2d 100644
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -2958,6 +2958,12 @@ Kernel parameters
+ 			Format: <bool>
+ 			Default: CONFIG_KFENCE_DEFERRABLE
+ 
++	kfence.fault=	[MM,KFENCE] Controls the behavior when a KFENCE
++			error is detected.
++			report - print the error report and continue (default).
++			oops   - print the error report and oops.
++			panic  - print the error report and panic.
++
+ 	kfence.sample_interval=
+ 			[MM,KFENCE] KFENCE's sample interval in milliseconds.
+ 			Format: <unsigned integer>
+diff --git a/Documentation/dev-tools/kfence.rst b/Documentation/dev-tools/kfence.rst
+index 5418993538653..b03d1201ddaea 100644
+--- a/Documentation/dev-tools/kfence.rst
++++ b/Documentation/dev-tools/kfence.rst
+@@ -81,6 +81,13 @@ tables being allocated.
+ Error reports
+ ~~~~~~~~~~~~~
+ 
++The boot parameter ``kfence.fault`` can be used to control the behavior when a
++KFENCE error is detected:
++
++- ``kfence.fault=report``: Print the error report and continue (default).
++- ``kfence.fault=oops``: Print the error report and oops.
++- ``kfence.fault=panic``: Print the error report and panic.
++
+ A typical out-of-bounds access looks like this::
+ 
+     ==================================================================
+diff --git a/mm/kfence/core.c b/mm/kfence/core.c
+index 7393957f9a202..9eba46212edf0 100644
+--- a/mm/kfence/core.c
++++ b/mm/kfence/core.c
+@@ -51,7 +51,7 @@
+ 
+ /* === Data ================================================================= */
+ 
+-static bool kfence_enabled __read_mostly;
++bool kfence_enabled __read_mostly;
+ static bool disabled_by_warn __read_mostly;
+ 
+ unsigned long kfence_sample_interval __read_mostly = CONFIG_KFENCE_SAMPLE_INTERVAL;
+@@ -336,6 +336,7 @@ metadata_update_state(struct kfence_metadata *meta, enum kfence_object_state nex
+ static check_canary_attributes bool check_canary_byte(u8 *addr)
+ {
+ 	struct kfence_metadata *meta;
++	enum kfence_fault fault;
+ 	unsigned long flags;
+ 
+ 	if (likely(*addr == KFENCE_CANARY_PATTERN_U8(addr)))
+@@ -345,8 +346,9 @@ static check_canary_attributes bool check_canary_byte(u8 *addr)
+ 
+ 	meta = addr_to_metadata((unsigned long)addr);
+ 	raw_spin_lock_irqsave(&meta->lock, flags);
+-	kfence_report_error((unsigned long)addr, false, NULL, meta, KFENCE_ERROR_CORRUPTION);
++	fault = kfence_report_error((unsigned long)addr, false, NULL, meta, KFENCE_ERROR_CORRUPTION);
+ 	raw_spin_unlock_irqrestore(&meta->lock, flags);
++	kfence_handle_fault(fault);
+ 
+ 	return false;
+ }
+@@ -525,11 +527,14 @@ static void kfence_guarded_free(void *addr, struct kfence_metadata *meta, bool z
+ 	raw_spin_lock_irqsave(&meta->lock, flags);
+ 
+ 	if (!kfence_obj_allocated(meta) || meta->addr != (unsigned long)addr) {
++		enum kfence_fault fault;
++
+ 		/* Invalid or double-free, bail out. */
+ 		atomic_long_inc(&counters[KFENCE_COUNTER_BUGS]);
+-		kfence_report_error((unsigned long)addr, false, NULL, meta,
+-				    KFENCE_ERROR_INVALID_FREE);
++		fault = kfence_report_error((unsigned long)addr, false, NULL, meta,
++					    KFENCE_ERROR_INVALID_FREE);
+ 		raw_spin_unlock_irqrestore(&meta->lock, flags);
++		kfence_handle_fault(fault);
+ 		return;
+ 	}
+ 
+@@ -831,7 +836,8 @@ static void kfence_check_all_canary(void)
+ static int kfence_check_canary_callback(struct notifier_block *nb,
+ 					unsigned long reason, void *arg)
+ {
+-	kfence_check_all_canary();
++	if (READ_ONCE(kfence_enabled))
++		kfence_check_all_canary();
+ 	return NOTIFY_OK;
+ }
+ 
+@@ -1266,6 +1272,7 @@ bool kfence_handle_page_fault(unsigned long addr, bool is_write, struct pt_regs
+ 	struct kfence_metadata *to_report = NULL;
+ 	unsigned long unprotected_page = 0;
+ 	enum kfence_error_type error_type;
++	enum kfence_fault fault;
+ 	unsigned long flags;
+ 
+ 	if (!is_kfence_address((void *)addr))
+@@ -1324,12 +1331,14 @@ bool kfence_handle_page_fault(unsigned long addr, bool is_write, struct pt_regs
+ 	if (to_report) {
+ 		raw_spin_lock_irqsave(&to_report->lock, flags);
+ 		to_report->unprotected_page = unprotected_page;
+-		kfence_report_error(addr, is_write, regs, to_report, error_type);
++		fault = kfence_report_error(addr, is_write, regs, to_report, error_type);
+ 		raw_spin_unlock_irqrestore(&to_report->lock, flags);
+ 	} else {
+ 		/* This may be a UAF or OOB access, but we can't be sure. */
+-		kfence_report_error(addr, is_write, regs, NULL, KFENCE_ERROR_INVALID);
++		fault = kfence_report_error(addr, is_write, regs, NULL, KFENCE_ERROR_INVALID);
+ 	}
+ 
++	kfence_handle_fault(fault);
++
+ 	return kfence_unprotect(addr); /* Unprotect and let access proceed. */
+ }
+diff --git a/mm/kfence/kfence.h b/mm/kfence/kfence.h
+index f9caea0072466..1f618f9b0d12d 100644
+--- a/mm/kfence/kfence.h
++++ b/mm/kfence/kfence.h
+@@ -16,6 +16,8 @@
+ 
+ #include "../slab.h" /* for struct kmem_cache */
+ 
++extern bool kfence_enabled;
++
+ /*
+  * Get the canary byte pattern for @addr. Use a pattern that varies based on the
+  * lower 3 bits of the address, to detect memory corruptions with higher
+@@ -140,8 +142,18 @@ enum kfence_error_type {
+ 	KFENCE_ERROR_INVALID_FREE,	/* Invalid free. */
+ };
+ 
+-void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
+-			 const struct kfence_metadata *meta, enum kfence_error_type type);
++enum kfence_fault {
++	KFENCE_FAULT_NONE,
++	KFENCE_FAULT_REPORT,
++	KFENCE_FAULT_OOPS,
++	KFENCE_FAULT_PANIC,
++};
++
++enum kfence_fault
++kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
++		    const struct kfence_metadata *meta, enum kfence_error_type type);
++
++void kfence_handle_fault(enum kfence_fault fault);
+ 
+ void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *meta) __must_hold(&meta->lock);
+ 
+diff --git a/mm/kfence/report.c b/mm/kfence/report.c
+index 787e87c26926f..d548536864b1d 100644
+--- a/mm/kfence/report.c
++++ b/mm/kfence/report.c
+@@ -7,9 +7,12 @@
+ 
+ #include <linux/stdarg.h>
+ 
++#include <linux/bug.h>
++#include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/lockdep.h>
+ #include <linux/math.h>
++#include <linux/panic.h>
+ #include <linux/printk.h>
+ #include <linux/sched/debug.h>
+ #include <linux/seq_file.h>
+@@ -29,6 +32,26 @@
+ #define ARCH_FUNC_PREFIX ""
+ #endif
+ 
++static enum kfence_fault kfence_fault __ro_after_init = KFENCE_FAULT_REPORT;
++
++static int __init early_kfence_fault(char *arg)
++{
++	if (!arg)
++		return -EINVAL;
++
++	if (!strcmp(arg, "report"))
++		kfence_fault = KFENCE_FAULT_REPORT;
++	else if (!strcmp(arg, "oops"))
++		kfence_fault = KFENCE_FAULT_OOPS;
++	else if (!strcmp(arg, "panic"))
++		kfence_fault = KFENCE_FAULT_PANIC;
++	else
++		return -EINVAL;
++
++	return 0;
++}
++early_param("kfence.fault", early_kfence_fault);
++
+ /* Helper function to either print to a seq_file or to console. */
+ __printf(2, 3)
+ static void seq_con_printf(struct seq_file *seq, const char *fmt, ...)
+@@ -189,8 +212,9 @@ static const char *get_access_type(bool is_write)
+ 	return str_write_read(is_write);
+ }
+ 
+-void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
+-			 const struct kfence_metadata *meta, enum kfence_error_type type)
++enum kfence_fault
++kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
++		    const struct kfence_metadata *meta, enum kfence_error_type type)
+ {
+ 	unsigned long stack_entries[KFENCE_STACK_DEPTH] = { 0 };
+ 	const ptrdiff_t object_index = meta ? meta - kfence_metadata : -1;
+@@ -206,7 +230,7 @@ void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *r
+ 
+ 	/* Require non-NULL meta, except if KFENCE_ERROR_INVALID. */
+ 	if (WARN_ON(type != KFENCE_ERROR_INVALID && !meta))
+-		return;
++		return KFENCE_FAULT_NONE;
+ 
+ 	/*
+ 	 * Because we may generate reports in printk-unfriendly parts of the
+@@ -282,6 +306,25 @@ void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *r
+ 
+ 	/* We encountered a memory safety error, taint the kernel! */
+ 	add_taint(TAINT_BAD_PAGE, LOCKDEP_STILL_OK);
++
++	return kfence_fault;
++}
++
++void kfence_handle_fault(enum kfence_fault fault)
++{
++	switch (fault) {
++	case KFENCE_FAULT_NONE:
++	case KFENCE_FAULT_REPORT:
++		break;
++	case KFENCE_FAULT_OOPS:
++		BUG();
++		break;
++	case KFENCE_FAULT_PANIC:
++		/* Disable KFENCE to avoid recursion if check_on_panic is set. */
++		WRITE_ONCE(kfence_enabled, false);
++		panic("kfence.fault=panic set ...\n");
++		break;
++	}
+ }
+ 
+ #ifdef CONFIG_PRINTK
+-- 
+2.47.3
+

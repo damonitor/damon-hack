@@ -1,0 +1,87 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:52:59 +0800
+Subject: [PATCH] mm: workingset: prevent memory cgroup release in
+ lru_gen_eviction()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the near future, a folio will no longer pin its corresponding memory
+cgroup.  To ensure safety, it will only be appropriate to hold the rcu
+read lock or acquire a reference to the memory cgroup returned by
+folio_memcg(), thereby preventing it from being released.
+
+In the current patch, the rcu read lock is employed to safeguard against
+the release of the memory cgroup in lru_gen_eviction().
+
+This serves as a preparatory measure for the reparenting of the LRU pages.
+
+Link: https://lkml.kernel.org/r/f37e8ae2d84ddc690813d834cd75735d52d1bc78.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/workingset.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/mm/workingset.c b/mm/workingset.c
+index 5e8b6e62a6175..6971aa163e466 100644
+--- a/mm/workingset.c
++++ b/mm/workingset.c
+@@ -244,12 +244,15 @@ static void *lru_gen_eviction(struct folio *folio)
+ 	int refs = folio_lru_refs(folio);
+ 	bool workingset = folio_test_workingset(folio);
+ 	int tier = lru_tier_from_refs(refs, workingset);
+-	struct mem_cgroup *memcg = folio_memcg(folio);
++	struct mem_cgroup *memcg;
+ 	struct pglist_data *pgdat = folio_pgdat(folio);
++	unsigned short memcg_id;
+ 
+ 	BUILD_BUG_ON(LRU_GEN_WIDTH + LRU_REFS_WIDTH >
+ 		     BITS_PER_LONG - max(EVICTION_SHIFT, EVICTION_SHIFT_ANON));
+ 
++	rcu_read_lock();
++	memcg = folio_memcg(folio);
+ 	lruvec = mem_cgroup_lruvec(memcg, pgdat);
+ 	lrugen = &lruvec->lrugen;
+ 	min_seq = READ_ONCE(lrugen->min_seq[type]);
+@@ -257,8 +260,10 @@ static void *lru_gen_eviction(struct folio *folio)
+ 
+ 	hist = lru_hist_from_seq(min_seq);
+ 	atomic_long_add(delta, &lrugen->evicted[hist][type][tier]);
++	memcg_id = mem_cgroup_private_id(memcg);
++	rcu_read_unlock();
+ 
+-	return pack_shadow(mem_cgroup_private_id(memcg), pgdat, token, workingset, type);
++	return pack_shadow(memcg_id, pgdat, token, workingset, type);
+ }
+ 
+ /*
+-- 
+2.47.3
+

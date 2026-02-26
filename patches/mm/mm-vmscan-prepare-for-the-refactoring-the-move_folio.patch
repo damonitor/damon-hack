@@ -1,0 +1,79 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 25 Feb 2026 15:48:37 +0800
+Subject: [PATCH] mm: vmscan: prepare for the refactoring the
+ move_folios_to_lru()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Once we refactor move_folios_to_lru(), its callers will no longer have to
+hold the lruvec lock; For shrink_inactive_list(), shrink_active_list() and
+evict_folios(), IRQ disabling is only needed for __count_vm_events() and
+__mod_node_page_state().
+
+To avoid using local_irq_disable() on the PREEMPT_RT kernel, let's make
+all callers of move_folios_to_lru() use IRQ-safed count_vm_events() and
+mod_node_page_state().
+
+Link: https://lkml.kernel.org/r/b3a202f1787b0857bb6cbe059fffb8edefaf67b7.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Chen Ridong <chenridong@huawei.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 8189d223fd95c..acef191bf8dc0 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2025,7 +2025,7 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
+ 
+ 	mod_lruvec_state(lruvec, PGDEMOTE_KSWAPD + reclaimer_offset(sc),
+ 					stat.nr_demoted);
+-	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
++	mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+ 	item = PGSTEAL_KSWAPD + reclaimer_offset(sc);
+ 	mod_lruvec_state(lruvec, item, nr_reclaimed);
+ 	mod_lruvec_state(lruvec, PGSTEAL_ANON + file, nr_reclaimed);
+@@ -2171,10 +2171,10 @@ static void shrink_active_list(unsigned long nr_to_scan,
+ 	nr_activate = move_folios_to_lru(lruvec, &l_active);
+ 	nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
+ 
+-	__count_vm_events(PGDEACTIVATE, nr_deactivate);
++	count_vm_events(PGDEACTIVATE, nr_deactivate);
+ 	count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
+ 
+-	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
++	mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+ 
+ 	lru_note_cost_unlock_irq(lruvec, file, 0, nr_rotated);
+ 	trace_mm_vmscan_lru_shrink_active(pgdat->node_id, nr_taken, nr_activate,
+-- 
+2.47.3
+

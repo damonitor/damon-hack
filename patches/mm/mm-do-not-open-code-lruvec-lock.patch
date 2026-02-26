@@ -1,0 +1,222 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 25 Feb 2026 15:53:06 +0800
+Subject: [PATCH] mm: do not open-code lruvec lock
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Now we have lruvec_unlock(), lruvec_unlock_irq() and
+lruvec_unlock_irqrestore(), but no the paired lruvec_lock(),
+lruvec_lock_irq() and lruvec_lock_irqsave().
+
+There is currently no use case for lruvec_lock_irqsave(), so only
+introduce lruvec_lock_irq(), and change all open-code places to use this
+helper function.  This looks cleaner and prepares for reparenting LRU
+pages, preventing user from missing RCU lock calls due to open-code lruvec
+lock.
+
+Link: https://lkml.kernel.org/r/2d0bafe7564e17ece46dfd58197af22ce57017dc.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h |  5 +++++
+ mm/vmscan.c                | 38 +++++++++++++++++++-------------------
+ 2 files changed, 24 insertions(+), 19 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index ef26ba087844c..38f94c7271c17 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -1498,6 +1498,11 @@ static inline struct lruvec *parent_lruvec(struct lruvec *lruvec)
+ 	return mem_cgroup_lruvec(memcg, lruvec_pgdat(lruvec));
+ }
+ 
++static inline void lruvec_lock_irq(struct lruvec *lruvec)
++{
++	spin_lock_irq(&lruvec->lru_lock);
++}
++
+ static inline void lruvec_unlock(struct lruvec *lruvec)
+ {
+ 	spin_unlock(&lruvec->lru_lock);
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index e60077ca54e80..9eec7d17f6df7 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2002,7 +2002,7 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
+ 
+ 	lru_add_drain();
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 
+ 	nr_taken = isolate_lru_folios(nr_to_scan, lruvec, &folio_list,
+ 				     &nr_scanned, sc, lru);
+@@ -2012,7 +2012,7 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
+ 	mod_lruvec_state(lruvec, item, nr_scanned);
+ 	mod_lruvec_state(lruvec, PGSCAN_ANON + file, nr_scanned);
+ 
+-	spin_unlock_irq(&lruvec->lru_lock);
++	lruvec_unlock_irq(lruvec);
+ 
+ 	if (nr_taken == 0)
+ 		return 0;
+@@ -2029,7 +2029,7 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
+ 	mod_lruvec_state(lruvec, item, nr_reclaimed);
+ 	mod_lruvec_state(lruvec, PGSTEAL_ANON + file, nr_reclaimed);
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 	lru_note_cost_unlock_irq(lruvec, file, stat.nr_pageout,
+ 					nr_scanned - nr_reclaimed);
+ 
+@@ -2108,7 +2108,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
+ 
+ 	lru_add_drain();
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 
+ 	nr_taken = isolate_lru_folios(nr_to_scan, lruvec, &l_hold,
+ 				     &nr_scanned, sc, lru);
+@@ -2117,7 +2117,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
+ 
+ 	mod_lruvec_state(lruvec, PGREFILL, nr_scanned);
+ 
+-	spin_unlock_irq(&lruvec->lru_lock);
++	lruvec_unlock_irq(lruvec);
+ 
+ 	while (!list_empty(&l_hold)) {
+ 		struct folio *folio;
+@@ -2173,7 +2173,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
+ 	count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
+ 	mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 	lru_note_cost_unlock_irq(lruvec, file, 0, nr_rotated);
+ 	trace_mm_vmscan_lru_shrink_active(pgdat->node_id, nr_taken, nr_activate,
+ 			nr_deactivate, nr_rotated, sc->priority, file);
+@@ -3794,9 +3794,9 @@ static void walk_mm(struct mm_struct *mm, struct lru_gen_mm_walk *walk)
+ 		}
+ 
+ 		if (walk->batched) {
+-			spin_lock_irq(&lruvec->lru_lock);
++			lruvec_lock_irq(lruvec);
+ 			reset_batch_size(walk);
+-			spin_unlock_irq(&lruvec->lru_lock);
++			lruvec_unlock_irq(lruvec);
+ 		}
+ 
+ 		cond_resched();
+@@ -3956,7 +3956,7 @@ static bool inc_max_seq(struct lruvec *lruvec, unsigned long seq, int swappiness
+ 	if (seq < READ_ONCE(lrugen->max_seq))
+ 		return false;
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 
+ 	VM_WARN_ON_ONCE(!seq_is_valid(lruvec));
+ 
+@@ -3971,7 +3971,7 @@ static bool inc_max_seq(struct lruvec *lruvec, unsigned long seq, int swappiness
+ 		if (inc_min_seq(lruvec, type, swappiness))
+ 			continue;
+ 
+-		spin_unlock_irq(&lruvec->lru_lock);
++		lruvec_unlock_irq(lruvec);
+ 		cond_resched();
+ 		goto restart;
+ 	}
+@@ -4006,7 +4006,7 @@ static bool inc_max_seq(struct lruvec *lruvec, unsigned long seq, int swappiness
+ 	/* make sure preceding modifications appear */
+ 	smp_store_release(&lrugen->max_seq, lrugen->max_seq + 1);
+ unlock:
+-	spin_unlock_irq(&lruvec->lru_lock);
++	lruvec_unlock_irq(lruvec);
+ 
+ 	return success;
+ }
+@@ -4697,7 +4697,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+ 
+-	spin_lock_irq(&lruvec->lru_lock);
++	lruvec_lock_irq(lruvec);
+ 
+ 	scanned = isolate_folios(nr_to_scan, lruvec, sc, swappiness, &type, &list);
+ 
+@@ -4706,7 +4706,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 	if (evictable_min_seq(lrugen->min_seq, swappiness) + MIN_NR_GENS > lrugen->max_seq)
+ 		scanned = 0;
+ 
+-	spin_unlock_irq(&lruvec->lru_lock);
++	lruvec_unlock_irq(lruvec);
+ 
+ 	if (list_empty(&list))
+ 		return scanned;
+@@ -4744,9 +4744,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 	walk = current->reclaim_state->mm_walk;
+ 	if (walk && walk->batched) {
+ 		walk->lruvec = lruvec;
+-		spin_lock_irq(&lruvec->lru_lock);
++		lruvec_lock_irq(lruvec);
+ 		reset_batch_size(walk);
+-		spin_unlock_irq(&lruvec->lru_lock);
++		lruvec_unlock_irq(lruvec);
+ 	}
+ 
+ 	mod_lruvec_state(lruvec, PGDEMOTE_KSWAPD + reclaimer_offset(sc),
+@@ -5178,7 +5178,7 @@ static void lru_gen_change_state(bool enabled)
+ 		for_each_node(nid) {
+ 			struct lruvec *lruvec = get_lruvec(memcg, nid);
+ 
+-			spin_lock_irq(&lruvec->lru_lock);
++			lruvec_lock_irq(lruvec);
+ 
+ 			VM_WARN_ON_ONCE(!seq_is_valid(lruvec));
+ 			VM_WARN_ON_ONCE(!state_is_valid(lruvec));
+@@ -5186,12 +5186,12 @@ static void lru_gen_change_state(bool enabled)
+ 			lruvec->lrugen.enabled = enabled;
+ 
+ 			while (!(enabled ? fill_evictable(lruvec) : drain_evictable(lruvec))) {
+-				spin_unlock_irq(&lruvec->lru_lock);
++				lruvec_unlock_irq(lruvec);
+ 				cond_resched();
+-				spin_lock_irq(&lruvec->lru_lock);
++				lruvec_lock_irq(lruvec);
+ 			}
+ 
+-			spin_unlock_irq(&lruvec->lru_lock);
++			lruvec_unlock_irq(lruvec);
+ 		}
+ 
+ 		cond_resched();
+-- 
+2.47.3
+

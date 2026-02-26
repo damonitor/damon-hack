@@ -1,0 +1,232 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:48:34 +0800
+Subject: [PATCH] mm: memcontrol: remove dead code of checking parent memory
+ cgroup
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "Eliminate Dying Memory Cgroup", v5.
+
+Introduction
+============
+
+This patchset is intended to transfer the LRU pages to the object cgroup
+without holding a reference to the original memory cgroup in order to
+address the issue of the dying memory cgroup.  A consensus has already
+been reached regarding this approach recently [1].
+
+Background
+==========
+
+The issue of a dying memory cgroup refers to a situation where a memory
+cgroup is no longer being used by users, but memory (the metadata
+associated with memory cgroups) remains allocated to it.  This situation
+may potentially result in memory leaks or inefficiencies in memory
+reclamation and has persisted as an issue for several years.  Any memory
+allocation that endures longer than the lifespan (from the users'
+perspective) of a memory cgroup can lead to the issue of dying memory
+cgroup.  We have exerted greater efforts to tackle this problem by
+introducing the infrastructure of object cgroup [2].
+
+Presently, numerous types of objects (slab objects, non-slab kernel
+allocations, per-CPU objects) are charged to the object cgroup without
+holding a reference to the original memory cgroup.  The final allocations
+for LRU pages (anonymous pages and file pages) are charged at allocation
+time and continues to hold a reference to the original memory cgroup until
+reclaimed.
+
+File pages are more complex than anonymous pages as they can be shared
+among different memory cgroups and may persist beyond the lifespan of the
+memory cgroup.  The long-term pinning of file pages to memory cgroups is a
+widespread issue that causes recurring problems in practical scenarios
+[3].  File pages remain unreclaimed for extended periods.  Additionally,
+they are accessed by successive instances (second, third, fourth, etc.) of
+the same job, which is restarted into a new cgroup each time.  As a
+result, unreclaimable dying memory cgroups accumulate, leading to memory
+wastage and significantly reducing the efficiency of page reclamation.
+
+Fundamentals
+============
+
+A folio will no longer pin its corresponding memory cgroup.  It is
+necessary to ensure that the memory cgroup or the lruvec associated with
+the memory cgroup is not released when a user obtains a pointer to the
+memory cgroup or lruvec returned by folio_memcg() or folio_lruvec().
+Users are required to hold the RCU read lock or acquire a reference to the
+memory cgroup associated with the folio to prevent its release if they are
+not concerned about the binding stability between the folio and its
+corresponding memory cgroup.  However, some users of folio_lruvec() (i.e.,
+the lruvec lock) desire a stable binding between the folio and its
+corresponding memory cgroup.  An approach is needed to ensure the
+stability of the binding while the lruvec lock is held, and to detect the
+situation of holding the incorrect lruvec lock when there is a race
+condition during memory cgroup reparenting.  The following four steps are
+taken to achieve these goals.
+
+1. The first step  to be taken is to identify all users of both functions
+   (folio_memcg() and folio_lruvec()) who are not concerned about binding
+   stability and implement appropriate measures (such as holding a RCU read
+   lock or temporarily obtaining a reference to the memory cgroup for a
+   brief period) to prevent the release of the memory cgroup.
+
+2. Secondly, the following refactoring of folio_lruvec_lock() demonstrates
+   how to ensure the binding stability from the user's perspective of
+   folio_lruvec().
+
+   struct lruvec *folio_lruvec_lock(struct folio *folio)
+   {
+           struct lruvec *lruvec;
+
+           rcu_read_lock();
+   retry:
+           lruvec = folio_lruvec(folio);
+           spin_lock(&lruvec->lru_lock);
+           if (unlikely(lruvec_memcg(lruvec) != folio_memcg(folio))) {
+                   spin_unlock(&lruvec->lru_lock);
+                   goto retry;
+           }
+
+           return lruvec;
+   }
+
+   From the perspective of memory cgroup removal, the entire reparenting
+   process (altering the binding relationship between folio and its memory
+   cgroup and moving the LRU lists to its parental memory cgroup) should be
+   carried out under both the lruvec lock of the memory cgroup being removed
+   and the lruvec lock of its parent.
+
+3. Finally, transfer the LRU pages to the object cgroup without holding a
+   reference to the original memory cgroup.
+
+Effect
+======
+
+Finally, it can be observed that the quantity of dying memory cgroups will
+not experience a significant increase if the following test script is
+executed to reproduce the issue.
+
+bash
+#!/bin/bash
+
+# Create a temporary file 'temp' filled with zero bytes
+dd if=/dev/zero of=temp bs=4096 count=1
+
+# Display memory-cgroup info from /proc/cgroups
+cat /proc/cgroups | grep memory
+
+for i in {0..2000}
+do
+    mkdir /sys/fs/cgroup/memory/test$i
+    echo $$ > /sys/fs/cgroup/memory/test$i/cgroup.procs
+
+    # Append 'temp' file content to 'log'
+    cat temp >> log
+
+    echo $$ > /sys/fs/cgroup/memory/cgroup.procs
+
+    # Potentially create a dying memory cgroup
+    rmdir /sys/fs/cgroup/memory/test$i
+done
+
+# Display memory-cgroup info after test
+cat /proc/cgroups | grep memory
+
+rm -f temp log
+
+
+
+
+Since the no-hierarchy mode has been deprecated after the commit:
+
+  commit bef8620cd8e0 ("mm: memcg: deprecate the non-hierarchical mode").
+
+As a result, parent_mem_cgroup() will not return NULL except when passing
+the root memcg, and the root memcg cannot be offline.  Hence, it's safe to
+remove the check on the returned value of parent_mem_cgroup().  Remove the
+corresponding dead code.
+
+Link: https://lkml.kernel.org/r/cover.1772005110.git.zhengqi.arch@bytedance.com
+Link: https://lkml.kernel.org/r/f4481291bf8c6561dd8949045b5a1ed4008a6b63.1772005110.git.zhengqi.arch@bytedance.com
+Link: https://lore.kernel.org/linux-mm/Z6OkXXYDorPrBvEQ@hm-sls2/ [1]
+Link: https://lwn.net/Articles/895431/ [2]
+Link: https://github.com/systemd/systemd/pull/36827 [3]
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Roman Gushchin <roman.gushchin@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Reviewed-by: Chen Ridong <chenridong@huawei.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 5 -----
+ mm/shrinker.c   | 6 +-----
+ 2 files changed, 1 insertion(+), 10 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 6561b19c65767..74ee61e3718e7 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3424,9 +3424,6 @@ static void memcg_offline_kmem(struct mem_cgroup *memcg)
+ 		return;
+ 
+ 	parent = parent_mem_cgroup(memcg);
+-	if (!parent)
+-		parent = root_mem_cgroup;
+-
+ 	memcg_reparent_list_lrus(memcg, parent);
+ 
+ 	/*
+@@ -3706,8 +3703,6 @@ struct mem_cgroup *mem_cgroup_private_id_get_online(struct mem_cgroup *memcg, un
+ 			break;
+ 		}
+ 		memcg = parent_mem_cgroup(memcg);
+-		if (!memcg)
+-			memcg = root_mem_cgroup;
+ 	}
+ 	return memcg;
+ }
+diff --git a/mm/shrinker.c b/mm/shrinker.c
+index a7849c558b4c0..bf03942744e80 100644
+--- a/mm/shrinker.c
++++ b/mm/shrinker.c
+@@ -288,14 +288,10 @@ void reparent_shrinker_deferred(struct mem_cgroup *memcg)
+ {
+ 	int nid, index, offset;
+ 	long nr;
+-	struct mem_cgroup *parent;
++	struct mem_cgroup *parent = parent_mem_cgroup(memcg);
+ 	struct shrinker_info *child_info, *parent_info;
+ 	struct shrinker_info_unit *child_unit, *parent_unit;
+ 
+-	parent = parent_mem_cgroup(memcg);
+-	if (!parent)
+-		parent = root_mem_cgroup;
+-
+ 	/* Prevent from concurrent shrinker_info expand */
+ 	mutex_lock(&shrinker_mutex);
+ 	for_each_node(nid) {
+-- 
+2.47.3
+

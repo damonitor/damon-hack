@@ -1,0 +1,192 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Wed, 25 Feb 2026 15:48:43 +0800
+Subject: [PATCH] writeback: prevent memory cgroup release in writeback module
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the near future, a folio will no longer pin its corresponding memory
+cgroup.  To ensure safety, it will only be appropriate to hold the rcu
+read lock or acquire a reference to the memory cgroup returned by
+folio_memcg(), thereby preventing it from being released.
+
+In the current patch, the function get_mem_cgroup_css_from_folio() and the
+rcu read lock are employed to safeguard against the release of the memory
+cgroup.
+
+This serves as a preparatory measure for the reparenting of the
+LRU pages.
+
+Link: https://lkml.kernel.org/r/645f99bc344575417f67def3744f975596df2793.1772005110.git.zhengqi.arch@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Harry Yoo <harry.yoo@oracle.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chen Ridong <chenridong@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/fs-writeback.c                | 22 +++++++++++-----------
+ include/linux/memcontrol.h       |  9 +++++++--
+ include/trace/events/writeback.h |  3 +++
+ mm/memcontrol.c                  | 14 ++++++++------
+ 4 files changed, 29 insertions(+), 19 deletions(-)
+
+diff --git a/fs/fs-writeback.c b/fs/fs-writeback.c
+index 8f8069fb76bae..490ead3e4bf3e 100644
+--- a/fs/fs-writeback.c
++++ b/fs/fs-writeback.c
+@@ -279,15 +279,13 @@ void __inode_attach_wb(struct inode *inode, struct folio *folio)
+ 	if (inode_cgwb_enabled(inode)) {
+ 		struct cgroup_subsys_state *memcg_css;
+ 
+-		if (folio) {
+-			memcg_css = mem_cgroup_css_from_folio(folio);
+-			wb = wb_get_create(bdi, memcg_css, GFP_ATOMIC);
+-		} else {
+-			/* must pin memcg_css, see wb_get_create() */
++		/* must pin memcg_css, see wb_get_create() */
++		if (folio)
++			memcg_css = get_mem_cgroup_css_from_folio(folio);
++		else
+ 			memcg_css = task_get_css(current, memory_cgrp_id);
+-			wb = wb_get_create(bdi, memcg_css, GFP_ATOMIC);
+-			css_put(memcg_css);
+-		}
++		wb = wb_get_create(bdi, memcg_css, GFP_ATOMIC);
++		css_put(memcg_css);
+ 	}
+ 
+ 	if (!wb)
+@@ -978,16 +976,16 @@ void wbc_account_cgroup_owner(struct writeback_control *wbc, struct folio *folio
+ 	if (!wbc->wb || wbc->no_cgroup_owner)
+ 		return;
+ 
+-	css = mem_cgroup_css_from_folio(folio);
++	css = get_mem_cgroup_css_from_folio(folio);
+ 	/* dead cgroups shouldn't contribute to inode ownership arbitration */
+ 	if (!css_is_online(css))
+-		return;
++		goto out;
+ 
+ 	id = css->id;
+ 
+ 	if (id == wbc->wb_id) {
+ 		wbc->wb_bytes += bytes;
+-		return;
++		goto out;
+ 	}
+ 
+ 	if (id == wbc->wb_lcand_id)
+@@ -1000,6 +998,8 @@ void wbc_account_cgroup_owner(struct writeback_control *wbc, struct folio *folio
+ 		wbc->wb_tcand_bytes += bytes;
+ 	else
+ 		wbc->wb_tcand_bytes -= min(bytes, wbc->wb_tcand_bytes);
++out:
++	css_put(css);
+ }
+ EXPORT_SYMBOL_GPL(wbc_account_cgroup_owner);
+ 
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 9a015258a2ffe..4454f03a4acf4 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -894,7 +894,7 @@ static inline bool mm_match_cgroup(struct mm_struct *mm,
+ 	return match;
+ }
+ 
+-struct cgroup_subsys_state *mem_cgroup_css_from_folio(struct folio *folio);
++struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio);
+ ino_t page_cgroup_ino(struct page *page);
+ 
+ static inline bool mem_cgroup_online(struct mem_cgroup *memcg)
+@@ -1563,9 +1563,14 @@ static inline void mem_cgroup_track_foreign_dirty(struct folio *folio,
+ 	if (mem_cgroup_disabled())
+ 		return;
+ 
++	if (!folio_memcg_charged(folio))
++		return;
++
++	rcu_read_lock();
+ 	memcg = folio_memcg(folio);
+-	if (unlikely(memcg && &memcg->css != wb->memcg_css))
++	if (unlikely(&memcg->css != wb->memcg_css))
+ 		mem_cgroup_track_foreign_dirty_slowpath(folio, wb);
++	rcu_read_unlock();
+ }
+ 
+ void mem_cgroup_flush_foreign(struct bdi_writeback *wb);
+diff --git a/include/trace/events/writeback.h b/include/trace/events/writeback.h
+index 4d3d8c8f3a1bc..b849b8cc96b1e 100644
+--- a/include/trace/events/writeback.h
++++ b/include/trace/events/writeback.h
+@@ -294,7 +294,10 @@ TRACE_EVENT(track_foreign_dirty,
+ 		__entry->ino		= inode ? inode->i_ino : 0;
+ 		__entry->memcg_id	= wb->memcg_css->id;
+ 		__entry->cgroup_ino	= __trace_wb_assign_cgroup(wb);
++
++		rcu_read_lock();
+ 		__entry->page_cgroup_ino = cgroup_ino(folio_memcg(folio)->css.cgroup);
++		rcu_read_unlock();
+ 	),
+ 
+ 	TP_printk("bdi %s[%llu]: ino=%lu memcg_id=%u cgroup_ino=%lu page_cgroup_ino=%lu",
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index f3cfaaf5fe5a3..bfd1e5fc1654b 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -244,7 +244,7 @@ DEFINE_STATIC_KEY_FALSE(memcg_bpf_enabled_key);
+ EXPORT_SYMBOL(memcg_bpf_enabled_key);
+ 
+ /**
+- * mem_cgroup_css_from_folio - css of the memcg associated with a folio
++ * get_mem_cgroup_css_from_folio - acquire a css of the memcg associated with a folio
+  * @folio: folio of interest
+  *
+  * If memcg is bound to the default hierarchy, css of the memcg associated
+@@ -254,14 +254,16 @@ EXPORT_SYMBOL(memcg_bpf_enabled_key);
+  * If memcg is bound to a traditional hierarchy, the css of root_mem_cgroup
+  * is returned.
+  */
+-struct cgroup_subsys_state *mem_cgroup_css_from_folio(struct folio *folio)
++struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio)
+ {
+-	struct mem_cgroup *memcg = folio_memcg(folio);
++	struct mem_cgroup *memcg;
+ 
+-	if (!memcg || !cgroup_subsys_on_dfl(memory_cgrp_subsys))
+-		memcg = root_mem_cgroup;
++	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys))
++		return &root_mem_cgroup->css;
+ 
+-	return &memcg->css;
++	memcg = get_mem_cgroup_from_folio(folio);
++
++	return memcg ? &memcg->css : &root_mem_cgroup->css;
+ }
+ 
+ /**
+-- 
+2.47.3
+

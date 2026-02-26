@@ -1,0 +1,105 @@
+From: Catalin Marinas <catalin.marinas@arm.com>
+Date: Wed, 25 Feb 2026 16:13:58 +0000
+Subject: [PATCH] mm: introduce vm_mmap_shadow_stack() as a helper for
+ VM_SHADOW_STACK mappings
+
+Patch series "mm: arch/shstk: Common shadow stack mapping helper and
+VM_NOHUGEPAGE", v2.
+
+A series to extract the common shadow stack mmap into a separate helper
+for arm64, riscv and x86.
+
+
+This patch (of 5):
+
+arm64, riscv and x86 use a similar pattern for mapping the user shadow
+stack (cloned from x86).  Extract this into a helper to facilitate code
+reuse.
+
+The call to do_mmap() from the new helper uses PROT_READ|PROT_WRITE prot
+bits instead of the PROT_READ with an explicit VM_WRITE vm_flag.  The x86
+intent was to avoid PROT_WRITE implying normal write since the shadow
+stack is not writable by normal stores.  However, from a kernel
+perspective, the vma is writeable.  Functionally there is no difference.
+
+Link: https://lkml.kernel.org/r/20260225161404.3157851-1-catalin.marinas@arm.com
+Link: https://lkml.kernel.org/r/20260225161404.3157851-2-catalin.marinas@arm.com
+Signed-off-by: Catalin Marinas <catalin.marinas@arm.com>
+Tested-by: Deepak Gupta <debug@rivosinc.com>
+Reviewed-by: Mark Brown <broonie@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h |  2 ++
+ mm/util.c          | 25 +++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 3016c86ef2174..d50987b5121ba 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -3912,6 +3912,8 @@ extern int vm_munmap(unsigned long, size_t);
+ extern unsigned long __must_check vm_mmap(struct file *, unsigned long,
+         unsigned long, unsigned long,
+         unsigned long, unsigned long);
++extern unsigned long __must_check vm_mmap_shadow_stack(unsigned long addr,
++		unsigned long len, unsigned long flags);
+ 
+ struct vm_unmapped_area_info {
+ #define VM_UNMAPPED_AREA_TOPDOWN 1
+diff --git a/mm/util.c b/mm/util.c
+index b05ab6f97e110..51f7f417e91f8 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -618,6 +618,31 @@ unsigned long vm_mmap(struct file *file, unsigned long addr,
+ }
+ EXPORT_SYMBOL(vm_mmap);
+ 
++#ifdef CONFIG_ARCH_HAS_USER_SHADOW_STACK
++/*
++ * Perform a userland memory mapping for a shadow stack into the current
++ * process address space. This is intended to be used by architectures that
++ * support user shadow stacks.
++ */
++unsigned long vm_mmap_shadow_stack(unsigned long addr, unsigned long len,
++		unsigned long flags)
++{
++	struct mm_struct *mm = current->mm;
++	unsigned long ret, unused;
++
++	flags |= MAP_ANONYMOUS | MAP_PRIVATE;
++	if (addr)
++		flags |= MAP_FIXED_NOREPLACE;
++
++	mmap_write_lock(mm);
++	ret = do_mmap(NULL, addr, len, PROT_READ | PROT_WRITE, flags,
++		      VM_SHADOW_STACK, 0, &unused, NULL);
++	mmap_write_unlock(mm);
++
++	return ret;
++}
++#endif /* CONFIG_ARCH_HAS_USER_SHADOW_STACK */
++
+ /**
+  * __vmalloc_array - allocate memory for a virtually contiguous array.
+  * @n: number of elements.
+-- 
+2.47.3
+
