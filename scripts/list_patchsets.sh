@@ -57,11 +57,16 @@ do
 	fi
 
 	echo "$to"
-	git log "$from..$to" -- mm/damon/ include/linux/damon.h \
+	for c in $(git log "$from..$to" --format="%h" --grep "Patch series" \
+		-- mm/damon/ include/linux/damon.h \
 		Documentation/vm/damon/ Documentation/admin-guide/vm/damon/ \
 		Documentation/mm/damon/ Documentation/admin-guide/mm/damon/ \
 		Documentation/ABI/testing/sysfs-kernel-mm-damon \
 		include/trace/events/damon.h \
 		samples/damon/ \
-		tools/testing/selftests/damon | grep "Patch series"
+		tools/testing/selftests/damon)
+	do
+		series=$(git log --pretty=%B -1 $c | grep "Patch series")
+		echo "$c $series"
+	done
 done
