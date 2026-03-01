@@ -10,30 +10,9 @@
 - mm-unstable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 2 -> 2 commits (no change)
-- mm-new: 0 -> 5 commits
-  - series: 0 (0) -> 2 (5)
-    - maintainer, nobody: 0 -> 5 commits
-  - new commits
-    - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2)
-      - 9303bf4d5e89 "mm/damon/core: set quota-score histogram with core filters (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - 4a317676a6df "mm/damon/core: do non-safe region walk on kdamond_apply_schemes() (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
-    - series "mm/damon: strictly respect min_nr_regions". (3)
-      - 322abf1b1edb "mm/damon/core: split regions for min_nr_regions (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
-        - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - 5a8e8d49ee93 "mm/damon/vaddr: do not split regions for min_nr_regions (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - 6547b855782f "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
+- mm-new: 5 -> 5 commits (no change)
+  - series: 2 (5) -> 2 (5) (no change)
+    - maintainer, nobody: 5 -> 5 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
