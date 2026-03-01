@@ -1,11 +1,8 @@
 From: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
-Date: Tue, 17 Feb 2026 11:10:04 -0500
+Date: Fri, 27 Feb 2026 10:37:28 -0500
 Subject: [PATCH] lib: introduce hierarchical per-cpu counters
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-Patch series "Improve proc RSS accuracy", v17.
+Patch series "Improve proc RSS accuracy", v18.
 
 This series introduces the hierarchical tree counter (hpcc) to increase
 accuracy of approximated RSS counters exposed through proc interfaces.
@@ -64,23 +61,22 @@ For a binary tree, the maximum inaccuracy is bound by:
    batch_size * log2(nr_cpu_ids) * nr_cpu_ids
 which evolves with O(n*log(n)) as the number of CPUs increases.
 
-For a N-way tree, the maximum inaccuracy can be pre-calculated
-based on the the N-arity of each level and the batch size.
+For a N-way tree, the maximum inaccuracy can be pre-calculated based on
+the the N-arity of each level and the batch size.
 
 * Memory Use
 
 The most important parts in terms of memory use are the per-cpu counters
 and the tree items which propagate the carry.
 
-In the proposed implementation, the per-cpu counters are allocated
-within per-cpu data structures, so they end up using:
+In the proposed implementation, the per-cpu counters are allocated within
+per-cpu data structures, so they end up using:
 
   nr_possible_cpus * sizeof(unsigned long)
 
-This is in addition to the tree items. The size of those items is
-defined by the per_nr_cpu_order_config table "nr_items" field.
-Each item is aligned on cacheline size (typically 64 bytes) to minimize
-false sharing.
+This is in addition to the tree items.  The size of those items is defined
+by the per_nr_cpu_order_config table "nr_items" field.  Each item is
+aligned on cacheline size (typically 64 bytes) to minimize false sharing.
 
 Here is the footprint for a few nr_cpu_ids on a 64-bit arch:
 
@@ -119,16 +115,16 @@ There are of course various trade offs we can make here. We can:
   cacheline for the various tree instances. This adds complexity,
   but provides compactness as well as minimal false-sharing.
 
-Compared to this, the upstream percpu counters use a 32-bit integer per-cpu
-(4 bytes), and accumulate within a 64-bit global value.
+Compared to this, the upstream percpu counters use a 32-bit integer
+per-cpu (4 bytes), and accumulate within a 64-bit global value.
 
 So there is an extra memory footprint added by the current hpcc
 implementation, but if it's an issue we have various options to consider
 to reduce its footprint.
 
-Link: https://lkml.kernel.org/r/20260217161006.1105611-1-mathieu.desnoyers@efficios.com
-Link: https://lore.kernel.org/lkml/20250331223516.7810-2-sweettea-kernel@dorminy.me/ [1]
-Link: https://lkml.kernel.org/r/20260217161006.1105611-2-mathieu.desnoyers@efficios.com
+Link: https://lkml.kernel.org/r/20260227153730.1556542-1-mathieu.desnoyers@efficios.com
+Link: https://lore.kernel.org/lkml/20250331223516.7810-2-sweettea-kernel@dorminy.me/ # [1]
+Link: https://lkml.kernel.org/r/20260227153730.1556542-2-mathieu.desnoyers@efficios.com
 Signed-off-by: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: "Paul E. McKenney" <paulmck@kernel.org>
 Cc: Steven Rostedt <rostedt@goodmis.org>
@@ -139,7 +135,7 @@ Cc: Tejun Heo <tj@kernel.org>
 Cc: Christoph Lameter <cl@linux.com>
 Cc: Martin Liu <liumartin@google.com>
 Cc: David Rientjes <rientjes@google.com>
-Cc: Christan König <christian.koenig@amd.com>
+Cc: christian.koenig@amd.com
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: SeongJae Park <sj@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
@@ -164,12 +160,12 @@ Cc: Aboorva Devarajan <aboorvad@linux.ibm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  .../core-api/percpu-counter-tree.rst          |  75 ++
- include/linux/mm_types.h                      |   6 +-
- include/linux/percpu_counter_tree.h           | 367 ++++++++++
+ include/linux/mm_types.h                      |   4 +-
+ include/linux/percpu_counter_tree.h           | 367 +++++++++
  init/main.c                                   |   2 +
  lib/Makefile                                  |   1 +
- lib/percpu_counter_tree.c                     | 690 ++++++++++++++++++
- 6 files changed, 1138 insertions(+), 3 deletions(-)
+ lib/percpu_counter_tree.c                     | 702 ++++++++++++++++++
+ 6 files changed, 1149 insertions(+), 2 deletions(-)
  create mode 100644 Documentation/core-api/percpu-counter-tree.rst
  create mode 100644 include/linux/percpu_counter_tree.h
  create mode 100644 lib/percpu_counter_tree.c
@@ -256,22 +252,20 @@ index 0000000000000..196da056e7b42
 +.. kernel-doc:: include/linux/percpu_counter_tree.h
 +.. kernel-doc:: lib/percpu_counter_tree.c
 diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index 3cc8ae7228860..63514c7d8d159 100644
+index 3cc8ae7228860..c8db9d69a8262 100644
 --- a/include/linux/mm_types.h
 +++ b/include/linux/mm_types.h
-@@ -1414,9 +1414,9 @@ static inline void __mm_flags_set_mask_bits_word(struct mm_struct *mm,
+@@ -1414,8 +1414,8 @@ static inline void __mm_flags_set_mask_bits_word(struct mm_struct *mm,
  			 MT_FLAGS_USE_RCU)
  extern struct mm_struct init_mm;
  
 -#define MM_STRUCT_FLEXIBLE_ARRAY_INIT				\
 -{								\
--	[0 ... sizeof(cpumask_t) + MM_CID_STATIC_SIZE - 1] = 0	\
 +#define MM_STRUCT_FLEXIBLE_ARRAY_INIT									\
 +{													\
-+	[0 ... sizeof(cpumask_t) + MM_CID_STATIC_SIZE + PERCPU_COUNTER_TREE_ITEMS_STATIC_SIZE - 1] = 0	\
+ 	[0 ... sizeof(cpumask_t) + MM_CID_STATIC_SIZE - 1] = 0	\
  }
  
- /* Pointer magic because the dynamic array size confuses some compilers. */
 diff --git a/include/linux/percpu_counter_tree.h b/include/linux/percpu_counter_tree.h
 new file mode 100644
 index 0000000000000..828c763edd4a7
@@ -679,10 +673,10 @@ index 1b9ee167517f3..abc32420b5814 100644
  
 diff --git a/lib/percpu_counter_tree.c b/lib/percpu_counter_tree.c
 new file mode 100644
-index 0000000000000..d948eba04c4d9
+index 0000000000000..5c8fc2dcdc169
 --- /dev/null
 +++ b/lib/percpu_counter_tree.c
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,702 @@
 +// SPDX-License-Identifier: GPL-2.0+ OR MIT
 +// SPDX-FileCopyrightText: 2025 Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 +
@@ -821,8 +815,9 @@ index 0000000000000..d948eba04c4d9
 +
 +#include <linux/percpu_counter_tree.h>
 +#include <linux/cpumask.h>
-+#include <linux/percpu.h>
 +#include <linux/atomic.h>
++#include <linux/export.h>
++#include <linux/percpu.h>
 +#include <linux/errno.h>
 +#include <linux/slab.h>
 +#include <linux/math.h>
@@ -957,6 +952,7 @@ index 0000000000000..d948eba04c4d9
 +	free_percpu(level0);
 +	return ret;
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_init_many);
 +
 +/**
 + * percpu_counter_tree_init() - Initialize one per-CPU counter tree.
@@ -982,6 +978,7 @@ index 0000000000000..d948eba04c4d9
 +{
 +	return percpu_counter_tree_init_many(counter, items, 1, batch_size, gfp_flags);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_init);
 +
 +/**
 + * percpu_counter_tree_destroy_many() - Destroy many per-CPU counter trees.
@@ -995,6 +992,7 @@ index 0000000000000..d948eba04c4d9
 +{
 +	free_percpu(counters->level0);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_destroy_many);
 +
 +/**
 + * percpu_counter_tree_destroy() - Destroy one per-CPU counter tree.
@@ -1006,6 +1004,7 @@ index 0000000000000..d948eba04c4d9
 +{
 +	return percpu_counter_tree_destroy_many(counter, 1);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_destroy);
 +
 +static
 +long percpu_counter_tree_carry(long orig, long res, long inc, unsigned long bit_mask)
@@ -1108,7 +1107,7 @@ index 0000000000000..d948eba04c4d9
 +		return;
 +	percpu_counter_tree_add_slowpath(counter, inc);
 +}
-+
++EXPORT_SYMBOL_GPL(percpu_counter_tree_add);
 +
 +static
 +long percpu_counter_tree_precise_sum_unbiased(struct percpu_counter_tree *counter)
@@ -1135,6 +1134,7 @@ index 0000000000000..d948eba04c4d9
 +{
 +	return percpu_counter_tree_precise_sum_unbiased(counter) + READ_ONCE(counter->bias);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_precise_sum);
 +
 +static
 +int compare_delta(long delta, unsigned long accuracy_neg, unsigned long accuracy_pos)
@@ -1176,6 +1176,7 @@ index 0000000000000..d948eba04c4d9
 +			     a->approx_accuracy_range.over + b->approx_accuracy_range.under,
 +			     a->approx_accuracy_range.under + b->approx_accuracy_range.over);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_approximate_compare);
 +
 +/**
 + * percpu_counter_tree_approximate_compare_value - Approximated comparison of a counter tree against a given value.
@@ -1199,6 +1200,7 @@ index 0000000000000..d948eba04c4d9
 +			     counter->approx_accuracy_range.under,
 +			     counter->approx_accuracy_range.over);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_approximate_compare_value);
 +
 +/**
 + * percpu_counter_tree_precise_compare - Precise comparison of two counter trees.
@@ -1267,6 +1269,7 @@ index 0000000000000..d948eba04c4d9
 +		return 1;
 +	return 0;
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_precise_compare);
 +
 +/**
 + * percpu_counter_tree_precise_compare_value - Precise comparison of a counter tree against a given value.
@@ -1304,6 +1307,7 @@ index 0000000000000..d948eba04c4d9
 +		return 1;
 +	return 0;
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_precise_compare_value);
 +
 +static
 +void percpu_counter_tree_set_bias(struct percpu_counter_tree *counter, long bias)
@@ -1326,6 +1330,7 @@ index 0000000000000..d948eba04c4d9
 +	percpu_counter_tree_set_bias(counter,
 +				     v - percpu_counter_tree_precise_sum_unbiased(counter));
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_set);
 +
 +/*
 + * percpu_counter_tree_items_size - Query the size required for counter tree items.
@@ -1342,6 +1347,7 @@ index 0000000000000..d948eba04c4d9
 +		return 0;
 +	return counter_config->nr_items * sizeof(struct percpu_counter_tree_level_item);
 +}
++EXPORT_SYMBOL_GPL(percpu_counter_tree_items_size);
 +
 +static void __init calculate_accuracy_topology(void)
 +{

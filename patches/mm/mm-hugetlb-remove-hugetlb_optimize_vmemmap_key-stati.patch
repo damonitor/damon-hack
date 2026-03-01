@@ -1,0 +1,115 @@
+From: Kiryl Shutsemau <kas@kernel.org>
+Date: Fri, 27 Feb 2026 19:42:53 +0000
+Subject: [PATCH] mm/hugetlb: remove hugetlb_optimize_vmemmap_key static key
+
+The hugetlb_optimize_vmemmap_key static key was used to guard fake head
+detection in compound_head() and related functions.  It allowed skipping
+the fake head checks entirely when HVO was not in use.
+
+With fake heads eliminated and the detection code removed, the static key
+serves no purpose.  Remove its definition and all increment/decrement
+calls.
+
+Link: https://lkml.kernel.org/r/20260227194302.274384-16-kas@kernel.org
+Signed-off-by: Kiryl Shutsemau <kas@kernel.org>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Harry Yoo <harry.yoo@oracle.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Paul Walmsley <paul.walmsley@sifive.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/page-flags.h |  2 --
+ mm/hugetlb_vmemmap.c       | 14 ++------------
+ 2 files changed, 2 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index 52a68d3e6f2c8..2260af4ee0ebf 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -221,8 +221,6 @@ static __always_inline bool compound_info_has_mask(void)
+ 	return is_power_of_2(sizeof(struct page));
+ }
+ 
+-DECLARE_STATIC_KEY_FALSE(hugetlb_optimize_vmemmap_key);
+-
+ static __always_inline unsigned long _compound_head(const struct page *page)
+ {
+ 	unsigned long info = READ_ONCE(page->compound_info);
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index fd1d5d5d12b46..4a077d231d3a2 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -385,9 +385,6 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
+ 	return vmemmap_remap_range(start, end, &walk);
+ }
+ 
+-DEFINE_STATIC_KEY_FALSE(hugetlb_optimize_vmemmap_key);
+-EXPORT_SYMBOL(hugetlb_optimize_vmemmap_key);
+-
+ static bool vmemmap_optimize_enabled = IS_ENABLED(CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP_DEFAULT_ON);
+ static int __init hugetlb_vmemmap_optimize_param(char *buf)
+ {
+@@ -419,10 +416,8 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+ 	 * discarded vmemmap pages must be allocated and remapping.
+ 	 */
+ 	ret = vmemmap_remap_alloc(vmemmap_start, vmemmap_end, flags);
+-	if (!ret) {
++	if (!ret)
+ 		folio_clear_hugetlb_vmemmap_optimized(folio);
+-		static_branch_dec(&hugetlb_optimize_vmemmap_key);
+-	}
+ 
+ 	return ret;
+ }
+@@ -544,8 +539,6 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 	if (!vmemmap_tail)
+ 		return -ENOMEM;
+ 
+-	static_branch_inc(&hugetlb_optimize_vmemmap_key);
+-
+ 	/*
+ 	 * Very Subtle
+ 	 * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
+@@ -581,10 +574,8 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 				 vmemmap_head, vmemmap_tail,
+ 				 vmemmap_pages, flags);
+ out:
+-	if (ret) {
+-		static_branch_dec(&hugetlb_optimize_vmemmap_key);
++	if (ret)
+ 		folio_clear_hugetlb_vmemmap_optimized(folio);
+-	}
+ 
+ 	return ret;
+ }
+@@ -650,7 +641,6 @@ static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+ 			register_page_bootmem_memmap(pfn_to_section_nr(spfn),
+ 					&folio->page,
+ 					HUGETLB_VMEMMAP_RESERVE_SIZE);
+-			static_branch_inc(&hugetlb_optimize_vmemmap_key);
+ 			continue;
+ 		}
+ 
+-- 
+2.47.3
+

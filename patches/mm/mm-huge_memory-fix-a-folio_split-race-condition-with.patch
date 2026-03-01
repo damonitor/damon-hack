@@ -1,0 +1,78 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Fri, 27 Feb 2026 20:06:14 -0500
+Subject: [PATCH] mm/huge_memory: fix a folio_split() race condition with
+ folio_try_get()
+
+During a pagecache folio split, the values in the related xarray should
+not be changed from the original folio at xarray split time until all
+after-split folios are well formed and stored in the xarray.  Current use
+of xas_try_split() in __split_unmapped_folio() lets some after-split
+folios show up at wrong indices in the xarray.  When these misplaced
+after-split folios are unfrozen, before correct folios are stored via
+__xa_store(), and grabbed by folio_try_get(), they are returned to
+userspace at wrong file indices, causing data corruption.
+
+Fix it by using the original folio in xas_try_split() calls, so that
+folio_try_get() can get the right after-split folios after the original
+folio is unfrozen.
+
+Uniform split, split_huge_page*(), is not affected, since it uses
+xas_split_alloc() and xas_split() only once and stores the original folio
+in the xarray.
+
+Fixes below points to the commit introduces the code, but folio_split() is
+used in a later commit 7460b470a131f ("mm/truncate: use folio_split() in
+truncate operation").
+
+Link: https://lkml.kernel.org/r/20260228010614.2536430-1-ziy@nvidia.com
+Fixes: 00527733d0dc8 ("mm/huge_memory: add two new (not yet used) functions for folio_split()")
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Reported-by: Bas van Dijk <bas@dfinity.org>
+Closes: https://lore.kernel.org/all/CAKNNEtw5_kZomhkugedKMPOG-sxs5Q5OLumWJdiWXv+C9Yct0w@mail.gmail.com/
+Tested-by: Lance Yang <lance.yang@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 8e2746ea74adf..3029e9ca5b5d9 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3631,6 +3631,7 @@ static int __split_unmapped_folio(struct folio *folio, int new_order,
+ 	const bool is_anon = folio_test_anon(folio);
+ 	int old_order = folio_order(folio);
+ 	int start_order = split_type == SPLIT_TYPE_UNIFORM ? new_order : old_order - 1;
++	struct folio *origin_folio = folio;
+ 	int split_order;
+ 
+ 	/*
+@@ -3656,7 +3657,13 @@ static int __split_unmapped_folio(struct folio *folio, int new_order,
+ 				xas_split(xas, folio, old_order);
+ 			else {
+ 				xas_set_order(xas, folio->index, split_order);
+-				xas_try_split(xas, folio, old_order);
++				/*
++				 * use the original folio, so that a parallel
++				 * folio_try_get() waits on it until xarray is
++				 * updated with after-split folios and
++				 * the original one is unfrozen.
++				 */
++				xas_try_split(xas, origin_folio, old_order);
+ 				if (xas_error(xas))
+ 					return xas_error(xas);
+ 			}
+-- 
+2.47.3
+

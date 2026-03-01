@@ -1,0 +1,95 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Fri, 27 Feb 2026 17:44:40 +0800
+Subject: [PATCH] arm64: mm: implement the architecture-specific
+ test_and_clear_young_ptes()
+
+Implement the Arm64 architecture-specific test_and_clear_young_ptes() to enable
+batched checking of young flags, improving performance during large folio
+reclamation when MGLRU is enabled.
+
+While we're at it, simplify ptep_test_and_clear_young() by calling
+test_and_clear_young_ptes(). Since callers guarantee that PTEs are present
+before calling these functions, we can use pte_cont() to check the CONT_PTE
+flag instead of pte_valid_cont().
+
+Performance testing:
+Enable MGLRU, then allocate 10G clean file-backed folios by mmap() in a memory
+cgroup, and try to reclaim 8G file-backed folios via the memory.reclaim interface.
+I can observe 60%+ performance improvement on my Arm64 32-core server (and about
+15% improvement on my X86 machine).
+
+W/o patchset:
+real	0m0.470s
+user	0m0.000s
+sys	0m0.470s
+
+W/ patchset:
+real	0m0.180s
+user	0m0.001s
+sys	0m0.179s
+
+Link: https://lkml.kernel.org/r/5d9298b94607b2bf4f1f92ea29a4c96217c5bcc1.1772185080.git.baolin.wang@linux.alibaba.com
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/include/asm/pgtable.h | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index aa4b13da6371a..ab451d20e4c53 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -1812,16 +1812,22 @@ static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
+ 	return __ptep_get_and_clear(mm, addr, ptep);
+ }
+ 
++#define test_and_clear_young_ptes test_and_clear_young_ptes
++static inline int test_and_clear_young_ptes(struct vm_area_struct *vma,
++					    unsigned long addr, pte_t *ptep,
++					    unsigned int nr)
++{
++	if (likely(nr == 1 && !pte_cont(__ptep_get(ptep))))
++		return __ptep_test_and_clear_young(vma, addr, ptep);
++
++	return contpte_test_and_clear_young_ptes(vma, addr, ptep, nr);
++}
++
+ #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
+ static inline int ptep_test_and_clear_young(struct vm_area_struct *vma,
+ 				unsigned long addr, pte_t *ptep)
+ {
+-	pte_t orig_pte = __ptep_get(ptep);
+-
+-	if (likely(!pte_valid_cont(orig_pte)))
+-		return __ptep_test_and_clear_young(vma, addr, ptep);
+-
+-	return contpte_test_and_clear_young_ptes(vma, addr, ptep, 1);
++	return test_and_clear_young_ptes(vma, addr, ptep, 1);
+ }
+ 
+ #define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
+-- 
+2.47.3
+

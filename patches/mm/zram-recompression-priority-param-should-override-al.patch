@@ -1,0 +1,57 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Fri, 27 Feb 2026 17:21:09 +0900
+Subject: [PATCH] zram: recompression priority param should override algo
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Recompression algorithm lookup by name is ambiguous and can lead to
+unexpected results.  The problem is that the system can configure the same
+algorithm but with different parameters (compression level, C/D-dicts,
+etc.) multiple times:
+
+    [zstd clevel=3] [zstd clevel=8 dict=/etc/dict]
+
+making it impossible to distinguish compressors by name.  It is advised to
+always use "priority".  Additionally, override "algo" with "priority",
+when both params are provided.
+
+Link: https://lkml.kernel.org/r/831636c74ca6d72317de02d96585cc6833d082e6.1772180459.git.senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Suggested-by: Minchan Kim <minchan@kernel.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: "Christoph Böhmwalder" <christoph.boehmwalder@linbit.com>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lars Ellenberg <lars.ellenberg@linbit.com>
+Cc: Philipp Reisner <philipp.reisner@linbit.com>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 78981744f0865..e583674c4e268 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2594,6 +2594,16 @@ static ssize_t recompress_store(struct device *dev,
+ 			if (ret)
+ 				return ret;
+ 
++			/*
++			 * "priority" overrides "algo".
++			 *
++			 * We can have several algorithms configured with
++			 * different params (compression/acceleration level,
++			 * C/D-dict, etc.) but under the same name.
++			 *
++			 * "algorithm" name lookup is ambiguous.
++			 */
++			algo = NULL;
+ 			prio_max = min(prio + 1, ZRAM_MAX_COMPS);
+ 			continue;
+ 		}
+-- 
+2.47.3
+

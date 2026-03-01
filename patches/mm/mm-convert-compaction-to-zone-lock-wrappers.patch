@@ -1,0 +1,122 @@
+From: Dmitry Ilvokhin <d@ilvokhin.com>
+Date: Fri, 27 Feb 2026 16:00:25 +0000
+Subject: [PATCH] mm: convert compaction to zone lock wrappers
+
+Compaction uses compact_lock_irqsave(), which currently operates on a raw
+spinlock_t pointer so it can be used for both zone->lock and
+lruvec->lru_lock.  Since zone lock operations are now wrapped,
+compact_lock_irqsave() can no longer directly operate on a spinlock_t when
+the lock belongs to a zone.
+
+Split the helper into compact_zone_lock_irqsave() and
+compact_lruvec_lock_irqsave(), duplicating the small amount of shared
+logic.  As there are only two call sites and both statically know the lock
+type, this avoids introducing additional abstraction or runtime dispatch
+in the compaction path.
+
+No functional change intended.
+
+Link: https://lkml.kernel.org/r/3a09e46f52cf9f709b0725bc2b648cc5212843b2.1772206930.git.d@ilvokhin.com
+Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/compaction.c | 33 ++++++++++++++++++++++++---------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/mm/compaction.c b/mm/compaction.c
+index fc026712cb0cb..97ae6028d377b 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -503,19 +503,36 @@ static bool test_and_set_skip(struct compact_control *cc, struct page *page)
+  *
+  * Always returns true which makes it easier to track lock state in callers.
+  */
+-static bool compact_lock_irqsave(spinlock_t *lock, unsigned long *flags,
+-						struct compact_control *cc)
+-	__acquires(lock)
++static bool compact_zone_lock_irqsave(struct zone *zone,
++				      unsigned long *flags,
++				      struct compact_control *cc)
++	__acquires(&zone->lock)
+ {
+ 	/* Track if the lock is contended in async mode */
+ 	if (cc->mode == MIGRATE_ASYNC && !cc->contended) {
+-		if (spin_trylock_irqsave(lock, *flags))
++		if (zone_trylock_irqsave(zone, *flags))
+ 			return true;
+ 
+ 		cc->contended = true;
+ 	}
+ 
+-	spin_lock_irqsave(lock, *flags);
++	zone_lock_irqsave(zone, *flags);
++	return true;
++}
++
++static bool compact_lruvec_lock_irqsave(struct lruvec *lruvec,
++					unsigned long *flags,
++					struct compact_control *cc)
++	__acquires(&lruvec->lru_lock)
++{
++	if (cc->mode == MIGRATE_ASYNC && !cc->contended) {
++		if (spin_trylock_irqsave(&lruvec->lru_lock, *flags))
++			return true;
++
++		cc->contended = true;
++	}
++
++	spin_lock_irqsave(&lruvec->lru_lock, *flags);
+ 	return true;
+ }
+ 
+@@ -528,7 +545,7 @@ compact_folio_lruvec_lock_irqsave(struct folio *folio, unsigned long *flags,
+ 	rcu_read_lock();
+ retry:
+ 	lruvec = folio_lruvec(folio);
+-	compact_lock_irqsave(&lruvec->lru_lock, flags, cc);
++	compact_lruvec_lock_irqsave(lruvec, flags, cc);
+ 	if (unlikely(lruvec_memcg(lruvec) != folio_memcg(folio))) {
+ 		spin_unlock_irqrestore(&lruvec->lru_lock, *flags);
+ 		goto retry;
+@@ -549,7 +566,6 @@ compact_folio_lruvec_lock_irqsave(struct folio *folio, unsigned long *flags,
+  * Returns true if compaction should abort due to fatal signal pending.
+  * Returns false when compaction can continue.
+  */
+-
+ static bool compact_unlock_should_abort(struct zone *zone,
+ 					unsigned long flags,
+ 					bool *locked,
+@@ -634,8 +650,7 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
+ 
+ 		/* If we already hold the lock, we can skip some rechecking. */
+ 		if (!locked) {
+-			locked = compact_lock_irqsave(&cc->zone->lock,
+-								&flags, cc);
++			locked = compact_zone_lock_irqsave(cc->zone, &flags, cc);
+ 
+ 			/* Recheck this is a buddy page under lock */
+ 			if (!PageBuddy(page))
+-- 
+2.47.3
+

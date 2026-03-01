@@ -1,0 +1,75 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Fri, 27 Feb 2026 20:05:01 +0530
+Subject: [PATCH] khugepaged: remove redundant index check for pmd-folios
+
+Claim: folio_order(folio) == HPAGE_PMD_ORDER => folio->index == start.
+
+Proof: Both loops in hpage_collapse_scan_file and collapse_file, which
+iterate on the xarray, have the invariant that start <= folio->index <
+start + HPAGE_PMD_NR ...  (i)
+
+A folio is always naturally aligned in the pagecache, therefore
+folio_order == HPAGE_PMD_ORDER => IS_ALIGNED(folio->index, HPAGE_PMD_NR) == true ... (ii)
+
+thp_vma_allowable_order -> thp_vma_suitable_order requires that the virtual
+offsets in the VMA are aligned to the order,
+=> IS_ALIGNED(start, HPAGE_PMD_NR) == true ... (iii)
+
+Combining (i), (ii) and (iii), the claim is proven.
+
+Therefore, remove this check.
+While at it, simplify the comments.
+
+Link: https://lkml.kernel.org/r/20260227143501.1488110-1-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 14 ++++----------
+ 1 file changed, 4 insertions(+), 10 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 5f668c1dd0fe4..b7b4680d27ab1 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -2015,9 +2015,7 @@ static enum scan_result collapse_file(struct mm_struct *mm, unsigned long addr,
+ 		 * we locked the first folio, then a THP might be there already.
+ 		 * This will be discovered on the first iteration.
+ 		 */
+-		if (folio_order(folio) == HPAGE_PMD_ORDER &&
+-		    folio->index == start) {
+-			/* Maybe PMD-mapped */
++		if (folio_order(folio) == HPAGE_PMD_ORDER) {
+ 			result = SCAN_PTE_MAPPED_HUGEPAGE;
+ 			goto out_unlock;
+ 		}
+@@ -2345,15 +2343,11 @@ static enum scan_result hpage_collapse_scan_file(struct mm_struct *mm,
+ 			continue;
+ 		}
+ 
+-		if (folio_order(folio) == HPAGE_PMD_ORDER &&
+-		    folio->index == start) {
+-			/* Maybe PMD-mapped */
++		if (folio_order(folio) == HPAGE_PMD_ORDER) {
+ 			result = SCAN_PTE_MAPPED_HUGEPAGE;
+ 			/*
+-			 * For SCAN_PTE_MAPPED_HUGEPAGE, further processing
+-			 * by the caller won't touch the page cache, and so
+-			 * it's safe to skip LRU and refcount checks before
+-			 * returning.
++			 * PMD-sized THP implies that we can only try
++			 * retracting the PTE table.
+ 			 */
+ 			folio_put(folio);
+ 			break;
+-- 
+2.47.3
+

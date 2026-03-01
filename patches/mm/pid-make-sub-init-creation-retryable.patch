@@ -1,0 +1,120 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Fri, 27 Feb 2026 13:03:41 +0100
+Subject: [PATCH] pid: make sub-init creation retryable
+
+Patch series "pid: make sub-init creation retryable".
+
+
+This patch (of 2):
+
+Currently we allow only one attempt to create init in a new namespace.  If
+the first fork() fails after alloc_pid() succeeds, free_pid() clears
+PIDNS_ADDING and thus disables further PID allocations.
+
+Nowadays this looks like an unnecessary limitation.  The original reason
+to handle "case PIDNS_ADDING" in free_pid() is gone, most probably after
+commit 69879c01a0c3 ("proc: Remove the now unnecessary internal mount of
+proc").
+
+Change free_pid() to keep ns->pid_allocated == PIDNS_ADDING, and change
+alloc_pid() to reset the cursor early, right after taking pidmap_lock.
+
+Test-case:
+
+	#define _GNU_SOURCE
+	#include <linux/sched.h>
+	#include <sys/syscall.h>
+	#include <sys/wait.h>
+	#include <assert.h>
+	#include <sched.h>
+	#include <errno.h>
+
+	int main(void)
+	{
+		struct clone_args args = {
+			.exit_signal = SIGCHLD,
+			.flags	= CLONE_PIDFD,
+			.pidfd	= 0,
+		};
+		unsigned long pidfd;
+		int pid;
+
+		assert(unshare(CLONE_NEWPID) == 0);
+
+		pid = syscall(__NR_clone3, &args, sizeof(args));
+		assert(pid == -1 && errno == EFAULT);
+
+		args.pidfd = (unsigned long)&pidfd;
+		pid = syscall(__NR_clone3, &args, sizeof(args));
+		if (pid)
+			assert(pid > 0 && wait(NULL) == pid);
+		else
+			assert(getpid() == 1);
+
+		return 0;
+	}
+
+Link: https://lkml.kernel.org/r/aaGHu3ixbw9Y7kFj@redhat.com
+Link: https://lkml.kernel.org/r/aaGIHa7vGdwhEc_D@redhat.com
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Acked-by: Andrei Vagin <avagin@gmail.com>
+Cc: Adrian Reber <areber@redhat.com>
+Cc: Aleksa Sarai <cyphar@cyphar.com>
+Cc: Alexander Mikhalitsyn <alexander@mihalicyn.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Juri Lelli <juri.lelli@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Kirill Tkhai <tkhai@ya.ru>
+Cc: Pavel Tikhomirov <ptikhomirov@virtuozzo.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Vincent Guittot <vincent.guittot@linaro.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/pid.c | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/kernel/pid.c b/kernel/pid.c
+index 3b96571d0fe65..aff5bf0f638f8 100644
+--- a/kernel/pid.c
++++ b/kernel/pid.c
+@@ -131,9 +131,8 @@ void free_pid(struct pid *pid)
+ 			wake_up_process(ns->child_reaper);
+ 			break;
+ 		case PIDNS_ADDING:
+-			/* Handle a fork failure of the first process */
+-			WARN_ON(ns->child_reaper);
+-			ns->pid_allocated = 0;
++			/* Only possible if the 1st fork fails */
++			WARN_ON(READ_ONCE(ns->child_reaper));
+ 			break;
+ 		}
+ 
+@@ -236,6 +235,10 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *arg_set_tid,
+ 	retried_preload = false;
+ 	idr_preload(GFP_KERNEL);
+ 	spin_lock(&pidmap_lock);
++	/* For the case when the previous attempt to create init failed */
++	if (ns->pid_allocated == PIDNS_ADDING)
++		idr_set_cursor(&ns->idr, 0);
++
+ 	for (tmp = ns, i = ns->level; i >= 0;) {
+ 		int tid = set_tid[ns->level - i];
+ 
+@@ -338,10 +341,6 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *arg_set_tid,
+ 		idr_remove(&upid->ns->idr, upid->nr);
+ 	}
+ 
+-	/* On failure to allocate the first pid, reset the state */
+-	if (ns->pid_allocated == PIDNS_ADDING)
+-		idr_set_cursor(&ns->idr, 0);
+-
+ 	spin_unlock(&pidmap_lock);
+ 	idr_preload_end();
+ 
+-- 
+2.47.3
+

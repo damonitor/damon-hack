@@ -1,0 +1,143 @@
+From: Dmitry Ilvokhin <d@ilvokhin.com>
+Date: Fri, 27 Feb 2026 16:00:23 +0000
+Subject: [PATCH] mm: introduce zone lock wrappers
+
+Patch series "mm: zone lock tracepoint instrumentation", v4.
+
+Zone lock contention can significantly impact allocation and reclaim
+latency, as it is a central synchronization point in the page allocator
+and reclaim paths.  Improved visibility into its behavior is therefore
+important for diagnosing performance issues in memory-intensive workloads.
+
+On some production workloads at Meta, we have observed noticeable zone
+lock contention.  Deeper analysis of lock holders and waiters is currently
+difficult with existing instrumentation.
+
+While generic lock contention_begin/contention_end tracepoints cover the
+slow path, they do not provide sufficient visibility into lock hold times.
+In particular, the lack of a release-side event makes it difficult to
+identify long lock holders and correlate them with waiters.  As a result,
+distinguishing between short bursts of contention and pathological long
+hold times requires additional instrumentation.
+
+This patch series adds dedicated tracepoint instrumentation to zone lock,
+following the existing mmap_lock tracing model.
+
+The goal is to enable detailed holder/waiter analysis and lock hold time
+measurements without affecting the fast path when tracing is disabled.
+
+The series is structured as follows:
+
+  1. Introduce zone lock wrappers.
+  2. Mechanically convert zone lock users to the wrappers.
+  3. Convert compaction to use the wrappers (requires minor
+     restructuring of compact_lock_irqsave()).
+  4. Rename zone->lock to zone->_lock.
+  5. Add zone lock tracepoints.
+
+The tracepoints are added via lightweight inline helpers in the wrappers.
+When tracing is disabled, the fast path remains unchanged.
+
+
+This patch (of 5):
+
+Add thin wrappers around zone lock acquire/release operations.  This
+prepares the code for future tracepoint instrumentation without modifying
+individual call sites.
+
+Centralizing zone lock operations behind wrappers allows future
+instrumentation or debugging hooks to be added without touching all users.
+
+No functional change intended.  The wrappers are introduced in preparation
+for subsequent patches and are not yet used.
+
+Link: https://lkml.kernel.org/r/cover.1772206930.git.d@ilvokhin.com
+Link: https://lkml.kernel.org/r/849dee9c47df1e6fba97c9933af0d5a08b8e15d3.1772206930.git.d@ilvokhin.com
+Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ MAINTAINERS                 |  1 +
+ include/linux/mmzone_lock.h | 38 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 39 insertions(+)
+ create mode 100644 include/linux/mmzone_lock.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 4753c8924964f..19ca85e2c31a5 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -16673,6 +16673,7 @@ F:	include/linux/memory.h
+ F:	include/linux/mm.h
+ F:	include/linux/mm_*.h
+ F:	include/linux/mmzone.h
++F:	include/linux/mmzone_lock.h
+ F:	include/linux/mmdebug.h
+ F:	include/linux/mmu_notifier.h
+ F:	include/linux/pagewalk.h
+diff --git a/include/linux/mmzone_lock.h b/include/linux/mmzone_lock.h
+new file mode 100644
+index 0000000000000..a1cfba8408d63
+--- /dev/null
++++ b/include/linux/mmzone_lock.h
+@@ -0,0 +1,38 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_MMZONE_LOCK_H
++#define _LINUX_MMZONE_LOCK_H
++
++#include <linux/mmzone.h>
++#include <linux/spinlock.h>
++
++static inline void zone_lock_init(struct zone *zone)
++{
++	spin_lock_init(&zone->lock);
++}
++
++#define zone_lock_irqsave(zone, flags)				\
++do {								\
++	spin_lock_irqsave(&(zone)->lock, flags);		\
++} while (0)
++
++#define zone_trylock_irqsave(zone, flags)			\
++({								\
++	spin_trylock_irqsave(&(zone)->lock, flags);		\
++})
++
++static inline void zone_unlock_irqrestore(struct zone *zone, unsigned long flags)
++{
++	spin_unlock_irqrestore(&zone->lock, flags);
++}
++
++static inline void zone_lock_irq(struct zone *zone)
++{
++	spin_lock_irq(&zone->lock);
++}
++
++static inline void zone_unlock_irq(struct zone *zone)
++{
++	spin_unlock_irq(&zone->lock);
++}
++
++#endif /* _LINUX_MMZONE_LOCK_H */
+-- 
+2.47.3
+

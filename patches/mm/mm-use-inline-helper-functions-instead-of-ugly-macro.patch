@@ -1,0 +1,208 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Fri, 27 Feb 2026 17:44:35 +0800
+Subject: [PATCH] mm: use inline helper functions instead of ugly macros
+
+Patch series "support batched checking of the young flag for MGLRU", v2.
+
+This is a follow-up to the previous work [1], to support batched checking
+of the young flag for MGLRU.
+
+Similarly, batched checking of young flag for large folios can improve
+performance during large-folio reclamation when MGLRU is enabled.  I
+observed noticeable performance improvements (see patch 5) on an Arm64
+machine that supports contiguous PTEs.  All mm-selftests are passed.
+
+Patch 1 - 3: cleanup patches.
+Patch 4: add a new generic batched PTE helper: test_and_clear_young_ptes().
+Patch 5: support batched young flag checking for MGLRU.
+Patch 6: implement the Arm64 arch-specific test_and_clear_young_ptes().
+
+
+This patch (of 6):
+
+People have already complained that these *_clear_young_notify() related
+macros are very ugly, so let's use inline helpers to make them more
+readable.
+
+In addition, we cannot implement these inline helper functions in the
+mmu_notifier.h file, because some arch-specific files will include the
+mmu_notifier.h, which introduces header compilation dependencies and
+causes build errors (e.g., arch/arm64/include/asm/tlbflush.h).  Moreover,
+since these functions are only used in the mm, implementing these inline
+helpers in the mm/internal.h header seems reasonable.
+
+Link: https://lkml.kernel.org/r/cover.1772185080.git.baolin.wang@linux.alibaba.com
+Link: https://lkml.kernel.org/r/4ffb2946062b9452be53d6b2fa3e359ba6446a93.1772185080.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/all/cover.1770645603.git.baolin.wang@linux.alibaba.com/ [1]
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmu_notifier.h | 54 ------------------------------------
+ mm/internal.h                | 52 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 54 deletions(-)
+
+diff --git a/include/linux/mmu_notifier.h b/include/linux/mmu_notifier.h
+index 07a2bbaf86e90..93894b90c8c17 100644
+--- a/include/linux/mmu_notifier.h
++++ b/include/linux/mmu_notifier.h
+@@ -515,55 +515,6 @@ static inline void mmu_notifier_range_init_owner(
+ 	range->owner = owner;
+ }
+ 
+-#define clear_flush_young_ptes_notify(__vma, __address, __ptep, __nr)	\
+-({									\
+-	int __young;							\
+-	struct vm_area_struct *___vma = __vma;				\
+-	unsigned long ___address = __address;				\
+-	unsigned int ___nr = __nr;					\
+-	__young = clear_flush_young_ptes(___vma, ___address, __ptep, ___nr);	\
+-	__young |= mmu_notifier_clear_flush_young(___vma->vm_mm,	\
+-						  ___address,		\
+-						  ___address +		\
+-						  ___nr * PAGE_SIZE);	\
+-	__young;							\
+-})
+-
+-#define pmdp_clear_flush_young_notify(__vma, __address, __pmdp)		\
+-({									\
+-	int __young;							\
+-	struct vm_area_struct *___vma = __vma;				\
+-	unsigned long ___address = __address;				\
+-	__young = pmdp_clear_flush_young(___vma, ___address, __pmdp);	\
+-	__young |= mmu_notifier_clear_flush_young(___vma->vm_mm,	\
+-						  ___address,		\
+-						  ___address +		\
+-							PMD_SIZE);	\
+-	__young;							\
+-})
+-
+-#define ptep_clear_young_notify(__vma, __address, __ptep)		\
+-({									\
+-	int __young;							\
+-	struct vm_area_struct *___vma = __vma;				\
+-	unsigned long ___address = __address;				\
+-	__young = ptep_test_and_clear_young(___vma, ___address, __ptep);\
+-	__young |= mmu_notifier_clear_young(___vma->vm_mm, ___address,	\
+-					    ___address + PAGE_SIZE);	\
+-	__young;							\
+-})
+-
+-#define pmdp_clear_young_notify(__vma, __address, __pmdp)		\
+-({									\
+-	int __young;							\
+-	struct vm_area_struct *___vma = __vma;				\
+-	unsigned long ___address = __address;				\
+-	__young = pmdp_test_and_clear_young(___vma, ___address, __pmdp);\
+-	__young |= mmu_notifier_clear_young(___vma->vm_mm, ___address,	\
+-					    ___address + PMD_SIZE);	\
+-	__young;							\
+-})
+-
+ #else /* CONFIG_MMU_NOTIFIER */
+ 
+ struct mmu_notifier_range {
+@@ -651,11 +602,6 @@ static inline void mmu_notifier_subscriptions_destroy(struct mm_struct *mm)
+ 
+ #define mmu_notifier_range_update_to_read_only(r) false
+ 
+-#define clear_flush_young_ptes_notify clear_flush_young_ptes
+-#define pmdp_clear_flush_young_notify pmdp_clear_flush_young
+-#define ptep_clear_young_notify ptep_test_and_clear_young
+-#define pmdp_clear_young_notify pmdp_test_and_clear_young
+-
+ static inline void mmu_notifier_synchronize(void)
+ {
+ }
+diff --git a/mm/internal.h b/mm/internal.h
+index 861a65a2399a2..bf9f374b48bc3 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -11,6 +11,7 @@
+ #include <linux/khugepaged.h>
+ #include <linux/mm.h>
+ #include <linux/mm_inline.h>
++#include <linux/mmu_notifier.h>
+ #include <linux/pagemap.h>
+ #include <linux/pagewalk.h>
+ #include <linux/rmap.h>
+@@ -1799,4 +1800,55 @@ static inline int io_remap_pfn_range_complete(struct vm_area_struct *vma,
+ 	return remap_pfn_range_complete(vma, addr, pfn, size, prot);
+ }
+ 
++#ifdef CONFIG_MMU_NOTIFIER
++static inline int clear_flush_young_ptes_notify(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, unsigned int nr)
++{
++	int young;
++
++	young = clear_flush_young_ptes(vma, addr, ptep, nr);
++	young |= mmu_notifier_clear_flush_young(vma->vm_mm, addr,
++						addr + nr * PAGE_SIZE);
++	return young;
++}
++
++static inline int pmdp_clear_flush_young_notify(struct vm_area_struct *vma,
++		unsigned long addr, pmd_t *pmdp)
++{
++	int young;
++
++	young = pmdp_clear_flush_young(vma, addr, pmdp);
++	young |= mmu_notifier_clear_flush_young(vma->vm_mm, addr, addr + PMD_SIZE);
++	return young;
++}
++
++static inline int ptep_clear_young_notify(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep)
++{
++	int young;
++
++	young = ptep_test_and_clear_young(vma, addr, ptep);
++	young |= mmu_notifier_clear_young(vma->vm_mm, addr, addr + PAGE_SIZE);
++	return young;
++}
++
++static inline int pmdp_clear_young_notify(struct vm_area_struct *vma,
++		unsigned long addr, pmd_t *pmdp)
++{
++	int young;
++
++	young = pmdp_test_and_clear_young(vma, addr, pmdp);
++	young |= mmu_notifier_clear_young(vma->vm_mm, addr, addr + PMD_SIZE);
++	return young;
++}
++
++#else /* CONFIG_MMU_NOTIFIER */
++
++#define clear_flush_young_ptes_notify	clear_flush_young_ptes
++#define pmdp_clear_flush_young_notify	pmdp_clear_flush_young
++#define ptep_clear_young_notify	ptep_test_and_clear_young
++#define pmdp_clear_young_notify	pmdp_test_and_clear_young
++
++#endif /* CONFIG_MMU_NOTIFIER */
++
+ #endif	/* __MM_INTERNAL_H */
+-- 
+2.47.3
+

@@ -1,9 +1,6 @@
 From: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
-Date: Tue, 17 Feb 2026 11:10:05 -0500
+Date: Fri, 27 Feb 2026 10:37:29 -0500
 Subject: [PATCH] lib: test hierarchical per-cpu counters
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Introduce Kunit tests for hierarchical per-cpu counters.
 
@@ -41,44 +38,45 @@ With the following execution (to use SMP):
 
 ./tools/testing/kunit/kunit.py run --arch=x86_64 --qemu_args="-smp 12"
 
-Link: https://lkml.kernel.org/r/20260217161006.1105611-3-mathieu.desnoyers@efficios.com
+Link: https://lkml.kernel.org/r/20260227153730.1556542-3-mathieu.desnoyers@efficios.com
 Signed-off-by: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
-Cc: Aboorva Devarajan <aboorvad@linux.ibm.com>
-Cc: Al Viro <viro@zeniv.linux.org.uk>
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: Christan König <christian.koenig@amd.com>
-Cc: Christian Brauner <brauner@kernel.org>
-Cc: Christoph Lameter <cl@linux.com>
-Cc: David Hildenbrand <david@redhat.com>
-Cc: David Rientjes <rientjes@google.com>
-Cc: Dennis Zhou <dennis@kernel.org>
-Cc: Johannes Weiner <hannes@cmpxchg.org>
-Cc: "Liam R . Howlett" <liam.howlett@oracle.com>
-Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
-Cc: Martin Liu <liumartin@google.com>
+Cc: "Paul E. McKenney" <paulmck@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
 Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: Martin Liu <liumartin@google.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: christian.koenig@amd.com
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: "Liam R . Howlett" <liam.howlett@oracle.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: David Hildenbrand <david@redhat.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
 Cc: Mateusz Guzik <mjguzik@gmail.com>
 Cc: Matthew Wilcox <willy@infradead.org>
-Cc: Miaohe Lin <linmiaohe@huawei.com>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: "Paul E. McKenney" <paulmck@kernel.org>
-Cc: Roman Gushchin <roman.gushchin@linux.dev>
-Cc: SeongJae Park <sj@kernel.org>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
-Cc: Steven Rostedt <rostedt@goodmis.org>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Sweet Tea Dorminy <sweettea-kernel@dorminy.me>
-Cc: Tejun Heo <tj@kernel.org>
-Cc: Vlastimil Babka <vbabka@suse.cz>
-Cc: Wei Yang <richard.weiyang@gmail.com>
-Cc: Yu Zhao <yuzhao@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Aboorva Devarajan <aboorvad@linux.ibm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  lib/Kconfig                           |  12 +
  lib/tests/Makefile                    |   2 +
- lib/tests/percpu_counter_tree_kunit.c | 351 ++++++++++++++++++++++++++
- 3 files changed, 365 insertions(+)
+ lib/tests/percpu_counter_tree_kunit.c | 399 ++++++++++++++++++++++++++
+ 3 files changed, 413 insertions(+)
  create mode 100644 lib/tests/percpu_counter_tree_kunit.c
 
 diff --git a/lib/Kconfig b/lib/Kconfig
@@ -117,10 +115,10 @@ index 05f74edbc62bf..d282aa23d2734 100644
  obj-$(CONFIG_TEST_RUNTIME_MODULE)		+= module/
 diff --git a/lib/tests/percpu_counter_tree_kunit.c b/lib/tests/percpu_counter_tree_kunit.c
 new file mode 100644
-index 0000000000000..6d2cee1c58018
+index 0000000000000..a79176655c4b0
 --- /dev/null
 +++ b/lib/tests/percpu_counter_tree_kunit.c
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,399 @@
 +// SPDX-License-Identifier: GPL-2.0+ OR MIT
 +// SPDX-FileCopyrightText: 2026 Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 +
@@ -136,14 +134,16 @@ index 0000000000000..6d2cee1c58018
 +	int counter_index;
 +};
 +
++#define NR_COUNTERS	2
++
 +/* Hierarchical per-CPU counter instances. */
-+static struct percpu_counter_tree counter[2];
-+static struct percpu_counter_tree_level_item *items[2];
++static struct percpu_counter_tree counter[NR_COUNTERS];
++static struct percpu_counter_tree_level_item *items;
 +
 +/* Global atomic counters for validation. */
-+static atomic_long_t global_counter[2];
++static atomic_long_t global_counter[NR_COUNTERS];
 +
-+static struct wait_queue_head kernel_threads_wq;
++static DECLARE_WAIT_QUEUE_HEAD(kernel_threads_wq);
 +static atomic_t kernel_threads_to_run;
 +
 +static void complete_work(void)
@@ -172,7 +172,7 @@ index 0000000000000..6d2cee1c58018
 +	int counter_index;
 +
 +	/* Compare each counter with its global counter. */
-+	for (counter_index = 0; counter_index < 2; counter_index++) {
++	for (counter_index = 0; counter_index < NR_COUNTERS; counter_index++) {
 +		long v = atomic_long_read(&global_counter[counter_index]);
 +		long approx_sum = percpu_counter_tree_approximate_sum(&counter[counter_index]);
 +		unsigned long under_accuracy = 0, over_accuracy = 0;
@@ -234,7 +234,6 @@ index 0000000000000..6d2cee1c58018
 +static void init_kthreads(void)
 +{
 +	atomic_set(&kernel_threads_to_run, 1);
-+	init_waitqueue_head(&kernel_threads_wq);
 +}
 +
 +static void fini_kthreads(void)
@@ -242,7 +241,7 @@ index 0000000000000..6d2cee1c58018
 +	/* Release our own reference. */
 +	complete_work();
 +	/* Wait for all others threads to run. */
-+	__wait_event(kernel_threads_wq, (atomic_read(&kernel_threads_to_run) == 0));
++	wait_event(kernel_threads_wq, (atomic_read(&kernel_threads_to_run) == 0));
 +}
 +
 +static void test_sync_kthreads(void)
@@ -255,24 +254,19 @@ index 0000000000000..6d2cee1c58018
 +{
 +	int i, ret;
 +
-+	for (i = 0; i < 2; i++) {
-+		items[i] = kzalloc(percpu_counter_tree_items_size(), GFP_KERNEL);
-+		KUNIT_EXPECT_PTR_NE(test, items[i], NULL);
-+		ret = percpu_counter_tree_init(&counter[i], items[i], batch_size, GFP_KERNEL);
-+		KUNIT_EXPECT_EQ(test, ret, 0);
++	items = kzalloc(percpu_counter_tree_items_size() * NR_COUNTERS, GFP_KERNEL);
++	KUNIT_EXPECT_PTR_NE(test, items, NULL);
++	ret = percpu_counter_tree_init_many(counter, items, NR_COUNTERS, batch_size, GFP_KERNEL);
++	KUNIT_EXPECT_EQ(test, ret, 0);
 +
++	for (i = 0; i < NR_COUNTERS; i++)
 +		atomic_long_set(&global_counter[i], 0);
-+	}
 +}
 +
 +static void fini_counters(void)
 +{
-+	int i;
-+
-+	for (i = 0; i < 2; i++) {
-+		percpu_counter_tree_destroy(&counter[i]);
-+		kfree(items[i]);
-+	}
++	percpu_counter_tree_destroy_many(counter, NR_COUNTERS);
++	kfree(items);
 +}
 +
 +enum up_test_inc_type {
@@ -453,6 +447,56 @@ index 0000000000000..6d2cee1c58018
 +	}
 +}
 +
++static void hpcc_test_init_one(struct kunit *test)
++{
++	struct percpu_counter_tree pct;
++	struct percpu_counter_tree_level_item *counter_items;
++	int ret;
++
++	counter_items = kzalloc(percpu_counter_tree_items_size(), GFP_KERNEL);
++	KUNIT_EXPECT_PTR_NE(test, counter_items, NULL);
++	ret = percpu_counter_tree_init(&pct, counter_items, 32, GFP_KERNEL);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++
++	percpu_counter_tree_destroy(&pct);
++	kfree(counter_items);
++}
++
++static void hpcc_test_set(struct kunit *test)
++{
++	static long values[] = {
++		5, 100, 127, 128, 255, 256, 4095, 4096, 500000, 0,
++		-5, -100, -127, -128, -255, -256, -4095, -4096, -500000,
++	};
++	struct percpu_counter_tree pct;
++	struct percpu_counter_tree_level_item *counter_items;
++	int i, ret;
++
++	counter_items = kzalloc(percpu_counter_tree_items_size(), GFP_KERNEL);
++	KUNIT_EXPECT_PTR_NE(test, counter_items, NULL);
++	ret = percpu_counter_tree_init(&pct, counter_items, 32, GFP_KERNEL);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++
++	for (i = 0; i < ARRAY_SIZE(values); i++) {
++		long v = values[i];
++
++		percpu_counter_tree_set(&pct, v);
++		KUNIT_EXPECT_EQ(test, percpu_counter_tree_precise_sum(&pct), v);
++		KUNIT_EXPECT_EQ(test, 0, percpu_counter_tree_approximate_compare_value(&pct, v));
++
++		percpu_counter_tree_add(&pct, v);
++		KUNIT_EXPECT_EQ(test, percpu_counter_tree_precise_sum(&pct), 2 * v);
++		KUNIT_EXPECT_EQ(test, 0, percpu_counter_tree_approximate_compare_value(&pct, 2 * v));
++
++		percpu_counter_tree_add(&pct, -2 * v);
++		KUNIT_EXPECT_EQ(test, percpu_counter_tree_precise_sum(&pct), 0);
++		KUNIT_EXPECT_EQ(test, 0, percpu_counter_tree_approximate_compare_value(&pct, 0));
++	}
++
++	percpu_counter_tree_destroy(&pct);
++	kfree(counter_items);
++}
++
 +static struct kunit_case hpcc_test_cases[] = {
 +	KUNIT_CASE(hpcc_print_info),
 +	KUNIT_CASE(hpcc_test_single_thread_first),
@@ -460,6 +504,8 @@ index 0000000000000..6d2cee1c58018
 +	KUNIT_CASE(hpcc_test_single_thread_random),
 +	KUNIT_CASE(hpcc_test_multi_thread_batch_increment),
 +	KUNIT_CASE(hpcc_test_multi_thread_random_walk),
++	KUNIT_CASE(hpcc_test_init_one),
++	KUNIT_CASE(hpcc_test_set),
 +	{}
 +};
 +

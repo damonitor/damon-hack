@@ -11,6 +11,7 @@ holding too many lru locks at once.
 
 Link: https://lkml.kernel.org/r/20260225094456.74145-1-qi.zheng@linux.dev
 Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Allen Pais <apais@linux.microsoft.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <bhe@redhat.com>
@@ -26,7 +27,6 @@ Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Michal Koutný <mkoutny@suse.com>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Tejun Heo <tj@kernel.org>
 Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: Wei Xu <weixugc@google.com>
@@ -45,7 +45,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  3 files changed, 62 insertions(+), 42 deletions(-)
 
 diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
-index 571fe3d0b0c4f..087d7d0cc1222 100644
+index 12982875073e3..3e836b56bfcb8 100644
 --- a/include/linux/memcontrol.h
 +++ b/include/linux/memcontrol.h
 @@ -115,6 +115,16 @@ struct mem_cgroup_per_node {
@@ -120,7 +120,7 @@ index 074ad4ef3d813..caa42b28df72d 100644
  #endif
  
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
-index d82dbfcc28057..648c0672eba03 100644
+index b0b77e1e7c0fb..05dc83a0bc66b 100644
 --- a/mm/memcontrol.c
 +++ b/mm/memcontrol.c
 @@ -84,8 +84,6 @@ EXPORT_SYMBOL(memory_cgrp_subsys);
@@ -159,7 +159,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  	return objcg;
  }
-@@ -260,14 +261,17 @@ static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
+@@ -268,14 +269,17 @@ static void memcg_reparent_objcgs(struct mem_cgroup *memcg)
  {
  	struct obj_cgroup *objcg;
  	struct mem_cgroup *parent = parent_mem_cgroup(memcg);
@@ -181,7 +181,7 @@ index d82dbfcc28057..648c0672eba03 100644
  }
  
  /*
-@@ -2859,8 +2863,10 @@ struct mem_cgroup *mem_cgroup_from_virt(void *p)
+@@ -2914,8 +2918,10 @@ struct mem_cgroup *mem_cgroup_from_virt(void *p)
  
  static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
  {
@@ -193,7 +193,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  		if (likely(objcg && obj_cgroup_tryget(objcg)))
  			return objcg;
-@@ -2924,6 +2930,7 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
+@@ -2979,6 +2985,7 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
  {
  	struct mem_cgroup *memcg;
  	struct obj_cgroup *objcg;
@@ -201,7 +201,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  	if (IS_ENABLED(CONFIG_MEMCG_NMI_UNSAFE) && in_nmi())
  		return NULL;
-@@ -2940,14 +2947,14 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
+@@ -2995,14 +3002,14 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
  		 * Objcg reference is kept by the task, so it's safe
  		 * to use the objcg by the current task.
  		 */
@@ -218,7 +218,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  from_memcg:
  	for (; memcg; memcg = parent_mem_cgroup(memcg)) {
-@@ -2957,12 +2964,12 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
+@@ -3012,12 +3019,12 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
  		 * away and can be used within the scope without any additional
  		 * protection.
  		 */
@@ -233,7 +233,7 @@ index d82dbfcc28057..648c0672eba03 100644
  }
  
  struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
-@@ -3859,6 +3866,8 @@ static bool alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
+@@ -3914,6 +3921,8 @@ static bool alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
  	if (!pn->lruvec_stats_percpu)
  		goto fail;
  
@@ -242,7 +242,7 @@ index d82dbfcc28057..648c0672eba03 100644
  	lruvec_init(&pn->lruvec);
  	pn->memcg = memcg;
  
-@@ -3873,10 +3882,12 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
+@@ -3928,10 +3937,12 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
  {
  	int node;
  
@@ -258,7 +258,7 @@ index d82dbfcc28057..648c0672eba03 100644
  	memcg1_free_events(memcg);
  	kfree(memcg->vmstats);
  	free_percpu(memcg->vmstats_percpu);
-@@ -3947,7 +3958,6 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
+@@ -4002,7 +4013,6 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
  #endif
  	memcg1_memcg_init(memcg);
  	memcg->kmemcg_id = -1;
@@ -266,7 +266,7 @@ index d82dbfcc28057..648c0672eba03 100644
  #ifdef CONFIG_CGROUP_WRITEBACK
  	INIT_LIST_HEAD(&memcg->cgwb_list);
  	for (i = 0; i < MEMCG_CGWB_FRN_CNT; i++)
-@@ -4024,6 +4034,7 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -4079,6 +4089,7 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
  {
  	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
  	struct obj_cgroup *objcg;
@@ -274,7 +274,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  	memcg_online_kmem(memcg);
  
-@@ -4035,17 +4046,19 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -4090,17 +4101,19 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
  	if (alloc_shrinker_info(memcg))
  		goto offline_kmem;
  
@@ -303,7 +303,7 @@ index d82dbfcc28057..648c0672eba03 100644
  
  	if (unlikely(mem_cgroup_is_root(memcg)) && !mem_cgroup_disabled())
  		queue_delayed_work(system_dfl_wq, &stats_flush_dwork,
-@@ -4069,7 +4082,13 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
+@@ -4124,7 +4137,13 @@ static int mem_cgroup_css_online(struct cgroup_subsys_state *css)
  	xa_store(&mem_cgroup_private_ids, memcg->id.id, memcg, GFP_KERNEL);
  
  	return 0;

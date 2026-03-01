@@ -1,0 +1,281 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Fri, 27 Feb 2026 17:44:39 +0800
+Subject: [PATCH] mm: support batched checking of the young flag for MGLRU
+
+Use the batched helper test_and_clear_young_ptes_notify() to check and
+clear the young flag to improve the performance during large folio
+reclamation when MGLRU is enabled.
+
+Meanwhile, we can also support batched checking the young and dirty flag
+when MGLRU walks the mm's pagetable to update the folios' generation
+counter.  Since MGLRU also checks the PTE dirty bit, use
+folio_pte_batch_flags() with FPB_MERGE_YOUNG_DIRTY set to detect batches
+of PTEs for a large folio.
+
+Then we can remove the ptep_test_and_clear_young_notify() since it has no
+users now.
+
+Note that we also update the 'young' counter and 'mm_stats[MM_LEAF_YOUNG]'
+counter with the batched count in the lru_gen_look_around() and
+walk_pte_range().  However, the batched operations may inflate these two
+counters, because in a large folio not all PTEs may have been accessed.
+(Additionally, tracking how many PTEs have been accessed within a large
+folio is not very meaningful, since the mm core actually tracks
+access/dirty on a per-folio basis, not per page).  The impact analysis is
+as follows:
+
+1. The 'mm_stats[MM_LEAF_YOUNG]' counter has no functional impact and
+   is mainly for debugging.
+
+2. The 'young' counter is used to decide whether to place the current
+   PMD entry into the bloom filters by suitable_to_scan() (so that next
+   time we can check whether it has been accessed again), which may set
+   the hash bit in the bloom filters for a PMD entry that hasn't seen much
+   access.  However, bloom filters inherently allow some error, so this
+   effect appears negligible.
+
+Link: https://lkml.kernel.org/r/f84233f95f209d59c3bc9c72a757af09337f0d40.1772185080.git.baolin.wang@linux.alibaba.com
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmzone.h |  5 +++--
+ mm/internal.h          |  6 ------
+ mm/rmap.c              | 28 +++++++++++++--------------
+ mm/vmscan.c            | 44 +++++++++++++++++++++++++++++++-----------
+ 4 files changed, 50 insertions(+), 33 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index cccadda20847f..cdcf6e369db2d 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -684,7 +684,7 @@ struct lru_gen_memcg {
+ 
+ void lru_gen_init_pgdat(struct pglist_data *pgdat);
+ void lru_gen_init_lruvec(struct lruvec *lruvec);
+-bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw);
++bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr);
+ 
+ void lru_gen_init_memcg(struct mem_cgroup *memcg);
+ void lru_gen_exit_memcg(struct mem_cgroup *memcg);
+@@ -706,7 +706,8 @@ static inline void lru_gen_init_lruvec(struct lruvec *lruvec)
+ {
+ }
+ 
+-static inline bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
++static inline bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw,
++		unsigned int nr)
+ {
+ 	return false;
+ }
+diff --git a/mm/internal.h b/mm/internal.h
+index e80c20924cbbf..4f1d9d5967eb0 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1851,10 +1851,4 @@ static inline int pmdp_test_and_clear_young_notify(struct vm_area_struct *vma,
+ 
+ #endif /* CONFIG_MMU_NOTIFIER */
+ 
+-static inline int ptep_test_and_clear_young_notify(struct vm_area_struct *vma,
+-		unsigned long addr, pte_t *ptep)
+-{
+-	return test_and_clear_young_ptes_notify(vma, addr, ptep, 1);
+-}
+-
+ #endif	/* __MM_INTERNAL_H */
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 11cc6171344f8..beb423f3e8ec3 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -958,25 +958,21 @@ static bool folio_referenced_one(struct folio *folio,
+ 			return false;
+ 		}
+ 
++		if (pvmw.pte && folio_test_large(folio)) {
++			const unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
++			const unsigned int max_nr = (end_addr - address) >> PAGE_SHIFT;
++			pte_t pteval = ptep_get(pvmw.pte);
++
++			nr = folio_pte_batch(folio, pvmw.pte, pteval, max_nr);
++			ptes += nr;
++		}
++
+ 		if (lru_gen_enabled() && pvmw.pte) {
+-			if (lru_gen_look_around(&pvmw))
++			if (lru_gen_look_around(&pvmw, nr))
+ 				referenced++;
+ 		} else if (pvmw.pte) {
+-			if (folio_test_large(folio)) {
+-				unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
+-				unsigned int max_nr = (end_addr - address) >> PAGE_SHIFT;
+-				pte_t pteval = ptep_get(pvmw.pte);
+-
+-				nr = folio_pte_batch(folio, pvmw.pte,
+-						     pteval, max_nr);
+-			}
+-
+-			ptes += nr;
+ 			if (clear_flush_young_ptes_notify(vma, address, pvmw.pte, nr))
+ 				referenced++;
+-			/* Skip the batched PTEs */
+-			pvmw.pte += nr - 1;
+-			pvmw.address += (nr - 1) * PAGE_SIZE;
+ 		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
+ 			if (pmdp_clear_flush_young_notify(vma, address,
+ 						pvmw.pmd))
+@@ -995,6 +991,10 @@ static bool folio_referenced_one(struct folio *folio,
+ 			page_vma_mapped_walk_done(&pvmw);
+ 			break;
+ 		}
++
++		/* Skip the batched PTEs */
++		pvmw.pte += nr - 1;
++		pvmw.address += (nr - 1) * PAGE_SIZE;
+ 	}
+ 
+ 	if (referenced)
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index f48cd6900add0..1f2f48815b6d8 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3479,6 +3479,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+ 	struct pglist_data *pgdat = lruvec_pgdat(walk->lruvec);
+ 	DEFINE_MAX_SEQ(walk->lruvec);
+ 	int gen = lru_gen_from_seq(max_seq);
++	unsigned int nr;
+ 	pmd_t pmdval;
+ 
+ 	pte = pte_offset_map_rw_nolock(args->mm, pmd, start & PMD_MASK, &pmdval, &ptl);
+@@ -3497,11 +3498,13 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+ 
+ 	lazy_mmu_mode_enable();
+ restart:
+-	for (i = pte_index(start), addr = start; addr != end; i++, addr += PAGE_SIZE) {
++	for (i = pte_index(start), addr = start; addr != end; i += nr, addr += nr * PAGE_SIZE) {
+ 		unsigned long pfn;
+ 		struct folio *folio;
+-		pte_t ptent = ptep_get(pte + i);
++		pte_t *cur_pte = pte + i;
++		pte_t ptent = ptep_get(cur_pte);
+ 
++		nr = 1;
+ 		total++;
+ 		walk->mm_stats[MM_LEAF_TOTAL]++;
+ 
+@@ -3513,7 +3516,16 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+ 		if (!folio)
+ 			continue;
+ 
+-		if (!ptep_test_and_clear_young_notify(args->vma, addr, pte + i))
++		if (folio_test_large(folio)) {
++			const unsigned int max_nr = (end - addr) >> PAGE_SHIFT;
++
++			nr = folio_pte_batch_flags(folio, NULL, cur_pte, &ptent,
++						   max_nr, FPB_MERGE_YOUNG_DIRTY);
++			total += nr - 1;
++			walk->mm_stats[MM_LEAF_TOTAL] += nr - 1;
++		}
++
++		if (!test_and_clear_young_ptes_notify(args->vma, addr, cur_pte, nr))
+ 			continue;
+ 
+ 		if (last != folio) {
+@@ -3526,8 +3538,8 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+ 		if (pte_dirty(ptent))
+ 			dirty = true;
+ 
+-		young++;
+-		walk->mm_stats[MM_LEAF_YOUNG]++;
++		young += nr;
++		walk->mm_stats[MM_LEAF_YOUNG] += nr;
+ 	}
+ 
+ 	walk_update_folio(walk, last, gen, dirty);
+@@ -4171,7 +4183,7 @@ static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
+  * the PTE table to the Bloom filter. This forms a feedback loop between the
+  * eviction and the aging.
+  */
+-bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
++bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
+ {
+ 	int i;
+ 	bool dirty;
+@@ -4189,12 +4201,13 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+ 	struct lruvec *lruvec;
+ 	struct lru_gen_mm_state *mm_state;
+ 	unsigned long max_seq;
++	pte_t *cur_pte;
+ 	int gen;
+ 
+ 	lockdep_assert_held(pvmw->ptl);
+ 	VM_WARN_ON_ONCE_FOLIO(folio_test_lru(folio), folio);
+ 
+-	if (!ptep_test_and_clear_young_notify(vma, addr, pte))
++	if (!test_and_clear_young_ptes_notify(vma, addr, pte, nr))
+ 		return false;
+ 
+ 	if (spin_is_contended(pvmw->ptl))
+@@ -4234,10 +4247,12 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+ 
+ 	pte -= (addr - start) / PAGE_SIZE;
+ 
+-	for (i = 0, addr = start; addr != end; i++, addr += PAGE_SIZE) {
++	for (i = 0, addr = start, cur_pte = pte; addr != end;
++	     i += nr, cur_pte += nr, addr += nr * PAGE_SIZE) {
+ 		unsigned long pfn;
+-		pte_t ptent = ptep_get(pte + i);
++		pte_t ptent = ptep_get(cur_pte);
+ 
++		nr = 1;
+ 		pfn = get_pte_pfn(ptent, vma, addr, pgdat);
+ 		if (pfn == -1)
+ 			continue;
+@@ -4246,7 +4261,14 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+ 		if (!folio)
+ 			continue;
+ 
+-		if (!ptep_test_and_clear_young_notify(vma, addr, pte + i))
++		if (folio_test_large(folio)) {
++			const unsigned int max_nr = (end - addr) >> PAGE_SHIFT;
++
++			nr = folio_pte_batch_flags(folio, NULL, cur_pte, &ptent,
++						   max_nr, FPB_MERGE_YOUNG_DIRTY);
++		}
++
++		if (!test_and_clear_young_ptes_notify(vma, addr, cur_pte, nr))
+ 			continue;
+ 
+ 		if (last != folio) {
+@@ -4259,7 +4281,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+ 		if (pte_dirty(ptent))
+ 			dirty = true;
+ 
+-		young++;
++		young += nr;
+ 	}
+ 
+ 	walk_update_folio(walk, last, gen, dirty);
+-- 
+2.47.3
+

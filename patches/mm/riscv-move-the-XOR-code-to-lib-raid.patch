@@ -1,0 +1,212 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Thu, 26 Feb 2026 07:10:27 -0800
+Subject: [PATCH] riscv: move the XOR code to lib/raid/
+
+Move the optimized XOR into lib/raid and include it it in xor.ko
+instead of always building it into the main kernel image.
+
+Link: https://lkml.kernel.org/r/20260226151106.144735-16-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: Li Nan <linan122@huawei.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Richard Henderson <richard.henderson@linaro.org>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Song Liu <song@kernel.org>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/riscv/include/asm/xor.h                 | 54 +------------------
+ arch/riscv/lib/Makefile                      |  1 -
+ lib/raid/xor/Makefile                        |  1 +
+ lib/raid/xor/riscv/xor-glue.c                | 56 ++++++++++++++++++++
+ {arch/riscv/lib => lib/raid/xor/riscv}/xor.S |  0
+ 5 files changed, 59 insertions(+), 53 deletions(-)
+ create mode 100644 lib/raid/xor/riscv/xor-glue.c
+ rename {arch/riscv/lib => lib/raid/xor/riscv}/xor.S (100%)
+
+diff --git a/arch/riscv/include/asm/xor.h b/arch/riscv/include/asm/xor.h
+index ed5f27903efc4..614d9209d0782 100644
+--- a/arch/riscv/include/asm/xor.h
++++ b/arch/riscv/include/asm/xor.h
+@@ -2,60 +2,10 @@
+ /*
+  * Copyright (C) 2021 SiFive
+  */
+-
+-#include <linux/hardirq.h>
+-#include <asm-generic/xor.h>
+-#ifdef CONFIG_RISCV_ISA_V
+ #include <asm/vector.h>
+-#include <asm/switch_to.h>
+-#include <asm/asm-prototypes.h>
+-
+-static void xor_vector_2(unsigned long bytes, unsigned long *__restrict p1,
+-			 const unsigned long *__restrict p2)
+-{
+-	kernel_vector_begin();
+-	xor_regs_2_(bytes, p1, p2);
+-	kernel_vector_end();
+-}
+-
+-static void xor_vector_3(unsigned long bytes, unsigned long *__restrict p1,
+-			 const unsigned long *__restrict p2,
+-			 const unsigned long *__restrict p3)
+-{
+-	kernel_vector_begin();
+-	xor_regs_3_(bytes, p1, p2, p3);
+-	kernel_vector_end();
+-}
+-
+-static void xor_vector_4(unsigned long bytes, unsigned long *__restrict p1,
+-			 const unsigned long *__restrict p2,
+-			 const unsigned long *__restrict p3,
+-			 const unsigned long *__restrict p4)
+-{
+-	kernel_vector_begin();
+-	xor_regs_4_(bytes, p1, p2, p3, p4);
+-	kernel_vector_end();
+-}
+-
+-static void xor_vector_5(unsigned long bytes, unsigned long *__restrict p1,
+-			 const unsigned long *__restrict p2,
+-			 const unsigned long *__restrict p3,
+-			 const unsigned long *__restrict p4,
+-			 const unsigned long *__restrict p5)
+-{
+-	kernel_vector_begin();
+-	xor_regs_5_(bytes, p1, p2, p3, p4, p5);
+-	kernel_vector_end();
+-}
++#include <asm-generic/xor.h>
+ 
+-static struct xor_block_template xor_block_rvv = {
+-	.name = "rvv",
+-	.do_2 = xor_vector_2,
+-	.do_3 = xor_vector_3,
+-	.do_4 = xor_vector_4,
+-	.do_5 = xor_vector_5
+-};
+-#endif /* CONFIG_RISCV_ISA_V */
++extern struct xor_block_template xor_block_rvv;
+ 
+ #define arch_xor_init arch_xor_init
+ static __always_inline void __init arch_xor_init(void)
+diff --git a/arch/riscv/lib/Makefile b/arch/riscv/lib/Makefile
+index bbc031124974e..e220c35764ebd 100644
+--- a/arch/riscv/lib/Makefile
++++ b/arch/riscv/lib/Makefile
+@@ -16,5 +16,4 @@ lib-$(CONFIG_MMU)	+= uaccess.o
+ lib-$(CONFIG_64BIT)	+= tishift.o
+ lib-$(CONFIG_RISCV_ISA_ZICBOZ)	+= clear_page.o
+ obj-$(CONFIG_FUNCTION_ERROR_INJECTION) += error-inject.o
+-lib-$(CONFIG_RISCV_ISA_V)	+= xor.o
+ lib-$(CONFIG_RISCV_ISA_V)	+= riscv_v_helpers.o
+diff --git a/lib/raid/xor/Makefile b/lib/raid/xor/Makefile
+index 3df9e04a1a9b1..c939fad437358 100644
+--- a/lib/raid/xor/Makefile
++++ b/lib/raid/xor/Makefile
+@@ -18,6 +18,7 @@ endif
+ xor-$(CONFIG_CPU_HAS_LSX)	+= loongarch/xor_simd.o
+ xor-$(CONFIG_CPU_HAS_LSX)	+= loongarch/xor_simd_glue.o
+ xor-$(CONFIG_ALTIVEC)		+= powerpc/xor_vmx.o powerpc/xor_vmx_glue.o
++xor-$(CONFIG_RISCV_ISA_V)	+= riscv/xor.o riscv/xor-glue.o
+ 
+ 
+ CFLAGS_arm/xor-neon.o		+= $(CC_FLAGS_FPU)
+diff --git a/lib/raid/xor/riscv/xor-glue.c b/lib/raid/xor/riscv/xor-glue.c
+new file mode 100644
+index 0000000000000..11666a4b6b687
+--- /dev/null
++++ b/lib/raid/xor/riscv/xor-glue.c
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2021 SiFive
++ */
++
++#include <linux/raid/xor_impl.h>
++#include <asm/vector.h>
++#include <asm/switch_to.h>
++#include <asm/asm-prototypes.h>
++#include <asm/xor.h>
++
++static void xor_vector_2(unsigned long bytes, unsigned long *__restrict p1,
++			 const unsigned long *__restrict p2)
++{
++	kernel_vector_begin();
++	xor_regs_2_(bytes, p1, p2);
++	kernel_vector_end();
++}
++
++static void xor_vector_3(unsigned long bytes, unsigned long *__restrict p1,
++			 const unsigned long *__restrict p2,
++			 const unsigned long *__restrict p3)
++{
++	kernel_vector_begin();
++	xor_regs_3_(bytes, p1, p2, p3);
++	kernel_vector_end();
++}
++
++static void xor_vector_4(unsigned long bytes, unsigned long *__restrict p1,
++			 const unsigned long *__restrict p2,
++			 const unsigned long *__restrict p3,
++			 const unsigned long *__restrict p4)
++{
++	kernel_vector_begin();
++	xor_regs_4_(bytes, p1, p2, p3, p4);
++	kernel_vector_end();
++}
++
++static void xor_vector_5(unsigned long bytes, unsigned long *__restrict p1,
++			 const unsigned long *__restrict p2,
++			 const unsigned long *__restrict p3,
++			 const unsigned long *__restrict p4,
++			 const unsigned long *__restrict p5)
++{
++	kernel_vector_begin();
++	xor_regs_5_(bytes, p1, p2, p3, p4, p5);
++	kernel_vector_end();
++}
++
++struct xor_block_template xor_block_rvv = {
++	.name = "rvv",
++	.do_2 = xor_vector_2,
++	.do_3 = xor_vector_3,
++	.do_4 = xor_vector_4,
++	.do_5 = xor_vector_5
++};
+diff --git a/arch/riscv/lib/xor.S b/lib/raid/xor/riscv/xor.S
+similarity index 100%
+rename from arch/riscv/lib/xor.S
+rename to lib/raid/xor/riscv/xor.S
+-- 
+2.47.3
+

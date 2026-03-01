@@ -1,0 +1,86 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Fri, 27 Feb 2026 17:21:07 +0900
+Subject: [PATCH] zram: do not autocorrect bad recompression parameters
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Do not silently autocorrect bad recompression priority parameter value and
+just error out.
+
+Link: https://lkml.kernel.org/r/8a5d53d19a8dbd51d7d81d153676895163e0735e.1772180459.git.senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Suggested-by: Minchan Kim <minchan@kernel.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: "Christoph Böhmwalder" <christoph.boehmwalder@linbit.com>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lars Ellenberg <lars.ellenberg@linbit.com>
+Cc: Philipp Reisner <philipp.reisner@linbit.com>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 17 ++++++++---------
+ 1 file changed, 8 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index fa38d26119eca..a428d2c11b679 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2524,19 +2524,16 @@ static ssize_t recompress_store(struct device *dev,
+ 				struct device_attribute *attr,
+ 				const char *buf, size_t len)
+ {
++	u32 prio = ZRAM_SECONDARY_COMP, prio_max = ZRAM_MAX_COMPS;
+ 	struct zram *zram = dev_to_zram(dev);
+ 	char *args, *param, *val, *algo = NULL;
+ 	u64 num_recomp_pages = ULLONG_MAX;
+ 	struct zram_pp_ctl *ctl = NULL;
+ 	struct zram_pp_slot *pps;
+ 	u32 mode = 0, threshold = 0;
+-	u32 prio, prio_max;
+ 	struct page *page = NULL;
+ 	ssize_t ret;
+ 
+-	prio = ZRAM_SECONDARY_COMP;
+-	prio_max = zram->num_active_comps;
+-
+ 	args = skip_spaces(buf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+@@ -2586,10 +2583,7 @@ static ssize_t recompress_store(struct device *dev,
+ 			if (ret)
+ 				return ret;
+ 
+-			if (prio == ZRAM_PRIMARY_COMP)
+-				prio = ZRAM_SECONDARY_COMP;
+-
+-			prio_max = prio + 1;
++			prio_max = min(prio + 1, ZRAM_MAX_COMPS);
+ 			continue;
+ 		}
+ 	}
+@@ -2609,7 +2603,7 @@ static ssize_t recompress_store(struct device *dev,
+ 				continue;
+ 
+ 			if (!strcmp(zram->comp_algs[prio], algo)) {
+-				prio_max = prio + 1;
++				prio_max = min(prio + 1, ZRAM_MAX_COMPS);
+ 				found = true;
+ 				break;
+ 			}
+@@ -2627,6 +2621,11 @@ static ssize_t recompress_store(struct device *dev,
+ 		goto out;
+ 	}
+ 
++	if (prio < ZRAM_SECONDARY_COMP || prio >= ZRAM_MAX_COMPS) {
++		ret = -EINVAL;
++		goto out;
++	}
++
+ 	page = alloc_page(GFP_KERNEL);
+ 	if (!page) {
+ 		ret = -ENOMEM;
+-- 
+2.47.3
+
