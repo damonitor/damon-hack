@@ -1,0 +1,57 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 3 Jan 2026 10:27:51 -0800
+Subject: [RFC PATCH v2 06/10] mm/damon/core: add damon_merge_regions_of()
+         debug_sanity check
+
+damon_merge_regions_of() should be called only after aggregation is
+finished and therefore each region's nr_accesses and nr_accesses_bp
+match.  There were bugs that broke the assumption, during development of
+online DAMON parameter updates and monitoring results handling changes.
+Add a sanity check for that under CONFIG_DAMON_DEBUG_SANITY.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 8a3738a17cdd9..93d1577b1ae07 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2505,6 +2505,20 @@ static void damon_merge_two_regions(struct damon_target *t,
+ 	damon_destroy_region(r, t);
+ }
+ 
++#ifdef CONFIG_DAMON_DEBUG_SANITY
++static void damon_verify_merge_regions_of(struct damon_region *r)
++{
++	WARN_ONCE(r->nr_accesses != r->nr_accesses_bp / 10000,
++			"nr_accesses (%u) != nr_accesses_bp (%u)\n",
++			r->nr_accesses, r->nr_accesses_bp);
++}
++#else
++static void damon_verify_merge_regions_of(struct damon_region *r)
++{
++}
++#endif
++
++
+ /*
+  * Merge adjacent regions having similar access frequencies
+  *
+@@ -2518,6 +2532,7 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+ 	struct damon_region *r, *prev = NULL, *next;
+ 
+ 	damon_for_each_region_safe(r, next, t) {
++		damon_verify_merge_regions_of(r);
+ 		if (abs(r->nr_accesses - r->last_nr_accesses) > thres)
+ 			r->age = 0;
+ 		else if ((r->nr_accesses == 0) != (r->last_nr_accesses == 0))
+-- 
+2.47.3
