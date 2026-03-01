@@ -69,4 +69,13 @@ do
 		series=$(git log --pretty=%B -1 $c | grep "Patch series")
 		echo "$c $series"
 	done
+	nr_commits=$(git log "$from..$to" --format="%h" \
+		-- mm/damon/ include/linux/damon.h \
+		Documentation/vm/damon/ Documentation/admin-guide/vm/damon/ \
+		Documentation/mm/damon/ Documentation/admin-guide/mm/damon/ \
+		Documentation/ABI/testing/sysfs-kernel-mm-damon \
+		include/trace/events/damon.h \
+		samples/damon/ \
+		tools/testing/selftests/damon | wc -l)
+	echo "nr patches: $nr_commits"
 done
