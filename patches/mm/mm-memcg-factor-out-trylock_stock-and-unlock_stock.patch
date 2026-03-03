@@ -1,0 +1,109 @@
+From: Johannes Weiner <jweiner@meta.com>
+Date: Mon, 2 Mar 2026 14:50:14 -0500
+Subject: [PATCH] mm: memcg: factor out trylock_stock() and unlock_stock()
+
+Patch series ": memcg: obj stock and slab stat caching cleanups".
+
+This is a follow-up to `[PATCH] memcg: fix slab accounting in
+refill_obj_stock() trylock path`.  The way the slab stat cache and the
+objcg charge cache interact appears a bit too fragile.  This series
+factors those paths apart as much as practical.
+
+
+This patch (of 5):
+
+Consolidate the local lock acquisition and the local stock lookup.  This
+allows subsequent patches to use !!stock as an easy way to disambiguate
+the locked vs.  contended cases through the callstack.
+
+Link: https://lkml.kernel.org/r/20260302195305.620713-1-hannes@cmpxchg.org
+Link: https://lkml.kernel.org/r/20260302195305.620713-2-hannes@cmpxchg.org
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Hao Li <hao.li@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 25 +++++++++++++++++++------
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 753d76e96cc67..a975ab3aee101 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3208,6 +3208,19 @@ void __memcg_kmem_uncharge_page(struct page *page, int order)
+ 	obj_cgroup_put(objcg);
+ }
+ 
++static struct obj_stock_pcp *trylock_stock(void)
++{
++	if (local_trylock(&obj_stock.lock))
++		return this_cpu_ptr(&obj_stock);
++
++	return NULL;
++}
++
++static void unlock_stock(struct obj_stock_pcp *stock)
++{
++	local_unlock(&obj_stock.lock);
++}
++
+ static void __account_obj_stock(struct obj_cgroup *objcg,
+ 				struct obj_stock_pcp *stock, int nr,
+ 				struct pglist_data *pgdat, enum node_stat_item idx)
+@@ -3263,10 +3276,10 @@ static bool consume_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 	struct obj_stock_pcp *stock;
+ 	bool ret = false;
+ 
+-	if (!local_trylock(&obj_stock.lock))
++	stock = trylock_stock();
++	if (!stock)
+ 		return ret;
+ 
+-	stock = this_cpu_ptr(&obj_stock);
+ 	if (objcg == READ_ONCE(stock->cached_objcg) && stock->nr_bytes >= nr_bytes) {
+ 		stock->nr_bytes -= nr_bytes;
+ 		ret = true;
+@@ -3275,7 +3288,7 @@ static bool consume_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 			__account_obj_stock(objcg, stock, nr_bytes, pgdat, idx);
+ 	}
+ 
+-	local_unlock(&obj_stock.lock);
++	unlock_stock(stock);
+ 
+ 	return ret;
+ }
+@@ -3366,7 +3379,8 @@ static void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 	struct obj_stock_pcp *stock;
+ 	unsigned int nr_pages = 0;
+ 
+-	if (!local_trylock(&obj_stock.lock)) {
++	stock = trylock_stock();
++	if (!stock) {
+ 		if (pgdat)
+ 			mod_objcg_mlstate(objcg, pgdat, idx, nr_acct);
+ 		nr_pages = nr_bytes >> PAGE_SHIFT;
+@@ -3375,7 +3389,6 @@ static void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 		goto out;
+ 	}
+ 
+-	stock = this_cpu_ptr(&obj_stock);
+ 	if (READ_ONCE(stock->cached_objcg) != objcg) { /* reset if necessary */
+ 		drain_obj_stock(stock);
+ 		obj_cgroup_get(objcg);
+@@ -3395,7 +3408,7 @@ static void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+ 		stock->nr_bytes &= (PAGE_SIZE - 1);
+ 	}
+ 
+-	local_unlock(&obj_stock.lock);
++	unlock_stock(stock);
+ out:
+ 	if (nr_pages)
+ 		obj_cgroup_uncharge_pages(objcg, nr_pages);
+-- 
+2.47.3
+

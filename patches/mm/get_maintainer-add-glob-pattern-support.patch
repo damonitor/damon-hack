@@ -1,0 +1,91 @@
+From: Matteo Croce <technoboy85@gmail.com>
+Date: Mon, 2 Mar 2026 11:38:22 +0100
+Subject: [PATCH] get_maintainer: add ** glob pattern support
+
+Add support for the ** glob operator in MAINTAINERS F: and X: patterns,
+matching any number of path components (like Python's ** glob).
+
+The existing * to .* conversion with slash-count check is preserved.  **
+is converted to (?:.*), a non-capturing group used as a marker to bypass
+the slash-count check in file_match_pattern(), allowing the pattern to
+cross directory boundaries.
+
+This enables patterns like F: **/*[_-]kunit*.c to match files at any depth
+in the tree.
+
+Link: https://lkml.kernel.org/r/20260302103822.77343-1-teknoraver@meta.com
+Signed-off-by: Matteo Croce <teknoraver@meta.com>
+Acked-by: Joe Perches <joe@perches.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ MAINTAINERS               | 1 +
+ scripts/get_maintainer.pl | 9 +++++++--
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index e510fbc6f882c..0a3e275eed907 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -35,6 +35,7 @@ Descriptions of section entries and preferred order
+ 	   F:	drivers/net/	all files in and below drivers/net
+ 	   F:	drivers/net/*	all files in drivers/net, but not below
+ 	   F:	*/net/*		all files in "any top level directory"/net
++	   F:	fs/**/*foo*.c	all *foo*.c files in any subdirectory of fs
+ 	   One pattern per line.  Multiple F: lines acceptable.
+ 	X: *Excluded* files and directories that are NOT maintained, same
+ 	   rules as F:. Files exclusions are tested before file matches.
+diff --git a/scripts/get_maintainer.pl b/scripts/get_maintainer.pl
+index 4414194bedcfd..f0ca0db6ddc27 100755
+--- a/scripts/get_maintainer.pl
++++ b/scripts/get_maintainer.pl
+@@ -375,8 +375,10 @@ sub read_maintainer_file {
+ 	    ##Filename pattern matching
+ 	    if ($type eq "F" || $type eq "X") {
+ 		$value =~ s@\.@\\\.@g;       ##Convert . to \.
++		$value =~ s/\*\*/\x00/g;     ##Convert ** to placeholder
+ 		$value =~ s/\*/\.\*/g;       ##Convert * to .*
+ 		$value =~ s/\?/\./g;         ##Convert ? to .
++		$value =~ s/\x00/(?:.*)/g;   ##Convert placeholder to (?:.*)
+ 		##if pattern is a directory and it lacks a trailing slash, add one
+ 		if ((-d $value)) {
+ 		    $value =~ s@([^/])$@$1/@;
+@@ -746,8 +748,10 @@ sub self_test {
+ 	if (($type eq "F" || $type eq "X") &&
+ 	    ($self_test eq "" || $self_test =~ /\bpatterns\b/)) {
+ 	    $value =~ s@\.@\\\.@g;       ##Convert . to \.
++	    $value =~ s/\*\*/\x00/g;     ##Convert ** to placeholder
+ 	    $value =~ s/\*/\.\*/g;       ##Convert * to .*
+ 	    $value =~ s/\?/\./g;         ##Convert ? to .
++	    $value =~ s/\x00/(?:.*)/g;   ##Convert placeholder to (?:.*)
+ 	    ##if pattern is a directory and it lacks a trailing slash, add one
+ 	    if ((-d $value)) {
+ 		$value =~ s@([^/])$@$1/@;
+@@ -921,7 +925,7 @@ sub get_maintainers {
+ 				my $value_pd = ($value =~ tr@/@@);
+ 				my $file_pd = ($file  =~ tr@/@@);
+ 				$value_pd++ if (substr($value,-1,1) ne "/");
+-				$value_pd = -1 if ($value =~ /^\.\*/);
++				$value_pd = -1 if ($value =~ /^(\.\*|\(\?:\.\*\))/);
+ 				if ($value_pd >= $file_pd &&
+ 				    range_is_maintained($start, $end) &&
+ 				    range_has_maintainer($start, $end)) {
+@@ -955,6 +959,7 @@ sub get_maintainers {
+ 			$line =~ s/([^\\])\.([^\*])/$1\?$2/g;
+ 			$line =~ s/([^\\])\.$/$1\?/g;	##Convert . back to ?
+ 			$line =~ s/\\\./\./g;       	##Convert \. to .
++			$line =~ s/\(\?:\.\*\)/\*\*/g;	##Convert (?:.*) to **
+ 			$line =~ s/\.\*/\*/g;       	##Convert .* to *
+ 		    }
+ 		    my $count = $line =~ s/^([A-Z]):/$1:\t/g;
+@@ -1048,7 +1053,7 @@ sub file_match_pattern {
+ 	if ($file =~ m@^$pattern@) {
+ 	    my $s1 = ($file =~ tr@/@@);
+ 	    my $s2 = ($pattern =~ tr@/@@);
+-	    if ($s1 == $s2) {
++	    if ($s1 == $s2 || $pattern =~ /\(\?:/) {
+ 		return 1;
+ 	    }
+ 	}
+-- 
+2.47.3
+

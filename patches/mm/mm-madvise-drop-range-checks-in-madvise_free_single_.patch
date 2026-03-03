@@ -1,0 +1,146 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Fri, 27 Feb 2026 21:08:32 +0100
+Subject: [PATCH] mm/madvise: drop range checks in madvise_free_single_vma()
+
+Patch series "mm: cleanups around unmapping / zapping".
+
+A bunch of cleanups around unmapping and zapping.  Mostly simplifications,
+code movements, documentation and renaming of zapping functions.
+
+With this series, we'll have the following high-level zap/unmap functions
+(excluding high-level folio zapping):
+* unmap_vmas() for actual unmapping (vmas will go away)
+* zap_vma(): zap all page table entries in a vma
+* zap_vma_for_reaping(): zap_vma() that must not block
+* zap_vma_range(): zap a range of page table entries
+* zap_vma_range_batched(): zap_vma_range() with more options and batching
+* zap_special_vma_range(): limited zap_vma_range() for modules
+* __zap_vma_range(): internal helper
+
+Patch #1 is not about unmapping/zapping, but I stumbled over it while
+verifying MADV_DONTNEED range handling.
+
+Patch #16 is related to [1], but makes sense even independent of that.
+
+
+This patch (of 16):
+
+madvise_vma_behavior()->
+madvise_dontneed_free()->madvise_free_single_vma() is only called from
+madvise_walk_vmas()
+
+(a) After try_vma_read_lock() confirmed that the whole range falls into
+    a single VMA (see is_vma_lock_sufficient()).
+
+(b) After adjusting the range to the VMA in the loop afterwards.
+
+madvise_dontneed_free() might drop the MM lock when handling userfaultfd,
+but it properly looks up the VMA again to adjust the range.
+
+So in madvise_free_single_vma(), the given range should always fall into a
+single VMA and should also span at least one page.
+
+Let's drop the error checks.
+
+The code now matches what we do in madvise_dontneed_single_vma(), where we
+call zap_vma_range_batched() that documents: "The range must fit into one
+VMA.".  Although that function still adjusts that range, we'll change that
+soon.
+
+Link: https://lkml.kernel.org/r/20260227200848.114019-1-david@kernel.org
+Link: https://lkml.kernel.org/r/20260227200848.114019-2-david@kernel.org
+Link: https://lore.kernel.org/r/aYSKyr7StGpGKNqW@google.com [1]
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrii Nakryiko <andrii@kernel.org>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Arve <arve@android.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
+Cc: Daniel Borkman <daniel@iogearbox.net>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Ahern <dsahern@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dimitri Sivanich <dimitri.sivanich@hpe.com>
+Cc: Eric Dumazet <edumazet@google.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hartley Sweeten <hsweeten@visionengravers.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Ian Abbott <abbotti@mev.co.uk>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jakub Kacinski <kuba@kernel.org>
+Cc: Jani Nikula <jani.nikula@linux.intel.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Janosch Frank <frankja@linux.ibm.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jonas Lahtinen <joonas.lahtinen@linux.intel.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Miguel Ojeda <ojeda@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Namhyung kim <namhyung@kernel.org>
+Cc: Neal Cardwell <ncardwell@google.com>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rodrigo Vivi <rodrigo.vivi@intel.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Todd Kjos <tkjos@android.com>
+Cc: Tvrtko Ursulin <tursulin@ursulin.net>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vincenzo Frascino <vincenzo.frascino@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/madvise.c | 13 ++++---------
+ 1 file changed, 4 insertions(+), 9 deletions(-)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index c0370d9b4e231..efc04334a000c 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -799,9 +799,10 @@ static int madvise_free_single_vma(struct madvise_behavior *madv_behavior)
+ {
+ 	struct mm_struct *mm = madv_behavior->mm;
+ 	struct vm_area_struct *vma = madv_behavior->vma;
+-	unsigned long start_addr = madv_behavior->range.start;
+-	unsigned long end_addr = madv_behavior->range.end;
+-	struct mmu_notifier_range range;
++	struct mmu_notifier_range range = {
++		.start = madv_behavior->range.start,
++		.end = madv_behavior->range.end,
++	};
+ 	struct mmu_gather *tlb = madv_behavior->tlb;
+ 	struct mm_walk_ops walk_ops = {
+ 		.pmd_entry		= madvise_free_pte_range,
+@@ -811,12 +812,6 @@ static int madvise_free_single_vma(struct madvise_behavior *madv_behavior)
+ 	if (!vma_is_anonymous(vma))
+ 		return -EINVAL;
+ 
+-	range.start = max(vma->vm_start, start_addr);
+-	if (range.start >= vma->vm_end)
+-		return -EINVAL;
+-	range.end = min(vma->vm_end, end_addr);
+-	if (range.end <= vma->vm_start)
+-		return -EINVAL;
+ 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm,
+ 				range.start, range.end);
+ 
+-- 
+2.47.3
+

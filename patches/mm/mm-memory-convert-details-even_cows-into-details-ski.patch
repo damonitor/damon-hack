@@ -1,0 +1,155 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Fri, 27 Feb 2026 21:08:40 +0100
+Subject: [PATCH] mm/memory: convert details->even_cows into details->skip_cows
+
+The current semantics are confusing: simply because someone specifies an
+empty zap_detail struct suddenly makes should_zap_cows() behave
+differently.  The default should be to also zap CoW'ed anonymous pages.
+
+Really only unmap_mapping_pages() and friends want to skip zapping of
+these anon folios.
+
+So let's invert the meaning; turn the confusing "reclaim_pt" check that
+overrides other properties in should_zap_cows() into a safety check.
+
+Note that the only caller that sets reclaim_pt=true is
+madvise_dontneed_single_vma(), which wants to zap any pages.
+
+Link: https://lkml.kernel.org/r/20260227200848.114019-10-david@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrii Nakryiko <andrii@kernel.org>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Arve <arve@android.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
+Cc: Daniel Borkman <daniel@iogearbox.net>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Ahern <dsahern@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dimitri Sivanich <dimitri.sivanich@hpe.com>
+Cc: Eric Dumazet <edumazet@google.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hartley Sweeten <hsweeten@visionengravers.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Ian Abbott <abbotti@mev.co.uk>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jakub Kacinski <kuba@kernel.org>
+Cc: Jani Nikula <jani.nikula@linux.intel.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Janosch Frank <frankja@linux.ibm.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jonas Lahtinen <joonas.lahtinen@linux.intel.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Miguel Ojeda <ojeda@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Namhyung kim <namhyung@kernel.org>
+Cc: Neal Cardwell <ncardwell@google.com>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rodrigo Vivi <rodrigo.vivi@intel.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Todd Kjos <tkjos@android.com>
+Cc: Tvrtko Ursulin <tursulin@ursulin.net>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vincenzo Frascino <vincenzo.frascino@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h |  2 +-
+ mm/madvise.c       |  1 -
+ mm/memory.c        | 12 ++++++------
+ 3 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index bcf327c9e6f45..67f75be614faa 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -2767,7 +2767,7 @@ extern void pagefault_out_of_memory(void);
+  */
+ struct zap_details {
+ 	struct folio *single_folio;	/* Locked folio to be unmapped */
+-	bool even_cows;			/* Zap COWed private pages too? */
++	bool skip_cows;			/* Do not zap COWed private pages */
+ 	bool reclaim_pt;		/* Need reclaim page tables? */
+ 	zap_flags_t zap_flags;		/* Extra flags for zapping */
+ };
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 557a360f79191..b51f216934f39 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -853,7 +853,6 @@ static long madvise_dontneed_single_vma(struct madvise_behavior *madv_behavior)
+ 	struct madvise_behavior_range *range = &madv_behavior->range;
+ 	struct zap_details details = {
+ 		.reclaim_pt = true,
+-		.even_cows = true,
+ 	};
+ 
+ 	zap_page_range_single_batched(
+diff --git a/mm/memory.c b/mm/memory.c
+index fdcd2abf29c22..7d7c24c6917c5 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1554,11 +1554,13 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
+ static inline bool should_zap_cows(struct zap_details *details)
+ {
+ 	/* By default, zap all pages */
+-	if (!details || details->reclaim_pt)
++	if (!details)
+ 		return true;
+ 
++	VM_WARN_ON_ONCE(details->skip_cows && details->reclaim_pt);
++
+ 	/* Or, we zap COWed pages only if the caller wants to */
+-	return details->even_cows;
++	return !details->skip_cows;
+ }
+ 
+ /* Decides whether we should zap this folio with the folio pointer specified */
+@@ -2149,8 +2151,6 @@ void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap)
+ 	struct mmu_notifier_range range;
+ 	struct zap_details details = {
+ 		.zap_flags = ZAP_FLAG_DROP_MARKER | ZAP_FLAG_UNMAP,
+-		/* Careful - we need to zap private pages too! */
+-		.even_cows = true,
+ 	};
+ 
+ 	vma = unmap->first;
+@@ -4282,7 +4282,7 @@ void unmap_mapping_folio(struct folio *folio)
+ 	first_index = folio->index;
+ 	last_index = folio_next_index(folio) - 1;
+ 
+-	details.even_cows = false;
++	details.skip_cows = true;
+ 	details.single_folio = folio;
+ 	details.zap_flags = ZAP_FLAG_DROP_MARKER;
+ 
+@@ -4312,7 +4312,7 @@ void unmap_mapping_pages(struct address_space *mapping, pgoff_t start,
+ 	pgoff_t	first_index = start;
+ 	pgoff_t	last_index = start + nr - 1;
+ 
+-	details.even_cows = even_cows;
++	details.skip_cows = !even_cows;
+ 	if (last_index < first_index)
+ 		last_index = ULONG_MAX;
+ 
+-- 
+2.47.3
+
