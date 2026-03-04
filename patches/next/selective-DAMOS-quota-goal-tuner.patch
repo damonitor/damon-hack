@@ -5,35 +5,32 @@ Subject: [PATCH] ==== selective DAMOS quota goal tuner ====
 mm/damon: support multiple goal-based quota tuning algorithms
 
 Aim-oriented DAMOS quota atuo-tuning uses a single tuning algorithm.
-The algorithm is designed to find a non-zero quota that should be
-consistently kept for achieving the aimed goal for long term.  In other
-words, the algorithm assumes the goal will be under-achieved once the
-DAMOS scheme is completely deactivated.  Memory pressure level metric
-goal (DAMOS_QUOTA_SOME_MEM_PSI_US) with pageout action is one good
-example.
+The algorithm is designed to find a quota value that should be
+consistently kept for achieving the aimed goal for long term.  It is
+useful and reliable at automatically operating systems that have dynamic
+environment in long term.
 
-It is particularly useful for automated kernel-only long term system
-operations on dynamic environments.  As always, however, no single
-algorithm fits all.  When the environment has static characteristics and
-the goal metric has no factor to move without additional intervention,
-the algorithm is difficult to control and accurately achieve the goal.
-Actually there were reports [1,2] of such cases.
+As always, however, no single algorithm fits all.  When the environment
+has static characteristics or there are control towers in not only the
+kernel space but also the user space, the algorithm shows some
+limitations.  In such environments, users want kernel work in more short
+term deterministic way.  Actually there were at least two reports [1,2]
+of such cases.
 
-Extend DAMOS quotas goal core API and sysfs ABI to support multiple
-quota tuning algorithms that the API callers and/or ABI users can
-select.  Keep the current algorithm as the default one, to keep the
-default behavior unchanged.  Also give it a name, "consist", as it is
+Extend DAMOS quotas goal to support multiple quota tuning algorithms
+that users can select.  Keep the current algorithm as the default one,
+to not break the old users.  Also give it a name, "consist", as it is
 designed to "consistently" apply the DAMOS action.  And introduce a new
 tuning algorithm, namely "temporal".  It is designed to apply the DAMOS
-action only temporally until the goal is achieved, in a deterministic
-way.  In more detail, as long as the goal is under-achieved, it uses the
-maximum quota available.  Once the goal is over-achieved, it sets the
-quota zero.
+action only temporally, in a deterministic way.  In more detail, as long
+as the goal is under-achieved, it uses the maximum quota available.
+Once the goal is over-achieved, it sets the quota zero.
 
 Tests
 =====
 
-I confirmed the feature is working as expected like below.
+I confirmed the feature is working as expected using the latest version
+of DAMON user-space tool, like below.
 
     $ # start DAMOS for reclaiming memory aiming 30% free memory
     $ sudo ./damo/damo start --damos_action pageout \
@@ -42,29 +39,30 @@ I confirmed the feature is working as expected like below.
             --damos_quota_interval 1s \
             --damos_quota_space 100M
 
-For this test, the latest version (v3.1.8) of DAMON user-space tool,
-which added the support of this feature, is used.  As expected, DAMOS
-was stop reclaiming memory as soon as the goal amount of free memory is
-made.  When 'consist' tuner is used, the reclamation was continued even
-after the goal amount of free memory is made, resulting in more than
-goal amount of free memory, as expected.
+Note that >=3.1.8 version of DAMON user-space tool supports this feature
+(--damos_quota_goal_tuner).  As expected, DAMOS stops reclaiming memory
+as soon as the goal amount of free memory is made.  When 'consist' tuner
+is used, the reclamation was continued even after the goal amount of
+free memory is made, resulting in more than goal amount of free memory,
+as expected.
 
 Patch Sequence
 ==============
 
-The first patch extends core API to allow multiple tuners and make the
-current tuner as the default and only available tuner, namely 'consist'.
-The second patch allows future tuners setting zero effective quota.  The
-third patch introduces the second tuner, namely 'temporal'.  The fourth
-patch further extend DAMON sysfs API to let users use that.
+First four patches implement the features.  Patch 1 extends core API to
+allow multiple tuners and make the current tuner as the default and only
+available tuner, namely 'consist'.  Patch 2 allows future tuners setting
+zero effective quota.  Patch 3 introduces the second tuner, namely
+'temporal'.  Patch 4 further extends DAMON sysfs API to let users use
+that.
 
 Three following patches (patches 5-7) update design, usage, and ABI
 documents, repsectively.
 
 Final three patches (patches 8-10) are for adding selftests.  The eighth
-and the ninth patches extend the DAMON sysfs testing-purpose control
-code and DAMON status dumping code to support the newly added feature.
-The tenth patch extend the existing online commit test to cover the new
+and the ninth patches extend the testing-purpose DAMON sysfs control
+helper and DAMON status dumping tool to support the newly added feature.
+The tenth patch extends the existing online commit test to cover the new
 feature.
 
 References
@@ -82,6 +80,7 @@ Changes from RFC v1
 - Set goal tuner inside damon_new_scheme().
 - Allow zero size effective size quota.
 - Update the ABI document.
+- Wrodsmith change descriptions.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
