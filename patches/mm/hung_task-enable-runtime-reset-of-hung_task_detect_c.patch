@@ -1,0 +1,170 @@
+From: Aaron Tomlin <atomlin@atomlin.com>
+Date: Tue, 3 Mar 2026 15:30:30 -0500
+Subject: [PATCH] hung_task: enable runtime reset of hung_task_detect_count
+
+Currently, the hung_task_detect_count sysctl provides a cumulative count
+of hung tasks since boot.  In long-running, high-availability
+environments, this counter may lose its utility if it cannot be reset once
+an incident has been resolved.  Furthermore, the previous implementation
+relied upon implicit ordering, which could not strictly guarantee that
+diagnostic metadata published by one CPU was visible to the panic logic on
+another.
+
+This patch introduces the capability to reset the detection count by
+writing "0" to the hung_task_detect_count sysctl.  The proc_handler logic
+has been updated to validate this input and atomically reset the counter.
+
+The synchronisation of sysctl_hung_task_detect_count relies upon a
+transactional model to ensure the integrity of the detection counter
+against concurrent resets from userspace.  The application of
+atomic_long_read_acquire() and atomic_long_cmpxchg_release() is correct
+and provides the following guarantees:
+
+    1. Prevention of Load-Store Reordering via Acquire Semantics By
+       utilising atomic_long_read_acquire() to snapshot the counter
+       before initiating the task traversal, we establish a strict
+       memory barrier. This prevents the compiler or hardware from
+       reordering the initial load to a point later in the scan. Without
+       this "acquire" barrier, a delayed load could potentially read a
+       "0" value resulting from a userspace reset that occurred
+       mid-scan. This would lead to the subsequent cmpxchg succeeding
+       erroneously, thereby overwriting the user's reset with stale
+       increment data.
+
+    2. Atomicity of the "Commit" Phase via Release Semantics The
+       atomic_long_cmpxchg_release() serves as the transaction's commit
+       point. The "release" barrier ensures that all diagnostic
+       recordings and task-state observations made during the scan are
+       globally visible before the counter is incremented.
+
+    3. Race Condition Resolution This pairing effectively detects any
+       "out-of-band" reset of the counter. If
+       sysctl_hung_task_detect_count is modified via the procfs
+       interface during the scan, the final cmpxchg will detect the
+       discrepancy between the current value and the "acquire" snapshot.
+       Consequently, the update will fail, ensuring that a reset command
+       from the administrator is prioritised over a scan that may have
+       been invalidated by that very reset.
+
+Link: https://lkml.kernel.org/r/20260303203031.4097316-3-atomlin@atomlin.com
+Signed-off-by: Aaron Tomlin <atomlin@atomlin.com>
+Reviewed-by: Masami Hiramatsu (Google) <mhiramat@kernel.org>
+Reviewed-by: Joel Granados <joel.granados@kernel.org>
+Reviewed-by: Petr Mladek <pmladek@suse.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/sysctl/kernel.rst |  3 +-
+ kernel/hung_task.c                          | 58 ++++++++++++++++++---
+ 2 files changed, 53 insertions(+), 8 deletions(-)
+
+diff --git a/Documentation/admin-guide/sysctl/kernel.rst b/Documentation/admin-guide/sysctl/kernel.rst
+index 9aed74e65cf4e..c6994e55d1411 100644
+--- a/Documentation/admin-guide/sysctl/kernel.rst
++++ b/Documentation/admin-guide/sysctl/kernel.rst
+@@ -418,7 +418,8 @@ hung_task_detect_count
+ ======================
+ 
+ Indicates the total number of tasks that have been detected as hung since
+-the system boot.
++the system boot or since the counter was reset. The counter is zeroed when
++a value of 0 is written.
+ 
+ This file shows up if ``CONFIG_DETECT_HUNG_TASK`` is enabled.
+ 
+diff --git a/kernel/hung_task.c b/kernel/hung_task.c
+index df10830ed9ef4..350093de05358 100644
+--- a/kernel/hung_task.c
++++ b/kernel/hung_task.c
+@@ -306,7 +306,11 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
+ 	int need_warning = sysctl_hung_task_warnings;
+ 	unsigned long si_mask = hung_task_si_mask;
+ 
+-	total_count = atomic_long_read(&sysctl_hung_task_detect_count);
++	/*
++	 * The counter might get reset. Remember the initial value.
++	 * Acquire prevents reordering task checks before this point.
++	 */
++	total_count = atomic_long_read_acquire(&sysctl_hung_task_detect_count);
+ 	/*
+ 	 * If the system crashed already then all bets are off,
+ 	 * do not report extra hung tasks:
+@@ -337,10 +341,11 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
+ 		return;
+ 
+ 	/*
+-	 * This counter tracks the total number of tasks detected as hung
+-	 * since boot.
++	 * Do not count this round when the global counter has been reset
++	 * during this check. Release ensures we see all hang details
++	 * recorded during the scan.
+ 	 */
+-	atomic_long_cmpxchg_relaxed(&sysctl_hung_task_detect_count,
++	atomic_long_cmpxchg_release(&sysctl_hung_task_detect_count,
+ 				    total_count, total_count +
+ 				    this_round_count);
+ 
+@@ -366,6 +371,46 @@ static long hung_timeout_jiffies(unsigned long last_checked,
+ }
+ 
+ #ifdef CONFIG_SYSCTL
++
++/**
++ * proc_dohung_task_detect_count - proc handler for hung_task_detect_count
++ * @table: Pointer to the struct ctl_table definition for this proc entry
++ * @dir: Flag indicating the operation
++ * @buffer: User space buffer for data transfer
++ * @lenp: Pointer to the length of the data being transferred
++ * @ppos: Pointer to the current file offset
++ *
++ * This handler is used for reading the current hung task detection count
++ * and for resetting it to zero when a write operation is performed using a
++ * zero value only.
++ * Return: 0 on success, or a negative error code on failure.
++ */
++static int proc_dohung_task_detect_count(const struct ctl_table *table, int dir,
++					 void *buffer, size_t *lenp, loff_t *ppos)
++{
++	unsigned long detect_count;
++	struct ctl_table proxy_table;
++	int err;
++
++	proxy_table = *table;
++	proxy_table.data = &detect_count;
++
++	if (SYSCTL_KERN_TO_USER(dir))
++		detect_count = atomic_long_read(&sysctl_hung_task_detect_count);
++
++	err = proc_doulongvec_minmax(&proxy_table, dir, buffer, lenp, ppos);
++	if (err < 0)
++		return err;
++
++	if (SYSCTL_USER_TO_KERN(dir)) {
++		if (detect_count)
++			return -EINVAL;
++		atomic_long_set(&sysctl_hung_task_detect_count, 0);
++	}
++
++	return 0;
++}
++
+ /*
+  * Process updating of timeout sysctl
+  */
+@@ -446,10 +491,9 @@ static const struct ctl_table hung_task_sysctls[] = {
+ 	},
+ 	{
+ 		.procname	= "hung_task_detect_count",
+-		.data		= &sysctl_hung_task_detect_count,
+ 		.maxlen		= sizeof(unsigned long),
+-		.mode		= 0444,
+-		.proc_handler	= proc_doulongvec_minmax,
++		.mode		= 0644,
++		.proc_handler	= proc_dohung_task_detect_count,
+ 	},
+ 	{
+ 		.procname	= "hung_task_sys_info",
+-- 
+2.47.3
+

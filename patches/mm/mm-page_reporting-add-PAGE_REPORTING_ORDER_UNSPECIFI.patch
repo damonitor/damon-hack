@@ -1,11 +1,11 @@
 From: Yuvraj Sakshith <yuvraj.sakshith@oss.qualcomm.com>
-Date: Wed, 25 Feb 2026 23:01:23 -0800
-Subject: [PATCH] mm/page_reporting: allow zero page_reporting_order
+Date: Tue, 3 Mar 2026 03:30:28 -0800
+Subject: [PATCH] mm/page_reporting: add PAGE_REPORTING_ORDER_UNSPECIFIED
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Patch series "Allow order zero pages in page reporting".
+Patch series "Allow order zero pages in page reporting", v4.
 
 Today, page reporting sets page_reporting_order in two ways:
 
@@ -22,34 +22,39 @@ For instance, when virtio-balloon runs inside a guest with tiny memory
 case order MAX_PAGE_ORDER page) after some uptime.  Page reporting should
 be able to return order zero pages back for optimal memory relinquishment.
 
-This patchset changes the default fallback value from '0' to '-1' in all
+This patch changes the default fallback value from '0' to '-1' in all
 possible clients of free page reporting (hv_balloon and virtio-balloon)
 together with allowing '0' as a valid order in page_reporting_register().
 
 
-This patch (of 3):
+This patch (of 5):
 
-Some drivers might require page sized chunks to be reported.  This patch
-allows registering a driver with order as zero.
+Drivers can pass order of pages to be reported while registering itself.
+Today, this is a magic number, 0.
 
-Example use case: virtio-balloon driver running on a guest with very small
-memory.  After some time has passed, the guest might not be able to find a
-chunk of 8KB.
+Label this with PAGE_REPORTING_ORDER_UNSPECIFIED and check for it when the
+driver is being registered.
 
-Link: https://lkml.kernel.org/r/20260226070125.3732265-1-yuvraj.sakshith@oss.qualcomm.com
-Link: https://lkml.kernel.org/r/20260226070125.3732265-2-yuvraj.sakshith@oss.qualcomm.com
+This macro will be used in relevant drivers next.
+
+Link: https://lkml.kernel.org/r/20260303113032.3008371-1-yuvraj.sakshith@oss.qualcomm.com
+Link: https://lkml.kernel.org/r/20260303113032.3008371-2-yuvraj.sakshith@oss.qualcomm.com
 Signed-off-by: Yuvraj Sakshith <yuvraj.sakshith@oss.qualcomm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Michael Kelley <mhklinux@outlook.com>
+Acked-by: Michael S. Tsirkin <mst@redhat.com>
 Cc: Brendan Jackman <jackmanb@google.com>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Dexuan Cui <decui@microsoft.com>
 Cc: Eugenio Pérez <eperezma@redhat.com>
 Cc: Haiyang Zhang <haiyangz@microsoft.com>
 Cc: Jason Wang <jasowang@redhat.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: K. Y. Srinivasan <kys@microsoft.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Long Li <longli@microsoft.com>
-Cc: "Michael S. Tsirkin" <mst@redhat.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
 Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Wei Liu <wei.liu@kernel.org>
@@ -57,19 +62,33 @@ Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/page_reporting.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ include/linux/page_reporting.h | 1 +
+ mm/page_reporting.c            | 3 ++-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
 
+diff --git a/include/linux/page_reporting.h b/include/linux/page_reporting.h
+index fe648dfa3a7ca..d1886c6572859 100644
+--- a/include/linux/page_reporting.h
++++ b/include/linux/page_reporting.h
+@@ -7,6 +7,7 @@
+ 
+ /* This value should always be a power of 2, see page_reporting_cycle() */
+ #define PAGE_REPORTING_CAPACITY		32
++#define PAGE_REPORTING_ORDER_UNSPECIFIED	0
+ 
+ struct page_reporting_dev_info {
+ 	/* function that alters pages to make them "reported" */
 diff --git a/mm/page_reporting.c b/mm/page_reporting.c
-index f0042d5743af8..c02874174ddae 100644
+index 43976a9dce3f7..a9c28d7b4291d 100644
 --- a/mm/page_reporting.c
 +++ b/mm/page_reporting.c
-@@ -370,7 +370,7 @@ int page_reporting_register(struct page_reporting_dev_info *prdev)
+@@ -371,7 +371,8 @@ int page_reporting_register(struct page_reporting_dev_info *prdev)
  	 */
  
  	if (page_reporting_order == -1) {
 -		if (prdev->order > 0 && prdev->order <= MAX_PAGE_ORDER)
-+		if (prdev->order >= 0 && prdev->order <= MAX_PAGE_ORDER)
++		if (prdev->order != PAGE_REPORTING_ORDER_UNSPECIFIED &&
++			prdev->order <= MAX_PAGE_ORDER)
  			page_reporting_order = prdev->order;
  		else
  			page_reporting_order = pageblock_order;

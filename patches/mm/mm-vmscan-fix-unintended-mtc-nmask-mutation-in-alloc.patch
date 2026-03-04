@@ -1,0 +1,75 @@
+From: Bing Jiao <bingjiao@google.com>
+Date: Tue, 3 Mar 2026 05:25:17 +0000
+Subject: [PATCH] mm/vmscan: fix unintended mtc->nmask mutation in
+ alloc_demote_folio()
+
+In alloc_demote_folio(), mtc->nmask is set to NULL for the first
+allocation.  If that succeeds, it returns without restoring mtc->nmask to
+allowed_mask.  For subsequent allocations from the migrate_pages() batch,
+mtc->nmask will be NULL.  If the target node then becomes full, the
+fallback allocation will use nmask = NULL, allocating from any node
+allowed by the task cpuset, which for kswapd is all nodes.
+
+To address this issue, use a local copy of the mtc structure with nmask =
+NULL for the first allocation attempt specifically, ensuring the original
+mtc remains unmodified.
+
+Link: https://lkml.kernel.org/r/20260303052519.109244-1-bingjiao@google.com
+Fixes: 320080272892 ("mm/demotion: demote pages according to allocation fallback order")
+Signed-off-by: Bing Jiao <bingjiao@google.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 14 +++++---------
+ 1 file changed, 5 insertions(+), 9 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 1f2f48815b6d8..14f880d7ca372 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -966,13 +966,11 @@ static void folio_check_dirty_writeback(struct folio *folio,
+ static struct folio *alloc_demote_folio(struct folio *src,
+ 		unsigned long private)
+ {
++	struct migration_target_control *mtc, target_nid_mtc;
+ 	struct folio *dst;
+-	nodemask_t *allowed_mask;
+-	struct migration_target_control *mtc;
+ 
+ 	mtc = (struct migration_target_control *)private;
+ 
+-	allowed_mask = mtc->nmask;
+ 	/*
+ 	 * make sure we allocate from the target node first also trying to
+ 	 * demote or reclaim pages from the target node via kswapd if we are
+@@ -982,15 +980,13 @@ static struct folio *alloc_demote_folio(struct folio *src,
+ 	 * a demotion of cold pages from the target memtier. This can result
+ 	 * in the kernel placing hot pages in slower(lower) memory tiers.
+ 	 */
+-	mtc->nmask = NULL;
+-	mtc->gfp_mask |= __GFP_THISNODE;
+-	dst = alloc_migration_target(src, (unsigned long)mtc);
++	target_nid_mtc = *mtc;
++	target_nid_mtc.nmask = NULL;
++	target_nid_mtc.gfp_mask |= __GFP_THISNODE;
++	dst = alloc_migration_target(src, (unsigned long)&target_nid_mtc);
+ 	if (dst)
+ 		return dst;
+ 
+-	mtc->gfp_mask &= ~__GFP_THISNODE;
+-	mtc->nmask = allowed_mask;
+-
+ 	return alloc_migration_target(src, (unsigned long)mtc);
+ }
+ 
+-- 
+2.47.3
+
