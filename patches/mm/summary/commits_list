@@ -1,27 +1,25 @@
 - baseline: v7.0-rc1
-- mm-hotfixes-stable: 1 total, 0 (0) series, 1 non-series commits
+- mm-hotfixes-stable: 2 total, 0 (0) series, 2 non-series commits
   - author/reviewer role stat
+    - no role, maintainer: 1 commits
     - maintainer, nobody: 1 commits
   - full commits list
     - c80f46ac228b "mm/damon/core: disallow non-power of two min_region_sz"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260214214124.87689-1-sj@kernel.org
-- mm-hotfixes-unstable: 1 total, 0 (0) series, 1 non-series commits
-  - author/reviewer role stat
-    - no role, maintainer: 1 commits
-  - full commits list
-    - e56b8a48fc9b "mm/damon/core: clear walk_control on inactive context in damos_walk()"
+    - d210fdcac9c0 "mm/damon/core: clear walk_control on inactive context in damos_walk()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260224011102.56033-1-sj@kernel.org
+- mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-unstable: 2 total, 0 (0) series, 2 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 2 commits
   - full commits list
-    - 55219fc3885c "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+    - 272256e91675 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - 5dde95b335fb "mm/damon: remove unused target param of get_scheme_score()"
+    - 831a8590943d "mm/damon: remove unused target param of get_scheme_score()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
 - mm-new: 5 total, 2 (5) series, 0 non-series commits
@@ -29,23 +27,23 @@
     - maintainer, nobody: 5 commits
   - full commits list
     - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2 commits)
-      - 80ae09a398cc "mm/damon/core: set quota-score histogram with core filters" (0/2)
+      - de206b0dfec3 "mm/damon/core: set quota-score histogram with core filters" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - 2417aa3438ab "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
+      - 0993ed89a17f "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
     - series "mm/damon: strictly respect min_nr_regions". (3 commits)
-      - 9749f1b4d368 "mm/damon/core: split regions for min_nr_regions" (0/3)
+      - cd9442615536 "mm/damon/core: split regions for min_nr_regions" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
         - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - 6a59eab27b0e "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
+      - 312939a2d06d "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - df5ba30eb42d "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
+      - 90d665622b4b "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits

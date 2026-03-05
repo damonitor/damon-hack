@@ -1,10 +1,16 @@
 - baseline: v7.0-rc1 -> v7.0-rc1 (no change)
-- mm-hotfixes-stable: 1 -> 1 commits (no change)
+- mm-hotfixes-stable: 1 -> 2 commits
   - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 0 -> 1 commits
     - maintainer, nobody: 1 -> 1 commits (no change)
-- mm-hotfixes-unstable: 1 -> 1 commits (no change)
+  - changed commits
+    - d210fdcac9c0 "mm/damon/core: clear walk_control on inactive context in damos_walk()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lkml.kernel.org/r/20260224011102.56033-1-sj@kernel.org
+- mm-hotfixes-unstable: 1 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 1 commits (no change)
+    - no role, maintainer: 1 -> 0 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 2 -> 2 commits (no change)
