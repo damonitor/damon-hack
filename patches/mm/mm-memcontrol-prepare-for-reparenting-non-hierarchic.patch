@@ -1,5 +1,5 @@
 From: Qi Zheng <zhengqi.arch@bytedance.com>
-Date: Wed, 25 Feb 2026 15:53:12 +0800
+Date: Thu, 5 Mar 2026 19:52:48 +0800
 Subject: [PATCH] mm: memcontrol: prepare for reparenting non-hierarchical
  stats
 MIME-Version: 1.0
@@ -7,17 +7,17 @@ Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 To resolve the dying memcg issue, we need to reparent LRU folios of child
-memcg to its parent memcg. This could cause problems for non-hierarchical
+memcg to its parent memcg.  This could cause problems for non-hierarchical
 stats.
 
 As Yosry Ahmed pointed out:
 
-: In short, if memory is charged to a dying cgroup at the time of
-: reparenting, when the memory gets uncharged the stats updates will occur
-: at the parent. This will update both hierarchical and non-hierarchical
-: stats of the parent, which would corrupt the parent's non-hierarchical
-: stats (because those counters were never incremented when the memory was
-: charged).
+In short, if memory is charged to a dying cgroup at the time of
+reparenting, when the memory gets uncharged the stats updates will occur
+at the parent. This will update both hierarchical and non-hierarchical
+stats of the parent, which would corrupt the parent's non-hierarchical
+stats (because those counters were never incremented when the memory was
+charged).
 
 Now we have the following two types of non-hierarchical stats, and they
 are only used in CONFIG_MEMCG_V1:
@@ -26,7 +26,7 @@ a. memcg->vmstats->state_local[i]
 b. pn->lruvec_stats->state_local[i]
 
 To ensure that these non-hierarchical stats work properly, we need to
-reparent these non-hierarchical stats after reparenting LRU folios.  To
+reparent these non-hierarchical stats after reparenting LRU folios. To
 this end, this commit makes the following preparations:
 
 1. implement reparent_state_local() to reparent non-hierarchical stats
@@ -35,7 +35,9 @@ this end, this commit makes the following preparations:
    between mod_memcg_state()/mod_memcg_lruvec_state()
    and reparent_state_local()
 
-Link: https://lkml.kernel.org/r/ef13e5974343b37ae2a0e28aff03ea2d033cb888.1772005110.git.zhengqi.arch@bytedance.com
+Link: https://lkml.kernel.org/r/e862995c45a7101a541284b6ebee5e5c32c89066.1772711148.git.zhengqi.arch@bytedance.com
+Co-developed-by: Yosry Ahmed <yosry@kernel.org>
+Signed-off-by: Yosry Ahmed <yosry@kernel.org>
 Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
 Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Allen Pais <apais@linux.microsoft.com>
@@ -51,56 +53,46 @@ Cc: Imran Khan <imran.f.khan@oracle.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
 Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <Liam.Howlett@oracle.com>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
-Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
 Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Muchun Song <songmuchun@bytedance.com>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
-Cc: Tejun Heo <tj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
-Cc: Yosry Ahmed <yosry@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/memcontrol.h |   1 +
- kernel/cgroup/cgroup.c     |   8 +--
- mm/memcontrol-v1.c         |  16 ++++++
- mm/memcontrol-v1.h         |   8 +++
- mm/memcontrol.c            | 115 ++++++++++++++++++++++++++++++++++---
- 5 files changed, 136 insertions(+), 12 deletions(-)
+ kernel/cgroup/cgroup.c |  9 ++--
+ mm/memcontrol-v1.c     | 16 +++++++
+ mm/memcontrol-v1.h     |  7 +++
+ mm/memcontrol.c        | 97 ++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 125 insertions(+), 4 deletions(-)
 
-diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
-index 12982875073e3..571fe3d0b0c4f 100644
---- a/include/linux/memcontrol.h
-+++ b/include/linux/memcontrol.h
-@@ -956,6 +956,7 @@ static inline void mod_memcg_page_state(struct page *page,
- 
- unsigned long memcg_events(struct mem_cgroup *memcg, int event);
- unsigned long memcg_page_state(struct mem_cgroup *memcg, int idx);
-+
- unsigned long memcg_page_state_output(struct mem_cgroup *memcg, int item);
- bool memcg_stat_item_valid(int idx);
- bool memcg_vm_event_item_valid(enum vm_event_item idx);
 diff --git a/kernel/cgroup/cgroup.c b/kernel/cgroup/cgroup.c
-index c22cda7766d84..5c8321029b3cf 100644
+index c22cda7766d84..7e99258e90902 100644
 --- a/kernel/cgroup/cgroup.c
 +++ b/kernel/cgroup/cgroup.c
-@@ -6043,8 +6043,8 @@ int cgroup_mkdir(struct kernfs_node *parent_kn, const char *name, umode_t mode)
+@@ -6043,8 +6043,9 @@ int cgroup_mkdir(struct kernfs_node *parent_kn, const char *name, umode_t mode)
   */
  static void css_killed_work_fn(struct work_struct *work)
  {
 -	struct cgroup_subsys_state *css =
 -		container_of(work, struct cgroup_subsys_state, destroy_work);
-+	struct cgroup_subsys_state *css = container_of(to_rcu_work(work),
-+				struct cgroup_subsys_state, destroy_rwork);
++	struct cgroup_subsys_state *css;
++
++	css = container_of(to_rcu_work(work), struct cgroup_subsys_state, destroy_rwork);
  
  	cgroup_lock();
  
-@@ -6065,8 +6065,8 @@ static void css_killed_ref_fn(struct percpu_ref *ref)
+@@ -6065,8 +6066,8 @@ static void css_killed_ref_fn(struct percpu_ref *ref)
  		container_of(ref, struct cgroup_subsys_state, refcnt);
  
  	if (atomic_dec_and_test(&css->online_cnt)) {
@@ -139,18 +131,10 @@ index 437cd25784fe5..8380adfa0f688 100644
  {
  	unsigned long memory, memsw;
 diff --git a/mm/memcontrol-v1.h b/mm/memcontrol-v1.h
-index 1b969294ea6a0..cec0bfe1feaec 100644
+index 1b969294ea6a0..f92f81108d5ed 100644
 --- a/mm/memcontrol-v1.h
 +++ b/mm/memcontrol-v1.h
-@@ -41,6 +41,7 @@ static inline bool do_memsw_account(void)
- 
- unsigned long memcg_events_local(struct mem_cgroup *memcg, int event);
- unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx);
-+void mod_memcg_page_state_local(struct mem_cgroup *memcg, int idx, unsigned long val);
- unsigned long memcg_page_state_local_output(struct mem_cgroup *memcg, int item);
- bool memcg1_alloc_events(struct mem_cgroup *memcg);
- void memcg1_free_events(struct mem_cgroup *memcg);
-@@ -73,6 +74,13 @@ void memcg1_uncharge_batch(struct mem_cgroup *memcg, unsigned long pgpgout,
+@@ -73,6 +73,13 @@ void memcg1_uncharge_batch(struct mem_cgroup *memcg, unsigned long pgpgout,
  			   unsigned long nr_memory, int nid);
  
  void memcg1_stat_format(struct mem_cgroup *memcg, struct seq_buf *s);
@@ -165,10 +149,10 @@ index 1b969294ea6a0..cec0bfe1feaec 100644
  void memcg1_account_kmem(struct mem_cgroup *memcg, int nr_pages);
  static inline bool memcg1_tcpmem_active(struct mem_cgroup *memcg)
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
-index c7ce92a31b1c4..94333f74aa428 100644
+index 3277e8021b1f0..b31145977e163 100644
 --- a/mm/memcontrol.c
 +++ b/mm/memcontrol.c
-@@ -225,6 +225,26 @@ static inline struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memc
+@@ -225,6 +225,34 @@ static inline struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memc
  	return objcg;
  }
  
@@ -180,11 +164,19 @@ index c7ce92a31b1c4..94333f74aa428 100644
 +	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
 +		return;
 +
++	/*
++	 * Reparent stats exposed non-hierarchically. Flush @memcg's stats first
++	 * to read its stats accurately , and conservatively flush @parent's
++	 * stats after reparenting to avoid hiding a potentially large stat
++	 * update (e.g. from callers of mem_cgroup_flush_stats_ratelimited()).
++	 */
 +	__mem_cgroup_flush_stats(memcg, true);
 +
 +	/* The following counts are all non-hierarchical and need to be reparented. */
 +	reparent_memcg1_state_local(memcg, parent);
 +	reparent_memcg1_lruvec_state_local(memcg, parent);
++
++	__mem_cgroup_flush_stats(parent, true);
 +}
 +#else
 +static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgroup *parent)
@@ -195,47 +187,30 @@ index c7ce92a31b1c4..94333f74aa428 100644
  static inline void reparent_locks(struct mem_cgroup *memcg, struct mem_cgroup *parent)
  {
  	spin_lock_irq(&objcg_lock);
-@@ -421,7 +441,7 @@ struct lruvec_stats {
- 	long state[NR_MEMCG_NODE_STAT_ITEMS];
- 
- 	/* Non-hierarchical (CPU aggregated) state */
--	long state_local[NR_MEMCG_NODE_STAT_ITEMS];
-+	atomic_long_t state_local[NR_MEMCG_NODE_STAT_ITEMS];
- 
- 	/* Pending child counts during tree propagation */
- 	long state_pending[NR_MEMCG_NODE_STAT_ITEMS];
-@@ -464,7 +484,7 @@ unsigned long lruvec_page_state_local(struct lruvec *lruvec,
- 		return 0;
- 
- 	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
--	x = READ_ONCE(pn->lruvec_stats->state_local[i]);
-+	x = atomic_long_read(&(pn->lruvec_stats->state_local[i]));
- #ifdef CONFIG_SMP
- 	if (x < 0)
- 		x = 0;
-@@ -472,6 +492,29 @@ unsigned long lruvec_page_state_local(struct lruvec *lruvec,
+@@ -472,6 +500,30 @@ unsigned long lruvec_page_state_local(struct lruvec *lruvec,
  	return x;
  }
  
 +#ifdef CONFIG_MEMCG_V1
++static void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
++				     enum node_stat_item idx, int val);
++
 +void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
 +				       struct mem_cgroup *parent, int idx)
 +{
-+	int i = memcg_stats_index(idx);
 +	int nid;
-+
-+	if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
-+		return;
 +
 +	for_each_node(nid) {
 +		struct lruvec *child_lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
 +		struct lruvec *parent_lruvec = mem_cgroup_lruvec(parent, NODE_DATA(nid));
-+		struct mem_cgroup_per_node *parent_pn;
 +		unsigned long value = lruvec_page_state_local(child_lruvec, idx);
++		struct mem_cgroup_per_node *child_pn, *parent_pn;
 +
++		child_pn = container_of(child_lruvec, struct mem_cgroup_per_node, lruvec);
 +		parent_pn = container_of(parent_lruvec, struct mem_cgroup_per_node, lruvec);
 +
-+		atomic_long_add(value, &(parent_pn->lruvec_stats->state_local[i]));
++		__mod_memcg_lruvec_state(child_pn, idx, -value);
++		__mod_memcg_lruvec_state(parent_pn, idx, value);
 +	}
 +}
 +#endif
@@ -243,16 +218,7 @@ index c7ce92a31b1c4..94333f74aa428 100644
  /* Subset of vm_event_item to report for memcg event stats */
  static const unsigned int memcg_vm_event_stat[] = {
  #ifdef CONFIG_MEMCG_V1
-@@ -554,7 +597,7 @@ struct memcg_vmstats {
- 	unsigned long		events[NR_MEMCG_EVENTS];
- 
- 	/* Non-hierarchical (CPU aggregated) page state & events */
--	long			state_local[MEMCG_VMSTAT_SIZE];
-+	atomic_long_t		state_local[MEMCG_VMSTAT_SIZE];
- 	unsigned long		events_local[NR_MEMCG_EVENTS];
- 
- 	/* Pending child counts during tree propagation */
-@@ -717,6 +760,42 @@ static int memcg_state_val_in_pages(int idx, int val)
+@@ -717,6 +769,42 @@ static int memcg_state_val_in_pages(int idx, int val)
  		return max(val * unit / PAGE_SIZE, 1UL);
  }
  
@@ -292,18 +258,10 @@ index c7ce92a31b1c4..94333f74aa428 100644
 +}
 +#endif
 +
- /**
-  * mod_memcg_state - update cgroup memory statistics
-  * @memcg: the memory cgroup
-@@ -755,13 +834,25 @@ unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx)
- 	if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
- 		return 0;
- 
--	x = READ_ONCE(memcg->vmstats->state_local[i]);
-+	x = atomic_long_read(&(memcg->vmstats->state_local[i]));
- #ifdef CONFIG_SMP
- 	if (x < 0)
- 		x = 0;
+ static void __mod_memcg_state(struct mem_cgroup *memcg,
+ 			      enum memcg_stat_item idx, int val)
+ {
+@@ -768,6 +856,15 @@ unsigned long memcg_page_state_local(struct mem_cgroup *memcg, int idx)
  #endif
  	return x;
  }
@@ -311,61 +269,14 @@ index c7ce92a31b1c4..94333f74aa428 100644
 +void reparent_memcg_state_local(struct mem_cgroup *memcg,
 +				struct mem_cgroup *parent, int idx)
 +{
-+	int i = memcg_stats_index(idx);
 +	unsigned long value = memcg_page_state_local(memcg, idx);
 +
-+	if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
-+		return;
-+
-+	atomic_long_add(value, &(parent->vmstats->state_local[i]));
++	__mod_memcg_state(memcg, idx, -value);
++	__mod_memcg_state(parent, idx, value);
 +}
  #endif
  
- static void mod_memcg_lruvec_state(struct lruvec *lruvec,
-@@ -4035,6 +4126,8 @@ struct aggregate_control {
- 	long *aggregate;
- 	/* pointer to the non-hierarchichal (CPU aggregated) counters */
- 	long *local;
-+	/* pointer to the atomic non-hierarchichal (CPU aggregated) counters */
-+	atomic_long_t *alocal;
- 	/* pointer to the pending child counters during tree propagation */
- 	long *pending;
- 	/* pointer to the parent's pending counters, could be NULL */
-@@ -4072,8 +4165,12 @@ static void mem_cgroup_stat_aggregate(struct aggregate_control *ac)
- 		}
- 
- 		/* Aggregate counts on this level and propagate upwards */
--		if (delta_cpu)
--			ac->local[i] += delta_cpu;
-+		if (delta_cpu) {
-+			if (ac->local)
-+				ac->local[i] += delta_cpu;
-+			else if (ac->alocal)
-+				atomic_long_add(delta_cpu, &(ac->alocal[i]));
-+		}
- 
- 		if (delta) {
- 			ac->aggregate[i] += delta;
-@@ -4144,7 +4241,8 @@ static void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
- 
- 	ac = (struct aggregate_control) {
- 		.aggregate = memcg->vmstats->state,
--		.local = memcg->vmstats->state_local,
-+		.local = NULL,
-+		.alocal = memcg->vmstats->state_local,
- 		.pending = memcg->vmstats->state_pending,
- 		.ppending = parent ? parent->vmstats->state_pending : NULL,
- 		.cstat = statc->state,
-@@ -4177,7 +4275,8 @@ static void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
- 
- 		ac = (struct aggregate_control) {
- 			.aggregate = lstats->state,
--			.local = lstats->state_local,
-+			.local = NULL,
-+			.alocal = lstats->state_local,
- 			.pending = lstats->state_pending,
- 			.ppending = plstats ? plstats->state_pending : NULL,
- 			.cstat = lstatc->state,
+ static void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
 -- 
 2.47.3
 

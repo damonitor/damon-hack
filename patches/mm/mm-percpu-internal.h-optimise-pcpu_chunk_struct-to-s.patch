@@ -1,0 +1,115 @@
+From: zenghongling <zenghongling@kylinos.cn>
+Date: Thu, 5 Mar 2026 15:30:43 +0800
+Subject: [PATCH] mm/percpu-internal.h: optimise pcpu_chunk_struct to save
+ memory
+
+The pcpu_chunk_struct has a hole of 4 bytes and pushes the struct to three
+cachelines.  Relocating the three booleans upwards allows for the struct
+to only use two cachelines.
+
+Before:
+struct pcpu_chunk {
+        struct list_head           list;                 /*     0    16 */
+        int                        free_bytes;           /*    16     4 */
+        struct pcpu_block_md       chunk_md;             /*    20    32 */
+
+        /* XXX 4 bytes hole, try to pack */
+
+        long unsigned int *        bound_map;            /*    56     8 */
+        /* --- cacheline 1 boundary (64 bytes) --- */
+        void *                     base_addr __attribute__((__aligned__(64))); /*    64     8 */
+        long unsigned int *        alloc_map;            /*    72     8 */
+        struct pcpu_block_md *     md_blocks;            /*    80     8 */
+        void *                     data;                 /*    88     8 */
+        bool                       immutable;            /*    96     1 */
+        bool                       isolated;             /*    97     1 */
+
+        /* XXX 2 bytes hole, try to pack */
+
+        int                        start_offset;         /*   100     4 */
+        int                        end_offset;           /*   104     4 */
+
+        /* XXX 4 bytes hole, try to pack */
+
+        struct obj_cgroup * *      obj_cgroups;          /*   112     8 */
+        int                        nr_pages;             /*   120     4 */
+        int                        nr_populated;         /*   124     4 */
+        /* --- cacheline 2 boundary (128 bytes) --- */
+        int                        nr_empty_pop_pages;   /*   128     4 */
+
+        /* XXX 4 bytes hole, try to pack */
+
+        long unsigned int          populated[];          /*   136     0 */
+
+        /* size: 192, cachelines: 3, members: 17 */
+        /* sum members: 122, holes: 4, sum holes: 14 */
+        /* padding: 56 */
+        /* forced alignments: 1 */
+} __attribute__((__aligned__(64)));
+
+After:
+struct pcpu_chunk {
+        struct list_head           list;                 /*     0    16 */
+        int                        free_bytes;           /*    16     4 */
+        struct pcpu_block_md       chunk_md;             /*    20    32 */
+
+        /* XXX 4 bytes hole, try to pack */
+
+        long unsigned int *        bound_map;            /*    56     8 */
+        /* --- cacheline 1 boundary (64 bytes) --- */
+        void *                     base_addr __attribute__((__aligned__(64))); /*    64     8 */
+        long unsigned int *        alloc_map;            /*    72     8 */
+        struct pcpu_block_md *     md_blocks;            /*    80     8 */
+        void *                     data;                 /*    88     8 */
+        bool                       immutable;            /*    96     1 */
+        bool                       isolated;             /*    97     1 */
+
+        /* XXX 2 bytes hole, try to pack */
+
+        int                        start_offset;         /*   100     4 */
+        int                        end_offset;           /*   104     4 */
+        int                        nr_empty_pop_pages;   /*   108     4 */
+        struct obj_cgroup * *      obj_cgroups;          /*   112     8 */
+        int                        nr_pages;             /*   120     4 */
+        int                        nr_populated;         /*   124     4 */
+        /* --- cacheline 2 boundary (128 bytes) --- */
+        long unsigned int          populated[];          /*   128     0 */
+
+        /* size: 128, cachelines: 2, members: 17 */
+        /* sum members: 122, holes: 2, sum holes: 6 */
+        /* forced alignments: 1 */
+} __attribute__((__aligned__(64)));
+
+Link: https://lkml.kernel.org/r/20260305073043.571691-1-zenghongling@kylinos.cn
+Signed-off-by: zenghongling <zenghongling@kylinos.cn>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Hongling Zeng <zenghongling@kylinos.cn>
+Cc: Tejun Heo <tj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/percpu-internal.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/percpu-internal.h b/mm/percpu-internal.h
+index 4b3d6ec43703e..26f3ac39f8c31 100644
+--- a/mm/percpu-internal.h
++++ b/mm/percpu-internal.h
+@@ -77,13 +77,13 @@ struct pcpu_chunk {
+ 	int			end_offset;	/* additional area required to
+ 						   have the region end page
+ 						   aligned */
++	int                     nr_empty_pop_pages; /* # of empty populated pages */
+ #ifdef NEED_PCPUOBJ_EXT
+ 	struct pcpuobj_ext	*obj_exts;	/* vector of object cgroups */
+ #endif
+ 
+ 	int			nr_pages;	/* # of pages served by this chunk */
+ 	int			nr_populated;	/* # of populated pages */
+-	int                     nr_empty_pop_pages; /* # of empty populated pages */
+ 	unsigned long		populated[];	/* populated bitmap */
+ };
+ 
+-- 
+2.47.3
+

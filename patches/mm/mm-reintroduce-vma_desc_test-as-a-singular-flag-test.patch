@@ -1,0 +1,242 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 5 Mar 2026 10:50:18 +0000
+Subject: [PATCH] mm: reintroduce vma_desc_test() as a singular flag test
+
+Similar to vma_flags_test(), we have previously renamed vma_desc_test() to
+vma_desc_test_any().  Now that is in place, we can reintroduce
+vma_desc_test() to explicitly check for a single VMA flag.
+
+As with vma_flags_test(), this is useful as often flag tests are against a
+single flag, and vma_desc_test_any(flags, VMA_READ_BIT) reads oddly and
+potentially causes confusion.
+
+As with vma_flags_test() a combination of sparse and vma_flags_t being a
+struct means that users cannot misuse this function without it getting
+flagged.
+
+Also update the VMA tests to reflect this change.
+
+Link: https://lkml.kernel.org/r/3a65ca23defb05060333f0586428fe279a484564.1772704455.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Babu Moger <babu.moger@amd.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Chao Yu <chao@kernel.org>
+Cc: Chatre, Reinette <reinette.chatre@intel.com>
+Cc: Chunhai Guo <guochunhai@vivo.com>
+Cc: Damien Le Maol <dlemoal@kernel.org>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Dave Martin <dave.martin@arm.com>
+Cc: Gao Xiang <xiang@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hongbo Li <lihongbo22@huawei.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: James Morse <james.morse@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jeffle Xu <jefflexu@linux.alibaba.com>
+Cc: Johannes Thumshirn <jth@kernel.org>
+Cc: Konstantin Komarov <almaz.alexandrovich@paragon-software.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: "Luck, Tony" <tony.luck@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Naohiro Aota <naohiro.aota@wdc.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Sandeep Dhavale <dhavale@google.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Yue Hu <zbestahu@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/char/mem.c              |  2 +-
+ fs/hugetlbfs/inode.c            |  2 +-
+ fs/ntfs3/file.c                 |  2 +-
+ fs/resctrl/pseudo_lock.c        |  2 +-
+ include/linux/dax.h             |  4 ++--
+ include/linux/mm.h              | 11 +++++++++++
+ mm/hugetlb.c                    | 12 ++++++------
+ tools/testing/vma/include/dup.h |  6 ++++++
+ 8 files changed, 29 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/char/mem.c b/drivers/char/mem.c
+index 5118787d09548..5fd421e48c04b 100644
+--- a/drivers/char/mem.c
++++ b/drivers/char/mem.c
+@@ -520,7 +520,7 @@ static int mmap_zero_prepare(struct vm_area_desc *desc)
+ #ifndef CONFIG_MMU
+ 	return -ENOSYS;
+ #endif
+-	if (vma_desc_test_any(desc, VMA_SHARED_BIT))
++	if (vma_desc_test(desc, VMA_SHARED_BIT))
+ 		return shmem_zero_setup_desc(desc);
+ 
+ 	desc->action.success_hook = mmap_zero_private_success;
+diff --git a/fs/hugetlbfs/inode.c b/fs/hugetlbfs/inode.c
+index 079ffaaf1f6cf..cd6b22f6e2b18 100644
+--- a/fs/hugetlbfs/inode.c
++++ b/fs/hugetlbfs/inode.c
+@@ -164,7 +164,7 @@ static int hugetlbfs_file_mmap_prepare(struct vm_area_desc *desc)
+ 		goto out;
+ 
+ 	ret = 0;
+-	if (vma_desc_test_any(desc, VMA_WRITE_BIT) && inode->i_size < len)
++	if (vma_desc_test(desc, VMA_WRITE_BIT) && inode->i_size < len)
+ 		i_size_write(inode, len);
+ out:
+ 	inode_unlock(inode);
+diff --git a/fs/ntfs3/file.c b/fs/ntfs3/file.c
+index c5e2181f9f02c..fbdfaf989a314 100644
+--- a/fs/ntfs3/file.c
++++ b/fs/ntfs3/file.c
+@@ -276,7 +276,7 @@ static int ntfs_file_mmap_prepare(struct vm_area_desc *desc)
+ 	struct file *file = desc->file;
+ 	struct inode *inode = file_inode(file);
+ 	struct ntfs_inode *ni = ntfs_i(inode);
+-	const bool rw = vma_desc_test_any(desc, VMA_WRITE_BIT);
++	const bool rw = vma_desc_test(desc, VMA_WRITE_BIT);
+ 	int err;
+ 
+ 	/* Avoid any operation if inode is bad. */
+diff --git a/fs/resctrl/pseudo_lock.c b/fs/resctrl/pseudo_lock.c
+index 79a006c6f26c9..d1cb0986006eb 100644
+--- a/fs/resctrl/pseudo_lock.c
++++ b/fs/resctrl/pseudo_lock.c
+@@ -1044,7 +1044,7 @@ static int pseudo_lock_dev_mmap_prepare(struct vm_area_desc *desc)
+ 	 * Ensure changes are carried directly to the memory being mapped,
+ 	 * do not allow copy-on-write mapping.
+ 	 */
+-	if (!vma_desc_test_any(desc, VMA_SHARED_BIT)) {
++	if (!vma_desc_test(desc, VMA_SHARED_BIT)) {
+ 		mutex_unlock(&rdtgroup_mutex);
+ 		return -EINVAL;
+ 	}
+diff --git a/include/linux/dax.h b/include/linux/dax.h
+index 5350190015774..10a7cc79aea5b 100644
+--- a/include/linux/dax.h
++++ b/include/linux/dax.h
+@@ -69,7 +69,7 @@ static inline bool daxdev_mapping_supported(const struct vm_area_desc *desc,
+ 					    const struct inode *inode,
+ 					    struct dax_device *dax_dev)
+ {
+-	if (!vma_desc_test_any(desc, VMA_SYNC_BIT))
++	if (!vma_desc_test(desc, VMA_SYNC_BIT))
+ 		return true;
+ 	if (!IS_DAX(inode))
+ 		return false;
+@@ -115,7 +115,7 @@ static inline bool daxdev_mapping_supported(const struct vm_area_desc *desc,
+ 					    const struct inode *inode,
+ 					    struct dax_device *dax_dev)
+ {
+-	return !vma_desc_test_any(desc, VMA_SYNC_BIT);
++	return !vma_desc_test(desc, VMA_SYNC_BIT);
+ }
+ static inline size_t dax_recovery_write(struct dax_device *dax_dev,
+ 		pgoff_t pgoff, void *addr, size_t bytes, struct iov_iter *i)
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 747cdae795729..25d5c2395b402 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1192,6 +1192,17 @@ static inline void vma_set_flags_mask(struct vm_area_struct *vma,
+ #define vma_set_flags(vma, ...) \
+ 	vma_set_flags_mask(vma, mk_vma_flags(__VA_ARGS__))
+ 
++/*
++ * Test whether a specific VMA flag is set in a VMA descriptor, e.g.:
++ *
++ * if (vma_desc_test(desc, VMA_READ_BIT)) { ... }
++ */
++static __always_inline bool vma_desc_test(const struct vm_area_desc *desc,
++		vma_flag_t bit)
++{
++	return vma_flags_test(&desc->vma_flags, bit);
++}
++
+ /* Helper to test any VMA flags in a VMA descriptor. */
+ static inline bool vma_desc_test_any_mask(const struct vm_area_desc *desc,
+ 		vma_flags_t flags)
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 9363b6072c0a0..992c1632d26ab 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1194,7 +1194,7 @@ static void set_vma_resv_flags(struct vm_area_struct *vma, unsigned long flags)
+ static void set_vma_desc_resv_map(struct vm_area_desc *desc, struct resv_map *map)
+ {
+ 	VM_WARN_ON_ONCE(!is_vma_hugetlb_flags(&desc->vma_flags));
+-	VM_WARN_ON_ONCE(vma_desc_test_any(desc, VMA_MAYSHARE_BIT));
++	VM_WARN_ON_ONCE(vma_desc_test(desc, VMA_MAYSHARE_BIT));
+ 
+ 	desc->private_data = map;
+ }
+@@ -1202,7 +1202,7 @@ static void set_vma_desc_resv_map(struct vm_area_desc *desc, struct resv_map *ma
+ static void set_vma_desc_resv_flags(struct vm_area_desc *desc, unsigned long flags)
+ {
+ 	VM_WARN_ON_ONCE(!is_vma_hugetlb_flags(&desc->vma_flags));
+-	VM_WARN_ON_ONCE(vma_desc_test_any(desc, VMA_MAYSHARE_BIT));
++	VM_WARN_ON_ONCE(vma_desc_test(desc, VMA_MAYSHARE_BIT));
+ 
+ 	desc->private_data = (void *)((unsigned long)desc->private_data | flags);
+ }
+@@ -6602,7 +6602,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	 * to reserve the full area even if read-only as mprotect() may be
+ 	 * called to make the mapping read-write. Assume !desc is a shm mapping
+ 	 */
+-	if (!desc || vma_desc_test_any(desc, VMA_MAYSHARE_BIT)) {
++	if (!desc || vma_desc_test(desc, VMA_MAYSHARE_BIT)) {
+ 		/*
+ 		 * resv_map can not be NULL as hugetlb_reserve_pages is only
+ 		 * called for inodes for which resv_maps were created (see
+@@ -6636,7 +6636,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	if (err < 0)
+ 		goto out_err;
+ 
+-	if (desc && !vma_desc_test_any(desc, VMA_MAYSHARE_BIT) && h_cg) {
++	if (desc && !vma_desc_test(desc, VMA_MAYSHARE_BIT) && h_cg) {
+ 		/* For private mappings, the hugetlb_cgroup uncharge info hangs
+ 		 * of the resv_map.
+ 		 */
+@@ -6673,7 +6673,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	 * consumed reservations are stored in the map. Hence, nothing
+ 	 * else has to be done for private mappings here
+ 	 */
+-	if (!desc || vma_desc_test_any(desc, VMA_MAYSHARE_BIT)) {
++	if (!desc || vma_desc_test(desc, VMA_MAYSHARE_BIT)) {
+ 		add = region_add(resv_map, from, to, regions_needed, h, h_cg);
+ 
+ 		if (unlikely(add < 0)) {
+@@ -6737,7 +6737,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	hugetlb_cgroup_uncharge_cgroup_rsvd(hstate_index(h),
+ 					    chg * pages_per_huge_page(h), h_cg);
+ out_err:
+-	if (!desc || vma_desc_test_any(desc, VMA_MAYSHARE_BIT))
++	if (!desc || vma_desc_test(desc, VMA_MAYSHARE_BIT))
+ 		/* Only call region_abort if the region_chg succeeded but the
+ 		 * region_add failed or didn't run.
+ 		 */
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index 630478f0d5836..5eb313beb43de 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -922,6 +922,12 @@ static inline void vma_set_flags_mask(struct vm_area_struct *vma,
+ #define vma_set_flags(vma, ...) \
+ 	vma_set_flags_mask(vma, mk_vma_flags(__VA_ARGS__))
+ 
++static __always_inline bool vma_desc_test(const struct vm_area_desc *desc,
++		vma_flag_t bit)
++{
++	return vma_flags_test(&desc->vma_flags, bit);
++}
++
+ static inline bool vma_desc_test_any_mask(const struct vm_area_desc *desc,
+ 					    vma_flags_t flags)
+ {
+-- 
+2.47.3
+

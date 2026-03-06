@@ -12,39 +12,37 @@
       - Link: https://lkml.kernel.org/r/20260224011102.56033-1-sj@kernel.org
 - mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 2 total, 0 (0) series, 2 non-series commits
+- mm-unstable: 7 total, 2 (5) series, 2 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 2 commits
-  - full commits list
-    - 272256e91675 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - 831a8590943d "mm/damon: remove unused target param of get_scheme_score()"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
-- mm-new: 5 total, 2 (5) series, 0 non-series commits
-  - author/reviewer role stat
     - maintainer, nobody: 5 commits
   - full commits list
+    - c659f6826058 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
+    - 16f3fd2d0d58 "mm/damon: remove unused target param of get_scheme_score()"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
     - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2 commits)
-      - de206b0dfec3 "mm/damon/core: set quota-score histogram with core filters" (0/2)
+      - 9e43743760cd "mm/damon/core: set quota-score histogram with core filters" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - 0993ed89a17f "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
+      - b41b189c0c0c "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
     - series "mm/damon: strictly respect min_nr_regions". (3 commits)
-      - cd9442615536 "mm/damon/core: split regions for min_nr_regions" (0/3)
+      - 0731c2930867 "mm/damon/core: split regions for min_nr_regions" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
         - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - 312939a2d06d "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
+      - 460d0e99491a "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - 90d665622b4b "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
+      - 6980fae62548 "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
+- mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

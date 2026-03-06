@@ -1,0 +1,158 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 5 Mar 2026 10:50:16 +0000
+Subject: [PATCH] mm: always inline __mk_vma_flags() and invoked functions
+
+Be explicit about __mk_vma_flags() (which is used by the mk_vma_flags()
+macro) always being inline, as we rely on the compiler converting this
+function into meaningful.
+
+Also update all of the functions __mk_vma_flags() ultimately invokes to be
+always inline too.
+
+Note that test_bitmap_const_eval() asserts that the relevant bitmap
+functions result in build time constant values.
+
+Additionally, vma_flag_set() operates on a vma_flags_t type, so it is
+inconsistently named versus other VMA flags functions.
+
+We only use vma_flag_set() in __mk_vma_flags() so we don't need to worry
+about its new name being rather cumbersome, so rename it to
+vma_flags_set_flag() to disambiguate it from vma_flags_set().
+
+Also update the VMA test headers to reflect the changes.
+
+Link: https://lkml.kernel.org/r/241f49c52074d436edbb9c6a6662a8dc142a8f43.1772704455.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Babu Moger <babu.moger@amd.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Chao Yu <chao@kernel.org>
+Cc: Chatre, Reinette <reinette.chatre@intel.com>
+Cc: Chunhai Guo <guochunhai@vivo.com>
+Cc: Damien Le Maol <dlemoal@kernel.org>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Dave Martin <dave.martin@arm.com>
+Cc: Gao Xiang <xiang@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hongbo Li <lihongbo22@huawei.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: James Morse <james.morse@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jeffle Xu <jefflexu@linux.alibaba.com>
+Cc: Johannes Thumshirn <jth@kernel.org>
+Cc: Konstantin Komarov <almaz.alexandrovich@paragon-software.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: "Luck, Tony" <tony.luck@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Naohiro Aota <naohiro.aota@wdc.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Sandeep Dhavale <dhavale@google.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Yue Hu <zbestahu@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h                 | 8 +++++---
+ include/linux/mm_types.h           | 2 +-
+ tools/testing/vma/include/custom.h | 5 +++--
+ tools/testing/vma/include/dup.h    | 5 +++--
+ 4 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 8a261b01eb848..98a8b0c725040 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1030,21 +1030,23 @@ static inline bool vma_test_atomic_flag(struct vm_area_struct *vma, vma_flag_t b
+ }
+ 
+ /* Set an individual VMA flag in flags, non-atomically. */
+-static inline void vma_flag_set(vma_flags_t *flags, vma_flag_t bit)
++static __always_inline void vma_flags_set_flag(vma_flags_t *flags,
++		vma_flag_t bit)
+ {
+ 	unsigned long *bitmap = flags->__vma_flags;
+ 
+ 	__set_bit((__force int)bit, bitmap);
+ }
+ 
+-static inline vma_flags_t __mk_vma_flags(size_t count, const vma_flag_t *bits)
++static __always_inline vma_flags_t __mk_vma_flags(size_t count,
++		const vma_flag_t *bits)
+ {
+ 	vma_flags_t flags;
+ 	int i;
+ 
+ 	vma_flags_clear_all(&flags);
+ 	for (i = 0; i < count; i++)
+-		vma_flag_set(&flags, bits[i]);
++		vma_flags_set_flag(&flags, bits[i]);
+ 	return flags;
+ }
+ 
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index c41ea6934aa67..3944b51ebac62 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -1056,7 +1056,7 @@ struct vm_area_struct {
+ } __randomize_layout;
+ 
+ /* Clears all bits in the VMA flags bitmap, non-atomically. */
+-static inline void vma_flags_clear_all(vma_flags_t *flags)
++static __always_inline void vma_flags_clear_all(vma_flags_t *flags)
+ {
+ 	bitmap_zero(flags->__vma_flags, NUM_VMA_FLAG_BITS);
+ }
+diff --git a/tools/testing/vma/include/custom.h b/tools/testing/vma/include/custom.h
+index 802a763172450..833ff4d7f799a 100644
+--- a/tools/testing/vma/include/custom.h
++++ b/tools/testing/vma/include/custom.h
+@@ -102,7 +102,8 @@ static inline void vma_lock_init(struct vm_area_struct *vma, bool reset_refcnt)
+ 		refcount_set(&vma->vm_refcnt, 0);
+ }
+ 
+-static inline vma_flags_t __mk_vma_flags(size_t count, const vma_flag_t *bits)
++static __always_inline vma_flags_t __mk_vma_flags(size_t count,
++		const vma_flag_t *bits)
+ {
+ 	vma_flags_t flags;
+ 	int i;
+@@ -114,6 +115,6 @@ static inline vma_flags_t __mk_vma_flags(size_t count, const vma_flag_t *bits)
+ 	vma_flags_clear_all(&flags);
+ 	for (i = 0; i < count; i++)
+ 		if (bits[i] < NUM_VMA_FLAG_BITS)
+-			vma_flag_set(&flags, bits[i]);
++			vma_flags_set_flag(&flags, bits[i]);
+ 	return flags;
+ }
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index 59788bc14d75d..ef6b9d963acc0 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -780,12 +780,13 @@ static inline void vma_flags_clear_word(vma_flags_t *flags, unsigned long value)
+ 	*bitmap &= ~value;
+ }
+ 
+-static inline void vma_flags_clear_all(vma_flags_t *flags)
++static __always_inline void vma_flags_clear_all(vma_flags_t *flags)
+ {
+ 	bitmap_zero(ACCESS_PRIVATE(flags, __vma_flags), NUM_VMA_FLAG_BITS);
+ }
+ 
+-static inline void vma_flag_set(vma_flags_t *flags, vma_flag_t bit)
++static __always_inline void vma_flags_set_flag(vma_flags_t *flags,
++		vma_flag_t bit)
+ {
+ 	unsigned long *bitmap = ACCESS_PRIVATE(flags, __vma_flags);
+ 
+-- 
+2.47.3
+

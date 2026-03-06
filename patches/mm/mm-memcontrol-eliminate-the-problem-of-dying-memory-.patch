@@ -1,5 +1,5 @@
 From: Muchun Song <songmuchun@bytedance.com>
-Date: Wed, 25 Feb 2026 15:53:14 +0800
+Date: Thu, 5 Mar 2026 19:52:50 +0800
 Subject: [PATCH] mm: memcontrol: eliminate the problem of dying memory cgroup
  for LRU folios
 MIME-Version: 1.0
@@ -13,7 +13,7 @@ Finally, folio->memcg_data of LRU folios and kmem folios will always point
 to an object cgroup pointer.  The folio->memcg_data of slab folios will
 point to an vector of object cgroups.
 
-Link: https://lkml.kernel.org/r/ff5a945386f168faa877901d569296592cdaadc3.1772005110.git.zhengqi.arch@bytedance.com
+Link: https://lkml.kernel.org/r/80cb7af198dc6f2173fe616d1207a4c315ece141.1772711148.git.zhengqi.arch@bytedance.com
 Signed-off-by: Muchun Song <songmuchun@bytedance.com>
 Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
 Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
@@ -30,23 +30,27 @@ Cc: Imran Khan <imran.f.khan@oracle.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
 Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <Liam.Howlett@oracle.com>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
-Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
 Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
-Cc: Tejun Heo <tj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/memcontrol.h |  77 +++++---------
+ include/linux/memcontrol.h |  77 +++++----------
  mm/memcontrol-v1.c         |  15 +--
- mm/memcontrol.c            | 199 ++++++++++++++++++++++---------------
- 3 files changed, 154 insertions(+), 137 deletions(-)
+ mm/memcontrol.c            | 194 ++++++++++++++++++++++---------------
+ 3 files changed, 151 insertions(+), 135 deletions(-)
 
 diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
 index 3e836b56bfcb8..0861589695298 100644
@@ -238,7 +242,7 @@ index 8380adfa0f688..433bba9dfe715 100644
  
  /*
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
-index eec9b703812fd..ef7524eb19889 100644
+index 73e0a32a7db20..19afdfc17ca1c 100644
 --- a/mm/memcontrol.c
 +++ b/mm/memcontrol.c
 @@ -254,13 +254,17 @@ static inline void reparent_state_local(struct mem_cgroup *memcg, struct mem_cgr
@@ -295,51 +299,43 @@ index eec9b703812fd..ef7524eb19889 100644
  }
  
  /*
-@@ -829,9 +850,14 @@ void mod_memcg_state(struct mem_cgroup *memcg, enum memcg_stat_item idx,
- 
- 	cpu = get_cpu();
- 
-+	memcg = get_non_dying_memcg_start(memcg);
-+
+@@ -823,6 +844,7 @@ static void __mod_memcg_state(struct mem_cgroup *memcg,
  	this_cpu_add(memcg->vmstats_percpu->state[i], val);
  	val = memcg_state_val_in_pages(idx, val);
  	memcg_rstat_updated(memcg, val, cpu);
 +
-+	get_non_dying_memcg_end();
-+
  	trace_mod_memcg_state(memcg, idx, val);
  
  	put_cpu();
-@@ -918,6 +944,7 @@ static void mod_memcg_lruvec_state(struct lruvec *lruvec,
+@@ -840,7 +862,9 @@ void mod_memcg_state(struct mem_cgroup *memcg, enum memcg_stat_item idx,
+ 	if (mem_cgroup_disabled())
+ 		return;
+ 
++	memcg = get_non_dying_memcg_start(memcg);
+ 	__mod_memcg_state(memcg, idx, val);
++	get_non_dying_memcg_end();
+ }
+ 
+ #ifdef CONFIG_MEMCG_V1
+@@ -900,11 +924,17 @@ static void mod_memcg_lruvec_state(struct lruvec *lruvec,
  				     enum node_stat_item idx,
  				     int val)
  {
 +	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
  	struct mem_cgroup_per_node *pn;
- 	struct mem_cgroup *memcg;
- 	int i = memcg_stats_index(idx);
-@@ -931,14 +958,18 @@ static void mod_memcg_lruvec_state(struct lruvec *lruvec,
++	struct mem_cgroup *memcg;
  
- 	cpu = get_cpu();
- 
-+	memcg = get_non_dying_memcg_start(memcg);
+ 	pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
++	memcg = get_non_dying_memcg_start(pn->memcg);
 +	pn = memcg->nodeinfo[pgdat->node_id];
-+
- 	/* Update memcg */
- 	this_cpu_add(memcg->vmstats_percpu->state[i], val);
--
- 	/* Update lruvec */
- 	this_cpu_add(pn->lruvec_stats_percpu->state[i], val);
--
- 	val = memcg_state_val_in_pages(idx, val);
- 	memcg_rstat_updated(memcg, val, cpu);
+ 
+ 	__mod_memcg_lruvec_state(pn, idx, val);
 +
 +	get_non_dying_memcg_end();
-+
- 	trace_mod_memcg_lruvec_state(memcg, idx, val);
+ }
  
- 	put_cpu();
-@@ -1164,6 +1195,8 @@ struct mem_cgroup *get_mem_cgroup_from_current(void)
+ /**
+@@ -1127,6 +1157,8 @@ struct mem_cgroup *get_mem_cgroup_from_current(void)
  /**
   * get_mem_cgroup_from_folio - Obtain a reference on a given folio's memcg.
   * @folio: folio from which memcg should be extracted.
@@ -348,7 +344,7 @@ index eec9b703812fd..ef7524eb19889 100644
   */
  struct mem_cgroup *get_mem_cgroup_from_folio(struct folio *folio)
  {
-@@ -2758,17 +2791,17 @@ static inline int try_charge(struct mem_cgroup *memcg, gfp_t gfp_mask,
+@@ -2721,17 +2753,17 @@ static inline int try_charge(struct mem_cgroup *memcg, gfp_t gfp_mask,
  	return try_charge_memcg(memcg, gfp_mask, nr_pages);
  }
  
@@ -369,7 +365,7 @@ index eec9b703812fd..ef7524eb19889 100644
  }
  
  #ifdef CONFIG_MEMCG_NMI_SAFETY_REQUIRES_ATOMIC
-@@ -2882,6 +2915,17 @@ static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
+@@ -2845,6 +2877,17 @@ static struct obj_cgroup *__get_obj_cgroup_from_memcg(struct mem_cgroup *memcg)
  	return NULL;
  }
  
@@ -387,7 +383,7 @@ index eec9b703812fd..ef7524eb19889 100644
  static struct obj_cgroup *current_objcg_update(void)
  {
  	struct mem_cgroup *memcg;
-@@ -2983,17 +3027,10 @@ struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
+@@ -2946,17 +2989,10 @@ struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
  {
  	struct obj_cgroup *objcg;
  
@@ -408,7 +404,7 @@ index eec9b703812fd..ef7524eb19889 100644
  	return objcg;
  }
  
-@@ -3509,7 +3546,7 @@ void folio_split_memcg_refs(struct folio *folio, unsigned old_order,
+@@ -3472,7 +3508,7 @@ void folio_split_memcg_refs(struct folio *folio, unsigned old_order,
  		return;
  
  	new_refs = (1 << (old_order - new_order)) - 1;
@@ -417,7 +413,7 @@ index eec9b703812fd..ef7524eb19889 100644
  }
  
  static void memcg_online_kmem(struct mem_cgroup *memcg)
-@@ -4932,16 +4969,20 @@ void mem_cgroup_calculate_protection(struct mem_cgroup *root,
+@@ -4895,16 +4931,20 @@ void mem_cgroup_calculate_protection(struct mem_cgroup *root,
  static int charge_memcg(struct folio *folio, struct mem_cgroup *memcg,
  			gfp_t gfp)
  {
@@ -446,7 +442,7 @@ index eec9b703812fd..ef7524eb19889 100644
  	return ret;
  }
  
-@@ -5027,7 +5068,7 @@ int mem_cgroup_swapin_charge_folio(struct folio *folio, struct mm_struct *mm,
+@@ -4990,7 +5030,7 @@ int mem_cgroup_swapin_charge_folio(struct folio *folio, struct mm_struct *mm,
  }
  
  struct uncharge_gather {
@@ -455,7 +451,7 @@ index eec9b703812fd..ef7524eb19889 100644
  	unsigned long nr_memory;
  	unsigned long pgpgout;
  	unsigned long nr_kmem;
-@@ -5041,58 +5082,52 @@ static inline void uncharge_gather_clear(struct uncharge_gather *ug)
+@@ -5004,58 +5044,52 @@ static inline void uncharge_gather_clear(struct uncharge_gather *ug)
  
  static void uncharge_batch(const struct uncharge_gather *ug)
  {
@@ -534,7 +530,7 @@ index eec9b703812fd..ef7524eb19889 100644
  	}
  
  	nr_pages = folio_nr_pages(folio);
-@@ -5100,20 +5135,17 @@ static void uncharge_folio(struct folio *folio, struct uncharge_gather *ug)
+@@ -5063,20 +5097,17 @@ static void uncharge_folio(struct folio *folio, struct uncharge_gather *ug)
  	if (folio_memcg_kmem(folio)) {
  		ug->nr_memory += nr_pages;
  		ug->nr_kmem += nr_pages;
@@ -558,7 +554,7 @@ index eec9b703812fd..ef7524eb19889 100644
  }
  
  void __mem_cgroup_uncharge(struct folio *folio)
-@@ -5137,7 +5169,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
+@@ -5100,7 +5131,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
  	uncharge_gather_clear(&ug);
  	for (i = 0; i < folios->nr; i++)
  		uncharge_folio(folios->folios[i], &ug);
@@ -567,7 +563,7 @@ index eec9b703812fd..ef7524eb19889 100644
  		uncharge_batch(&ug);
  }
  
-@@ -5154,6 +5186,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
+@@ -5117,6 +5148,7 @@ void __mem_cgroup_uncharge_folios(struct folio_batch *folios)
  void mem_cgroup_replace_folio(struct folio *old, struct folio *new)
  {
  	struct mem_cgroup *memcg;
@@ -575,7 +571,7 @@ index eec9b703812fd..ef7524eb19889 100644
  	long nr_pages = folio_nr_pages(new);
  
  	VM_BUG_ON_FOLIO(!folio_test_locked(old), old);
-@@ -5168,21 +5201,24 @@ void mem_cgroup_replace_folio(struct folio *old, struct folio *new)
+@@ -5131,21 +5163,24 @@ void mem_cgroup_replace_folio(struct folio *old, struct folio *new)
  	if (folio_memcg_charged(new))
  		return;
  
@@ -606,7 +602,7 @@ index eec9b703812fd..ef7524eb19889 100644
  }
  
  /**
-@@ -5198,7 +5234,7 @@ void mem_cgroup_replace_folio(struct folio *old, struct folio *new)
+@@ -5161,7 +5196,7 @@ void mem_cgroup_replace_folio(struct folio *old, struct folio *new)
   */
  void mem_cgroup_migrate(struct folio *old, struct folio *new)
  {
@@ -615,7 +611,7 @@ index eec9b703812fd..ef7524eb19889 100644
  
  	VM_BUG_ON_FOLIO(!folio_test_locked(old), old);
  	VM_BUG_ON_FOLIO(!folio_test_locked(new), new);
-@@ -5209,18 +5245,18 @@ void mem_cgroup_migrate(struct folio *old, struct folio *new)
+@@ -5172,18 +5207,18 @@ void mem_cgroup_migrate(struct folio *old, struct folio *new)
  	if (mem_cgroup_disabled())
  		return;
  
@@ -640,7 +636,7 @@ index eec9b703812fd..ef7524eb19889 100644
  
  	/* Warning should never happen, so don't worry about refcount non-0 */
  	WARN_ON_ONCE(folio_unqueue_deferred_split(old));
-@@ -5403,22 +5439,27 @@ int __mem_cgroup_try_charge_swap(struct folio *folio, swp_entry_t entry)
+@@ -5366,22 +5401,27 @@ int __mem_cgroup_try_charge_swap(struct folio *folio, swp_entry_t entry)
  	unsigned int nr_pages = folio_nr_pages(folio);
  	struct page_counter *counter;
  	struct mem_cgroup *memcg;

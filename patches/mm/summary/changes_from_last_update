@@ -1,24 +1,45 @@
 - baseline: v7.0-rc1 -> v7.0-rc1 (no change)
-- mm-hotfixes-stable: 1 -> 2 commits
+- mm-hotfixes-stable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 0 -> 1 commits
+    - no role, maintainer: 1 -> 1 commits (no change)
     - maintainer, nobody: 1 -> 1 commits (no change)
-  - changed commits
-    - d210fdcac9c0 "mm/damon/core: clear walk_control on inactive context in damos_walk()"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: https://lkml.kernel.org/r/20260224011102.56033-1-sj@kernel.org
-- mm-hotfixes-unstable: 1 -> 0 commits
+- mm-hotfixes-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 0 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 2 -> 2 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
+- mm-unstable: 2 -> 7 commits
+  - series: 0 (0) -> 2 (5)
     - no role, maintainer: 2 -> 2 commits (no change)
-- mm-new: 5 -> 5 commits (no change)
-  - series: 2 (5) -> 2 (5) (no change)
-    - maintainer, nobody: 5 -> 5 commits (no change)
+    - maintainer, nobody: 0 -> 5 commits
+  - changed commits
+    - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2)
+      - 9e43743760cd "mm/damon/core: set quota-score histogram with core filters (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
+      - b41b189c0c0c "mm/damon/core: do non-safe region walk on kdamond_apply_schemes() (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
+    - series "mm/damon: strictly respect min_nr_regions". (3)
+      - 0731c2930867 "mm/damon/core: split regions for min_nr_regions (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
+        - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
+      - 460d0e99491a "mm/damon/vaddr: do not split regions for min_nr_regions (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
+      - 6980fae62548 "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
+- mm-new: 5 -> 0 commits
+  - series: 2 (5) -> 0 (0)
+    - maintainer, nobody: 5 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
