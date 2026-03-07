@@ -17,32 +17,69 @@
     - no role, maintainer: 2 commits
     - maintainer, nobody: 5 commits
   - full commits list
-    - c659f6826058 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+    - 9c0128c6f08f "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - 16f3fd2d0d58 "mm/damon: remove unused target param of get_scheme_score()"
+    - 824dfdff86f6 "mm/damon: remove unused target param of get_scheme_score()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
     - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2 commits)
-      - 9e43743760cd "mm/damon/core: set quota-score histogram with core filters" (0/2)
+      - 7fb04a089ff9 "mm/damon/core: set quota-score histogram with core filters" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - b41b189c0c0c "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
+      - 6e0c2dba6fb2 "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
     - series "mm/damon: strictly respect min_nr_regions". (3 commits)
-      - 0731c2930867 "mm/damon/core: split regions for min_nr_regions" (0/3)
+      - 2ce6c8a6f02f "mm/damon/core: split regions for min_nr_regions" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
         - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - 460d0e99491a "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
+      - 369da08083b2 "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - 6980fae62548 "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
+      - 1152290eba3c "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
-- mm-new: 0 total, 0 (0) series, 0 non-series commits
+- mm-new: 10 total, 1 (10) series, 0 non-series commits
+  - author/reviewer role stat
+    - maintainer, nobody: 10 commits
+  - full commits list
+    - series "mm/damon: add optional debugging-purpose sanity checks". (10 commits)
+      - a4e039b9cae8 "mm/damon: add CONFIG_DAMON_DEBUG_SANITY" (0/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org [1]
+        - Link: https://github.com/damonitor/damon-tests/commit/a80fbee55e272f151b4e5809ee85898aea33e6ff [2]
+      - 67063550131d "mm/damon/core: add damon_new_region() debug_sanity check" (1/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-3-sj@kernel.org
+      - 8f7d2974552b "mm/damon/core: add damon_del_region() debug_sanity check" (2/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-4-sj@kernel.org
+      - caaf479ac89f "mm/damon/core: add damon_nr_regions() debug_sanity check" (3/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-5-sj@kernel.org
+      - ce7a8db27cc7 "mm/damon/core: add damon_merge_two_regions() debug_sanity check" (4/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-6-sj@kernel.org
+      - a560701b88a7 "mm/damon/core: add damon_merge_regions_of() debug_sanity check" (5/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-7-sj@kernel.org
+      - 4964413ae83c "mm/damon/core: add damon_split_region_at() debug_sanity check" (6/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-8-sj@kernel.org
+      - 766ba5411e0d "mm/damon/core: add damon_reset_aggregated() debug_sanity check" (7/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-9-sj@kernel.org
+      - 8332b9c7461d "mm/damon/tests/.kunitconifg: enable DAMON_DEBUG_SANITY" (8/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-10-sj@kernel.org
+      - fa9da02ac134 "selftests/damon/config: enable DAMON_DEBUG_SANITY" (9/10)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-11-sj@kernel.org
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

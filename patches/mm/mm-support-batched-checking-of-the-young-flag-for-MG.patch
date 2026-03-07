@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 27 Feb 2026 17:44:39 +0800
+Date: Fri, 6 Mar 2026 14:43:41 +0800
 Subject: [PATCH] mm: support batched checking of the young flag for MGLRU
 
 Use the batched helper test_and_clear_young_ptes_notify() to check and
@@ -34,14 +34,14 @@ as follows:
    access.  However, bloom filters inherently allow some error, so this
    effect appears negligible.
 
-Link: https://lkml.kernel.org/r/f84233f95f209d59c3bc9c72a757af09337f0d40.1772185080.git.baolin.wang@linux.alibaba.com
+Link: https://lkml.kernel.org/r/378f4acf7d07410aa7c2e4b49d56bb165918eb34.1772778858.git.baolin.wang@linux.alibaba.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Reviewed-by: Rik van Riel <riel@surriel.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
 Cc: Jann Horn <jannh@google.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
@@ -63,8 +63,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  include/linux/mmzone.h |  5 +++--
  mm/internal.h          |  6 ------
  mm/rmap.c              | 28 +++++++++++++--------------
- mm/vmscan.c            | 44 +++++++++++++++++++++++++++++++-----------
- 4 files changed, 50 insertions(+), 33 deletions(-)
+ mm/vmscan.c            | 43 +++++++++++++++++++++++++++++++-----------
+ 4 files changed, 49 insertions(+), 33 deletions(-)
 
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
 index b53b95abe287d..7bd0134c241ce 100644
@@ -105,10 +105,10 @@ index 8cdd5d8e43fb3..95b583e7e4f75 100644
 -
  #endif	/* __MM_INTERNAL_H */
 diff --git a/mm/rmap.c b/mm/rmap.c
-index 2d94b3ba52da9..06b283a9aaff5 100644
+index 2d94b3ba52da9..6398d7eef393f 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
-@@ -958,25 +958,21 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -958,25 +958,20 @@ static bool folio_referenced_one(struct folio *folio,
  			return false;
  		}
  
@@ -118,7 +118,6 @@ index 2d94b3ba52da9..06b283a9aaff5 100644
 +			pte_t pteval = ptep_get(pvmw.pte);
 +
 +			nr = folio_pte_batch(folio, pvmw.pte, pteval, max_nr);
-+			ptes += nr;
 +		}
 +
  		if (lru_gen_enabled() && pvmw.pte) {
@@ -144,6 +143,14 @@ index 2d94b3ba52da9..06b283a9aaff5 100644
  		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
  			if (pmdp_clear_flush_young_notify(vma, address,
  						pvmw.pmd))
+@@ -986,6 +981,7 @@ static bool folio_referenced_one(struct folio *folio,
+ 			WARN_ON_ONCE(1);
+ 		}
+ 
++		ptes += nr;
+ 		pra->mapcount -= nr;
+ 		/*
+ 		 * If we are sure that we batched the entire folio,
 @@ -995,6 +991,10 @@ static bool folio_referenced_one(struct folio *folio,
  			page_vma_mapped_walk_done(&pvmw);
  			break;
@@ -156,7 +163,7 @@ index 2d94b3ba52da9..06b283a9aaff5 100644
  
  	if (referenced)
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index f48cd6900add0..1f2f48815b6d8 100644
+index f48cd6900add0..93e1af92c0d3a 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -3479,6 +3479,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
@@ -221,13 +228,7 @@ index f48cd6900add0..1f2f48815b6d8 100644
  {
  	int i;
  	bool dirty;
-@@ -4189,12 +4201,13 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
- 	struct lruvec *lruvec;
- 	struct lru_gen_mm_state *mm_state;
- 	unsigned long max_seq;
-+	pte_t *cur_pte;
- 	int gen;
- 
+@@ -4194,7 +4206,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
  	lockdep_assert_held(pvmw->ptl);
  	VM_WARN_ON_ONCE_FOLIO(folio_test_lru(folio), folio);
  
@@ -236,22 +237,22 @@ index f48cd6900add0..1f2f48815b6d8 100644
  		return false;
  
  	if (spin_is_contended(pvmw->ptl))
-@@ -4234,10 +4247,12 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+@@ -4234,10 +4246,12 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
  
  	pte -= (addr - start) / PAGE_SIZE;
  
 -	for (i = 0, addr = start; addr != end; i++, addr += PAGE_SIZE) {
-+	for (i = 0, addr = start, cur_pte = pte; addr != end;
-+	     i += nr, cur_pte += nr, addr += nr * PAGE_SIZE) {
++	for (i = 0, addr = start; addr != end;
++	     i += nr, pte += nr, addr += nr * PAGE_SIZE) {
  		unsigned long pfn;
 -		pte_t ptent = ptep_get(pte + i);
-+		pte_t ptent = ptep_get(cur_pte);
++		pte_t ptent = ptep_get(pte);
  
 +		nr = 1;
  		pfn = get_pte_pfn(ptent, vma, addr, pgdat);
  		if (pfn == -1)
  			continue;
-@@ -4246,7 +4261,14 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+@@ -4246,7 +4260,14 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
  		if (!folio)
  			continue;
  
@@ -259,15 +260,15 @@ index f48cd6900add0..1f2f48815b6d8 100644
 +		if (folio_test_large(folio)) {
 +			const unsigned int max_nr = (end - addr) >> PAGE_SHIFT;
 +
-+			nr = folio_pte_batch_flags(folio, NULL, cur_pte, &ptent,
++			nr = folio_pte_batch_flags(folio, NULL, pte, &ptent,
 +						   max_nr, FPB_MERGE_YOUNG_DIRTY);
 +		}
 +
-+		if (!test_and_clear_young_ptes_notify(vma, addr, cur_pte, nr))
++		if (!test_and_clear_young_ptes_notify(vma, addr, pte, nr))
  			continue;
  
  		if (last != folio) {
-@@ -4259,7 +4281,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
+@@ -4259,7 +4280,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw)
  		if (pte_dirty(ptent))
  			dirty = true;
  

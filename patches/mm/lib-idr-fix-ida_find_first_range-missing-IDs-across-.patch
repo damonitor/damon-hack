@@ -1,0 +1,145 @@
+From: Josh Law <objecting@objecting.org>
+Date: Fri, 6 Mar 2026 20:30:47 +0000
+Subject: [PATCH] lib/idr: fix ida_find_first_range() missing IDs across chunk
+ boundaries
+
+ida_find_first_range() only examines the first XArray entry returned by
+xa_find().  If that entry does not contain a set bit at or above the
+requested offset, the function returns -ENOENT without searching
+subsequent entries, even though later chunks may contain allocated IDs
+within the requested range.
+
+For example, a DRM driver using IDA to manage connector IDs may allocate
+IDs across multiple 1024-bit IDA chunks.  If early IDs are freed and the
+driver calls ida_find_first_range() with a min that falls into a sparsely
+populated first chunk, valid IDs in higher chunks are silently missed.
+This can cause the driver to incorrectly conclude no connectors exist in
+the queried range, leading to stale connector state or failed hotplug
+detection.
+
+Fix this by looping over xa_find()/xa_find_after() to continue searching
+subsequent entries when the current one has no matching bit.
+
+Link: https://lkml.kernel.org/r/20260306203047.2821852-1-objecting@objecting.org
+Fixes: 7fe6b987166b ("ida: Add ida_find_first_range()")
+Signed-off-by: Josh Law <objecting@objecting.org>
+Cc: Yi Liu <yi.l.liu@intel.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Kevin Tian <kevin.tian@intel.com>
+Cc: Liu Yi L <yi.l.liu@intel.com>
+Cc: Matthew Wilcox <willy@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/idr.c      | 55 ++++++++++++++++++++++----------------------------
+ lib/test_ida.c | 14 +++++++++++++
+ 2 files changed, 38 insertions(+), 31 deletions(-)
+
+diff --git a/lib/idr.c b/lib/idr.c
+index 69bee5369670c..1649f41016e7c 100644
+--- a/lib/idr.c
++++ b/lib/idr.c
+@@ -495,10 +495,9 @@ int ida_find_first_range(struct ida *ida, unsigned int min, unsigned int max)
+ 	unsigned long index = min / IDA_BITMAP_BITS;
+ 	unsigned int offset = min % IDA_BITMAP_BITS;
+ 	unsigned long *addr, size, bit;
+-	unsigned long tmp = 0;
++	unsigned long tmp;
+ 	unsigned long flags;
+ 	void *entry;
+-	int ret;
+ 
+ 	if ((int)min < 0)
+ 		return -EINVAL;
+@@ -508,40 +507,34 @@ int ida_find_first_range(struct ida *ida, unsigned int min, unsigned int max)
+ 	xa_lock_irqsave(&ida->xa, flags);
+ 
+ 	entry = xa_find(&ida->xa, &index, max / IDA_BITMAP_BITS, XA_PRESENT);
+-	if (!entry) {
+-		ret = -ENOENT;
+-		goto err_unlock;
+-	}
+-
+-	if (index > min / IDA_BITMAP_BITS)
+-		offset = 0;
+-	if (index * IDA_BITMAP_BITS + offset > max) {
+-		ret = -ENOENT;
+-		goto err_unlock;
+-	}
+-
+-	if (xa_is_value(entry)) {
+-		tmp = xa_to_value(entry);
+-		addr = &tmp;
+-		size = BITS_PER_XA_VALUE;
+-	} else {
+-		addr = ((struct ida_bitmap *)entry)->bitmap;
+-		size = IDA_BITMAP_BITS;
+-	}
+-
+-	bit = find_next_bit(addr, size, offset);
++	while (entry) {
++		if (index > min / IDA_BITMAP_BITS)
++			offset = 0;
++		if (index * IDA_BITMAP_BITS + offset > max)
++			break;
+ 
+-	xa_unlock_irqrestore(&ida->xa, flags);
++		if (xa_is_value(entry)) {
++			tmp = xa_to_value(entry);
++			addr = &tmp;
++			size = BITS_PER_XA_VALUE;
++		} else {
++			addr = ((struct ida_bitmap *)entry)->bitmap;
++			size = IDA_BITMAP_BITS;
++		}
+ 
+-	if (bit == size ||
+-	    index * IDA_BITMAP_BITS + bit > max)
+-		return -ENOENT;
++		bit = find_next_bit(addr, size, offset);
++		if (bit < size &&
++		    index * IDA_BITMAP_BITS + bit <= max) {
++			xa_unlock_irqrestore(&ida->xa, flags);
++			return index * IDA_BITMAP_BITS + bit;
++		}
+ 
+-	return index * IDA_BITMAP_BITS + bit;
++		entry = xa_find_after(&ida->xa, &index,
++				      max / IDA_BITMAP_BITS, XA_PRESENT);
++	}
+ 
+-err_unlock:
+ 	xa_unlock_irqrestore(&ida->xa, flags);
+-	return ret;
++	return -ENOENT;
+ }
+ EXPORT_SYMBOL(ida_find_first_range);
+ 
+diff --git a/lib/test_ida.c b/lib/test_ida.c
+index 63078f8dc13f5..c400b24f88b61 100644
+--- a/lib/test_ida.c
++++ b/lib/test_ida.c
+@@ -256,6 +256,20 @@ static void ida_check_find_first(struct ida *ida)
+ 	ida_free(ida, (1 << 20) - 1);
+ 
+ 	IDA_BUG_ON(ida, !ida_is_empty(ida));
++
++	/*
++	 * Test cross-chunk search.
++	 * Allocate ID in chunk 0 and ID in chunk 1.
++	 * Search for ID >= 1. min=1 maps to chunk 0. Chunk 0 has no IDs >= 1.
++	 * It should continue to chunk 1 and return 1024.
++	 */
++	IDA_BUG_ON(ida, ida_alloc_min(ida, 0, GFP_KERNEL) != 0);
++	IDA_BUG_ON(ida, ida_alloc_min(ida, 1024, GFP_KERNEL) != 1024);
++	IDA_BUG_ON(ida, ida_find_first_range(ida, 1, INT_MAX) != 1024);
++	ida_free(ida, 0);
++	ida_free(ida, 1024);
++
++	IDA_BUG_ON(ida, !ida_is_empty(ida));
+ }
+ 
+ static DEFINE_IDA(ida);
+-- 
+2.47.3
+
