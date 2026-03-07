@@ -1,0 +1,100 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 30 Jan 2026 17:44:25 -0800
+Subject: [RFC PATCH 2/5] mm/damon/core: support addr_unit on
+         damon_find_biggest_system_ram()
+
+damon_find_biggest_system_ram() sets an 'unsigned long' variable with
+'resource_size_t' value.  This is fundamentally wrong.  On environments
+such as ARM 32 bit machines having LPAE (Large Physical Address
+Extensions), which DAMON supports, the size of 'unsigned long' may be
+smaller than that of 'resource_size_t'.  It is safe, though, since we
+restrict the walk to be done only up to ULONG_MAX.
+
+DAMON supports the address size gap using 'addr_unit'.  We didn't add
+the support to the function, just to make the initial support change
+small.  Now the support is reasonably settled.  This kind of gap is only
+making the code inconsistent and easy to be confused.  Add the support
+of 'addr_unit' to the function, by letting callers pass the 'addr_unit'
+and handling it in the function.  All callers are passing 'addr_unit' 1,
+though, to keep the old behavior.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 33 +++++++++++++++++++++++----------
+ 1 file changed, 23 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index db388d05cac3f..38c7a919f9bb2 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3052,31 +3052,44 @@ static int kdamond_fn(void *data)
+ 
+ static int walk_system_ram(struct resource *res, void *arg)
+ {
+-	struct damon_addr_range *a = arg;
++	struct resource *a = arg;
+ 
+-	if (a->end - a->start < resource_size(res)) {
++	if (resource_size(a) < resource_size(res)) {
+ 		a->start = res->start;
+-		a->end = res->end + 1;
++		a->end = res->end;
+ 	}
+ 	return 0;
+ }
+ 
++static unsigned long damon_res_to_core_addr(resource_size_t ra,
++		unsigned long addr_unit)
++{
++	/*
++	 * Use div_u64() for avoiding linking errors related with __udivdi3,
++	 * __aeabi_uldivmod, or similar problems.  This should also improve the
++	 * performance optimization (read div_u64() comment for the detail).
++	 */
++	if (sizeof(ra) == 8 && sizeof(addr_unit) == 4)
++		return div_u64(ra, addr_unit);
++	return ra / addr_unit;
++}
++
+ /*
+  * Find biggest 'System RAM' resource and store its start and end address in
+  * @start and @end, respectively.  If no System RAM is found, returns false.
+  */
+ static bool damon_find_biggest_system_ram(unsigned long *start,
+-						unsigned long *end)
++		unsigned long *end, unsigned long addr_unit)
+ 
+ {
+-	struct damon_addr_range arg = {};
++	struct resource res = {};
+ 
+-	walk_system_ram_res(0, ULONG_MAX, &arg, walk_system_ram);
+-	if (arg.end <= arg.start)
++	walk_system_ram_res(0, -1, &res, walk_system_ram);
++	if (res.end < res.start)
+ 		return false;
+ 
+-	*start = arg.start;
+-	*end = arg.end;
++	*start = damon_res_to_core_addr(res.start, addr_unit);
++	*end = damon_res_to_core_addr(res.end + 1, addr_unit);
+ 	return true;
+ }
+ 
+@@ -3106,7 +3119,7 @@ int damon_set_region_biggest_system_ram_default(struct damon_target *t,
+ 		return -EINVAL;
+ 
+ 	if (!*start && !*end &&
+-		!damon_find_biggest_system_ram(start, end))
++		!damon_find_biggest_system_ram(start, end, 1))
+ 		return -EINVAL;
+ 
+ 	addr_range.start = *start;
+-- 
+2.47.3
