@@ -1,0 +1,59 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 7 Mar 2026 11:49:14 -0800
+Subject: [PATCH] mm/damon/core: use time_after_eq() in kdamond_fn()
+
+damon_ctx->passed_sample_intervals and damon_ctx->next_*_sis are unsigned
+long.  Those are compared in kdamond_fn() using normal comparison
+operators.  It is unsafe from overflow.  Use time_after_eq(), which is
+safe from overflows when correctly used, instead.
+
+Link: https://lkml.kernel.org/r/20260307194915.203169-4-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 4ede733a94cc0..cd2d7a8e3fe92 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2915,7 +2915,8 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 
+-		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
++		if (time_after_eq(ctx->passed_sample_intervals,
++					next_aggregation_sis)) {
+ 			kdamond_merge_regions(ctx,
+ 					max_nr_accesses / 10,
+ 					sz_limit);
+@@ -2935,10 +2936,12 @@ static int kdamond_fn(void *data)
+ 
+ 		sample_interval = ctx->attrs.sample_interval ?
+ 			ctx->attrs.sample_interval : 1;
+-		if (ctx->passed_sample_intervals >= next_aggregation_sis) {
++		if (time_after_eq(ctx->passed_sample_intervals,
++					next_aggregation_sis)) {
+ 			if (ctx->attrs.intervals_goal.aggrs &&
+-					ctx->passed_sample_intervals >=
+-					ctx->next_intervals_tune_sis) {
++					time_after_eq(
++						ctx->passed_sample_intervals,
++						ctx->next_intervals_tune_sis)) {
+ 				/*
+ 				 * ctx->next_aggregation_sis might be updated
+ 				 * from kdamond_call().  In the case,
+@@ -2972,7 +2975,8 @@ static int kdamond_fn(void *data)
+ 			kdamond_split_regions(ctx);
+ 		}
+ 
+-		if (ctx->passed_sample_intervals >= next_ops_update_sis) {
++		if (time_after_eq(ctx->passed_sample_intervals,
++					next_ops_update_sis)) {
+ 			ctx->next_ops_update_sis = next_ops_update_sis +
+ 				ctx->attrs.ops_update_interval /
+ 				sample_interval;
+-- 
+2.47.3
+

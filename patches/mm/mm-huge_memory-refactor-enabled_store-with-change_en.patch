@@ -1,0 +1,130 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Sat, 7 Mar 2026 08:08:07 -0800
+Subject: [PATCH] mm: huge_memory: refactor enabled_store() with
+ change_enabled()
+
+Refactor enabled_store() to use a new change_enabled() helper.  Introduce
+a separate enum global_enabled_mode and global_enabled_mode_strings[],
+mirroring the anon_enabled_mode pattern from the previous commit.
+
+A separate enum is necessary because the global THP setting does not
+support "inherit", only "always", "madvise", and "never".  Reusing
+anon_enabled_mode would leave a NULL gap in the string array, causing
+sysfs_match_string() to stop early and fail to match entries after the
+gap.
+
+The helper uses the same loop pattern as change_anon_orders(), iterating
+over an array of flag bit positions and using
+test_and_set_bit()/test_and_clear_bit() to track whether the state
+actually changed.
+
+Link: https://lkml.kernel.org/r/20260307-thp_logs-v3-3-a45d2c8f3685@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 63 ++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 48 insertions(+), 15 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 14ca789fca097..d5efdc6340532 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -330,30 +330,63 @@ static const char * const anon_enabled_mode_strings[] = {
+ 	[ANON_ENABLED_NEVER]	= "never",
+ };
+ 
++enum global_enabled_mode {
++	GLOBAL_ENABLED_ALWAYS,
++	GLOBAL_ENABLED_MADVISE,
++	GLOBAL_ENABLED_NEVER,
++};
++
++static const char * const global_enabled_mode_strings[] = {
++	[GLOBAL_ENABLED_ALWAYS]		= "always",
++	[GLOBAL_ENABLED_MADVISE]	= "madvise",
++	[GLOBAL_ENABLED_NEVER]		= "never",
++};
++
++static bool change_enabled(enum global_enabled_mode mode)
++{
++	static const unsigned long thp_flags[] = {
++		TRANSPARENT_HUGEPAGE_FLAG,
++		TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG,
++	};
++	bool changed = false;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(thp_flags); i++) {
++		if (i == mode)
++			changed |= !test_and_set_bit(thp_flags[i],
++						     &transparent_hugepage_flags);
++		else
++			changed |= test_and_clear_bit(thp_flags[i],
++						      &transparent_hugepage_flags);
++	}
++
++	return changed;
++}
++
+ static ssize_t enabled_store(struct kobject *kobj,
+ 			     struct kobj_attribute *attr,
+ 			     const char *buf, size_t count)
+ {
+-	ssize_t ret = count;
++	int mode;
+ 
+-	if (sysfs_streq(buf, "always")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "madvise")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "never")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-	} else
+-		ret = -EINVAL;
++	mode = sysfs_match_string(global_enabled_mode_strings, buf);
++	if (mode < 0)
++		return -EINVAL;
+ 
+-	if (ret > 0) {
++	if (change_enabled(mode)) {
+ 		int err = start_stop_khugepaged();
++
+ 		if (err)
+-			ret = err;
++			return err;
++	} else {
++		/*
++		 * Recalculate watermarks even when the mode didn't
++		 * change, as the previous code always called
++		 * start_stop_khugepaged() which does this internally.
++		 */
++		set_recommended_min_free_kbytes();
+ 	}
+-	return ret;
++	return count;
+ }
+ 
+ static struct kobj_attribute enabled_attr = __ATTR_RW(enabled);
+-- 
+2.47.3
+

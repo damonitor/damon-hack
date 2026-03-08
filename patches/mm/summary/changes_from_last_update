@@ -11,44 +11,52 @@
   - series: 2 (5) -> 2 (5) (no change)
     - no role, maintainer: 2 -> 2 commits (no change)
     - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-new: 0 -> 10 commits
-  - series: 0 (0) -> 1 (10)
-    - maintainer, nobody: 0 -> 10 commits
+- mm-new: 10 -> 22 commits
+  - series: 1 (10) -> 4 (22)
+    - maintainer, nobody: 10 -> 22 commits
   - new commits
-    - series "mm/damon: add optional debugging-purpose sanity checks". (10)
-      - a4e039b9cae8 "mm/damon: add CONFIG_DAMON_DEBUG_SANITY (0/10)"
+    - series "mm/damon: test and document power-of-2 min_region_sz requirement". (2)
+      - 02513b935df8 "mm/damon/tests/core-kunit: add a test for damon_commit_ctx() (0/2)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org [1]
-        - Link: https://github.com/damonitor/damon-tests/commit/a80fbee55e272f151b4e5809ee85898aea33e6ff [2]
-      - 67063550131d "mm/damon/core: add damon_new_region() debug_sanity check (1/10)"
+        - Link: https://lkml.kernel.org/r/20260307194222.202075-2-sj@kernel.org
+      - 6a13c682f074 "Docs/mm/damon/design: document the power-of-two limitation for addr_unit (1/2)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-3-sj@kernel.org
-      - 8f7d2974552b "mm/damon/core: add damon_del_region() debug_sanity check (2/10)"
+        - Link: https://lkml.kernel.org/r/20260307194222.202075-3-sj@kernel.org
+    - series "mm/damon/core: make passed_sample_intervals comparisons overflow-safe". (3)
+      - bec997ef4806 "mm/damon/core: remove damos_set_next_apply_sis() duplicates (0/3)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-4-sj@kernel.org
-      - caaf479ac89f "mm/damon/core: add damon_nr_regions() debug_sanity check (3/10)"
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-2-sj@kernel.org
+      - 36af4d0e94d2 "mm/damon/core: use time_before() for next_apply_sis (1/3)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-5-sj@kernel.org
-      - ce7a8db27cc7 "mm/damon/core: add damon_merge_two_regions() debug_sanity check (4/10)"
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-3-sj@kernel.org
+      - 3bd080ee4fb4 "mm/damon/core: use time_after_eq() in kdamond_fn() (2/3)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-6-sj@kernel.org
-      - a560701b88a7 "mm/damon/core: add damon_merge_regions_of() debug_sanity check (5/10)"
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-4-sj@kernel.org
+    - series "mm/damon: improve/fixup/update ratio calculation, test and documentation". (7)
+      - a331406069c9 "mm/damon/core: use mult_frac() (0/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-7-sj@kernel.org
-      - 4964413ae83c "mm/damon/core: add damon_split_region_at() debug_sanity check (6/10)"
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-2-sj@kernel.org
+      - 9073945e3aad "mm/damon/tests/core-kunit: add a test for damon_is_last_region() (1/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-8-sj@kernel.org
-      - 766ba5411e0d "mm/damon/core: add damon_reset_aggregated() debug_sanity check (7/10)"
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260114152049.99727-1-sj@kernel.org/ [1]
+      - 12b6ccb4eb3e "mm/damon/core: clarify damon_set_attrs() usages (2/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-9-sj@kernel.org
-      - 8332b9c7461d "mm/damon/tests/.kunitconifg: enable DAMON_DEBUG_SANITY (8/10)"
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-4-sj@kernel.org
+      - a53a64eb849f "mm/damon: document non-zero length damon_region assumption (3/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-10-sj@kernel.org
-      - fa9da02ac134 "selftests/damon/config: enable DAMON_DEBUG_SANITY (9/10)"
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org/ [1]
+      - 7eea768693d8 "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name (4/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260306152914.86303-11-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-6-sj@kernel.org
+      - 6e41aa485acb "Docs/mm/damon/maintainer-profile: use flexible review cadence (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-7-sj@kernel.org
+      - 11625b62bb9e "Docs/mm/damon/index: fix typo: autoamted -> automated (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-8-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
