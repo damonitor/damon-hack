@@ -1,0 +1,160 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 9 Mar 2026 16:18:58 +0100
+Subject: [PATCH] mm: move vma_kernel_pagesize() from hugetlb to mm.h
+
+Patch series "mm: move vma_(kernel|mmu)_pagesize() out of hugetlb.c", v2.
+
+Looking into vma_(kernel|mmu)_pagesize(), I realized that there is one
+scenario where DAX would not do the right thing when the kernel is not
+compiled with hugetlb support.
+
+Without hugetlb support, vma_(kernel|mmu)_pagesize() will always return
+PAGE_SIZE instead of using the ->pagesize() result provided by dax-device
+code.
+
+Fix that by moving vma_kernel_pagesize() to core MM code, where it
+belongs.  I don't think this is stable material, but am not 100% sure.
+
+Also, move vma_mmu_pagesize() while at it.  Remove the unnecessary
+hugetlb.h inclusion from KVM code.
+
+
+This patch (of 4):
+
+In the past, only hugetlb had special "vma_kernel_pagesize()"
+requirements, so it provided its own implementation.
+
+In commit 05ea88608d4e ("mm, hugetlbfs: introduce ->pagesize() to
+vm_operations_struct") we generalized that approach by providing a
+vm_ops->pagesize() callback to be used by device-dax.
+
+Once device-dax started using that callback in commit c1d53b92b95c
+("device-dax: implement ->pagesize() for smaps to report MMUPageSize") it
+was missed that CONFIG_DEV_DAX does not depend on hugetlb support.
+
+So building a kernel with CONFIG_DEV_DAX but without CONFIG_HUGETLBFS
+would not pick up that value.
+
+Fix it by moving vma_kernel_pagesize() to mm.h, providing only a single
+implementation.  While at it, improve the kerneldoc a bit.
+
+Ideally, we'd move vma_mmu_pagesize() as well to the header.  However, its
+__weak symbol might be overwritten by a PPC variant in hugetlb code.  So
+let's leave it in there for now, as it really only matters for some
+hugetlb oddities.
+
+This was found by code inspection.
+
+Link: https://lkml.kernel.org/r/20260309151901.123947-1-david@kernel.org
+Link: https://lkml.kernel.org/r/20260309151901.123947-2-david@kernel.org
+Fixes: c1d53b92b95c ("device-dax: implement ->pagesize() for smaps to report MMUPageSize")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: "Christophe Leroy (CS GROUP)" <chleroy@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/hugetlb.h |  7 -------
+ include/linux/mm.h      | 20 ++++++++++++++++++++
+ mm/hugetlb.c            | 17 -----------------
+ 3 files changed, 20 insertions(+), 24 deletions(-)
+
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index f003afe0cc916..6273ce218c10c 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -777,8 +777,6 @@ static inline unsigned long huge_page_size(const struct hstate *h)
+ 	return (unsigned long)PAGE_SIZE << h->order;
+ }
+ 
+-extern unsigned long vma_kernel_pagesize(struct vm_area_struct *vma);
+-
+ extern unsigned long vma_mmu_pagesize(struct vm_area_struct *vma);
+ 
+ static inline unsigned long huge_page_mask(struct hstate *h)
+@@ -1188,11 +1186,6 @@ static inline unsigned long huge_page_mask(struct hstate *h)
+ 	return PAGE_MASK;
+ }
+ 
+-static inline unsigned long vma_kernel_pagesize(struct vm_area_struct *vma)
+-{
+-	return PAGE_SIZE;
+-}
+-
+ static inline unsigned long vma_mmu_pagesize(struct vm_area_struct *vma)
+ {
+ 	return PAGE_SIZE;
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 4c4fd55fc8238..0f3c0b97bddfb 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1356,6 +1356,26 @@ static inline bool vma_is_shared_maywrite(const struct vm_area_struct *vma)
+ 	return is_shared_maywrite(&vma->flags);
+ }
+ 
++/**
++ * vma_kernel_pagesize - Default page size granularity for this VMA.
++ * @vma: The user mapping.
++ *
++ * The kernel page size specifies in which granularity VMA modifications
++ * can be performed. Folios in this VMA will be aligned to, and at least
++ * the size of the number of bytes returned by this function.
++ *
++ * The default kernel page size is not affected by Transparent Huge Pages
++ * being in effect.
++ *
++ * Return: The default page size granularity for this VMA.
++ */
++static inline unsigned long vma_kernel_pagesize(struct vm_area_struct *vma)
++{
++	if (unlikely(vma->vm_ops && vma->vm_ops->pagesize))
++		return vma->vm_ops->pagesize(vma);
++	return PAGE_SIZE;
++}
++
+ static inline
+ struct vm_area_struct *vma_find(struct vma_iterator *vmi, unsigned long max)
+ {
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 4de6a6c068720..2553c95dcf6b3 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1006,23 +1006,6 @@ static long region_count(struct resv_map *resv, long f, long t)
+ 	return chg;
+ }
+ 
+-/**
+- * vma_kernel_pagesize - Page size granularity for this VMA.
+- * @vma: The user mapping.
+- *
+- * Folios in this VMA will be aligned to, and at least the size of the
+- * number of bytes returned by this function.
+- *
+- * Return: The default size of the folios allocated when backing a VMA.
+- */
+-unsigned long vma_kernel_pagesize(struct vm_area_struct *vma)
+-{
+-	if (vma->vm_ops && vma->vm_ops->pagesize)
+-		return vma->vm_ops->pagesize(vma);
+-	return PAGE_SIZE;
+-}
+-EXPORT_SYMBOL_GPL(vma_kernel_pagesize);
+-
+ /*
+  * Return the page size being used by the MMU to back a VMA. In the majority
+  * of cases, the page size used by the kernel matches the MMU size. On
+-- 
+2.47.3
+

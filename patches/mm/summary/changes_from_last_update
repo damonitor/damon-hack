@@ -11,51 +11,43 @@
   - series: 2 (5) -> 2 (5) (no change)
     - no role, maintainer: 2 -> 2 commits (no change)
     - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-new: 10 -> 22 commits
-  - series: 1 (10) -> 4 (22)
-    - maintainer, nobody: 10 -> 22 commits
-  - new commits
-    - series "mm/damon: test and document power-of-2 min_region_sz requirement". (2)
-      - 02513b935df8 "mm/damon/tests/core-kunit: add a test for damon_commit_ctx() (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260307194222.202075-2-sj@kernel.org
-      - 6a13c682f074 "Docs/mm/damon/design: document the power-of-two limitation for addr_unit (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260307194222.202075-3-sj@kernel.org
-    - series "mm/damon/core: make passed_sample_intervals comparisons overflow-safe". (3)
-      - bec997ef4806 "mm/damon/core: remove damos_set_next_apply_sis() duplicates (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260307194915.203169-2-sj@kernel.org
-      - 36af4d0e94d2 "mm/damon/core: use time_before() for next_apply_sis (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260307194915.203169-3-sj@kernel.org
-      - 3bd080ee4fb4 "mm/damon/core: use time_after_eq() in kdamond_fn() (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260307194915.203169-4-sj@kernel.org
+- mm-new: 22 -> 22 commits (no change)
+  - series: 4 (22) -> 4 (22) (no change)
+    - maintainer, nobody: 22 -> 15 commits
+    - maintainer, no role : 0 -> 7 commits
+  - changed commits
     - series "mm/damon: improve/fixup/update ratio calculation, test and documentation". (7)
-      - a331406069c9 "mm/damon/core: use mult_frac() (0/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - 0b5fbe25eb70 "mm/damon/core: use mult_frac() (0/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260307195356.203753-2-sj@kernel.org
-      - 9073945e3aad "mm/damon/tests/core-kunit: add a test for damon_is_last_region() (1/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - e025bdf58295 "mm/damon/tests/core-kunit: add a test for damon_is_last_region() (1/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Tested-by: wang lian <lianux.mm@gmail.com>"
+        - added "Reviewed-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260114152049.99727-1-sj@kernel.org/ [1]
-      - 12b6ccb4eb3e "mm/damon/core: clarify damon_set_attrs() usages (2/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - b7bf7a085b79 "mm/damon/core: clarify damon_set_attrs() usages (2/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-4-sj@kernel.org
-      - a53a64eb849f "mm/damon: document non-zero length damon_region assumption (3/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - 7b3cfbad5076 "mm/damon: document non-zero length damon_region assumption (3/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-5-sj@kernel.org
         - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org/ [1]
-      - 7eea768693d8 "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name (4/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - fcc6bf588c10 "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name (4/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-6-sj@kernel.org
-      - 6e41aa485acb "Docs/mm/damon/maintainer-profile: use flexible review cadence (5/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - 99f66f67303d "Docs/mm/damon/maintainer-profile: use flexible review cadence (5/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-7-sj@kernel.org
-      - 11625b62bb9e "Docs/mm/damon/index: fix typo: autoamted -> automated (6/7)"
-        - Authored by a maintainer, reviewed by nobody
+      - ce09499cee98 "Docs/mm/damon/index: fix typo: autoamted -> automated (6/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - added "Acked-by: wang lian <lianux.mm@gmail.com>"
         - Link: https://lkml.kernel.org/r/20260307195356.203753-8-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
