@@ -1,0 +1,91 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Tue, 10 Mar 2026 03:54:19 -0700
+Subject: [PATCH] mm: migrate: requeue destination folio on deferred split
+ queue
+
+During folio migration, __folio_migrate_mapping() removes the source folio
+from the deferred split queue, but the destination folio is never
+re-queued.  This causes underutilized THPs to escape the shrinker after
+NUMA migration, since they silently drop off the deferred split list.
+
+Fix this by recording whether the source folio was on the deferred split
+queue and its partially mapped state before move_to_new_folio() unqueues
+it, and re-queuing the destination folio after a successful migration if
+it was.
+
+By the time migrate_folio_move() runs, partially mapped folios without a
+pin have already been split by migrate_pages_batch().  So only two cases
+remain on the deferred list at this point:
+
+  1. Partially mapped folios with a pin (split failed).
+
+  2. Fully mapped but potentially underused folios.  The recorded
+     partially_mapped state is forwarded to deferred_split_folio() so that
+     the destination folio is correctly re-queued in both cases.
+
+Link: https://lkml.kernel.org/r/20260310105419.3256755-1-usama.arif@linux.dev
+Fixes: dafff3f4c850 ("mm: split underused THPs")
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Reported-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 27e6103037c29..3380021fd3db2 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -1360,6 +1360,8 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+ 	int rc;
+ 	int old_page_state = 0;
+ 	struct anon_vma *anon_vma = NULL;
++	bool src_deferred_split = false;
++	bool src_partially_mapped = false;
+ 	struct list_head *prev;
+ 
+ 	__migrate_folio_extract(dst, &old_page_state, &anon_vma);
+@@ -1373,6 +1375,12 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+ 		goto out_unlock_both;
+ 	}
+ 
++	if (folio_test_large(src) && folio_test_large_rmappable(src) &&
++	    !data_race(list_empty(&src->_deferred_list))) {
++		src_deferred_split = true;
++		src_partially_mapped = folio_test_partially_mapped(src);
++	}
++
+ 	rc = move_to_new_folio(dst, src, mode);
+ 	if (rc)
+ 		goto out;
+@@ -1393,6 +1401,15 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+ 	if (old_page_state & PAGE_WAS_MAPPED)
+ 		remove_migration_ptes(src, dst, 0);
+ 
++	/*
++	 * Requeue the destination folio on the deferred split queue if
++	 * the source was on the queue.  The source is unqueued in
++	 * __folio_migrate_mapping(), so we recorded the state from
++	 * before move_to_new_folio().
++	 */
++	if (src_deferred_split)
++		deferred_split_folio(dst, src_partially_mapped);
++
+ out_unlock_both:
+ 	folio_unlock(dst);
+ 	folio_set_owner_migrate_reason(dst, reason);
+-- 
+2.47.3
+

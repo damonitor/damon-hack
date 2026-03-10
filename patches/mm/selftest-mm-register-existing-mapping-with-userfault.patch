@@ -1,0 +1,119 @@
+From: Sayali Patil <sayalip@linux.ibm.com>
+Date: Tue, 10 Mar 2026 15:19:25 +0530
+Subject: [PATCH] selftest/mm: register existing mapping with userfaultfd in
+ hugepage-mremap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Previously, register_region_with_uffd() created a new anonymous mapping
+and overwrote the address supplied by the caller before registering the
+range with userfaultfd.
+
+As a result, userfaultfd was applied to an unrelated anonymous mapping
+instead of the hugetlb region used by the test.
+
+Remove the extra mmap() and register the caller-provided address range
+directly using UFFDIO_REGISTER_MODE_MISSING, so that faults are generated
+for the hugetlb mapping used by the test.
+
+This ensures userfaultfd operates on the actual hugetlb test region and
+validates the expected fault handling.
+
+Before patch:
+ running ./hugepage-mremap
+ -------------------------
+ TAP version 13
+ 1..1
+  Map haddr: Returned address is 0x7eaa40000000
+  Map daddr: Returned address is 0x7daa40000000
+  Map vaddr: Returned address is 0x7faa40000000
+  Address returned by mmap() = 0x7fff9d000000
+  Mremap: Returned address is 0x7faa40000000
+  First hex is 0
+  First hex is 3020100
+ ok 1 Read same data
+ Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0
+ [PASS]
+ ok 1 hugepage-mremap
+
+After patch:
+ running ./hugepage-mremap
+ -------------------------
+ TAP version 13
+ 1..1
+  Map haddr: Returned address is 0x7eaa40000000
+  Map daddr: Returned address is 0x7daa40000000
+  Map vaddr: Returned address is 0x7faa40000000
+  Registered memory at address 0x7eaa40000000 with userfaultfd
+  Mremap: Returned address is 0x7faa40000000
+  First hex is 0
+  First hex is 3020100
+ ok 1 Read same data
+ Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0
+ [PASS]
+ ok 1 hugepage-mremap
+
+Link: https://lkml.kernel.org/r/a2dbb11faee4041420620f375b2f80d43ac9e482.1773134177.git.sayalip@linux.ibm.com
+Fixes: 12b613206474 ("mm, hugepages: add hugetlb vma mremap() test")
+Signed-off-by: Sayali Patil <sayalip@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: "Michal Koutný" <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/hugepage-mremap.c | 21 +++++---------------
+ 1 file changed, 5 insertions(+), 16 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/hugepage-mremap.c b/tools/testing/selftests/mm/hugepage-mremap.c
+index b8f7d92e5a351..e611249080d6d 100644
+--- a/tools/testing/selftests/mm/hugepage-mremap.c
++++ b/tools/testing/selftests/mm/hugepage-mremap.c
+@@ -85,25 +85,14 @@ static void register_region_with_uffd(char *addr, size_t len)
+ 	if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1)
+ 		ksft_exit_fail_msg("ioctl-UFFDIO_API: %s\n", strerror(errno));
+ 
+-	/* Create a private anonymous mapping. The memory will be
+-	 * demand-zero paged--that is, not yet allocated. When we
+-	 * actually touch the memory, it will be allocated via
+-	 * the userfaultfd.
+-	 */
+-
+-	addr = mmap(NULL, len, PROT_READ | PROT_WRITE,
+-		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-	if (addr == MAP_FAILED)
+-		ksft_exit_fail_msg("mmap: %s\n", strerror(errno));
+-
+-	ksft_print_msg("Address returned by mmap() = %p\n", addr);
+-
+-	/* Register the memory range of the mapping we just created for
+-	 * handling by the userfaultfd object. In mode, we request to track
+-	 * missing pages (i.e., pages that have not yet been faulted in).
++	/* Register the passed memory range for handling by the userfaultfd object.
++	 * In mode, we request to track missing pages
++	 * (i.e., pages that have not yet been faulted in).
+ 	 */
+ 	if (uffd_register(uffd, addr, len, true, false, false))
+ 		ksft_exit_fail_msg("ioctl-UFFDIO_REGISTER: %s\n", strerror(errno));
++
++	ksft_print_msg("Registered memory at address %p with userfaultfd\n", addr);
+ }
+ 
+ int main(int argc, char *argv[])
+-- 
+2.47.3
+

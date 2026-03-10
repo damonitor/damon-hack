@@ -1,0 +1,71 @@
+From: Sayali Patil <sayalip@linux.ibm.com>
+Date: Tue, 10 Mar 2026 15:19:26 +0530
+Subject: [PATCH] selftests/mm: ensure destination is hugetlb-backed in
+ hugepage-mremap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The hugepage-mremap selftest reserves the destination address using a
+anonymous base-page mapping before calling mremap() with MREMAP_FIXED,
+while the source region is hugetlb-backed.
+
+When remapping a hugetlb mapping into a base-page VMA may fail with:
+
+    mremap: Device or resource busy
+
+This is observed on powerpc hash MMU systems where slice constraints and
+page size incompatibilities prevent the remap.
+
+Ensure the destination region is created using MAP_HUGETLB so that both
+source and destination VMAs are hugetlb-backed and compatible.  Also add
+MAP_POPULATE to the destination mapping to prefault hugepages, matching
+the behaviour used for other hugetlb mappiing in the test and ensuring
+deterministic behaviour.
+
+This ensures the test reliably exercises hugetlb mremap instead of failing
+due to VMA type mismatch.
+
+Link: https://lkml.kernel.org/r/2c8858154273159f964236810c7304dec665b28b.1773134177.git.sayalip@linux.ibm.com
+Fixes: 12b613206474 ("mm, hugepages: add hugetlb vma mremap() test")
+Signed-off-by: Sayali Patil <sayalip@linux.ibm.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: "Michal Koutný" <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/hugepage-mremap.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/hugepage-mremap.c b/tools/testing/selftests/mm/hugepage-mremap.c
+index e611249080d6d..9558515c282d4 100644
+--- a/tools/testing/selftests/mm/hugepage-mremap.c
++++ b/tools/testing/selftests/mm/hugepage-mremap.c
+@@ -136,8 +136,8 @@ int main(int argc, char *argv[])
+ 		ksft_exit_fail_msg("mmap3: %s\n", strerror(errno));
+ 
+ 	suggested_addr = 0x7faa40000000;
+-	void *vaddr =
+-		mmap((void *)suggested_addr, length, PROTECTION, FLAGS, -1, 0);
++	void *vaddr = mmap((void *)suggested_addr, length, PROTECTION,
++			MAP_HUGETLB | MAP_SHARED | MAP_POPULATE, fd, 0);
+ 	ksft_print_msg("Map vaddr: Returned address is %p\n", vaddr);
+ 	if (vaddr == MAP_FAILED)
+ 		ksft_exit_fail_msg("mmap2: %s\n", strerror(errno));
+-- 
+2.47.3
+

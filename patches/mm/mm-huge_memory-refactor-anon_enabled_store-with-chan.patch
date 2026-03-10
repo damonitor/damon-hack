@@ -1,5 +1,5 @@
 From: Breno Leitao <leitao@debian.org>
-Date: Mon, 9 Mar 2026 04:07:31 -0700
+Date: Tue, 10 Mar 2026 10:57:08 -0700
 Subject: [PATCH] mm: huge_memory: refactor anon_enabled_store() with
  change_anon_orders()
 
@@ -20,13 +20,14 @@ needed.  When the mode is unchanged, set_recommended_min_free_kbytes() is
 called directly to preserve the watermark recalculation behavior of the
 original code.
 
-Link: https://lkml.kernel.org/r/20260309-thp_logs-v4-2-926b9840083e@debian.org
+Link: https://lkml.kernel.org/r/20260310-thp_logs-v5-2-686099175bf6@debian.org
 Signed-off-by: Breno Leitao <leitao@debian.org>
 Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Lance Yang <lance.yang@linux.dev>
@@ -37,14 +38,14 @@ Cc: Nico Pache <npache@redhat.com>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Usama Arif <usamaarif642@gmail.com>
-Cc: Zi Yan <ziy@nvidia.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  mm/huge_memory.c | 84 ++++++++++++++++++++++++++++++------------------
  1 file changed, 52 insertions(+), 32 deletions(-)
 
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 7d0a64033b18a..a59390b1aceb4 100644
+index 7d0a64033b18a..58144d30dc4ce 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
 @@ -316,6 +316,20 @@ static ssize_t enabled_show(struct kobject *kobj,
@@ -72,9 +73,9 @@ index 7d0a64033b18a..a59390b1aceb4 100644
  	return sysfs_emit(buf, "%s\n", output);
  }
  
-+static bool change_anon_orders(int order, enum anon_enabled_mode mode)
++static bool set_anon_enabled_mode(int order, enum anon_enabled_mode mode)
 +{
-+	static unsigned long *orders[] = {
++	static unsigned long *enabled_orders[] = {
 +		&huge_anon_orders_always,
 +		&huge_anon_orders_madvise,
 +		&huge_anon_orders_inherit,
@@ -83,11 +84,11 @@ index 7d0a64033b18a..a59390b1aceb4 100644
 +	bool changed = false;
 +
 +	spin_lock(&huge_anon_orders_lock);
-+	for (m = 0; m < ARRAY_SIZE(orders); m++) {
++	for (m = 0; m < ARRAY_SIZE(enabled_orders); m++) {
 +		if (m == mode)
-+			changed |= !test_and_set_bit(order, orders[m]);
++			changed |= !__test_and_set_bit(order, enabled_orders[m]);
 +		else
-+			changed |= test_and_clear_bit(order, orders[m]);
++			changed |= __test_and_clear_bit(order, enabled_orders[m]);
 +	}
 +	spin_unlock(&huge_anon_orders_lock);
 +
@@ -134,7 +135,7 @@ index 7d0a64033b18a..a59390b1aceb4 100644
  
 -	if (ret > 0) {
 -		int err;
-+	if (change_anon_orders(order, mode)) {
++	if (set_anon_enabled_mode(order, mode)) {
 +		int err = start_stop_khugepaged();
  
 -		err = start_stop_khugepaged();

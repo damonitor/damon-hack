@@ -1,66 +1,64 @@
 From: Jianhui Zhou <jianhuizzzzz@gmail.com>
-Date: Fri, 6 Mar 2026 21:59:26 +0800
+Date: Tue, 10 Mar 2026 19:05:26 +0800
 Subject: [PATCH] mm/userfaultfd: fix hugetlb fault mutex hash calculation
 
 In mfill_atomic_hugetlb(), linear_page_index() is used to calculate the
 page index for hugetlb_fault_mutex_hash().  However, linear_page_index()
 returns the index in PAGE_SIZE units, while hugetlb_fault_mutex_hash()
-expects the index in huge page units (as calculated by
-vma_hugecache_offset()).  This mismatch means that different addresses
-within the same huge page can produce different hash values, leading to
-the use of different mutexes for the same huge page.  This can cause races
-between faulting threads, which can corrupt the reservation map and
-trigger the BUG_ON in resv_map_release().
+expects the index in huge page units.  This mismatch means that different
+addresses within the same huge page can produce different hash values,
+leading to the use of different mutexes for the same huge page.  This can
+cause races between faulting threads, which can corrupt the reservation
+map and trigger the BUG_ON in resv_map_release().
 
-Fix this by replacing linear_page_index() with vma_hugecache_offset() and
-applying huge_page_mask() to align the address properly.  To make
-vma_hugecache_offset() available outside of mm/hugetlb.c, move it to
-include/linux/hugetlb.h as a static inline function.
+Fix this by introducing hugetlb_linear_page_index(), which returns the
+page index in huge page granularity, and using it in place of
+linear_page_index().
 
-Link: https://lkml.kernel.org/r/20260309033053.220012-1-jianhuizzzzz@gmail.com
-Link: https://lkml.kernel.org/r/20260306140332.171078-1-jianhuizzzzz@gmail.com
-Link: https://lkml.kernel.org/r/tencent_F70AFD1D8067E3D2409764BC1A199DA6AF0A@qq.com
+Link: https://lkml.kernel.org/r/20260310110526.335749-1-jianhuizzzzz@gmail.com
 Fixes: a08c7193e4f1 ("mm/filemap: remove hugetlb special casing in filemap.c")
 Signed-off-by: Jianhui Zhou <jianhuizzzzz@gmail.com>
 Reported-by: syzbot+f525fd79634858f478e7@syzkaller.appspotmail.com
 Closes: https://syzkaller.appspot.com/bug?extid=f525fd79634858f478e7
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
 Cc: JonasZhou <JonasZhou@zhaoxin.com>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Peter Xu <peterx@redhat.com>
-Cc: Andrea Arcangeli <aarcange@redhat.com>
-Cc: "Dr. David Alan Gilbert" <dgilbert@redhat.com>
-Cc: Hillf Danton <hillf.zj@alibaba-inc.com>
-Cc: Pavel Emelyanov <xemul@parallels.com>
-Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
-Cc: David Hildenbrand <david@redhat.com>
-Cc: Hugh Dickins <hughd@google.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Sidhartha Kumar <sidhartha.kumar@oracle.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/hugetlb.h | 17 +++++++++++++++++
- mm/hugetlb.c            | 11 -----------
- mm/userfaultfd.c        |  5 ++++-
- 3 files changed, 21 insertions(+), 12 deletions(-)
+ mm/userfaultfd.c        |  2 +-
+ 2 files changed, 18 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
-index 65910437be1ca..3f994f3e839cf 100644
+index aaf3d472e6b5c..9c098a02a09e1 100644
 --- a/include/linux/hugetlb.h
 +++ b/include/linux/hugetlb.h
-@@ -796,6 +796,17 @@ static inline unsigned huge_page_shift(struct hstate *h)
+@@ -792,6 +792,23 @@ static inline unsigned huge_page_shift(struct hstate *h)
  	return h->order + PAGE_SHIFT;
  }
  
-+/*
-+ * Convert the address within this vma to the page offset within
-+ * the mapping, huge page units here.
++/**
++ * hugetlb_linear_page_index() - linear_page_index() but in hugetlb
++ *				 page size granularity.
++ * @vma: the hugetlb VMA
++ * @address: the virtual address within the VMA
++ *
++ * Return: the page offset within the mapping in huge page units.
 + */
-+static inline pgoff_t vma_hugecache_offset(struct hstate *h,
-+		struct vm_area_struct *vma, unsigned long address)
++static inline pgoff_t hugetlb_linear_page_index(struct vm_area_struct *vma,
++		unsigned long address)
 +{
++	struct hstate *h = hstate_vma(vma);
++
 +	return ((address - vma->vm_start) >> huge_page_shift(h)) +
 +		(vma->vm_pgoff >> huge_page_order(h));
 +}
@@ -68,68 +66,16 @@ index 65910437be1ca..3f994f3e839cf 100644
  static inline bool order_is_gigantic(unsigned int order)
  {
  	return order > MAX_PAGE_ORDER;
-@@ -1197,6 +1208,12 @@ static inline unsigned int huge_page_shift(struct hstate *h)
- 	return PAGE_SHIFT;
- }
- 
-+static inline pgoff_t vma_hugecache_offset(struct hstate *h,
-+		struct vm_area_struct *vma, unsigned long address)
-+{
-+	return linear_page_index(vma, address);
-+}
-+
- static inline bool hstate_is_gigantic(struct hstate *h)
- {
- 	return false;
-diff --git a/mm/hugetlb.c b/mm/hugetlb.c
-index 327eaa4074d39..16dd3f10670f5 100644
---- a/mm/hugetlb.c
-+++ b/mm/hugetlb.c
-@@ -1006,17 +1006,6 @@ static long region_count(struct resv_map *resv, long f, long t)
- 	return chg;
- }
- 
--/*
-- * Convert the address within this vma to the page offset within
-- * the mapping, huge page units here.
-- */
--static pgoff_t vma_hugecache_offset(struct hstate *h,
--			struct vm_area_struct *vma, unsigned long address)
--{
--	return ((address - vma->vm_start) >> huge_page_shift(h)) +
--			(vma->vm_pgoff >> huge_page_order(h));
--}
--
- /**
-  * vma_kernel_pagesize - Page size granularity for this VMA.
-  * @vma: The user mapping.
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index 927086bb4a3c2..8efebc47a4105 100644
+index 849fb2f302335..12ed4820b789e 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
-@@ -507,6 +507,7 @@ static __always_inline ssize_t mfill_atomic_hugetlb(
- 	pgoff_t idx;
- 	u32 hash;
- 	struct address_space *mapping;
-+	struct hstate *h;
- 
- 	/*
- 	 * There is no default zero huge page for all huge page sizes as
-@@ -564,6 +565,8 @@ static __always_inline ssize_t mfill_atomic_hugetlb(
- 			goto out_unlock;
- 	}
- 
-+	h = hstate_vma(dst_vma);
-+
- 	while (src_addr < src_start + len) {
- 		VM_WARN_ON_ONCE(dst_addr >= dst_start + len);
- 
-@@ -573,7 +576,7 @@ static __always_inline ssize_t mfill_atomic_hugetlb(
+@@ -769,7 +769,7 @@ static __always_inline ssize_t mfill_atomic_hugetlb(
  		 * in the case of shared pmds.  fault mutex prevents
  		 * races with other faulting threads.
  		 */
 -		idx = linear_page_index(dst_vma, dst_addr);
-+		idx = vma_hugecache_offset(h, dst_vma, dst_addr & huge_page_mask(h));
++		idx = hugetlb_linear_page_index(dst_vma, dst_addr);
  		mapping = dst_vma->vm_file->f_mapping;
  		hash = hugetlb_fault_mutex_hash(mapping, idx);
  		mutex_lock(&hugetlb_fault_mutex_table[hash]);

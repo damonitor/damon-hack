@@ -1,0 +1,117 @@
+From: Sayali Patil <sayalip@linux.ibm.com>
+Date: Tue, 10 Mar 2026 15:19:27 +0530
+Subject: [PATCH] selftests/mm: skip uffd-wp-mremap if UFFD write-protect is
+ unsupported
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The uffd-wp-mremap test requires the UFFD_FEATURE_PAGEFAULT_FLAG_WP
+capability.  On systems where userfaultfd write-protect is not supported,
+uffd_register() fails and the test reports failures.
+
+Check for the required feature at startup and skip the test when the
+UFFD_FEATURE_PAGEFAULT_FLAG_WP capability is not present, preventing false
+failures on unsupported configurations.
+
+Before patch:
+ running ./uffd-wp-mremap
+ ------------------------
+  [INFO] detected THP size: 256 KiB
+  [INFO] detected THP size: 512 KiB
+  [INFO] detected THP size: 1024 KiB
+  [INFO] detected THP size: 2048 KiB
+  [INFO] detected hugetlb page size: 2048 KiB
+  [INFO] detected hugetlb page size: 1048576 KiB
+ 1..24
+  [RUN] test_one_folio(size=65536, private=false, swapout=false,
+  hugetlb=false)
+ not ok 1 uffd_register() failed
+  [RUN] test_one_folio(size=65536, private=true, swapout=false,
+  hugetlb=false)
+ not ok 2 uffd_register() failed
+  [RUN] test_one_folio(size=65536, private=false, swapout=true,
+  hugetlb=false)
+ not ok 3 uffd_register() failed
+  [RUN] test_one_folio(size=65536, private=true, swapout=true,
+  hugetlb=false)
+ not ok 4 uffd_register() failed
+  [RUN] test_one_folio(size=262144, private=false, swapout=false,
+  hugetlb=false)
+ not ok 5 uffd_register() failed
+  [RUN] test_one_folio(size=524288, private=false, swapout=false,
+  hugetlb=false)
+ not ok 6 uffd_register() failed
+ .
+ .
+ .
+ Bail out! 24 out of 24 tests failed
+  Totals: pass:0 fail:24 xfail:0 xpass:0 skip:0 error:0
+ [FAIL]
+not ok 1 uffd-wp-mremap # exit=1
+
+After patch:
+ running ./uffd-wp-mremap
+ ------------------------
+ 1..0 # SKIP uffd-wp feature not supported
+ [SKIP]
+ok 1 uffd-wp-mremap # SKIP
+
+Link: https://lkml.kernel.org/r/afbe6bf8ca508d810bc1c9d749483711edae9751.1773134177.git.sayalip@linux.ibm.com
+Signed-off-by: Sayali Patil <sayalip@linux.ibm.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: "Michal Koutný" <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/uffd-wp-mremap.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/uffd-wp-mremap.c b/tools/testing/selftests/mm/uffd-wp-mremap.c
+index 17186d4a41471..73d53a4da389c 100644
+--- a/tools/testing/selftests/mm/uffd-wp-mremap.c
++++ b/tools/testing/selftests/mm/uffd-wp-mremap.c
+@@ -19,6 +19,17 @@ static size_t thpsizes[20];
+ static int nr_hugetlbsizes;
+ static size_t hugetlbsizes[10];
+ 
++static void uffd_wp_feature_supported(void)
++{
++	uint64_t features;
++
++	if (uffd_get_features(&features) && errno == ENOENT)
++		ksft_exit_skip("failed to get available features (%d)\n", errno);
++
++	if (!(features & UFFD_FEATURE_PAGEFAULT_FLAG_WP))
++		ksft_exit_skip("uffd-wp feature not supported\n");
++}
++
+ static int detect_thp_sizes(size_t sizes[], int max)
+ {
+ 	int count = 0;
+@@ -336,6 +347,8 @@ int main(int argc, char **argv)
+ 	struct thp_settings settings;
+ 	int i, j, plan = 0;
+ 
++	uffd_wp_feature_supported();
++
+ 	pagesize = getpagesize();
+ 	nr_thpsizes = detect_thp_sizes(thpsizes, ARRAY_SIZE(thpsizes));
+ 	nr_hugetlbsizes = detect_hugetlb_page_sizes(hugetlbsizes,
+-- 
+2.47.3
+

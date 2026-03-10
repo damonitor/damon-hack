@@ -1,0 +1,118 @@
+From: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Date: Fri, 6 Mar 2026 09:50:16 +0900
+Subject: [PATCH] decode_stacktrace: decode caller address
+
+Decode the caller address instead of the return address by default.  This
+also introduced -R option to provide return address decoding mode.
+
+This changes the decode_stacktrace.sh to decode the line info 1byte before
+the return address which will be the call(branch) instruction address.  If
+the return address is a symbol address (zero offset from it), it falls
+back to decoding the return address.
+
+This improves results especially when optimizations have changed the order
+of the lines around the return address, or when the return address does
+not have the actual line information.
+
+With this change;
+ Call Trace:
+  <TASK>
+  dump_stack_lvl (lib/dump_stack.c:94 lib/dump_stack.c:120)
+  lockdep_rcu_suspicious (kernel/locking/lockdep.c:6876)
+  event_filter_pid_sched_process_fork (kernel/trace/trace_events.c:1057)
+  kernel_clone (include/trace/events/sched.h:396 include/trace/events/sched.h:396 kernel/fork.c:2664)
+  __x64_sys_clone (kernel/fork.c:2795 kernel/fork.c:2779 kernel/fork.c:2779)
+  do_syscall_64 (arch/x86/entry/syscall_64.c:63 arch/x86/entry/syscall_64.c:94)
+  ? entry_SYSCALL_64_after_hwframe (arch/x86/entry/entry_64.S:121)
+  ? trace_irq_disable (include/trace/events/preemptirq.h:36)
+  entry_SYSCALL_64_after_hwframe (arch/x86/entry/entry_64.S:121)
+
+Without this (or give -R option);
+ Call Trace:
+  <TASK>
+  dump_stack_lvl (lib/dump_stack.c:122)
+  lockdep_rcu_suspicious (kernel/locking/lockdep.c:6877)
+  event_filter_pid_sched_process_fork (kernel/trace/trace_events.c:?)
+  kernel_clone (include/trace/events/sched.h:? include/trace/events/sched.h:396 kernel/fork.c:2664)
+  __x64_sys_clone (kernel/fork.c:2779)
+  do_syscall_64 (arch/x86/entry/syscall_64.c:?)
+  ? entry_SYSCALL_64_after_hwframe (arch/x86/entry/entry_64.S:130)
+  ? trace_irq_disable (include/trace/events/preemptirq.h:36)
+  entry_SYSCALL_64_after_hwframe (arch/x86/entry/entry_64.S:130)
+
+Link: https://lkml.kernel.org/r/177275821652.1557019.18367881408364381866.stgit@mhiramat.tok.corp.google.com
+Signed-off-by: Masami Hiramatsu (Google) <mhiramat@kernel.org>
+Reviewed-by: Matthieu Baerts (NGI0) <matttbe@kernel.org>
+Tested-by: Luca Ceresoli <luca.ceresoli@bootlin.com>	[arm64]
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Sasha Levin (Microsoft) <sashal@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ scripts/decode_stacktrace.sh | 26 ++++++++++++++++++++++----
+ 1 file changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/scripts/decode_stacktrace.sh b/scripts/decode_stacktrace.sh
+index 8d01b741de624..5a25844003cc6 100755
+--- a/scripts/decode_stacktrace.sh
++++ b/scripts/decode_stacktrace.sh
+@@ -5,9 +5,11 @@
+ 
+ usage() {
+ 	echo "Usage:"
+-	echo "	$0 -r <release>"
+-	echo "	$0 [<vmlinux> [<base_path>|auto [<modules_path>]]]"
++	echo "	$0 [-R] -r <release>"
++	echo "	$0 [-R] [<vmlinux> [<base_path>|auto [<modules_path>]]]"
+ 	echo "	$0 -h"
++	echo "Options:"
++	echo "  -R: decode return address instead of caller address."
+ }
+ 
+ # Try to find a Rust demangler
+@@ -33,11 +35,17 @@ fi
+ READELF=${UTIL_PREFIX}readelf${UTIL_SUFFIX}
+ ADDR2LINE=${UTIL_PREFIX}addr2line${UTIL_SUFFIX}
+ NM=${UTIL_PREFIX}nm${UTIL_SUFFIX}
++decode_retaddr=false
+ 
+ if [[ $1 == "-h" ]] ; then
+ 	usage
+ 	exit 0
+-elif [[ $1 == "-r" ]] ; then
++elif [[ $1 == "-R" ]] ; then
++	decode_retaddr=true
++	shift 1
++fi
++
++if [[ $1 == "-r" ]] ; then
+ 	vmlinux=""
+ 	basepath="auto"
+ 	modpath=""
+@@ -176,13 +184,23 @@ parse_symbol() {
+ 	# Let's start doing the math to get the exact address into the
+ 	# symbol. First, strip out the symbol total length.
+ 	local expr=${symbol%/*}
++	# Also parse the offset from symbol.
++	local offset=${expr#*+}
++	offset=$((offset))
+ 
+ 	# Now, replace the symbol name with the base address we found
+ 	# before.
+ 	expr=${expr/$name/0x$base_addr}
+ 
+ 	# Evaluate it to find the actual address
+-	expr=$((expr))
++	# The stack trace shows the return address, which is the next
++	# instruction after the actual call, so as long as it's in the same
++	# symbol, substract one from that to point the call instruction.
++	if [[ $decode_retaddr == false && $offset != 0 ]]; then
++		expr=$((expr-1))
++	else
++		expr=$((expr))
++	fi
+ 	local address=$(printf "%x\n" "$expr")
+ 
+ 	# Pass it to addr2line to get filename and line number
+-- 
+2.47.3
+

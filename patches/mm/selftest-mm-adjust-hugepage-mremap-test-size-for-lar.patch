@@ -1,0 +1,125 @@
+From: Sayali Patil <sayalip@linux.ibm.com>
+Date: Tue, 10 Mar 2026 15:19:24 +0530
+Subject: [PATCH] selftest/mm: adjust hugepage-mremap test size for large huge
+ pages
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The hugepage-mremap selftest uses a default size of 10MB, which is
+sufficient for small huge page sizes.  However, when the huge page size is
+large (e.g.  1GB), 10MB is smaller than a single huge page.  As a result,
+the test does not trigger PMD sharing and the corresponding unshare path
+in mremap(), causing the test to fail (mremap succeeds where a failure is
+expected).
+
+Update run_vmtest.sh to use twice the huge page size when the huge page
+size exceeds 10MB, while retaining the 10MB default for smaller huge
+pages.  This ensures the test exercises the intended PMD sharing and
+unsharing paths for larger huge page sizes.
+
+Before patch:
+ running ./hugepage-mremap
+ ------------------------------
+ TAP version 13
+ 1..1
+  Map haddr: Returned address is 0x7eaa40000000
+  Map daddr: Returned address is 0x7daa40000000
+  Map vaddr: Returned address is 0x7faa40000000
+  Address returned by mmap() = 0x7fffaa600000
+  Mremap: Returned address is 0x7faa40000000
+  First hex is 0
+  First hex is 3020100
+ Bail out! mremap: Expected failure, but call succeeded
+ Planned tests != run tests (1 != 0)
+ Totals: pass:0 fail:0 xfail:0 xpass:0 skip:0 error:0
+ [FAIL]
+ not ok 1 hugepage-mremap # exit=1
+
+Before patch:
+ running ./hugepage-mremap
+ ------------------------------
+ TAP version 13
+ 1..1
+  Map haddr: Returned address is 0x7eaa40000000
+  Map daddr: Returned address is 0x7daa40000000
+  Map vaddr: Returned address is 0x7faa40000000
+  Address returned by mmap() = 0x7fffaa600000
+  Mremap: Returned address is 0x7faa40000000
+  First hex is 0
+  First hex is 3020100
+ Bail out! mremap: Expected failure, but call succeeded
+ Planned tests != run tests (1 != 0)
+ Totals: pass:0 fail:0 xfail:0 xpass:0 skip:0 error:0
+ [FAIL]
+ not ok 1 hugepage-mremap # exit=1
+
+After patch:
+ running ./hugepage-mremap 2048
+ ------------------------------
+ TAP version 13
+ 1..1
+  Map haddr: Returned address is 0x7eaa40000000
+  Map daddr: Returned address is 0x7daa40000000
+  Map vaddr: Returned address is 0x7faa40000000
+  Address returned by mmap() = 0x7fff13000000
+  Mremap: Returned address is 0x7faa40000000
+  First hex is 0
+  First hex is 3020100
+  ok 1 Read same data
+ Totals: pass:1 fail:0 xfail:0 xpass:0 skip:0 error:0
+ [PASS]
+ ok 1 hugepage-mremap 2048
+
+Link: https://lkml.kernel.org/r/a5fc759e5896898bf930382f4a353771f4249204.1773134177.git.sayalip@linux.ibm.com
+Fixes: f77a286de48c ("mm, hugepages: make memory size variable in hugepage-mremap selftest")
+Signed-off-by: Sayali Patil <sayalip@linux.ibm.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: "Michal Koutný" <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/run_vmtests.sh | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
+index 9e0e2089214a3..eca814962bc13 100755
+--- a/tools/testing/selftests/mm/run_vmtests.sh
++++ b/tools/testing/selftests/mm/run_vmtests.sh
+@@ -293,7 +293,18 @@ echo "$shmmax" > /proc/sys/kernel/shmmax
+ echo "$shmall" > /proc/sys/kernel/shmall
+ 
+ CATEGORY="hugetlb" run_test ./map_hugetlb
+-CATEGORY="hugetlb" run_test ./hugepage-mremap
++
++# If the huge page size is larger than 10MB, increase the test memory size
++# to twice the huge page size (in MB) to ensure the test exercises PMD sharing
++# and the unshare path in hugepage-mremap. Otherwise, run the test with
++# the default 10MB memory size.
++if [ "$hpgsize_KB" -gt 10240 ]; then
++	len_mb=$(( (2 * hpgsize_KB) / 1024 ))
++	CATEGORY="hugetlb" run_test ./hugepage-mremap "${len_mb}"
++else
++	CATEGORY="hugetlb" run_test ./hugepage-mremap
++fi
++
+ CATEGORY="hugetlb" run_test ./hugepage-vmemmap
+ CATEGORY="hugetlb" run_test ./hugetlb-madvise
+ CATEGORY="hugetlb" run_test ./hugetlb_dio
+-- 
+2.47.3
+

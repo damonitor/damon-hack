@@ -1,0 +1,44 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Tue, 10 Mar 2026 15:01:41 +0900
+Subject: [PATCH] zram: do not permit params change after init
+
+First, algorithm_params_store(), like any sysfs handler, should grab
+device init lock.
+
+Second, like any write() sysfs handler, it should grab device init lock in
+exclusive mode.
+
+Third, it should not permit change of algos' parameters after device init,
+as this doesn't make sense - we cannot compress with one C/D dict and then
+just change C/D dict to a different one, for example.
+
+Link: https://lkml.kernel.org/r/20260310060407.1133800-1-senozhatsky@chromium.org
+Fixes: 4eac932103a5d ("zram: introduce algorithm_params device attribute")
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: gao xu <gaoxu2@honor.com>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/block/zram/zram_drv.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 0715fe7bb3800..d814928f412b4 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -1769,6 +1769,10 @@ static ssize_t algorithm_params_store(struct device *dev,
+ 	if (prio < ZRAM_PRIMARY_COMP || prio >= ZRAM_MAX_COMPS)
+ 		return -EINVAL;
+ 
++	guard(rwsem_write)(&zram->dev_lock);
++	if (init_done(zram))
++		return -EBUSY;
++
+ 	ret = comp_params_store(zram, prio, level, dict_path, &deflate_params);
+ 	return ret ? ret : len;
+ }
+-- 
+2.47.3
+
