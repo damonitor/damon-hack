@@ -1,11 +1,11 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Thu, 26 Feb 2026 07:10:24 -0800
+Date: Wed, 11 Mar 2026 08:03:44 +0100
 Subject: [PATCH] arm64: move the XOR code to lib/raid/
 
-Move the optimized XOR into lib/raid and include it it in the main
-xor.ko instead of building a separate module for it.
+Move the optimized XOR into lib/raid and include it it in the main xor.ko
+instead of building a separate module for it.
 
-Link: https://lkml.kernel.org/r/20260226151106.144735-13-hch@lst.de
+Link: https://lkml.kernel.org/r/20260311070416.972667-13-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -25,6 +25,7 @@ Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Johannes Berg <johannes@sipsolutions.net>
 Cc: Li Nan <linan122@huawei.com>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
@@ -38,6 +39,7 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Russell King <linux@armlinux.org.uk>
 Cc: Song Liu <song@kernel.org>
 Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
@@ -47,8 +49,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  arch/arm64/lib/Makefile                       |  6 --
  lib/raid/xor/Makefile                         |  5 ++
  lib/raid/xor/arm64/xor-neon-glue.c            | 57 ++++++++++++++++++
- .../lib => lib/raid/xor/arm64}/xor-neon.c     | 21 ++-----
- 5 files changed, 69 insertions(+), 78 deletions(-)
+ .../lib => lib/raid/xor/arm64}/xor-neon.c     | 20 +------
+ 5 files changed, 68 insertions(+), 78 deletions(-)
  create mode 100644 lib/raid/xor/arm64/xor-neon-glue.c
  rename {arch/arm64/lib => lib/raid/xor/arm64}/xor-neon.c (95%)
 
@@ -235,10 +237,10 @@ diff --git a/arch/arm64/lib/xor-neon.c b/lib/raid/xor/arm64/xor-neon.c
 similarity index 95%
 rename from arch/arm64/lib/xor-neon.c
 rename to lib/raid/xor/arm64/xor-neon.c
-index 8fffebfa17b20..8d2d185090db7 100644
+index 351aba92d9324..8d2d185090db7 100644
 --- a/arch/arm64/lib/xor-neon.c
 +++ b/lib/raid/xor/arm64/xor-neon.c
-@@ -1,14 +1,13 @@
+@@ -1,15 +1,13 @@
  // SPDX-License-Identifier: GPL-2.0-only
  /*
 - * arch/arm64/lib/xor-neon.c
@@ -248,15 +250,15 @@ index 8fffebfa17b20..8d2d185090db7 100644
   */
  
 -#include <linux/raid/xor.h>
+ #include <linux/raid/xor_impl.h>
 -#include <linux/module.h>
-+#include <linux/raid/xor_impl.h>
 +#include <linux/cache.h>
  #include <asm/neon-intrinsics.h>
 +#include <asm/xor.h>
  
  static void xor_arm64_neon_2(unsigned long bytes, unsigned long * __restrict p1,
  	const unsigned long * __restrict p2)
-@@ -179,7 +178,6 @@ struct xor_block_template xor_block_inner_neon __ro_after_init = {
+@@ -180,7 +178,6 @@ struct xor_block_template xor_block_inner_neon __ro_after_init = {
  	.do_4	= xor_arm64_neon_4,
  	.do_5	= xor_arm64_neon_5,
  };
@@ -264,7 +266,7 @@ index 8fffebfa17b20..8d2d185090db7 100644
  
  static inline uint64x2_t eor3(uint64x2_t p, uint64x2_t q, uint64x2_t r)
  {
-@@ -317,22 +315,11 @@ static void xor_arm64_eor3_5(unsigned long bytes,
+@@ -318,22 +315,11 @@ static void xor_arm64_eor3_5(unsigned long bytes,
  	} while (--lines > 0);
  }
  

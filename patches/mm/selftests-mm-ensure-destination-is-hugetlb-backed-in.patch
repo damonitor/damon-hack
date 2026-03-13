@@ -1,5 +1,5 @@
 From: Sayali Patil <sayalip@linux.ibm.com>
-Date: Tue, 10 Mar 2026 15:19:26 +0530
+Date: Thu, 12 Mar 2026 17:55:35 +0530
 Subject: [PATCH] selftests/mm: ensure destination is hugetlb-backed in
  hugepage-mremap
 MIME-Version: 1.0
@@ -20,13 +20,17 @@ page size incompatibilities prevent the remap.
 Ensure the destination region is created using MAP_HUGETLB so that both
 source and destination VMAs are hugetlb-backed and compatible.  Also add
 MAP_POPULATE to the destination mapping to prefault hugepages, matching
-the behaviour used for other hugetlb mappiing in the test and ensuring
+the behaviour used for other hugetlb mapping in the test and ensuring
 deterministic behaviour.
+
+Update the FLAGS macro to include MAP_HUGETLB | MAP_SHARED | MAP_POPULATE
+so that both mappings are hugetlb-backed and compatible.  Also use the
+macro for the mmap() calls to avoid repeating the flag combination.
 
 This ensures the test reliably exercises hugetlb mremap instead of failing
 due to VMA type mismatch.
 
-Link: https://lkml.kernel.org/r/2c8858154273159f964236810c7304dec665b28b.1773134177.git.sayalip@linux.ibm.com
+Link: https://lkml.kernel.org/r/a9e12dcb25b9be4f146063669b1eb3ff9b776c23.1773305677.git.sayalip@linux.ibm.com
 Fixes: 12b613206474 ("mm, hugepages: add hugetlb vma mremap() test")
 Signed-off-by: Sayali Patil <sayalip@linux.ibm.com>
 Acked-by: Zi Yan <ziy@nvidia.com>
@@ -35,34 +39,58 @@ Cc: Dev Jain <dev.jain@arm.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
 Cc: Michal Hocko <mhocko@kernel.org>
 Cc: "Michal Koutný" <mkoutny@suse.com>
 Cc: Muchun Song <muchun.song@linux.dev>
-Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
 Cc: Oscar Salvador <osalvador@suse.de>
 Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Tejun Heo <tj@kernel.org>
-Cc: Miaohe Lin <linmiaohe@huawei.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/hugepage-mremap.c | 4 ++--
- 1 file changed, 2 insertions(+), 2 deletions(-)
+ tools/testing/selftests/mm/hugepage-mremap.c | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/hugepage-mremap.c b/tools/testing/selftests/mm/hugepage-mremap.c
-index e611249080d6d..9558515c282d4 100644
+index e611249080d6d..48c24a4ba9a7e 100644
 --- a/tools/testing/selftests/mm/hugepage-mremap.c
 +++ b/tools/testing/selftests/mm/hugepage-mremap.c
-@@ -136,8 +136,8 @@ int main(int argc, char *argv[])
+@@ -31,7 +31,7 @@
+ #define MB_TO_BYTES(x) (x * 1024 * 1024)
+ 
+ #define PROTECTION (PROT_READ | PROT_WRITE | PROT_EXEC)
+-#define FLAGS (MAP_SHARED | MAP_ANONYMOUS)
++#define FLAGS (MAP_HUGETLB | MAP_SHARED | MAP_POPULATE)
+ 
+ static void check_bytes(char *addr)
+ {
+@@ -121,23 +121,20 @@ int main(int argc, char *argv[])
+ 
+ 	/* mmap to a PUD aligned address to hopefully trigger pmd sharing. */
+ 	unsigned long suggested_addr = 0x7eaa40000000;
+-	void *haddr = mmap((void *)suggested_addr, length, PROTECTION,
+-			   MAP_HUGETLB | MAP_SHARED | MAP_POPULATE, fd, 0);
++	void *haddr = mmap((void *)suggested_addr, length, PROTECTION, FLAGS, fd, 0);
+ 	ksft_print_msg("Map haddr: Returned address is %p\n", haddr);
+ 	if (haddr == MAP_FAILED)
+ 		ksft_exit_fail_msg("mmap1: %s\n", strerror(errno));
+ 
+ 	/* mmap again to a dummy address to hopefully trigger pmd sharing. */
+ 	suggested_addr = 0x7daa40000000;
+-	void *daddr = mmap((void *)suggested_addr, length, PROTECTION,
+-			   MAP_HUGETLB | MAP_SHARED | MAP_POPULATE, fd, 0);
++	void *daddr = mmap((void *)suggested_addr, length, PROTECTION, FLAGS, fd, 0);
+ 	ksft_print_msg("Map daddr: Returned address is %p\n", daddr);
+ 	if (daddr == MAP_FAILED)
  		ksft_exit_fail_msg("mmap3: %s\n", strerror(errno));
  
  	suggested_addr = 0x7faa40000000;
 -	void *vaddr =
 -		mmap((void *)suggested_addr, length, PROTECTION, FLAGS, -1, 0);
-+	void *vaddr = mmap((void *)suggested_addr, length, PROTECTION,
-+			MAP_HUGETLB | MAP_SHARED | MAP_POPULATE, fd, 0);
++	void *vaddr = mmap((void *)suggested_addr, length, PROTECTION, FLAGS, fd, 0);
  	ksft_print_msg("Map vaddr: Returned address is %p\n", vaddr);
  	if (vaddr == MAP_FAILED)
  		ksft_exit_fail_msg("mmap2: %s\n", strerror(errno));

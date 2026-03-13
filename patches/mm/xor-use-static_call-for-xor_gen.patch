@@ -1,10 +1,10 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Thu, 26 Feb 2026 07:10:37 -0800
+Date: Wed, 11 Mar 2026 08:03:57 +0100
 Subject: [PATCH] xor: use static_call for xor_gen
 
 Avoid the indirect call for xor_generation by using a static_call.
 
-Link: https://lkml.kernel.org/r/20260226151106.144735-26-hch@lst.de
+Link: https://lkml.kernel.org/r/20260311070416.972667-26-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -24,6 +24,7 @@ Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Johannes Berg <johannes@sipsolutions.net>
 Cc: Li Nan <linan122@huawei.com>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
@@ -37,6 +38,7 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Russell King <linux@armlinux.org.uk>
 Cc: Song Liu <song@kernel.org>
 Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
@@ -61,7 +63,7 @@ index acb4a10d1e95b..759a31f764148 100644
  struct xor_block_template xor_block_32regs = {
  	.name		= "32regs",
 diff --git a/lib/raid/xor/xor-core.c b/lib/raid/xor/xor-core.c
-index f18dcc57004b9..2ab03dd294bf4 100644
+index c3523f92ab83a..331da1afc0e4e 100644
 --- a/lib/raid/xor/xor-core.c
 +++ b/lib/raid/xor/xor-core.c
 @@ -11,10 +11,14 @@
@@ -81,10 +83,10 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  
  /**
   * xor_gen - generate RAID-style XOR information
-@@ -32,13 +36,13 @@ static struct xor_block_template *active_template;
- void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
- {
- 	WARN_ON_ONCE(in_interrupt());
+@@ -36,13 +40,13 @@ void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
+ 	lockdep_assert_preemption_enabled();
+ 	WARN_ON_ONCE(bytes & 511);
+ 
 -	active_template->xor_gen(dest, srcs, src_cnt, bytes);
 +	static_call(xor_gen_impl)(dest, srcs, src_cnt, bytes);
  }
@@ -92,12 +94,12 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  
  /* Set of all registered templates.  */
  static struct xor_block_template *__initdata template_list;
--static int __initdata xor_forced = false;
+-static bool __initdata xor_forced = false;
 +static struct xor_block_template *forced_template;
  
  /**
   * xor_register - register a XOR template
-@@ -64,7 +68,7 @@ void __init xor_register(struct xor_block_template *tmpl)
+@@ -68,7 +72,7 @@ void __init xor_register(struct xor_block_template *tmpl)
   */
  void __init xor_force(struct xor_block_template *tmpl)
  {
@@ -106,7 +108,7 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  }
  
  #define BENCH_SIZE	4096
-@@ -106,7 +110,7 @@ static int __init calibrate_xor_blocks(void)
+@@ -110,7 +114,7 @@ static int __init calibrate_xor_blocks(void)
  	void *b1, *b2;
  	struct xor_block_template *f, *fastest;
  
@@ -115,7 +117,7 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  		return 0;
  
  	b1 = (void *) __get_free_pages(GFP_KERNEL, 2);
-@@ -123,7 +127,7 @@ static int __init calibrate_xor_blocks(void)
+@@ -127,7 +131,7 @@ static int __init calibrate_xor_blocks(void)
  		if (f->speed > fastest->speed)
  			fastest = f;
  	}
@@ -124,7 +126,7 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  	pr_info("xor: using function: %s (%d MB/sec)\n",
  	       fastest->name, fastest->speed);
  
-@@ -151,21 +155,16 @@ static int __init xor_init(void)
+@@ -155,21 +159,16 @@ static int __init xor_init(void)
  	 * If this arch/cpu has a short-circuited selection, don't loop through
  	 * all the possible functions, just use the best one.
  	 */
@@ -150,7 +152,7 @@ index f18dcc57004b9..2ab03dd294bf4 100644
  #endif
  }
 diff --git a/lib/raid/xor/xor_impl.h b/lib/raid/xor/xor_impl.h
-index 968dd07df6273..f11910162b084 100644
+index 09ae2916f71ec..59c801777219a 100644
 --- a/lib/raid/xor/xor_impl.h
 +++ b/lib/raid/xor/xor_impl.h
 @@ -50,6 +50,10 @@ extern struct xor_block_template xor_block_32regs;

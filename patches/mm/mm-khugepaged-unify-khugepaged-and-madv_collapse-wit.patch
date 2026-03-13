@@ -1,0 +1,252 @@
+From: Nico Pache <npache@redhat.com>
+Date: Wed, 11 Mar 2026 15:13:15 -0600
+Subject: [PATCH] mm/khugepaged: unify khugepaged and madv_collapse with
+ collapse_single_pmd()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The khugepaged daemon and madvise_collapse have two different
+implementations that do almost the same thing.  Create collapse_single_pmd
+to increase code reuse and create an entry point to these two users.
+
+Refactor madvise_collapse and collapse_scan_mm_slot to use the new
+collapse_single_pmd function.  This introduces a minor behavioral change
+that is most likely an undiscovered bug.  The current implementation of
+khugepaged tests collapse_test_exit_or_disable before calling
+collapse_pte_mapped_thp, but we weren't doing it in the madvise_collapse
+case.  By unifying these two callers madvise_collapse now also performs
+this check.  We also modify the return value to be SCAN_ANY_PROCESS which
+properly indicates that this process is no longer valid to operate on.
+
+By moving the madvise_collapse writeback-retry logic into the helper
+function we can also avoid having to revalidate the VMA.
+
+We also guard the khugepaged_pages_collapsed variable to ensure its only
+incremented for khugepaged.
+
+Link: https://lkml.kernel.org/r/20260311211315.450947-6-npache@redhat.com
+Signed-off-by: Nico Pache <npache@redhat.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rafael Aquini <raquini@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 120 +++++++++++++++++++++++++-----------------------
+ 1 file changed, 63 insertions(+), 57 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index be7388fb7cf48..1e2bff40d014e 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -2409,6 +2409,65 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+ 	return result;
+ }
+ 
++/*
++ * Try to collapse a single PMD starting at a PMD aligned addr, and return
++ * the results.
++ */
++static enum scan_result collapse_single_pmd(unsigned long addr,
++		struct vm_area_struct *vma, bool *mmap_locked,
++		struct collapse_control *cc)
++{
++	struct mm_struct *mm = vma->vm_mm;
++	bool triggered_wb = false;
++	enum scan_result result;
++	struct file *file;
++	pgoff_t pgoff;
++
++	if (vma_is_anonymous(vma)) {
++		result = collapse_scan_pmd(mm, vma, addr, mmap_locked, cc);
++		goto end;
++	}
++
++	file = get_file(vma->vm_file);
++	pgoff = linear_page_index(vma, addr);
++
++	mmap_read_unlock(mm);
++	*mmap_locked = false;
++retry:
++	result = collapse_scan_file(mm, addr, file, pgoff, cc);
++
++	/*
++	 * For MADV_COLLAPSE, when encountering dirty pages, try to writeback,
++	 * then retry the collapse one time.
++	 */
++	if (!cc->is_khugepaged && result == SCAN_PAGE_DIRTY_OR_WRITEBACK &&
++	    !triggered_wb && mapping_can_writeback(file->f_mapping)) {
++		const loff_t lstart = (loff_t)pgoff << PAGE_SHIFT;
++		const loff_t lend = lstart + HPAGE_PMD_SIZE - 1;
++
++		filemap_write_and_wait_range(file->f_mapping, lstart, lend);
++		triggered_wb = true;
++		goto retry;
++	}
++	fput(file);
++
++	if (result == SCAN_PTE_MAPPED_HUGEPAGE) {
++		mmap_read_lock(mm);
++		if (collapse_test_exit_or_disable(mm))
++			result = SCAN_ANY_PROCESS;
++		else
++			result = try_collapse_pte_mapped_thp(mm, addr,
++							     !cc->is_khugepaged);
++		if (result == SCAN_PMD_MAPPED)
++			result = SCAN_SUCCEED;
++		mmap_read_unlock(mm);
++	}
++end:
++	if (cc->is_khugepaged && result == SCAN_SUCCEED)
++		++khugepaged_pages_collapsed;
++	return result;
++}
++
+ static void collapse_scan_mm_slot(unsigned int progress_max,
+ 		enum scan_result *result, struct collapse_control *cc)
+ 	__releases(&khugepaged_mm_lock)
+@@ -2479,34 +2538,9 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+ 			VM_BUG_ON(khugepaged_scan.address < hstart ||
+ 				  khugepaged_scan.address + HPAGE_PMD_SIZE >
+ 				  hend);
+-			if (!vma_is_anonymous(vma)) {
+-				struct file *file = get_file(vma->vm_file);
+-				pgoff_t pgoff = linear_page_index(vma,
+-						khugepaged_scan.address);
+-
+-				mmap_read_unlock(mm);
+-				mmap_locked = false;
+-				*result = collapse_scan_file(mm,
+-					khugepaged_scan.address, file, pgoff, cc);
+-				fput(file);
+-				if (*result == SCAN_PTE_MAPPED_HUGEPAGE) {
+-					mmap_read_lock(mm);
+-					if (collapse_test_exit_or_disable(mm))
+-						goto breakouterloop;
+-					*result = try_collapse_pte_mapped_thp(mm,
+-						khugepaged_scan.address, false);
+-					if (*result == SCAN_PMD_MAPPED)
+-						*result = SCAN_SUCCEED;
+-					mmap_read_unlock(mm);
+-				}
+-			} else {
+-				*result = collapse_scan_pmd(mm, vma,
+-					khugepaged_scan.address, &mmap_locked, cc);
+-			}
+-
+-			if (*result == SCAN_SUCCEED)
+-				++khugepaged_pages_collapsed;
+ 
++			*result = collapse_single_pmd(khugepaged_scan.address,
++						      vma, &mmap_locked, cc);
+ 			/* move to next address */
+ 			khugepaged_scan.address += HPAGE_PMD_SIZE;
+ 			if (!mmap_locked)
+@@ -2806,9 +2840,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 
+ 	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
+ 		enum scan_result result = SCAN_FAIL;
+-		bool triggered_wb = false;
+ 
+-retry:
+ 		if (!mmap_locked) {
+ 			cond_resched();
+ 			mmap_read_lock(mm);
+@@ -2823,46 +2855,20 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 			hend = min(hend, vma->vm_end & HPAGE_PMD_MASK);
+ 		}
+ 		mmap_assert_locked(mm);
+-		if (!vma_is_anonymous(vma)) {
+-			struct file *file = get_file(vma->vm_file);
+-			pgoff_t pgoff = linear_page_index(vma, addr);
+ 
+-			mmap_read_unlock(mm);
+-			mmap_locked = false;
+-			*lock_dropped = true;
+-			result = collapse_scan_file(mm, addr, file, pgoff, cc);
+-
+-			if (result == SCAN_PAGE_DIRTY_OR_WRITEBACK && !triggered_wb &&
+-			    mapping_can_writeback(file->f_mapping)) {
+-				loff_t lstart = (loff_t)pgoff << PAGE_SHIFT;
+-				loff_t lend = lstart + HPAGE_PMD_SIZE - 1;
++		result = collapse_single_pmd(addr, vma, &mmap_locked, cc);
+ 
+-				filemap_write_and_wait_range(file->f_mapping, lstart, lend);
+-				triggered_wb = true;
+-				fput(file);
+-				goto retry;
+-			}
+-			fput(file);
+-		} else {
+-			result = collapse_scan_pmd(mm, vma, addr, &mmap_locked, cc);
+-		}
+ 		if (!mmap_locked)
+ 			*lock_dropped = true;
+ 
+-handle_result:
+ 		switch (result) {
+ 		case SCAN_SUCCEED:
+ 		case SCAN_PMD_MAPPED:
+ 			++thps;
+ 			break;
+-		case SCAN_PTE_MAPPED_HUGEPAGE:
+-			BUG_ON(mmap_locked);
+-			mmap_read_lock(mm);
+-			result = try_collapse_pte_mapped_thp(mm, addr, true);
+-			mmap_read_unlock(mm);
+-			goto handle_result;
+ 		/* Whitelisted set of results where continuing OK */
+ 		case SCAN_NO_PTE_TABLE:
++		case SCAN_PTE_MAPPED_HUGEPAGE:
+ 		case SCAN_PTE_NON_PRESENT:
+ 		case SCAN_PTE_UFFD_WP:
+ 		case SCAN_LACK_REFERENCED_PAGE:
+-- 
+2.47.3
+

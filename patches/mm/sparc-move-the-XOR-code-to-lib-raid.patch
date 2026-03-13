@@ -1,14 +1,14 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Thu, 26 Feb 2026 07:10:28 -0800
+Date: Wed, 11 Mar 2026 08:03:48 +0100
 Subject: [PATCH] sparc: move the XOR code to lib/raid/
 
-Move the optimized XOR into lib/raid and include it it in xor.ko
-instead of always building it into the main kernel image.
+Move the optimized XOR into lib/raid and include it it in xor.ko instead
+of always building it into the main kernel image.
 
-This also splits the sparc64 code into separate files for the two
-implementations.
+The code should probably be split into separate files for the two
+implementations, but for now this just does the trivial move.
 
-Link: https://lkml.kernel.org/r/20260226151106.144735-17-hch@lst.de
+Link: https://lkml.kernel.org/r/20260311070416.972667-17-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -28,6 +28,7 @@ Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Johannes Berg <johannes@sipsolutions.net>
 Cc: Li Nan <linan122@huawei.com>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
@@ -41,28 +42,23 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Russell King <linux@armlinux.org.uk>
 Cc: Song Liu <song@kernel.org>
 Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- arch/sparc/include/asm/asm-prototypes.h       |   1 -
- arch/sparc/include/asm/xor.h                  |  45 ++-
- arch/sparc/include/asm/xor_64.h               |  76 ----
- arch/sparc/lib/Makefile                       |   2 +-
- lib/raid/xor/Makefile                         |   3 +
- lib/raid/xor/sparc/xor-niagara-glue.c         |  33 ++
- .../xor.S => lib/raid/xor/sparc/xor-niagara.S | 346 +----------------
- .../raid/xor/sparc/xor-sparc32.c              |  23 +-
- lib/raid/xor/sparc/xor-vis-glue.c             |  35 ++
- lib/raid/xor/sparc/xor-vis.S                  | 348 ++++++++++++++++++
- 10 files changed, 465 insertions(+), 447 deletions(-)
- delete mode 100644 arch/sparc/include/asm/xor_64.h
- create mode 100644 lib/raid/xor/sparc/xor-niagara-glue.c
- rename arch/sparc/lib/xor.S => lib/raid/xor/sparc/xor-niagara.S (53%)
+ arch/sparc/include/asm/asm-prototypes.h       |  1 -
+ arch/sparc/include/asm/xor.h                  | 45 ++++++++++++++++---
+ arch/sparc/lib/Makefile                       |  2 +-
+ lib/raid/xor/Makefile                         |  2 +
+ .../raid/xor/sparc/xor-sparc32.c              | 23 ++--------
+ .../raid/xor/sparc/xor-sparc64-glue.c         | 26 +++--------
+ .../xor.S => lib/raid/xor/sparc/xor-sparc64.S | 10 -----
+ 7 files changed, 52 insertions(+), 57 deletions(-)
  rename arch/sparc/include/asm/xor_32.h => lib/raid/xor/sparc/xor-sparc32.c (93%)
- create mode 100644 lib/raid/xor/sparc/xor-vis-glue.c
- create mode 100644 lib/raid/xor/sparc/xor-vis.S
+ rename arch/sparc/include/asm/xor_64.h => lib/raid/xor/sparc/xor-sparc64-glue.c (74%)
+ rename arch/sparc/lib/xor.S => lib/raid/xor/sparc/xor-sparc64.S (98%)
 
 diff --git a/arch/sparc/include/asm/asm-prototypes.h b/arch/sparc/include/asm/asm-prototypes.h
 index 08810808ca6de..bbd1a8afaabf8 100644
@@ -130,88 +126,6 @@ index f4c651e203c43..f923b009fc24f 100644
 +}
 +#endif /* !sparc64 */
 +#endif /* ___ASM_SPARC_XOR_H */
-diff --git a/arch/sparc/include/asm/xor_64.h b/arch/sparc/include/asm/xor_64.h
-deleted file mode 100644
-index e0482ecc0a68b..0000000000000
---- a/arch/sparc/include/asm/xor_64.h
-+++ /dev/null
-@@ -1,76 +0,0 @@
--/* SPDX-License-Identifier: GPL-2.0-or-later */
--/*
-- * include/asm/xor.h
-- *
-- * High speed xor_block operation for RAID4/5 utilizing the
-- * UltraSparc Visual Instruction Set and Niagara block-init
-- * twin-load instructions.
-- *
-- * Copyright (C) 1997, 1999 Jakub Jelinek (jj@ultra.linux.cz)
-- * Copyright (C) 2006 David S. Miller <davem@davemloft.net>
-- */
--
--#include <asm/spitfire.h>
--
--void xor_vis_2(unsigned long bytes, unsigned long * __restrict p1,
--	       const unsigned long * __restrict p2);
--void xor_vis_3(unsigned long bytes, unsigned long * __restrict p1,
--	       const unsigned long * __restrict p2,
--	       const unsigned long * __restrict p3);
--void xor_vis_4(unsigned long bytes, unsigned long * __restrict p1,
--	       const unsigned long * __restrict p2,
--	       const unsigned long * __restrict p3,
--	       const unsigned long * __restrict p4);
--void xor_vis_5(unsigned long bytes, unsigned long * __restrict p1,
--	       const unsigned long * __restrict p2,
--	       const unsigned long * __restrict p3,
--	       const unsigned long * __restrict p4,
--	       const unsigned long * __restrict p5);
--
--/* XXX Ugh, write cheetah versions... -DaveM */
--
--static struct xor_block_template xor_block_VIS = {
--        .name	= "VIS",
--        .do_2	= xor_vis_2,
--        .do_3	= xor_vis_3,
--        .do_4	= xor_vis_4,
--        .do_5	= xor_vis_5,
--};
--
--void xor_niagara_2(unsigned long bytes, unsigned long * __restrict p1,
--		   const unsigned long * __restrict p2);
--void xor_niagara_3(unsigned long bytes, unsigned long * __restrict p1,
--		   const unsigned long * __restrict p2,
--		   const unsigned long * __restrict p3);
--void xor_niagara_4(unsigned long bytes, unsigned long * __restrict p1,
--		   const unsigned long * __restrict p2,
--		   const unsigned long * __restrict p3,
--		   const unsigned long * __restrict p4);
--void xor_niagara_5(unsigned long bytes, unsigned long * __restrict p1,
--		   const unsigned long * __restrict p2,
--		   const unsigned long * __restrict p3,
--		   const unsigned long * __restrict p4,
--		   const unsigned long * __restrict p5);
--
--static struct xor_block_template xor_block_niagara = {
--        .name	= "Niagara",
--        .do_2	= xor_niagara_2,
--        .do_3	= xor_niagara_3,
--        .do_4	= xor_niagara_4,
--        .do_5	= xor_niagara_5,
--};
--
--#define arch_xor_init arch_xor_init
--static __always_inline void __init arch_xor_init(void)
--{
--	/* Force VIS for everything except Niagara.  */
--	if (tlb_type == hypervisor &&
--	    (sun4v_chip_type == SUN4V_CHIP_NIAGARA1 ||
--	     sun4v_chip_type == SUN4V_CHIP_NIAGARA2 ||
--	     sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
--	     sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
--	     sun4v_chip_type == SUN4V_CHIP_NIAGARA5))
--		xor_force(&xor_block_niagara);
--	else
--		xor_force(&xor_block_VIS);
--}
 diff --git a/arch/sparc/lib/Makefile b/arch/sparc/lib/Makefile
 index 783bdec0d7be0..dd10cdd6f0623 100644
 --- a/arch/sparc/lib/Makefile
@@ -226,451 +140,18 @@ index 783bdec0d7be0..dd10cdd6f0623 100644
  obj-$(CONFIG_SPARC64) += iomap.o
  obj-$(CONFIG_SPARC32) += atomic32.o
 diff --git a/lib/raid/xor/Makefile b/lib/raid/xor/Makefile
-index c939fad437358..eb7617b5c61bf 100644
+index c939fad437358..ddcd78ca55c5f 100644
 --- a/lib/raid/xor/Makefile
 +++ b/lib/raid/xor/Makefile
-@@ -19,6 +19,9 @@ xor-$(CONFIG_CPU_HAS_LSX)	+= loongarch/xor_simd.o
+@@ -19,6 +19,8 @@ xor-$(CONFIG_CPU_HAS_LSX)	+= loongarch/xor_simd.o
  xor-$(CONFIG_CPU_HAS_LSX)	+= loongarch/xor_simd_glue.o
  xor-$(CONFIG_ALTIVEC)		+= powerpc/xor_vmx.o powerpc/xor_vmx_glue.o
  xor-$(CONFIG_RISCV_ISA_V)	+= riscv/xor.o riscv/xor-glue.o
 +xor-$(CONFIG_SPARC32)		+= sparc/xor-sparc32.o
-+xor-$(CONFIG_SPARC64)		+= sparc/xor-vis.o sparc/xor-vis-glue.o
-+xor-$(CONFIG_SPARC64)		+= sparc/xor-niagara.o sparc/xor-niagara-glue.o
++xor-$(CONFIG_SPARC64)		+= sparc/xor-sparc64.o sparc/xor-sparc64-glue.o
  
  
  CFLAGS_arm/xor-neon.o		+= $(CC_FLAGS_FPU)
-diff --git a/lib/raid/xor/sparc/xor-niagara-glue.c b/lib/raid/xor/sparc/xor-niagara-glue.c
-new file mode 100644
-index 0000000000000..5087e63ac1309
---- /dev/null
-+++ b/lib/raid/xor/sparc/xor-niagara-glue.c
-@@ -0,0 +1,33 @@
-+// SPDX-License-Identifier: GPL-2.0-or-later
-+/*
-+ * High speed xor_block operation for RAID4/5 utilizing the
-+ * Niagara block-init twin-load instructions.
-+ *
-+ * Copyright (C) 2006 David S. Miller <davem@davemloft.net>
-+ */
-+
-+#include <linux/raid/xor_impl.h>
-+#include <asm/xor.h>
-+
-+void xor_niagara_2(unsigned long bytes, unsigned long * __restrict p1,
-+		   const unsigned long * __restrict p2);
-+void xor_niagara_3(unsigned long bytes, unsigned long * __restrict p1,
-+		   const unsigned long * __restrict p2,
-+		   const unsigned long * __restrict p3);
-+void xor_niagara_4(unsigned long bytes, unsigned long * __restrict p1,
-+		   const unsigned long * __restrict p2,
-+		   const unsigned long * __restrict p3,
-+		   const unsigned long * __restrict p4);
-+void xor_niagara_5(unsigned long bytes, unsigned long * __restrict p1,
-+		   const unsigned long * __restrict p2,
-+		   const unsigned long * __restrict p3,
-+		   const unsigned long * __restrict p4,
-+		   const unsigned long * __restrict p5);
-+
-+struct xor_block_template xor_block_niagara = {
-+        .name	= "Niagara",
-+        .do_2	= xor_niagara_2,
-+        .do_3	= xor_niagara_3,
-+        .do_4	= xor_niagara_4,
-+        .do_5	= xor_niagara_5,
-+};
-diff --git a/arch/sparc/lib/xor.S b/lib/raid/xor/sparc/xor-niagara.S
-similarity index 53%
-rename from arch/sparc/lib/xor.S
-rename to lib/raid/xor/sparc/xor-niagara.S
-index 35461e3b2a9b1..f8749a212eb38 100644
---- a/arch/sparc/lib/xor.S
-+++ b/lib/raid/xor/sparc/xor-niagara.S
-@@ -1,11 +1,8 @@
- /* SPDX-License-Identifier: GPL-2.0 */
- /*
-- * arch/sparc64/lib/xor.S
-- *
-  * High speed xor_block operation for RAID4/5 utilizing the
-- * UltraSparc Visual Instruction Set and Niagara store-init/twin-load.
-+ * Niagara store-init/twin-load.
-  *
-- * Copyright (C) 1997, 1999 Jakub Jelinek (jj@ultra.linux.cz)
-  * Copyright (C) 2006 David S. Miller <davem@davemloft.net>
-  */
- 
-@@ -16,343 +13,6 @@
- #include <asm/dcu.h>
- #include <asm/spitfire.h>
- 
--/*
-- *	Requirements:
-- *	!(((long)dest | (long)sourceN) & (64 - 1)) &&
-- *	!(len & 127) && len >= 256
-- */
--	.text
--
--	/* VIS versions. */
--ENTRY(xor_vis_2)
--	rd	%fprs, %o5
--	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
--	be,pt	%icc, 0f
--	 sethi	%hi(VISenter), %g1
--	jmpl	%g1 + %lo(VISenter), %g7
--	 add	%g7, 8, %g7
--0:	wr	%g0, FPRS_FEF, %fprs
--	rd	%asi, %g1
--	wr	%g0, ASI_BLK_P, %asi
--	membar	#LoadStore|#StoreLoad|#StoreStore
--	sub	%o0, 128, %o0
--	ldda	[%o1] %asi, %f0
--	ldda	[%o2] %asi, %f16
--
--2:	ldda	[%o1 + 64] %asi, %f32
--	fxor	%f0, %f16, %f16
--	fxor	%f2, %f18, %f18
--	fxor	%f4, %f20, %f20
--	fxor	%f6, %f22, %f22
--	fxor	%f8, %f24, %f24
--	fxor	%f10, %f26, %f26
--	fxor	%f12, %f28, %f28
--	fxor	%f14, %f30, %f30
--	stda	%f16, [%o1] %asi
--	ldda	[%o2 + 64] %asi, %f48
--	ldda	[%o1 + 128] %asi, %f0
--	fxor	%f32, %f48, %f48
--	fxor	%f34, %f50, %f50
--	add	%o1, 128, %o1
--	fxor	%f36, %f52, %f52
--	add	%o2, 128, %o2
--	fxor	%f38, %f54, %f54
--	subcc	%o0, 128, %o0
--	fxor	%f40, %f56, %f56
--	fxor	%f42, %f58, %f58
--	fxor	%f44, %f60, %f60
--	fxor	%f46, %f62, %f62
--	stda	%f48, [%o1 - 64] %asi
--	bne,pt	%xcc, 2b
--	 ldda	[%o2] %asi, %f16
--
--	ldda	[%o1 + 64] %asi, %f32
--	fxor	%f0, %f16, %f16
--	fxor	%f2, %f18, %f18
--	fxor	%f4, %f20, %f20
--	fxor	%f6, %f22, %f22
--	fxor	%f8, %f24, %f24
--	fxor	%f10, %f26, %f26
--	fxor	%f12, %f28, %f28
--	fxor	%f14, %f30, %f30
--	stda	%f16, [%o1] %asi
--	ldda	[%o2 + 64] %asi, %f48
--	membar	#Sync
--	fxor	%f32, %f48, %f48
--	fxor	%f34, %f50, %f50
--	fxor	%f36, %f52, %f52
--	fxor	%f38, %f54, %f54
--	fxor	%f40, %f56, %f56
--	fxor	%f42, %f58, %f58
--	fxor	%f44, %f60, %f60
--	fxor	%f46, %f62, %f62
--	stda	%f48, [%o1 + 64] %asi
--	membar	#Sync|#StoreStore|#StoreLoad
--	wr	%g1, %g0, %asi
--	retl
--	  wr	%g0, 0, %fprs
--ENDPROC(xor_vis_2)
--EXPORT_SYMBOL(xor_vis_2)
--
--ENTRY(xor_vis_3)
--	rd	%fprs, %o5
--	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
--	be,pt	%icc, 0f
--	 sethi	%hi(VISenter), %g1
--	jmpl	%g1 + %lo(VISenter), %g7
--	 add	%g7, 8, %g7
--0:	wr	%g0, FPRS_FEF, %fprs
--	rd	%asi, %g1
--	wr	%g0, ASI_BLK_P, %asi
--	membar	#LoadStore|#StoreLoad|#StoreStore
--	sub	%o0, 64, %o0
--	ldda	[%o1] %asi, %f0
--	ldda	[%o2] %asi, %f16
--
--3:	ldda	[%o3] %asi, %f32
--	fxor	%f0, %f16, %f48
--	fxor	%f2, %f18, %f50
--	add	%o1, 64, %o1
--	fxor	%f4, %f20, %f52
--	fxor	%f6, %f22, %f54
--	add	%o2, 64, %o2
--	fxor	%f8, %f24, %f56
--	fxor	%f10, %f26, %f58
--	fxor	%f12, %f28, %f60
--	fxor	%f14, %f30, %f62
--	ldda	[%o1] %asi, %f0
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	add	%o3, 64, %o3
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	subcc	%o0, 64, %o0
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	stda	%f48, [%o1 - 64] %asi
--	bne,pt	%xcc, 3b
--	 ldda	[%o2] %asi, %f16
--
--	ldda	[%o3] %asi, %f32
--	fxor	%f0, %f16, %f48
--	fxor	%f2, %f18, %f50
--	fxor	%f4, %f20, %f52
--	fxor	%f6, %f22, %f54
--	fxor	%f8, %f24, %f56
--	fxor	%f10, %f26, %f58
--	fxor	%f12, %f28, %f60
--	fxor	%f14, %f30, %f62
--	membar	#Sync
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	stda	%f48, [%o1] %asi
--	membar	#Sync|#StoreStore|#StoreLoad
--	wr	%g1, %g0, %asi
--	retl
--	 wr	%g0, 0, %fprs
--ENDPROC(xor_vis_3)
--EXPORT_SYMBOL(xor_vis_3)
--
--ENTRY(xor_vis_4)
--	rd	%fprs, %o5
--	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
--	be,pt	%icc, 0f
--	 sethi	%hi(VISenter), %g1
--	jmpl	%g1 + %lo(VISenter), %g7
--	 add	%g7, 8, %g7
--0:	wr	%g0, FPRS_FEF, %fprs
--	rd	%asi, %g1
--	wr	%g0, ASI_BLK_P, %asi
--	membar	#LoadStore|#StoreLoad|#StoreStore
--	sub	%o0, 64, %o0
--	ldda	[%o1] %asi, %f0
--	ldda	[%o2] %asi, %f16
--
--4:	ldda	[%o3] %asi, %f32
--	fxor	%f0, %f16, %f16
--	fxor	%f2, %f18, %f18
--	add	%o1, 64, %o1
--	fxor	%f4, %f20, %f20
--	fxor	%f6, %f22, %f22
--	add	%o2, 64, %o2
--	fxor	%f8, %f24, %f24
--	fxor	%f10, %f26, %f26
--	fxor	%f12, %f28, %f28
--	fxor	%f14, %f30, %f30
--	ldda	[%o4] %asi, %f48
--	fxor	%f16, %f32, %f32
--	fxor	%f18, %f34, %f34
--	fxor	%f20, %f36, %f36
--	fxor	%f22, %f38, %f38
--	add	%o3, 64, %o3
--	fxor	%f24, %f40, %f40
--	fxor	%f26, %f42, %f42
--	fxor	%f28, %f44, %f44
--	fxor	%f30, %f46, %f46
--	ldda	[%o1] %asi, %f0
--	fxor	%f32, %f48, %f48
--	fxor	%f34, %f50, %f50
--	fxor	%f36, %f52, %f52
--	add	%o4, 64, %o4
--	fxor	%f38, %f54, %f54
--	fxor	%f40, %f56, %f56
--	fxor	%f42, %f58, %f58
--	subcc	%o0, 64, %o0
--	fxor	%f44, %f60, %f60
--	fxor	%f46, %f62, %f62
--	stda	%f48, [%o1 - 64] %asi
--	bne,pt	%xcc, 4b
--	 ldda	[%o2] %asi, %f16
--
--	ldda	[%o3] %asi, %f32
--	fxor	%f0, %f16, %f16
--	fxor	%f2, %f18, %f18
--	fxor	%f4, %f20, %f20
--	fxor	%f6, %f22, %f22
--	fxor	%f8, %f24, %f24
--	fxor	%f10, %f26, %f26
--	fxor	%f12, %f28, %f28
--	fxor	%f14, %f30, %f30
--	ldda	[%o4] %asi, %f48
--	fxor	%f16, %f32, %f32
--	fxor	%f18, %f34, %f34
--	fxor	%f20, %f36, %f36
--	fxor	%f22, %f38, %f38
--	fxor	%f24, %f40, %f40
--	fxor	%f26, %f42, %f42
--	fxor	%f28, %f44, %f44
--	fxor	%f30, %f46, %f46
--	membar	#Sync
--	fxor	%f32, %f48, %f48
--	fxor	%f34, %f50, %f50
--	fxor	%f36, %f52, %f52
--	fxor	%f38, %f54, %f54
--	fxor	%f40, %f56, %f56
--	fxor	%f42, %f58, %f58
--	fxor	%f44, %f60, %f60
--	fxor	%f46, %f62, %f62
--	stda	%f48, [%o1] %asi
--	membar	#Sync|#StoreStore|#StoreLoad
--	wr	%g1, %g0, %asi
--	retl
--	 wr	%g0, 0, %fprs
--ENDPROC(xor_vis_4)
--EXPORT_SYMBOL(xor_vis_4)
--
--ENTRY(xor_vis_5)
--	save	%sp, -192, %sp
--	rd	%fprs, %o5
--	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
--	be,pt	%icc, 0f
--	 sethi	%hi(VISenter), %g1
--	jmpl	%g1 + %lo(VISenter), %g7
--	 add	%g7, 8, %g7
--0:	wr	%g0, FPRS_FEF, %fprs
--	rd	%asi, %g1
--	wr	%g0, ASI_BLK_P, %asi
--	membar	#LoadStore|#StoreLoad|#StoreStore
--	sub	%i0, 64, %i0
--	ldda	[%i1] %asi, %f0
--	ldda	[%i2] %asi, %f16
--
--5:	ldda	[%i3] %asi, %f32
--	fxor	%f0, %f16, %f48
--	fxor	%f2, %f18, %f50
--	add	%i1, 64, %i1
--	fxor	%f4, %f20, %f52
--	fxor	%f6, %f22, %f54
--	add	%i2, 64, %i2
--	fxor	%f8, %f24, %f56
--	fxor	%f10, %f26, %f58
--	fxor	%f12, %f28, %f60
--	fxor	%f14, %f30, %f62
--	ldda	[%i4] %asi, %f16
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	add	%i3, 64, %i3
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	ldda	[%i5] %asi, %f32
--	fxor	%f48, %f16, %f48
--	fxor	%f50, %f18, %f50
--	add	%i4, 64, %i4
--	fxor	%f52, %f20, %f52
--	fxor	%f54, %f22, %f54
--	add	%i5, 64, %i5
--	fxor	%f56, %f24, %f56
--	fxor	%f58, %f26, %f58
--	fxor	%f60, %f28, %f60
--	fxor	%f62, %f30, %f62
--	ldda	[%i1] %asi, %f0
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	subcc	%i0, 64, %i0
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	stda	%f48, [%i1 - 64] %asi
--	bne,pt	%xcc, 5b
--	 ldda	[%i2] %asi, %f16
--
--	ldda	[%i3] %asi, %f32
--	fxor	%f0, %f16, %f48
--	fxor	%f2, %f18, %f50
--	fxor	%f4, %f20, %f52
--	fxor	%f6, %f22, %f54
--	fxor	%f8, %f24, %f56
--	fxor	%f10, %f26, %f58
--	fxor	%f12, %f28, %f60
--	fxor	%f14, %f30, %f62
--	ldda	[%i4] %asi, %f16
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	ldda	[%i5] %asi, %f32
--	fxor	%f48, %f16, %f48
--	fxor	%f50, %f18, %f50
--	fxor	%f52, %f20, %f52
--	fxor	%f54, %f22, %f54
--	fxor	%f56, %f24, %f56
--	fxor	%f58, %f26, %f58
--	fxor	%f60, %f28, %f60
--	fxor	%f62, %f30, %f62
--	membar	#Sync
--	fxor	%f48, %f32, %f48
--	fxor	%f50, %f34, %f50
--	fxor	%f52, %f36, %f52
--	fxor	%f54, %f38, %f54
--	fxor	%f56, %f40, %f56
--	fxor	%f58, %f42, %f58
--	fxor	%f60, %f44, %f60
--	fxor	%f62, %f46, %f62
--	stda	%f48, [%i1] %asi
--	membar	#Sync|#StoreStore|#StoreLoad
--	wr	%g1, %g0, %asi
--	wr	%g0, 0, %fprs
--	ret
--	 restore
--ENDPROC(xor_vis_5)
--EXPORT_SYMBOL(xor_vis_5)
- 
- 	/* Niagara versions. */
- ENTRY(xor_niagara_2) /* %o0=bytes, %o1=dest, %o2=src */
-@@ -399,7 +59,6 @@ ENTRY(xor_niagara_2) /* %o0=bytes, %o1=dest, %o2=src */
- 	ret
- 	 restore
- ENDPROC(xor_niagara_2)
--EXPORT_SYMBOL(xor_niagara_2)
- 
- ENTRY(xor_niagara_3) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2 */
- 	save		%sp, -192, %sp
-@@ -461,7 +120,6 @@ ENTRY(xor_niagara_3) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2 */
- 	ret
- 	 restore
- ENDPROC(xor_niagara_3)
--EXPORT_SYMBOL(xor_niagara_3)
- 
- ENTRY(xor_niagara_4) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3 */
- 	save		%sp, -192, %sp
-@@ -544,7 +202,6 @@ ENTRY(xor_niagara_4) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3 */
- 	ret
- 	 restore
- ENDPROC(xor_niagara_4)
--EXPORT_SYMBOL(xor_niagara_4)
- 
- ENTRY(xor_niagara_5) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3, %o5=src4 */
- 	save		%sp, -192, %sp
-@@ -643,4 +300,3 @@ ENTRY(xor_niagara_5) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3, %o5=s
- 	ret
- 	 restore
- ENDPROC(xor_niagara_5)
--EXPORT_SYMBOL(xor_niagara_5)
 diff --git a/arch/sparc/include/asm/xor_32.h b/lib/raid/xor/sparc/xor-sparc32.c
 similarity index 93%
 rename from arch/sparc/include/asm/xor_32.h
@@ -721,401 +202,144 @@ index 8fbf0c07ec289..b65a75a6e59d8 100644
 -	xor_register(&xor_block_32regs);
 -	xor_register(&xor_block_SPARC);
 -}
-diff --git a/lib/raid/xor/sparc/xor-vis-glue.c b/lib/raid/xor/sparc/xor-vis-glue.c
-new file mode 100644
-index 0000000000000..73e5b293d0c9a
---- /dev/null
-+++ b/lib/raid/xor/sparc/xor-vis-glue.c
-@@ -0,0 +1,35 @@
+diff --git a/arch/sparc/include/asm/xor_64.h b/lib/raid/xor/sparc/xor-sparc64-glue.c
+similarity index 74%
+rename from arch/sparc/include/asm/xor_64.h
+rename to lib/raid/xor/sparc/xor-sparc64-glue.c
+index e0482ecc0a68b..3c67c8c3a0e82 100644
+--- a/arch/sparc/include/asm/xor_64.h
++++ b/lib/raid/xor/sparc/xor-sparc64-glue.c
+@@ -1,7 +1,5 @@
+-/* SPDX-License-Identifier: GPL-2.0-or-later */
 +// SPDX-License-Identifier: GPL-2.0-or-later
-+/*
-+ * High speed xor_block operation for RAID4/5 utilizing the
-+ * UltraSparc Visual Instruction Set.
-+ *
-+ * Copyright (C) 1997, 1999 Jakub Jelinek (jj@ultra.linux.cz)
-+ */
-+
+ /*
+- * include/asm/xor.h
+- *
+  * High speed xor_block operation for RAID4/5 utilizing the
+  * UltraSparc Visual Instruction Set and Niagara block-init
+  * twin-load instructions.
+@@ -10,7 +8,8 @@
+  * Copyright (C) 2006 David S. Miller <davem@davemloft.net>
+  */
+ 
+-#include <asm/spitfire.h>
 +#include <linux/raid/xor_impl.h>
 +#include <asm/xor.h>
-+
-+void xor_vis_2(unsigned long bytes, unsigned long * __restrict p1,
-+	       const unsigned long * __restrict p2);
-+void xor_vis_3(unsigned long bytes, unsigned long * __restrict p1,
-+	       const unsigned long * __restrict p2,
-+	       const unsigned long * __restrict p3);
-+void xor_vis_4(unsigned long bytes, unsigned long * __restrict p1,
-+	       const unsigned long * __restrict p2,
-+	       const unsigned long * __restrict p3,
-+	       const unsigned long * __restrict p4);
-+void xor_vis_5(unsigned long bytes, unsigned long * __restrict p1,
-+	       const unsigned long * __restrict p2,
-+	       const unsigned long * __restrict p3,
-+	       const unsigned long * __restrict p4,
-+	       const unsigned long * __restrict p5);
-+
-+/* XXX Ugh, write cheetah versions... -DaveM */
-+
+ 
+ void xor_vis_2(unsigned long bytes, unsigned long * __restrict p1,
+ 	       const unsigned long * __restrict p2);
+@@ -29,7 +28,7 @@ void xor_vis_5(unsigned long bytes, unsigned long * __restrict p1,
+ 
+ /* XXX Ugh, write cheetah versions... -DaveM */
+ 
+-static struct xor_block_template xor_block_VIS = {
 +struct xor_block_template xor_block_VIS = {
-+        .name	= "VIS",
-+        .do_2	= xor_vis_2,
-+        .do_3	= xor_vis_3,
-+        .do_4	= xor_vis_4,
-+        .do_5	= xor_vis_5,
-+};
-diff --git a/lib/raid/xor/sparc/xor-vis.S b/lib/raid/xor/sparc/xor-vis.S
-new file mode 100644
-index 0000000000000..d06e221055d95
---- /dev/null
-+++ b/lib/raid/xor/sparc/xor-vis.S
-@@ -0,0 +1,348 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+/*
-+ * High speed xor_block operation for RAID4/5 utilizing the
-+ * UltraSparc Visual Instruction Set.
-+ *
-+ * Copyright (C) 1997, 1999 Jakub Jelinek (jj@ultra.linux.cz)
-+ */
-+
-+#include <linux/export.h>
-+#include <linux/linkage.h>
-+#include <asm/visasm.h>
-+#include <asm/asi.h>
-+#include <asm/dcu.h>
-+#include <asm/spitfire.h>
-+
-+/*
-+ *	Requirements:
-+ *	!(((long)dest | (long)sourceN) & (64 - 1)) &&
-+ *	!(len & 127) && len >= 256
-+ */
-+	.text
-+
-+	/* VIS versions. */
-+ENTRY(xor_vis_2)
-+	rd	%fprs, %o5
-+	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
-+	be,pt	%icc, 0f
-+	 sethi	%hi(VISenter), %g1
-+	jmpl	%g1 + %lo(VISenter), %g7
-+	 add	%g7, 8, %g7
-+0:	wr	%g0, FPRS_FEF, %fprs
-+	rd	%asi, %g1
-+	wr	%g0, ASI_BLK_P, %asi
-+	membar	#LoadStore|#StoreLoad|#StoreStore
-+	sub	%o0, 128, %o0
-+	ldda	[%o1] %asi, %f0
-+	ldda	[%o2] %asi, %f16
-+
-+2:	ldda	[%o1 + 64] %asi, %f32
-+	fxor	%f0, %f16, %f16
-+	fxor	%f2, %f18, %f18
-+	fxor	%f4, %f20, %f20
-+	fxor	%f6, %f22, %f22
-+	fxor	%f8, %f24, %f24
-+	fxor	%f10, %f26, %f26
-+	fxor	%f12, %f28, %f28
-+	fxor	%f14, %f30, %f30
-+	stda	%f16, [%o1] %asi
-+	ldda	[%o2 + 64] %asi, %f48
-+	ldda	[%o1 + 128] %asi, %f0
-+	fxor	%f32, %f48, %f48
-+	fxor	%f34, %f50, %f50
-+	add	%o1, 128, %o1
-+	fxor	%f36, %f52, %f52
-+	add	%o2, 128, %o2
-+	fxor	%f38, %f54, %f54
-+	subcc	%o0, 128, %o0
-+	fxor	%f40, %f56, %f56
-+	fxor	%f42, %f58, %f58
-+	fxor	%f44, %f60, %f60
-+	fxor	%f46, %f62, %f62
-+	stda	%f48, [%o1 - 64] %asi
-+	bne,pt	%xcc, 2b
-+	 ldda	[%o2] %asi, %f16
-+
-+	ldda	[%o1 + 64] %asi, %f32
-+	fxor	%f0, %f16, %f16
-+	fxor	%f2, %f18, %f18
-+	fxor	%f4, %f20, %f20
-+	fxor	%f6, %f22, %f22
-+	fxor	%f8, %f24, %f24
-+	fxor	%f10, %f26, %f26
-+	fxor	%f12, %f28, %f28
-+	fxor	%f14, %f30, %f30
-+	stda	%f16, [%o1] %asi
-+	ldda	[%o2 + 64] %asi, %f48
-+	membar	#Sync
-+	fxor	%f32, %f48, %f48
-+	fxor	%f34, %f50, %f50
-+	fxor	%f36, %f52, %f52
-+	fxor	%f38, %f54, %f54
-+	fxor	%f40, %f56, %f56
-+	fxor	%f42, %f58, %f58
-+	fxor	%f44, %f60, %f60
-+	fxor	%f46, %f62, %f62
-+	stda	%f48, [%o1 + 64] %asi
-+	membar	#Sync|#StoreStore|#StoreLoad
-+	wr	%g1, %g0, %asi
-+	retl
-+	  wr	%g0, 0, %fprs
-+ENDPROC(xor_vis_2)
-+
-+ENTRY(xor_vis_3)
-+	rd	%fprs, %o5
-+	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
-+	be,pt	%icc, 0f
-+	 sethi	%hi(VISenter), %g1
-+	jmpl	%g1 + %lo(VISenter), %g7
-+	 add	%g7, 8, %g7
-+0:	wr	%g0, FPRS_FEF, %fprs
-+	rd	%asi, %g1
-+	wr	%g0, ASI_BLK_P, %asi
-+	membar	#LoadStore|#StoreLoad|#StoreStore
-+	sub	%o0, 64, %o0
-+	ldda	[%o1] %asi, %f0
-+	ldda	[%o2] %asi, %f16
-+
-+3:	ldda	[%o3] %asi, %f32
-+	fxor	%f0, %f16, %f48
-+	fxor	%f2, %f18, %f50
-+	add	%o1, 64, %o1
-+	fxor	%f4, %f20, %f52
-+	fxor	%f6, %f22, %f54
-+	add	%o2, 64, %o2
-+	fxor	%f8, %f24, %f56
-+	fxor	%f10, %f26, %f58
-+	fxor	%f12, %f28, %f60
-+	fxor	%f14, %f30, %f62
-+	ldda	[%o1] %asi, %f0
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	add	%o3, 64, %o3
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	subcc	%o0, 64, %o0
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	stda	%f48, [%o1 - 64] %asi
-+	bne,pt	%xcc, 3b
-+	 ldda	[%o2] %asi, %f16
-+
-+	ldda	[%o3] %asi, %f32
-+	fxor	%f0, %f16, %f48
-+	fxor	%f2, %f18, %f50
-+	fxor	%f4, %f20, %f52
-+	fxor	%f6, %f22, %f54
-+	fxor	%f8, %f24, %f56
-+	fxor	%f10, %f26, %f58
-+	fxor	%f12, %f28, %f60
-+	fxor	%f14, %f30, %f62
-+	membar	#Sync
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	stda	%f48, [%o1] %asi
-+	membar	#Sync|#StoreStore|#StoreLoad
-+	wr	%g1, %g0, %asi
-+	retl
-+	 wr	%g0, 0, %fprs
-+ENDPROC(xor_vis_3)
-+
-+ENTRY(xor_vis_4)
-+	rd	%fprs, %o5
-+	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
-+	be,pt	%icc, 0f
-+	 sethi	%hi(VISenter), %g1
-+	jmpl	%g1 + %lo(VISenter), %g7
-+	 add	%g7, 8, %g7
-+0:	wr	%g0, FPRS_FEF, %fprs
-+	rd	%asi, %g1
-+	wr	%g0, ASI_BLK_P, %asi
-+	membar	#LoadStore|#StoreLoad|#StoreStore
-+	sub	%o0, 64, %o0
-+	ldda	[%o1] %asi, %f0
-+	ldda	[%o2] %asi, %f16
-+
-+4:	ldda	[%o3] %asi, %f32
-+	fxor	%f0, %f16, %f16
-+	fxor	%f2, %f18, %f18
-+	add	%o1, 64, %o1
-+	fxor	%f4, %f20, %f20
-+	fxor	%f6, %f22, %f22
-+	add	%o2, 64, %o2
-+	fxor	%f8, %f24, %f24
-+	fxor	%f10, %f26, %f26
-+	fxor	%f12, %f28, %f28
-+	fxor	%f14, %f30, %f30
-+	ldda	[%o4] %asi, %f48
-+	fxor	%f16, %f32, %f32
-+	fxor	%f18, %f34, %f34
-+	fxor	%f20, %f36, %f36
-+	fxor	%f22, %f38, %f38
-+	add	%o3, 64, %o3
-+	fxor	%f24, %f40, %f40
-+	fxor	%f26, %f42, %f42
-+	fxor	%f28, %f44, %f44
-+	fxor	%f30, %f46, %f46
-+	ldda	[%o1] %asi, %f0
-+	fxor	%f32, %f48, %f48
-+	fxor	%f34, %f50, %f50
-+	fxor	%f36, %f52, %f52
-+	add	%o4, 64, %o4
-+	fxor	%f38, %f54, %f54
-+	fxor	%f40, %f56, %f56
-+	fxor	%f42, %f58, %f58
-+	subcc	%o0, 64, %o0
-+	fxor	%f44, %f60, %f60
-+	fxor	%f46, %f62, %f62
-+	stda	%f48, [%o1 - 64] %asi
-+	bne,pt	%xcc, 4b
-+	 ldda	[%o2] %asi, %f16
-+
-+	ldda	[%o3] %asi, %f32
-+	fxor	%f0, %f16, %f16
-+	fxor	%f2, %f18, %f18
-+	fxor	%f4, %f20, %f20
-+	fxor	%f6, %f22, %f22
-+	fxor	%f8, %f24, %f24
-+	fxor	%f10, %f26, %f26
-+	fxor	%f12, %f28, %f28
-+	fxor	%f14, %f30, %f30
-+	ldda	[%o4] %asi, %f48
-+	fxor	%f16, %f32, %f32
-+	fxor	%f18, %f34, %f34
-+	fxor	%f20, %f36, %f36
-+	fxor	%f22, %f38, %f38
-+	fxor	%f24, %f40, %f40
-+	fxor	%f26, %f42, %f42
-+	fxor	%f28, %f44, %f44
-+	fxor	%f30, %f46, %f46
-+	membar	#Sync
-+	fxor	%f32, %f48, %f48
-+	fxor	%f34, %f50, %f50
-+	fxor	%f36, %f52, %f52
-+	fxor	%f38, %f54, %f54
-+	fxor	%f40, %f56, %f56
-+	fxor	%f42, %f58, %f58
-+	fxor	%f44, %f60, %f60
-+	fxor	%f46, %f62, %f62
-+	stda	%f48, [%o1] %asi
-+	membar	#Sync|#StoreStore|#StoreLoad
-+	wr	%g1, %g0, %asi
-+	retl
-+	 wr	%g0, 0, %fprs
-+ENDPROC(xor_vis_4)
-+
-+ENTRY(xor_vis_5)
-+	save	%sp, -192, %sp
-+	rd	%fprs, %o5
-+	andcc	%o5, FPRS_FEF|FPRS_DU, %g0
-+	be,pt	%icc, 0f
-+	 sethi	%hi(VISenter), %g1
-+	jmpl	%g1 + %lo(VISenter), %g7
-+	 add	%g7, 8, %g7
-+0:	wr	%g0, FPRS_FEF, %fprs
-+	rd	%asi, %g1
-+	wr	%g0, ASI_BLK_P, %asi
-+	membar	#LoadStore|#StoreLoad|#StoreStore
-+	sub	%i0, 64, %i0
-+	ldda	[%i1] %asi, %f0
-+	ldda	[%i2] %asi, %f16
-+
-+5:	ldda	[%i3] %asi, %f32
-+	fxor	%f0, %f16, %f48
-+	fxor	%f2, %f18, %f50
-+	add	%i1, 64, %i1
-+	fxor	%f4, %f20, %f52
-+	fxor	%f6, %f22, %f54
-+	add	%i2, 64, %i2
-+	fxor	%f8, %f24, %f56
-+	fxor	%f10, %f26, %f58
-+	fxor	%f12, %f28, %f60
-+	fxor	%f14, %f30, %f62
-+	ldda	[%i4] %asi, %f16
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	add	%i3, 64, %i3
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	ldda	[%i5] %asi, %f32
-+	fxor	%f48, %f16, %f48
-+	fxor	%f50, %f18, %f50
-+	add	%i4, 64, %i4
-+	fxor	%f52, %f20, %f52
-+	fxor	%f54, %f22, %f54
-+	add	%i5, 64, %i5
-+	fxor	%f56, %f24, %f56
-+	fxor	%f58, %f26, %f58
-+	fxor	%f60, %f28, %f60
-+	fxor	%f62, %f30, %f62
-+	ldda	[%i1] %asi, %f0
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	subcc	%i0, 64, %i0
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	stda	%f48, [%i1 - 64] %asi
-+	bne,pt	%xcc, 5b
-+	 ldda	[%i2] %asi, %f16
-+
-+	ldda	[%i3] %asi, %f32
-+	fxor	%f0, %f16, %f48
-+	fxor	%f2, %f18, %f50
-+	fxor	%f4, %f20, %f52
-+	fxor	%f6, %f22, %f54
-+	fxor	%f8, %f24, %f56
-+	fxor	%f10, %f26, %f58
-+	fxor	%f12, %f28, %f60
-+	fxor	%f14, %f30, %f62
-+	ldda	[%i4] %asi, %f16
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	ldda	[%i5] %asi, %f32
-+	fxor	%f48, %f16, %f48
-+	fxor	%f50, %f18, %f50
-+	fxor	%f52, %f20, %f52
-+	fxor	%f54, %f22, %f54
-+	fxor	%f56, %f24, %f56
-+	fxor	%f58, %f26, %f58
-+	fxor	%f60, %f28, %f60
-+	fxor	%f62, %f30, %f62
-+	membar	#Sync
-+	fxor	%f48, %f32, %f48
-+	fxor	%f50, %f34, %f50
-+	fxor	%f52, %f36, %f52
-+	fxor	%f54, %f38, %f54
-+	fxor	%f56, %f40, %f56
-+	fxor	%f58, %f42, %f58
-+	fxor	%f60, %f44, %f60
-+	fxor	%f62, %f46, %f62
-+	stda	%f48, [%i1] %asi
-+	membar	#Sync|#StoreStore|#StoreLoad
-+	wr	%g1, %g0, %asi
-+	wr	%g0, 0, %fprs
-+	ret
-+	 restore
-+ENDPROC(xor_vis_5)
+         .name	= "VIS",
+         .do_2	= xor_vis_2,
+         .do_3	= xor_vis_3,
+@@ -52,25 +51,10 @@ void xor_niagara_5(unsigned long bytes, unsigned long * __restrict p1,
+ 		   const unsigned long * __restrict p4,
+ 		   const unsigned long * __restrict p5);
+ 
+-static struct xor_block_template xor_block_niagara = {
++struct xor_block_template xor_block_niagara = {
+         .name	= "Niagara",
+         .do_2	= xor_niagara_2,
+         .do_3	= xor_niagara_3,
+         .do_4	= xor_niagara_4,
+         .do_5	= xor_niagara_5,
+ };
+-
+-#define arch_xor_init arch_xor_init
+-static __always_inline void __init arch_xor_init(void)
+-{
+-	/* Force VIS for everything except Niagara.  */
+-	if (tlb_type == hypervisor &&
+-	    (sun4v_chip_type == SUN4V_CHIP_NIAGARA1 ||
+-	     sun4v_chip_type == SUN4V_CHIP_NIAGARA2 ||
+-	     sun4v_chip_type == SUN4V_CHIP_NIAGARA3 ||
+-	     sun4v_chip_type == SUN4V_CHIP_NIAGARA4 ||
+-	     sun4v_chip_type == SUN4V_CHIP_NIAGARA5))
+-		xor_force(&xor_block_niagara);
+-	else
+-		xor_force(&xor_block_VIS);
+-}
+diff --git a/arch/sparc/lib/xor.S b/lib/raid/xor/sparc/xor-sparc64.S
+similarity index 98%
+rename from arch/sparc/lib/xor.S
+rename to lib/raid/xor/sparc/xor-sparc64.S
+index 35461e3b2a9b1..a7b74d473bd47 100644
+--- a/arch/sparc/lib/xor.S
++++ b/lib/raid/xor/sparc/xor-sparc64.S
+@@ -1,7 +1,5 @@
+ /* SPDX-License-Identifier: GPL-2.0 */
+ /*
+- * arch/sparc64/lib/xor.S
+- *
+  * High speed xor_block operation for RAID4/5 utilizing the
+  * UltraSparc Visual Instruction Set and Niagara store-init/twin-load.
+  *
+@@ -92,7 +90,6 @@ ENTRY(xor_vis_2)
+ 	retl
+ 	  wr	%g0, 0, %fprs
+ ENDPROC(xor_vis_2)
+-EXPORT_SYMBOL(xor_vis_2)
+ 
+ ENTRY(xor_vis_3)
+ 	rd	%fprs, %o5
+@@ -159,7 +156,6 @@ ENTRY(xor_vis_3)
+ 	retl
+ 	 wr	%g0, 0, %fprs
+ ENDPROC(xor_vis_3)
+-EXPORT_SYMBOL(xor_vis_3)
+ 
+ ENTRY(xor_vis_4)
+ 	rd	%fprs, %o5
+@@ -245,7 +241,6 @@ ENTRY(xor_vis_4)
+ 	retl
+ 	 wr	%g0, 0, %fprs
+ ENDPROC(xor_vis_4)
+-EXPORT_SYMBOL(xor_vis_4)
+ 
+ ENTRY(xor_vis_5)
+ 	save	%sp, -192, %sp
+@@ -352,7 +347,6 @@ ENTRY(xor_vis_5)
+ 	ret
+ 	 restore
+ ENDPROC(xor_vis_5)
+-EXPORT_SYMBOL(xor_vis_5)
+ 
+ 	/* Niagara versions. */
+ ENTRY(xor_niagara_2) /* %o0=bytes, %o1=dest, %o2=src */
+@@ -399,7 +393,6 @@ ENTRY(xor_niagara_2) /* %o0=bytes, %o1=dest, %o2=src */
+ 	ret
+ 	 restore
+ ENDPROC(xor_niagara_2)
+-EXPORT_SYMBOL(xor_niagara_2)
+ 
+ ENTRY(xor_niagara_3) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2 */
+ 	save		%sp, -192, %sp
+@@ -461,7 +454,6 @@ ENTRY(xor_niagara_3) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2 */
+ 	ret
+ 	 restore
+ ENDPROC(xor_niagara_3)
+-EXPORT_SYMBOL(xor_niagara_3)
+ 
+ ENTRY(xor_niagara_4) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3 */
+ 	save		%sp, -192, %sp
+@@ -544,7 +536,6 @@ ENTRY(xor_niagara_4) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3 */
+ 	ret
+ 	 restore
+ ENDPROC(xor_niagara_4)
+-EXPORT_SYMBOL(xor_niagara_4)
+ 
+ ENTRY(xor_niagara_5) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3, %o5=src4 */
+ 	save		%sp, -192, %sp
+@@ -643,4 +634,3 @@ ENTRY(xor_niagara_5) /* %o0=bytes, %o1=dest, %o2=src1, %o3=src2, %o4=src3, %o5=s
+ 	ret
+ 	 restore
+ ENDPROC(xor_niagara_5)
+-EXPORT_SYMBOL(xor_niagara_5)
 -- 
 2.47.3
 

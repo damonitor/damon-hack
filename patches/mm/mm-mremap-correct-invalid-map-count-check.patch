@@ -1,0 +1,160 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Wed, 11 Mar 2026 17:24:36 +0000
+Subject: [PATCH] mm/mremap: correct invalid map count check
+
+Patch series "mm: improve map count checks".
+
+Firstly, in mremap(), it appears that our map count checks have been overly
+conservative - there is simply no reason to require that we have headroom
+of 4 mappings prior to moving the VMA, we only need headroom of 2 VMAs
+since commit 659ace584e7a ("mmap: don't return ENOMEM when mapcount is
+temporarily exceeded in munmap()").
+
+Likely the original headroom of 4 mappings was a mistake, and 3 was
+actually intended.
+
+Next, we access sysctl_max_map_count in a number of places without being
+all that careful about how we do so.
+
+We introduce a simple helper that READ_ONCE()'s the field
+(get_sysctl_max_map_count()) to ensure that the field is accessed
+correctly.  The WRITE_ONCE() side is already handled by the sysctl procfs
+code in proc_int_conv().
+
+We also move this field to internal.h as there's no reason for anybody
+else to access it outside of mm.  Unfortunately we have to maintain the
+extern variable, as mmap.c implements the procfs code.
+
+Finally, we are accessing current->mm->map_count without holding the mmap
+write lock, which is also not correct, so this series ensures the lock is
+head before we access it.
+
+We also abstract the check to a helper function, and add ASCII diagrams to
+explain why we're doing what we're doing.
+
+
+This patch (of 3):
+
+We currently check to see, if on moving a VMA when doing mremap(), if it
+might violate the sys.vm.max_map_count limit.
+
+This was introduced in the mists of time prior to 2.6.12.
+
+At this point in time, as now, the move_vma() operation would copy the VMA
+(+1 mapping if not merged), then potentially split the source VMA upon
+unmap.
+
+Prior to commit 659ace584e7a ("mmap: don't return ENOMEM when mapcount is
+temporarily exceeded in munmap()"), a VMA split would check whether
+mm->map_count >= sysctl_max_map_count prior to a split before it ran.
+
+On unmap of the source VMA, if we are moving a partial VMA, we might split
+the VMA twice.
+
+This would mean, on invocation of split_vma() (as was), we'd check whether
+mm->map_count >= sysctl_max_map_count with a map count elevated by one,
+then again with a map count elevated by two, ending up with a map count
+elevated by three.
+
+At this point we'd reduce the map count on unmap.
+
+At the start of move_vma(), there was a check that has remained throughout
+mremap()'s history of mm->map_count >= sysctl_max_map_count - 3 (which
+implies mm->mmap_count + 4 > sysctl_max_map_count - that is, we must have
+headroom for 4 additional mappings).
+
+After mm->map_count is elevated by 3, it is decremented by one once the
+unmap completes. The mmap write lock is held, so nothing else will observe
+mm->map_count > sysctl_max_map_count.
+
+It appears this check was always incorrect - it should have either be one
+of 'mm->map_count > sysctl_max_map_count - 3' or 'mm->map_count >=
+sysctl_max_map_count - 2'.
+
+After commit 659ace584e7a ("mmap: don't return ENOMEM when mapcount is
+temporarily exceeded in munmap()"), the map count check on split is
+eliminated in the newly introduced __split_vma(), which the unmap path
+uses, and has that path check whether mm->map_count >=
+sysctl_max_map_count.
+
+This is valid since, net, an unmap can only cause an increase in map count
+of 1 (split both sides, unmap middle).
+
+Since we only copy a VMA and (if MREMAP_DONTUNMAP is not set) unmap
+afterwards, the maximum number of additional mappings that will actually be
+subject to any check will be 2.
+
+Therefore, update the check to assert this corrected value. Additionally,
+update the check introduced by commit ea2c3f6f5545 ("mm,mremap: bail out
+earlier in mremap_to under map pressure") to account for this.
+
+While we're here, clean up the comment prior to that.
+
+Link: https://lkml.kernel.org/r/cover.1773249037.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/73e218c67dcd197c5331840fb011e2c17155bfb0.1773249037.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jianzhou Zhao <luckd0g@163.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mremap.c | 28 ++++++++++++----------------
+ 1 file changed, 12 insertions(+), 16 deletions(-)
+
+diff --git a/mm/mremap.c b/mm/mremap.c
+index 2be876a70cc0d..e8c3021dd841f 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -1041,10 +1041,11 @@ static unsigned long prep_move_vma(struct vma_remap_struct *vrm)
+ 	vm_flags_t dummy = vma->vm_flags;
+ 
+ 	/*
+-	 * We'd prefer to avoid failure later on in do_munmap:
+-	 * which may split one vma into three before unmapping.
++	 * We'd prefer to avoid failure later on in do_munmap: we copy a VMA,
++	 * which may not merge, then (if MREMAP_DONTUNMAP is not set) unmap the
++	 * source, which may split, causing a net increase of 2 mappings.
+ 	 */
+-	if (current->mm->map_count >= sysctl_max_map_count - 3)
++	if (current->mm->map_count + 2 > sysctl_max_map_count)
+ 		return -ENOMEM;
+ 
+ 	if (vma->vm_ops && vma->vm_ops->may_split) {
+@@ -1804,20 +1805,15 @@ static unsigned long check_mremap_params(struct vma_remap_struct *vrm)
+ 		return -EINVAL;
+ 
+ 	/*
+-	 * move_vma() need us to stay 4 maps below the threshold, otherwise
+-	 * it will bail out at the very beginning.
+-	 * That is a problem if we have already unmapped the regions here
+-	 * (new_addr, and old_addr), because userspace will not know the
+-	 * state of the vma's after it gets -ENOMEM.
+-	 * So, to avoid such scenario we can pre-compute if the whole
+-	 * operation has high chances to success map-wise.
+-	 * Worst-scenario case is when both vma's (new_addr and old_addr) get
+-	 * split in 3 before unmapping it.
+-	 * That means 2 more maps (1 for each) to the ones we already hold.
+-	 * Check whether current map count plus 2 still leads us to 4 maps below
+-	 * the threshold, otherwise return -ENOMEM here to be more safe.
++	 * We may unmap twice before invoking move_vma(), that is if new_len <
++	 * old_len (shrinking), and in the MREMAP_FIXED case, unmapping part of
++	 * a VMA located at the destination.
++	 *
++	 * In the worst case, both unmappings will cause splits, resulting in a
++	 * net increased map count of 2. In move_vma() we check for headroom of
++	 * 2 additional mappings, so check early to avoid bailing out then.
+ 	 */
+-	if ((current->mm->map_count + 2) >= sysctl_max_map_count - 3)
++	if (current->mm->map_count + 4 > sysctl_max_map_count)
+ 		return -ENOMEM;
+ 
+ 	return 0;
+-- 
+2.47.3
+

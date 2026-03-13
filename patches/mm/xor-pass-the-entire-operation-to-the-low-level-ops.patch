@@ -1,20 +1,19 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Thu, 26 Feb 2026 07:10:36 -0800
+Date: Wed, 11 Mar 2026 08:03:56 +0100
 Subject: [PATCH] xor: pass the entire operation to the low-level ops
 
 Currently the high-level xor code chunks up all operations into small
 units for only up to 1 + 4 vectors, and passes it to four different
-methods.  This means the FPU/vector context is entered and left a lot
-for wide stripes, and a lot of indirect expensive indirect calls are
-performed.  Switch to passing the entire gen_xor request to the
-low-level ops, and provide a macro to dispatch it to the existing
-helper.
+methods.  This means the FPU/vector context is entered and left a lot for
+wide stripes, and a lot of indirect expensive indirect calls are
+performed.  Switch to passing the entire gen_xor request to the low-level
+ops, and provide a macro to dispatch it to the existing helper.
 
 This reduce the number of indirect calls and FPU/vector context switches
-by a factor approaching nr_stripes / 4, and also reduces source and
-binary code size.
+by a factor approaching nr_stripes / 4, and also reduces source and binary
+code size.
 
-Link: https://lkml.kernel.org/r/20260226151106.144735-25-hch@lst.de
+Link: https://lkml.kernel.org/r/20260311070416.972667-25-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -34,6 +33,7 @@ Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Johannes Berg <johannes@sipsolutions.net>
 Cc: Li Nan <linan122@huawei.com>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
@@ -47,6 +47,7 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Russell King <linux@armlinux.org.uk>
 Cc: Song Liu <song@kernel.org>
 Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
@@ -67,9 +68,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  lib/raid/xor/powerpc/xor_vmx_glue.c    | 49 ++------------------
  lib/raid/xor/riscv/xor-glue.c          | 43 +++--------------
  lib/raid/xor/s390/xor.c                |  9 ++--
- lib/raid/xor/sparc/xor-niagara-glue.c  | 10 ++--
  lib/raid/xor/sparc/xor-sparc32.c       |  9 ++--
- lib/raid/xor/sparc/xor-vis-glue.c      |  9 ++--
+ lib/raid/xor/sparc/xor-sparc64-glue.c  | 19 ++++----
  lib/raid/xor/x86/xor-avx.c             | 29 ++++--------
  lib/raid/xor/x86/xor-mmx.c             | 64 ++++++++++----------------
  lib/raid/xor/x86/xor-sse.c             | 63 +++++++++----------------
@@ -79,10 +79,10 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  lib/raid/xor/xor-8regs.c               |  9 ++--
  lib/raid/xor/xor-core.c                | 47 ++-----------------
  lib/raid/xor/xor_impl.h                | 48 +++++++++++++------
- 27 files changed, 224 insertions(+), 504 deletions(-)
+ 26 files changed, 224 insertions(+), 504 deletions(-)
 
 diff --git a/include/linux/raid/xor.h b/include/linux/raid/xor.h
-index 4735a4e960f95..11620d5f5b936 100644
+index 6d9a39fd85dda..870558c9d36ee 100644
 --- a/include/linux/raid/xor.h
 +++ b/include/linux/raid/xor.h
 @@ -2,11 +2,6 @@
@@ -94,9 +94,9 @@ index 4735a4e960f95..11620d5f5b936 100644
 -extern void xor_blocks(unsigned int count, unsigned int bytes,
 -	void *dest, void **srcs);
 -
- void xor_gen(void *dest, void **srcss, unsigned int src_cnt,
- 		unsigned int bytes);
+ void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes);
  
+ #endif /* _XOR_H */
 diff --git a/lib/raid/xor/alpha/xor.c b/lib/raid/xor/alpha/xor.c
 index 90694cc47395b..a8f72f2dd3a5e 100644
 --- a/lib/raid/xor/alpha/xor.c
@@ -764,26 +764,6 @@ index c28cb56fec92b..0c478678a1291 100644
 +	.name		= "xc",
 +	.xor_gen	= xor_gen_xc,
  };
-diff --git a/lib/raid/xor/sparc/xor-niagara-glue.c b/lib/raid/xor/sparc/xor-niagara-glue.c
-index 92d4712c65e1b..a4adb088e7d3a 100644
---- a/lib/raid/xor/sparc/xor-niagara-glue.c
-+++ b/lib/raid/xor/sparc/xor-niagara-glue.c
-@@ -24,10 +24,10 @@ void xor_niagara_5(unsigned long bytes, unsigned long * __restrict p1,
- 		   const unsigned long * __restrict p4,
- 		   const unsigned long * __restrict p5);
- 
-+DO_XOR_BLOCKS(niagara, xor_niagara_2, xor_niagara_3, xor_niagara_4,
-+		xor_niagara_5);
-+
- struct xor_block_template xor_block_niagara = {
--        .name	= "Niagara",
--        .do_2	= xor_niagara_2,
--        .do_3	= xor_niagara_3,
--        .do_4	= xor_niagara_4,
--        .do_5	= xor_niagara_5,
-+        .name		= "Niagara",
-+	.xor_gen	= xor_gen_niagara,
- };
 diff --git a/lib/raid/xor/sparc/xor-sparc32.c b/lib/raid/xor/sparc/xor-sparc32.c
 index 307c4a84f535d..fb37631e90e69 100644
 --- a/lib/raid/xor/sparc/xor-sparc32.c
@@ -803,11 +783,11 @@ index 307c4a84f535d..fb37631e90e69 100644
 +	.name		= "SPARC",
 +	.xor_gen	= xor_gen_sparc32,
  };
-diff --git a/lib/raid/xor/sparc/xor-vis-glue.c b/lib/raid/xor/sparc/xor-vis-glue.c
-index 1c0977e85f533..ef39d6c8b9bb5 100644
---- a/lib/raid/xor/sparc/xor-vis-glue.c
-+++ b/lib/raid/xor/sparc/xor-vis-glue.c
-@@ -26,10 +26,9 @@ void xor_vis_5(unsigned long bytes, unsigned long * __restrict p1,
+diff --git a/lib/raid/xor/sparc/xor-sparc64-glue.c b/lib/raid/xor/sparc/xor-sparc64-glue.c
+index 5f90c2460b54c..a8a686e0d2583 100644
+--- a/lib/raid/xor/sparc/xor-sparc64-glue.c
++++ b/lib/raid/xor/sparc/xor-sparc64-glue.c
+@@ -28,12 +28,11 @@ void xor_vis_5(unsigned long bytes, unsigned long * __restrict p1,
  
  /* XXX Ugh, write cheetah versions... -DaveM */
  
@@ -821,6 +801,24 @@ index 1c0977e85f533..ef39d6c8b9bb5 100644
 -        .do_5	= xor_vis_5,
 +        .name		= "VIS",
 +	.xor_gen	= xor_gen_vis,
+ };
+ 
+ void xor_niagara_2(unsigned long bytes, unsigned long * __restrict p1,
+@@ -51,10 +50,10 @@ void xor_niagara_5(unsigned long bytes, unsigned long * __restrict p1,
+ 		   const unsigned long * __restrict p4,
+ 		   const unsigned long * __restrict p5);
+ 
++DO_XOR_BLOCKS(niagara, xor_niagara_2, xor_niagara_3, xor_niagara_4,
++		xor_niagara_5);
++
+ struct xor_block_template xor_block_niagara = {
+-        .name	= "Niagara",
+-        .do_2	= xor_niagara_2,
+-        .do_3	= xor_niagara_3,
+-        .do_4	= xor_niagara_4,
+-        .do_5	= xor_niagara_5,
++        .name		= "Niagara",
++	.xor_gen	= xor_gen_niagara,
  };
 diff --git a/lib/raid/xor/x86/xor-avx.c b/lib/raid/xor/x86/xor-avx.c
 index d411efa1ff435..f7777d7aa269b 100644
@@ -1366,7 +1364,7 @@ index 72a44e898c551..1edaed8acffe6 100644
  };
  #endif /* NO_TEMPLATE */
 diff --git a/lib/raid/xor/xor-core.c b/lib/raid/xor/xor-core.c
-index b7c29ca931ecc..f18dcc57004b9 100644
+index 64f12f579e96c..c3523f92ab83a 100644
 --- a/lib/raid/xor/xor-core.c
 +++ b/lib/raid/xor/xor-core.c
 @@ -13,39 +13,9 @@
@@ -1382,7 +1380,7 @@ index b7c29ca931ecc..f18dcc57004b9 100644
 -{
 -	unsigned long *p1, *p2, *p3, *p4;
 -
--	WARN_ON_ONCE(in_interrupt());
+-	lockdep_assert_preemption_enabled();
 -
 -	p1 = (unsigned long *) srcs[0];
 -	if (src_count == 1) {
@@ -1410,12 +1408,15 @@ index b7c29ca931ecc..f18dcc57004b9 100644
  /**
   * xor_gen - generate RAID-style XOR information
   * @dest:	destination vector
-@@ -61,16 +31,8 @@ EXPORT_SYMBOL(xor_blocks);
+@@ -63,18 +33,10 @@ EXPORT_SYMBOL(xor_blocks);
   */
  void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
  {
 -	unsigned int src_off = 0;
 -
++	lockdep_assert_preemption_enabled();
+ 	WARN_ON_ONCE(bytes & 511);
+ 
 -	while (src_cnt > 0) {
 -		unsigned int this_cnt = min(src_cnt, MAX_XOR_BLOCKS);
 -
@@ -1424,12 +1425,11 @@ index b7c29ca931ecc..f18dcc57004b9 100644
 -		src_cnt -= this_cnt;
 -		src_off += this_cnt;
 -	}
-+	WARN_ON_ONCE(in_interrupt());
 +	active_template->xor_gen(dest, srcs, src_cnt, bytes);
  }
  EXPORT_SYMBOL(xor_gen);
  
-@@ -114,6 +76,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
+@@ -118,6 +80,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
  	int speed;
  	unsigned long reps;
  	ktime_t min, start, t0;
@@ -1437,7 +1437,7 @@ index b7c29ca931ecc..f18dcc57004b9 100644
  
  	preempt_disable();
  
-@@ -124,7 +87,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
+@@ -128,7 +91,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
  		cpu_relax();
  	do {
  		mb(); /* prevent loop optimization */
@@ -1447,7 +1447,7 @@ index b7c29ca931ecc..f18dcc57004b9 100644
  	} while (reps++ < REPS || (t0 = ktime_get()) == start);
  	min = ktime_sub(t0, start);
 diff --git a/lib/raid/xor/xor_impl.h b/lib/raid/xor/xor_impl.h
-index 44b6c99e2093e..968dd07df6273 100644
+index 44b6c99e2093e..09ae2916f71ec 100644
 --- a/lib/raid/xor/xor_impl.h
 +++ b/lib/raid/xor/xor_impl.h
 @@ -3,27 +3,47 @@
@@ -1487,19 +1487,19 @@ index 44b6c99e2093e..968dd07df6273 100644
 +									\
 +	while (src_cnt > 0) {						\
 +		unsigned int this_cnt = min(src_cnt, 4);		\
-+		unsigned long *p1 = (unsigned long *)srcs[src_off];	\
-+		unsigned long *p2 = (unsigned long *)srcs[src_off + 1];	\
-+		unsigned long *p3 = (unsigned long *)srcs[src_off + 2];	\
-+		unsigned long *p4 = (unsigned long *)srcs[src_off + 3];	\
 +									\
 +		if (this_cnt == 1)					\
-+			_handle1(bytes, dest, p1);			\
++			_handle1(bytes, dest, srcs[src_off]);		\
 +		else if (this_cnt == 2)					\
-+			_handle2(bytes, dest, p1, p2);			\
++			_handle2(bytes, dest, srcs[src_off],		\
++				srcs[src_off + 1]);			\
 +		else if (this_cnt == 3)					\
-+			_handle3(bytes, dest, p1, p2, p3);		\
++			_handle3(bytes, dest, srcs[src_off],		\
++				srcs[src_off + 1], srcs[src_off + 2]);	\
 +		else							\
-+			_handle4(bytes, dest, p1, p2, p3, p4);		\
++			_handle4(bytes, dest, srcs[src_off],		\
++				srcs[src_off + 1], srcs[src_off + 2],	\
++				srcs[src_off + 3]);			\
 +									\
 +		src_cnt -= this_cnt;					\
 +		src_off += this_cnt;					\

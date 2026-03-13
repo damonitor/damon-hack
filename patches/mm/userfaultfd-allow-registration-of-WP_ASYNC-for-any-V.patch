@@ -1,0 +1,79 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Wed, 11 Mar 2026 20:21:38 +0200
+Subject: [PATCH] userfaultfd: allow registration of WP_ASYNC for any VMA
+
+Registration of a VMA with WP_ASYNC userfaulfd context in write-protect
+mode does not require any VMA-specific resolution of user faults and these
+faults are completely handled by the generic page fault handler.
+
+This functionality existed since the introduction of WP_ASYNC mode and it
+allows tracking writes to SysV shared memory mappings (shmget(2) and
+shmat(2)).
+
+Move the check for WP mode before checking for presence of ->uffd_ops in a
+VMA to restore the original behaviour.
+
+Link: https://lkml.kernel.org/r/abG5HFV8yoEHOFkh@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nikita Kalyazin <kalyazin@amazon.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/userfaultfd.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index cd0f659b55f20..3b395d8275764 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -2044,22 +2044,22 @@ bool vma_can_userfault(struct vm_area_struct *vma, vm_flags_t vm_flags,
+ {
+ 	const struct vm_uffd_ops *ops = vma_uffd_ops(vma);
+ 
+-	/* only VMAs that implement vm_uffd_ops are supported */
+-	if (!ops)
+-		return false;
+-
+ 	vm_flags &= __VM_UFFD_FLAGS;
+ 
+-	if (vma->vm_flags & VM_DROPPABLE)
+-		return false;
+-
+ 	/*
+-	 * If wp async enabled, and WP is the only mode enabled, allow any
++	 * If WP is the only mode enabled and context is wp async, allow any
+ 	 * memory type.
+ 	 */
+ 	if (wp_async && (vm_flags == VM_UFFD_WP))
+ 		return true;
+ 
++	/* For any other mode reject VMAs that don't implement vm_uffd_ops */
++	if (!ops)
++		return false;
++
++	if (vma->vm_flags & VM_DROPPABLE)
++		return false;
++
+ 	/*
+ 	 * If user requested uffd-wp but not enabled pte markers for
+ 	 * uffd-wp, then only anonymous memory is supported
+-- 
+2.47.3
+

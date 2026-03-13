@@ -1,0 +1,111 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Wed, 11 Mar 2026 08:03:58 +0100
+Subject: [PATCH] random: factor out a __limit_random_u32_below helper
+
+Factor out the guts of __get_random_u32_below into a new helper, so that
+callers with their own prng state can reuse this code.
+
+Link: https://lkml.kernel.org/r/20260311070416.972667-27-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Herbert Xu <herbert@gondor.apana.org.au>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: Li Nan <linan122@huawei.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Richard Henderson <richard.henderson@linaro.org>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Song Liu <song@kernel.org>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/char/random.c  | 26 +++++++++++++++-----------
+ include/linux/random.h |  1 +
+ 2 files changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/char/random.c b/drivers/char/random.c
+index 7ff4d29911fd8..23b5addf02fbf 100644
+--- a/drivers/char/random.c
++++ b/drivers/char/random.c
+@@ -544,18 +544,16 @@ DEFINE_BATCHED_ENTROPY(u16)
+ DEFINE_BATCHED_ENTROPY(u32)
+ DEFINE_BATCHED_ENTROPY(u64)
+ 
+-u32 __get_random_u32_below(u32 ceil)
++/*
++ * This is the slow path for variable ceil. It is still fast, most of the time,
++ * by doing traditional reciprocal multiplication and opportunistically
++ * comparing the lower half to ceil itself, before falling back to computing a
++ * larger bound, and then rejecting samples whose lower half would indicate a
++ * range indivisible by ceil. The use of `-ceil % ceil` is analogous to `2^32 %
++ * ceil`, but is computable in 32-bits.
++ */
++u32 __limit_random_u32_below(u32 ceil, u32 rand)
+ {
+-	/*
+-	 * This is the slow path for variable ceil. It is still fast, most of
+-	 * the time, by doing traditional reciprocal multiplication and
+-	 * opportunistically comparing the lower half to ceil itself, before
+-	 * falling back to computing a larger bound, and then rejecting samples
+-	 * whose lower half would indicate a range indivisible by ceil. The use
+-	 * of `-ceil % ceil` is analogous to `2^32 % ceil`, but is computable
+-	 * in 32-bits.
+-	 */
+-	u32 rand = get_random_u32();
+ 	u64 mult;
+ 
+ 	/*
+@@ -577,6 +575,12 @@ u32 __get_random_u32_below(u32 ceil)
+ 	}
+ 	return mult >> 32;
+ }
++EXPORT_SYMBOL_GPL(__limit_random_u32_below);
++
++u32 __get_random_u32_below(u32 ceil)
++{
++	return __limit_random_u32_below(ceil, get_random_u32());
++}
+ EXPORT_SYMBOL(__get_random_u32_below);
+ 
+ #ifdef CONFIG_SMP
+diff --git a/include/linux/random.h b/include/linux/random.h
+index 8a8064dc3970b..54401dd53f689 100644
+--- a/include/linux/random.h
++++ b/include/linux/random.h
+@@ -50,6 +50,7 @@ static inline unsigned long get_random_long(void)
+ #endif
+ }
+ 
++u32 __limit_random_u32_below(u32 ceil, u32 rand);
+ u32 __get_random_u32_below(u32 ceil);
+ 
+ /*
+-- 
+2.47.3
+

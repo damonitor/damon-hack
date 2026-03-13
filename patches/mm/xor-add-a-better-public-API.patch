@@ -1,15 +1,14 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Thu, 26 Feb 2026 07:10:33 -0800
+Date: Wed, 11 Mar 2026 08:03:53 +0100
 Subject: [PATCH] xor: add a better public API
 
-xor_blocks is very annoying to use, because it is limited to 4 + 1
-sources / destinations, has an odd argument order and is completely
-undocumented.
+xor_blocks is very annoying to use, because it is limited to 4 + 1 sources
+/ destinations, has an odd argument order and is completely undocumented.
 
 Lift the code that loops around it from btrfs and async_tx/async_xor into
 common code under the name xor_gen and properly document it.
 
-Link: https://lkml.kernel.org/r/20260226151106.144735-22-hch@lst.de
+Link: https://lkml.kernel.org/r/20260311070416.972667-22-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -29,6 +28,7 @@ Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Johannes Berg <johannes@sipsolutions.net>
 Cc: Li Nan <linan122@huawei.com>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
@@ -42,32 +42,32 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Russell King <linux@armlinux.org.uk>
 Cc: Song Liu <song@kernel.org>
 Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Ted Ts'o <tytso@mit.edu>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/raid/xor.h |  3 +++
- lib/raid/xor/xor-core.c  | 28 ++++++++++++++++++++++++++++
- 2 files changed, 31 insertions(+)
+ include/linux/raid/xor.h |  2 ++
+ lib/raid/xor/xor-core.c  | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+)
 
 diff --git a/include/linux/raid/xor.h b/include/linux/raid/xor.h
-index 02bda8d995347..4735a4e960f95 100644
+index 02bda8d995347..6d9a39fd85dda 100644
 --- a/include/linux/raid/xor.h
 +++ b/include/linux/raid/xor.h
-@@ -7,4 +7,7 @@
+@@ -7,4 +7,6 @@
  extern void xor_blocks(unsigned int count, unsigned int bytes,
  	void *dest, void **srcs);
  
-+void xor_gen(void *dest, void **srcss, unsigned int src_cnt,
-+		unsigned int bytes);
++void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes);
 +
  #endif /* _XOR_H */
 diff --git a/lib/raid/xor/xor-core.c b/lib/raid/xor/xor-core.c
-index 8dda4055ad092..b7c29ca931ecc 100644
+index 47e09ae954b2b..64f12f579e96c 100644
 --- a/lib/raid/xor/xor-core.c
 +++ b/lib/raid/xor/xor-core.c
-@@ -46,6 +46,34 @@ xor_blocks(unsigned int src_count, unsigned int bytes, void *dest, void **srcs)
+@@ -46,6 +46,38 @@ xor_blocks(unsigned int src_count, unsigned int bytes, void *dest, void **srcs)
  }
  EXPORT_SYMBOL(xor_blocks);
  
@@ -79,7 +79,9 @@ index 8dda4055ad092..b7c29ca931ecc 100644
 + * @bytes:	length in bytes of each vector
 + *
 + * Performs bit-wise XOR operation into @dest for each of the @src_cnt vectors
-+ * in @srcs for a length of @bytes bytes.
++ * in @srcs for a length of @bytes bytes.  @src_count must be non-zero, and the
++ * memory pointed to by @dest and each member of @srcs must be at least 32-byte
++ * aligned.  @bytes must be non-zero and a multiple of 512.
 + *
 + * Note: for typical RAID uses, @dest either needs to be zeroed, or filled with
 + * the first disk, which then needs to be removed from @srcs.
@@ -87,6 +89,8 @@ index 8dda4055ad092..b7c29ca931ecc 100644
 +void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
 +{
 +	unsigned int src_off = 0;
++
++	WARN_ON_ONCE(bytes & 511);
 +
 +	while (src_cnt > 0) {
 +		unsigned int this_cnt = min(src_cnt, MAX_XOR_BLOCKS);
@@ -101,7 +105,7 @@ index 8dda4055ad092..b7c29ca931ecc 100644
 +
  /* Set of all registered templates.  */
  static struct xor_block_template *__initdata template_list;
- static int __initdata xor_forced = false;
+ static bool __initdata xor_forced = false;
 -- 
 2.47.3
 
