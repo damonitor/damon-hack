@@ -1,9 +1,19 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Wed, 4 Feb 2026 21:55:43 -0800
-Subject: [PATCH] mm/damon/stat: monitor all system rams
+Subject: [PATCH] mm/damon/stat: monitor all System RAM resources
 
-DAMON_STAT is documented to monitor the system's entire physical memory.
-But, it is monitoring only the biggest System RAM.  Fix it.
+DAMON_STAT usage document (Documentation/admin-guide/mm/damon/stat.rst)
+says it monitors the system's entire physical memory.  But, it is
+monitoring only the biggest System RAM resource of the system.  When
+there are multiple System RAM resources, this results in monitoring only
+an unexpectedly small fraction of the physical memory.  For example,
+suppose the system has a 500 GiB System RAM, 10 MiB non-System RAM, and
+500 GiB System RAM resources in order on the physical address space.
+DAMON_STAT will monitor only the first 500 GiB System RAM.  This
+situation is particularly common on NUMA systems.
+
+Select a physical address range that covers all System RAM areas of the
+system, to fix this issue and make it work as documented.
 
 Fixes: 369c415e6073 ("mm/damon: introduce DAMON_STAT module")
 Cc: <stable@vger.kernel.org> # 6.17.x
@@ -13,21 +23,21 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 48 insertions(+), 3 deletions(-)
 
 diff --git a/mm/damon/stat.c b/mm/damon/stat.c
-index f9a2028483b05..8e84998a18501 100644
+index f9a2028483b05..3ed71db33e899 100644
 --- a/mm/damon/stat.c
 +++ b/mm/damon/stat.c
 @@ -145,12 +145,57 @@ static int damon_stat_damon_call_fn(void *data)
  	return 0;
  }
  
-+struct damon_system_ram_range_walk_arg {
++struct damon_stat_system_ram_range_walk_arg {
 +	bool walked;
 +	struct resource res;
 +};
 +
-+static int damon_system_ram_walk_fn(struct resource *res, void *arg)
++static int damon_stat_system_ram_walk_fn(struct resource *res, void *arg)
 +{
-+	struct damon_system_ram_range_walk_arg *a = arg;
++	struct damon_stat_system_ram_range_walk_arg *a = arg;
 +
 +	if (!a->walked) {
 +		a->walked = true;
@@ -54,9 +64,9 @@ index f9a2028483b05..8e84998a18501 100644
 +		unsigned long addr_unit, unsigned long min_region_sz)
 +{
 +	struct damon_addr_range addr_range;
-+	struct damon_system_ram_range_walk_arg arg = {};
++	struct damon_stat_system_ram_range_walk_arg arg = {};
 +
-+	walk_system_ram_res(0, -1, &arg, damon_system_ram_walk_fn);
++	walk_system_ram_res(0, -1, &arg, damon_stat_system_ram_walk_fn);
 +	if (!arg.walked)
 +		return -EINVAL;
 +	addr_range.start = damon_stat_res_to_core_addr(
