@@ -2,6 +2,56 @@ From: SeongJae Park <sj@kernel.org>
 Date: Fri, 20 Feb 2026 18:01:00 -0800
 Subject: [PATCH] ==== damon pause_resume ====
 
+mm/damon: let DAMON be paused and resumed
+
+The execution of DAMON can only be started and stopped.  Letting it be
+paused and resumed can be beneficial in multiple use cases.
+
+Tests of DAMON is one such use cases.  DAMON selftest is using drgn to
+dump the internal DAMON status.  The status is investigated if it is
+same to what the test code expected.  Because DAMON keeps running and
+modifying its internal status, there is a chance of data race that can
+cause wrong test results.
+
+Investigation of DAMON is another use case.  When an investigation of
+DAMON is needed, it is common to stop DAMON, coleecting clues for the
+investigation, and restart DAMON.  It is not very useful since many of
+DAMON internal clues are gone when DAMON is stopped.  Also, DAMON's
+monitoring results are improved over time due to its adaptive regions
+adjustment mechanism and the 'age' counters.  DAMON that restarted after
+the investigation should start over from the not yet ripen monitoring
+results.  This can espeically be problematic on production environment.
+
+Monitoring of workloads that have different phases is another use case.
+For example, in Android, applications are known to have very different
+access pattern and behavior when they are running on the foreground and
+the background.  It can therefore useful to separately monitor the
+access pattern of apps while they are on the foreground and on the
+background.  Having two DAMON threads per application that paused and
+resumed for the apps foreground/background switches can be used for the
+purpose.
+
+Let such control be available.  Introduce a new DAMON context parameter,
+namely 'pause'.  API callers can update it while the context is running,
+using the online parameters update functions (damon_commit_ctx() and
+damon_call()).  Once it is set, kdamond_fn() main loop will do only
+limited works while sleeping sampling intervals per the work.  The
+limited works include handling of the online prameters update.  Hence
+users can still update the 'pause' parameter.  Once it is unset,
+kdamond_fn() main loop will do the all works again.  Under the paused
+state, it also does stop condition checks and handling of it.  Further
+extend DAMON sysfs interface for user-space control of the feature.
+Also, update existing tests to test and use the feature.
+
+Patch 1 introduces the new parameter to core API.  Patch 2 extend DAMON
+sysfs interface for the new parameter.  Patches 3-5 update design, usage
+and ABI documents for the new sysfs file, respectively.  Following five
+patches are for tests.  Patch 6 implement new kunit test for the pause
+parameter online commitment.  Patches 7 and 8 extend DAMON selftest
+helpers to support the new feature.  Patch 9 extend selftest to test the
+feature.  Finally, patch 10 updates existing selftest to be safe from
+the race condition using the pause/resume feature.
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  hkml_cv_bogus/hkml_cv_bogus_wf2tozw0 | 0
