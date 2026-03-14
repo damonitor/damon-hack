@@ -9,7 +9,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  2 files changed, 10 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index 013784099b892..abe6279b49727 100644
+index 013784099b892..170505f21d7ff 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -811,6 +811,8 @@ struct damon_ctx {
@@ -17,36 +17,36 @@ index 013784099b892..abe6279b49727 100644
  	 */
  	unsigned long next_intervals_tune_sis;
 +	/* pause kdamond main loop */
-+	bool paused;
++	bool pause;
  	/* for waiting until the execution of the kdamond_fn is started */
  	struct completion kdamond_started;
  	/* for scheme quotas prioritization */
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 77def367191d5..3bf312b9ccab0 100644
+index 77def367191d5..0641cdedc8255 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1363,6 +1363,7 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
  		if (err)
  			return err;
  	}
-+	dst->paused = src->paused;
++	dst->pause = src->pause;
  	dst->ops = src->ops;
  	dst->addr_unit = src->addr_unit;
  	dst->min_region_sz = src->min_region_sz;
-@@ -2984,6 +2985,13 @@ static int kdamond_fn(void *data)
- 		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
- 		unsigned long sample_interval = ctx->attrs.sample_interval;
- 
-+		if (ctx->paused) {
-+			kdamond_usleep(sample_interval);
-+			/* allow caller resetting paused via damon_call() */
+@@ -3010,6 +3011,13 @@ static int kdamond_fn(void *data)
+ 		 * kdamond_merge_regions() if possible, to reduce overhead
+ 		 */
+ 		kdamond_call(ctx, false);
++		while (ctx->pause) {
++			if (kdamond_need_stop(ctx))
++				goto done;
++			kdamond_usleep(ctx->attrs.sample_interval);
++			/* allow caller unset pause via damon_call() */
 +			kdamond_call(ctx, false);
-+			continue;
 +		}
-+
- 		if (kdamond_wait_activation(ctx))
- 			break;
- 
+ 		if (!list_empty(&ctx->schemes))
+ 			kdamond_apply_schemes(ctx);
+ 		else
 -- 
 2.47.3
 
