@@ -2,6 +2,52 @@ From: SeongJae Park <sj@kernel.org>
 Date: Fri, 6 Mar 2026 17:07:53 -0800
 Subject: [PATCH] ==== failed region charge rate ====
 
+Tests
+=====
+
+I tested this feature in below steps.
+
+1. Allocate 50% of system memory and mlock() it using a test program.
+2. Fill up page cache to exhaust nearly all free memory.
+3. Start DAMON-based proactive reclamation with 100 MiB/second
+   hard-quota.  Auto-tune the soft-quota under the hard-quota for
+   achieving 40% free memory of the system with 'temporal' tuner.
+
+For the step 1, I used a simple C program that written by Gemini.  It is
+too simple, so I'm not sharing the code here.
+
+For the step 2, I use dd command like below:
+
+   dd if=/dev/zero of=foo bs=1M count=$50_percent_of_system_memory
+
+For the step 3, I use the latest version of DAMON user-space tool (damo)
+like below.
+
+    sudo ./damo start --damos_action pageout \
+            ` # Do the pageout only up to 100 MiB per second `
+            --damos_quota_space 100M --damos_quota_interval 1s \
+            ` # Auto-tune the quota below the hard quota aiming` \
+            ` # 40% free memory of the node 0 ` \
+            ` # (entire node of the test system)` \
+            --damos_quota_goal node_mem_free_bp 40% 0 \
+            ` # use temporal tuner, which is easy to understnd ` \
+            --damos_quota_goal_tuner temporal
+
+As expected, the progress of the reclamation is not consistent, because
+the quota is exceeded for the failed reclamation of the unreclamable memory.
+
+I do this again, but with failed region charge ratio feature.  For this,
+the above 'damo' command is used, after appending below command line option.
+Note that the option was added to 'damo' after v3.1.9.
+
+    sudo ./damo start --damos_action pageout \
+            [...]
+            ` # quota-charge only 1/4096 for pageout-failed regions ` \
+            --damos_quota_fail_charge_ratio 1 4096
+
+As expected, the progress of the reclamation was nearly 100 MiB per
+second until the goal is achieved.
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  hkml_cv_bogus/hkml_cv_bogus_yi9absiw | 0
