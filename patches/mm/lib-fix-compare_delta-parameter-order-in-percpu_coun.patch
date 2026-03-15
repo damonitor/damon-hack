@@ -1,0 +1,63 @@
+From: David Carlier <devnexen@gmail.com>
+Date: Fri, 13 Mar 2026 17:54:24 +0000
+Subject: [PATCH] lib: fix compare_delta parameter order in percpu_counter_tree
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The compare_delta() helper takes (delta, accuracy_neg, accuracy_pos), but
+every call site passes (delta, accuracy_pos, accuracy_neg) — the last
+two arguments are consistently swapped.
+
+The documented invariant (include/linux/percpu_counter_tree.h) is:
+
+  (precise_sum - under) <= approx_sum <= (precise_sum + over)
+
+Which means precise_sum is in [approx_sum - over, approx_sum + under].
+
+For a positive delta (v - approx_sum >= 0), accuracy_pos must be
+"under" (the maximum amount precise_sum can exceed approx_sum).
+For a negative delta, accuracy_neg must be "over". Since under > over
+always (batch_size * M vs (batch_size - 1) * M), swapping them causes
+false definitive results: the functions return 1 ("v > counter") when
+the correct answer is 0 (indeterminate).
+
+This affects all comparison functions:
+- percpu_counter_tree_approximate_compare_value()
+- percpu_counter_tree_approximate_compare()
+- percpu_counter_tree_precise_compare_value()
+- percpu_counter_tree_precise_compare()
+
+The precise variants are also affected because their approximate
+fast-path can short-circuit with a wrong result, skipping the precise
+sum computation.
+
+Fix by swapping the parameter order in compare_delta() itself, since all
+call sites are consistently swapped.
+
+Link: https://lkml.kernel.org/r/20260313175424.132735-1-devnexen@gmail.com
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Reviewed-by: Josh Law <objecting@objecting.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/percpu_counter_tree.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/percpu_counter_tree.c b/lib/percpu_counter_tree.c
+index 5c8fc2dcdc169..beb1144e6450f 100644
+--- a/lib/percpu_counter_tree.c
++++ b/lib/percpu_counter_tree.c
+@@ -458,7 +458,7 @@ long percpu_counter_tree_precise_sum(struct percpu_counter_tree *counter)
+ EXPORT_SYMBOL_GPL(percpu_counter_tree_precise_sum);
+ 
+ static
+-int compare_delta(long delta, unsigned long accuracy_neg, unsigned long accuracy_pos)
++int compare_delta(long delta, unsigned long accuracy_pos, unsigned long accuracy_neg)
+ {
+ 	if (delta >= 0) {
+ 		if (delta <= accuracy_pos)
+-- 
+2.47.3
+

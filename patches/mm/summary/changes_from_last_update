@@ -5,81 +5,43 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 29 -> 40 commits
-  - series: 6 (27) -> 7 (38)
+- mm-unstable: 40 -> 46 commits
+  - series: 7 (38) -> 8 (43)
     - no role, maintainer: 2 -> 2 commits (no change)
-    - maintainer, nobody: 20 -> 31 commits
+    - maintainer, nobody: 31 -> 37 commits
     - maintainer, no role : 7 -> 7 commits (no change)
-  - changed commits
-    - series "mm/damon: support multiple goal-based quota tuning algorithms". (11)
-      - bbb1df061bb7 "mm/damon/core: introduce damos_quota_goal_tuner (0/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-2-sj@kernel.org
-        - Link: https://lore.kernel.org/CALa+Y17__d=ZsM1yX+MXx0ozVdsXnFqF4p0g+kATEitrWyZFfg@mail.gmail.com [1]
-        - Link: https://lore.kernel.org/20260204022537.814-1-yunjeong.mun@sk.com [2]
-      - ff28b3bb65c3 "mm/damon/core: allow quota goals set zero effective size quota (1/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-3-sj@kernel.org
-      - 6b6d05c42456 "mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL (2/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-4-sj@kernel.org
-      - 9f34a49968f6 "mm/damon/sysfs-schemes: implement quotas->goal_tuner file (3/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-5-sj@kernel.org
-      - 61db228a166d "Docs/mm/damon/design: document the goal-based quota tuner selections (4/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-6-sj@kernel.org
-      - 10eb4a32dac2 "Docs/admin-guide/mm/damon/usage: document goal_tuner sysfs file (5/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-7-sj@kernel.org
-      - 76947032b8e4 "Docs/ABI/damon: update for goal_tuner (6/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-8-sj@kernel.org
-      - 7bef04fc654e "mm/damon/tests/core-kunit: test goal_tuner commit (7/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-9-sj@kernel.org
-      - 70a0067584e8 "selftests/damon/_damon_sysfs: support goal_tuner setup (8/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-10-sj@kernel.org
-      - f74eea8877d7 "selftests/damon/drgn_dump_damon_status: support quota goal_tuner dumping (9/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-11-sj@kernel.org
-      - 64d7d6cce7dd "selftests/damon/sysfs.py: test goal_tuner commit (10/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260310010529.91162-12-sj@kernel.org
-- mm-new: 11 -> 5 commits
-  - series: 1 (11) -> 1 (5)
-    - maintainer, nobody: 11 -> 5 commits
   - new commits
     - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
-      - f062f8650608 "mm/damon/core: fix wrong end address assignment on walk_system_ram() (0/5)"
+      - 046bd9023a96 "mm/damon/core: fix wrong damon_set_regions() argument (3/5)"
         - Authored by a maintainer, reviewed by nobody
+        - Link: https://lkml.kernel.org/r/20260314001854.79623-1-sj@kernel.org
+  - changed commits
+    - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
+      - 342c26d008de "mm/damon/core: fix wrong end address assignment on walk_system_ram() (0/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
         - Link: https://lkml.kernel.org/r/20260311052927.93921-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260311052927.93921-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260131015643.79158-1-sj@kernel.org [1]
-      - df434afda1af "mm/damon/core: support addr_unit on damon_find_biggest_system_ram() (1/5)"
+      - 16f853d205f0 "mm/damon/core: support addr_unit on damon_find_biggest_system_ram() (1/5)"
         - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
         - Link: https://lkml.kernel.org/r/20260311052927.93921-3-sj@kernel.org
-      - 02fcd3582dae "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default() (2/5)"
+      - 74e8f130e609 "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default() (2/5)"
         - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
         - Link: https://lkml.kernel.org/r/20260311052927.93921-4-sj@kernel.org
-      - d41e57cd0ccd "mm/damon/reclaim: respect addr_unit on default monitoring region setup (3/5)"
+      - 30558e76ce1a "mm/damon/reclaim: respect addr_unit on default monitoring region setup (4/5)"
         - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
         - Link: https://lkml.kernel.org/r/20260311052927.93921-5-sj@kernel.org
-      - 1f4fec396026 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup (4/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-6-sj@kernel.org
+    - b448c4d27664 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-new -> mm-unstable
+      - Link: https://lkml.kernel.org/r/20260311052927.93921-6-sj@kernel.org
+- mm-new: 5 -> 0 commits
+  - series: 1 (5) -> 0 (0)
+    - maintainer, nobody: 5 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
