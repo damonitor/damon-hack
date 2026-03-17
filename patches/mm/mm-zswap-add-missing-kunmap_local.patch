@@ -1,0 +1,53 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Mon, 16 Mar 2026 14:01:22 +0000
+Subject: [PATCH] mm/zswap: add missing kunmap_local()
+
+Commit e2c3b6b21c77 ("mm: zswap: use SG list decompression APIs from
+zsmalloc") updated zswap_decompress() to use the scatterwalk API to copy
+data for uncompressed pages.
+
+In doing so, it mapped kernel memory locally for 32-bit kernels using
+kmap_local_folio(), however it never unmapped this memory.
+
+This resulted in the linked syzbot report where a BUG_ON() is triggered
+due to leaking the kmap slot.
+
+This patch fixes the issue by explicitly unmapping the established kmap.
+
+Link: https://lkml.kernel.org/r/20260316140122.339697-1-ljs@kernel.org
+Fixes: e2c3b6b21c77 ("mm: zswap: use SG list decompression APIs from zsmalloc")
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reported-by: syzbot+fe426bef95363177631d@syzkaller.appspotmail.com
+Closes: https://lore.kernel.org/all/69b75e2c.050a0220.12d28.015a.GAE@google.com
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zswap.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index e6ec3295bdb01..499520f65ff02 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -942,9 +942,14 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+ 
+ 	/* zswap entries of length PAGE_SIZE are not compressed. */
+ 	if (entry->length == PAGE_SIZE) {
++		void *dst;
++
+ 		WARN_ON_ONCE(input->length != PAGE_SIZE);
+-		memcpy_from_sglist(kmap_local_folio(folio, 0), input, 0, PAGE_SIZE);
++
++		dst = kmap_local_folio(folio, 0);
++		memcpy_from_sglist(dst, input, 0, PAGE_SIZE);
+ 		dlen = PAGE_SIZE;
++		kunmap_local(dst);
+ 	} else {
+ 		sg_init_table(&output, 1);
+ 		sg_set_folio(&output, folio, PAGE_SIZE, 0);
+-- 
+2.47.3
+

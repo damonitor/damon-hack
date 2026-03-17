@@ -1,50 +1,34 @@
 From: Thomas Ballasi <tballasi@linux.microsoft.com>
-Date: Mon, 23 Feb 2026 09:15:44 -0800
+Date: Mon, 16 Mar 2026 09:09:08 -0700
 Subject: [PATCH] mm: vmscan: add PIDs to vmscan tracepoints
 
 The changes aims at adding additionnal tracepoints variables to help
 debuggers attribute them to specific processes.
 
-The PID field uses in_task() to reliably detect when we're in process
-context and can safely access current->pid.  When not in process context
-(such as in interrupt or in an asynchronous RCU context), the field is set
-to -1 as a sentinel value.
-
-Link: https://lkml.kernel.org/r/20260223171544.4750-4-tballasi@linux.microsoft.com
+Link: https://lkml.kernel.org/r/20260316160908.42727-4-tballasi@linux.microsoft.com
 Signed-off-by: Thomas Ballasi <tballasi@linux.microsoft.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
-Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Masami Hiramatsu <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <zhengqi.arch@bytedance.com>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
-Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Steven Rostedt (Google) <rostedt@goodmis.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/trace/events/vmscan.h | 34 +++++++++++++++++++++++++---------
- 1 file changed, 25 insertions(+), 9 deletions(-)
+ include/trace/events/vmscan.h | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
 
 diff --git a/include/trace/events/vmscan.h b/include/trace/events/vmscan.h
-index c9e637c10f961..0ba7eee187a68 100644
+index c9e637c10f961..4445a8d9218de 100644
 --- a/include/trace/events/vmscan.h
 +++ b/include/trace/events/vmscan.h
-@@ -132,18 +132,22 @@ DECLARE_EVENT_CLASS(mm_vmscan_direct_reclaim_begin_template,
- 		__field(	unsigned long,	gfp_flags	)
- 		__field(	u64,	memcg_id	)
- 		__field(	int,	order		)
-+		__field(	int,	pid		)
- 	),
- 
- 	TP_fast_assign(
- 		__entry->gfp_flags	= (__force unsigned long)gfp_flags;
- 		__entry->order		= order;
-+		__entry->pid		= current->pid;
+@@ -140,10 +140,12 @@ DECLARE_EVENT_CLASS(mm_vmscan_direct_reclaim_begin_template,
  		__entry->memcg_id	= mem_cgroup_id(memcg);
  	),
  
@@ -53,52 +37,28 @@ index c9e637c10f961..0ba7eee187a68 100644
  		__entry->order,
  		show_gfp_flags(__entry->gfp_flags),
 -		__entry->memcg_id)
-+		__entry->pid,
++		__entry->ent.pid,
 +		__entry->memcg_id,
 +		__event_in_irq() ? "(in-irq)" : "")
  );
  
  DEFINE_EVENT(mm_vmscan_direct_reclaim_begin_template, mm_vmscan_direct_reclaim_begin,
-@@ -178,16 +182,20 @@ DECLARE_EVENT_CLASS(mm_vmscan_direct_reclaim_end_template,
- 	TP_STRUCT__entry(
- 		__field(	unsigned long,	nr_reclaimed	)
- 		__field(	u64,	memcg_id	)
-+		__field(	int,	pid		)
- 	),
- 
- 	TP_fast_assign(
- 		__entry->nr_reclaimed	= nr_reclaimed;
+@@ -185,9 +187,11 @@ DECLARE_EVENT_CLASS(mm_vmscan_direct_reclaim_end_template,
  		__entry->memcg_id	= mem_cgroup_id(memcg);
-+		__entry->pid		= current->pid;
  	),
  
 -	TP_printk("nr_reclaimed=%lu memcg_id=%llu",
 +	TP_printk("nr_reclaimed=%lu pid=%d memcg_id=%llu %s",
  		__entry->nr_reclaimed,
 -		__entry->memcg_id)
-+		__entry->pid,
++		__entry->ent.pid,
 +		__entry->memcg_id,
 +		__event_in_irq() ? "(in-irq)" : "")
  );
  
  DEFINE_EVENT(mm_vmscan_direct_reclaim_end_template, mm_vmscan_direct_reclaim_end,
-@@ -230,9 +238,10 @@ TRACE_EVENT(mm_shrink_slab_start,
- 		__field(unsigned long, cache_items)
- 		__field(unsigned long long, delta)
- 		__field(unsigned long, total_scan)
-+		__field(u64, memcg_id)
- 		__field(int, priority)
- 		__field(int, nid)
--		__field(u64, memcg_id)
-+		__field(int, pid)
- 	),
- 
- 	TP_fast_assign(
-@@ -246,19 +255,22 @@ TRACE_EVENT(mm_shrink_slab_start,
- 		__entry->priority = priority;
- 		__entry->nid = sc->nid;
+@@ -248,17 +252,19 @@ TRACE_EVENT(mm_shrink_slab_start,
  		__entry->memcg_id = mem_cgroup_id(memcg);
-+		__entry->pid = current->pid;
  	),
  
 -	TP_printk("%pS %p: nid: %d memcg_id: %llu objects to shrink %ld gfp_flags %s cache items %ld delta %lld total_scan %ld priority %d",
@@ -106,7 +66,7 @@ index c9e637c10f961..0ba7eee187a68 100644
  		__entry->shrink,
  		__entry->shr,
  		__entry->nid,
-+		__entry->pid,
++		__entry->ent.pid,
  		__entry->memcg_id,
  		__entry->nr_objects_to_shrink,
  		show_gfp_flags(__entry->gfp_flags),
@@ -119,19 +79,7 @@ index c9e637c10f961..0ba7eee187a68 100644
  );
  
  TRACE_EVENT(mm_shrink_slab_end,
-@@ -276,6 +288,7 @@ TRACE_EVENT(mm_shrink_slab_end,
- 		__field(long, total_scan)
- 		__field(int, nid)
- 		__field(int, retval)
-+		__field(int, pid)
- 		__field(u64, memcg_id)
- 	),
- 
-@@ -287,18 +300,21 @@ TRACE_EVENT(mm_shrink_slab_end,
- 		__entry->total_scan = total_scan;
- 		__entry->nid = nid;
- 		__entry->retval = shrinker_retval;
-+		__entry->pid = current->pid;
+@@ -290,15 +296,17 @@ TRACE_EVENT(mm_shrink_slab_end,
  		__entry->memcg_id = mem_cgroup_id(memcg);
  	),
  
@@ -140,7 +88,7 @@ index c9e637c10f961..0ba7eee187a68 100644
  		__entry->shrink,
  		__entry->shr,
  		__entry->nid,
-+		__entry->pid,
++		__entry->ent.pid,
  		__entry->memcg_id,
  		__entry->unused_scan,
  		__entry->new_scan,

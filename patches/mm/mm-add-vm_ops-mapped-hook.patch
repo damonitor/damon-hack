@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Thu, 12 Mar 2026 20:27:19 +0000
+Date: Mon, 16 Mar 2026 21:12:00 +0000
 Subject: [PATCH] mm: add vm_ops->mapped hook
 
 Previously, when a driver needed to do something like establish a
@@ -8,6 +8,10 @@ mapping would succeed.
 
 With the introduction of f_op->mmap_prepare this is no longer the case, as
 it is invoked prior to actually establishing the mapping.
+
+mmap_prepare is not appropriate for this kind of thing as it is called
+before any merge might take place, and after which an error might occur
+meaning resources could be leaked.
 
 To take this into account, introduce a new vm_ops->mapped callback which
 is invoked when the VMA is first mapped (though notably - not when it is
@@ -35,13 +39,16 @@ be called in __mmap_region() instead via maybe_drop_file_rmap_lock().
 We also abstract unmapping of a VMA on mmap action completion into its own
 helper function, unmap_vma_locked().
 
+Update the mmap_prepare documentation to describe the mapped hook and make
+it clear what its intended use is.
+
 Additionally, update VMA userland test headers to reflect the change.
 
-Link: https://lkml.kernel.org/r/0e0fe47852e6009f662b1fa42f836447b8d1283a.1773346620.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/700b3a31185c1b4255c8410c7724ffd123488467.1773695307.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
-Cc: Alexander Viro <viro@zeniv.linux.org.uk>
 Cc: Alexandre Torgue <alexandre.torgue@foss.st.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
 Cc: Arnd Bergmann <arnd@arndb.de>
 Cc: Bodo Stroesser <bostroesser@gmail.com>
 Cc: Christian Brauner <brauner@kernel.org>
@@ -72,14 +79,41 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/fs.h              |  9 +++-
- include/linux/mm.h              | 17 +++++++
- mm/internal.h                   | 10 ++++
- mm/util.c                       | 86 ++++++++++++++++++++++++---------
- mm/vma.c                        | 41 +++++++++++-----
- tools/testing/vma/include/dup.h | 34 ++++++++++++-
- 6 files changed, 158 insertions(+), 39 deletions(-)
+ Documentation/filesystems/mmap_prepare.rst | 15 ++++
+ include/linux/fs.h                         |  9 ++-
+ include/linux/mm.h                         | 17 +++++
+ mm/internal.h                              |  8 ++
+ mm/util.c                                  | 85 ++++++++++++++++------
+ mm/vma.c                                   | 41 ++++++++---
+ tools/testing/vma/include/dup.h            | 27 ++++++-
+ 7 files changed, 164 insertions(+), 38 deletions(-)
 
+diff --git a/Documentation/filesystems/mmap_prepare.rst b/Documentation/filesystems/mmap_prepare.rst
+index 65a1f094e4699..20db474915da4 100644
+--- a/Documentation/filesystems/mmap_prepare.rst
++++ b/Documentation/filesystems/mmap_prepare.rst
+@@ -25,6 +25,21 @@ That is - no resources should be allocated nor state updated to reflect that a
+ mapping has been established, as the mapping may either be merged, or fail to be
+ mapped after the callback is complete.
+ 
++Mapped callback
++---------------
++
++If resources need to be allocated per-mapping, or state such as a reference
++count needs to be manipulated, this should be done using the ``vm_ops->mapped``
++hook, which itself should be set by the >mmap_prepare hook.
++
++This callback is only invoked if a new mapping has been established and was not
++merged with any other, and is invoked at a point where no error may occur before
++the mapping is established.
++
++You may return an error to the callback itself, which will cause the mapping to
++become unmapped and an error returned to the mmap() caller. This is useful if
++resources need to be allocated, and that allocation might fail.
++
+ How To Use
+ ==========
+ 
 diff --git a/include/linux/fs.h b/include/linux/fs.h
 index a2628a12bd2bc..c390f5c667e3e 100644
 --- a/include/linux/fs.h
@@ -107,10 +141,10 @@ index a2628a12bd2bc..c390f5c667e3e 100644
  
  static inline int vfs_mmap_prepare(struct file *file, struct vm_area_desc *desc)
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index 3d5e5e36a7608..0245edf0f8f25 100644
+index da94edb287cd2..ad1b8c3c0cfd2 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
-@@ -757,6 +757,23 @@ struct vm_operations_struct {
+@@ -777,6 +777,23 @@ struct vm_operations_struct {
  	 * Context: User context.  May sleep.  Caller holds mmap_lock.
  	 */
  	void (*close)(struct vm_area_struct *vma);
@@ -135,19 +169,10 @@ index 3d5e5e36a7608..0245edf0f8f25 100644
  	int (*may_split)(struct vm_area_struct *vma, unsigned long addr);
  	int (*mremap)(struct vm_area_struct *vma);
 diff --git a/mm/internal.h b/mm/internal.h
-index 27787971e83b9..b9ef03936fa0b 100644
+index 9e42a57e8a124..f5774892071ed 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -159,6 +159,8 @@ static inline void *folio_raw_mapping(const struct folio *folio)
-  * mmap hook and safely handle error conditions. On error, VMA hooks will be
-  * mutated.
-  *
-+ * IMPORTANT: f_op->mmap() is deprecated, prefer f_op->mmap_prepare().
-+ *
-  * @file: File which backs the mapping.
-  * @vma:  VMA which we are mapping.
-  *
-@@ -202,6 +204,14 @@ static inline void vma_close(struct vm_area_struct *vma)
+@@ -202,6 +202,14 @@ static inline void vma_close(struct vm_area_struct *vma)
  /* unmap_vmas is in mm/memory.c */
  void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap);
  
@@ -155,7 +180,7 @@ index 27787971e83b9..b9ef03936fa0b 100644
 +{
 +	const size_t len = vma_pages(vma) << PAGE_SHIFT;
 +
-+	mmap_assert_locked(vma->vm_mm);
++	mmap_assert_write_locked(vma->vm_mm);
 +	do_munmap(vma->vm_mm, vma->vm_start, len, NULL);
 +}
 +
@@ -163,10 +188,10 @@ index 27787971e83b9..b9ef03936fa0b 100644
  
  static inline void get_anon_vma(struct anon_vma *anon_vma)
 diff --git a/mm/util.c b/mm/util.c
-index 0c602b0b4ac6a..ac90cd9b1aacc 100644
+index ac9dd6490523e..cdfba09e50d7f 100644
 --- a/mm/util.c
 +++ b/mm/util.c
-@@ -1163,6 +1163,55 @@ void flush_dcache_folio(struct folio *folio)
+@@ -1163,6 +1163,54 @@ void flush_dcache_folio(struct folio *folio)
  EXPORT_SYMBOL(flush_dcache_folio);
  #endif
  
@@ -191,7 +216,7 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
 +	if (err)
 +		return err;
 +
-+	err = mmap_action_prepare(&desc, &desc.action);
++	err = mmap_action_prepare(&desc);
 +	if (err)
 +		return err;
 +
@@ -205,15 +230,14 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
 +	void *vm_private_data = vma->vm_private_data;
 +	int err;
 +
-+	if (!vm_ops->mapped)
++	if (!vm_ops || !vm_ops->mapped)
 +		return 0;
 +
 +	err = vm_ops->mapped(vma->vm_start, vma->vm_end, vma->vm_pgoff, file,
 +			     &vm_private_data);
 +	if (err)
 +		unmap_vma_locked(vma);
-+	/* Update private data if changed. */
-+	if (vm_private_data != vma->vm_private_data)
++	else if (vm_private_data != vma->vm_private_data)
 +		vma->vm_private_data = vm_private_data;
 +
 +	return err;
@@ -222,7 +246,7 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
  /**
   * compat_vma_mmap() - Apply the file's .mmap_prepare() hook to an
   * existing VMA and execute any requested actions.
-@@ -1191,34 +1240,26 @@ EXPORT_SYMBOL(flush_dcache_folio);
+@@ -1191,34 +1239,26 @@ EXPORT_SYMBOL(flush_dcache_folio);
   */
  int compat_vma_mmap(struct file *file, struct vm_area_struct *vma)
  {
@@ -245,7 +269,7 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
 -	if (err)
 -		return err;
 -
--	err = mmap_action_prepare(&desc, &desc.action);
+-	err = mmap_action_prepare(&desc);
 +	err = __compat_vma_mmap(file, vma);
  	if (err)
  		return err;
@@ -259,7 +283,7 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
 +int __vma_check_mmap_hook(struct vm_area_struct *vma)
 +{
 +	/* vm_ops->mapped is not valid if mmap() is specified. */
-+	if (WARN_ON_ONCE(vma->vm_ops->mapped))
++	if (vma->vm_ops && WARN_ON_ONCE(vma->vm_ops->mapped))
 +		return -EINVAL;
 +
 +	return 0;
@@ -269,7 +293,7 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
  static void set_ps_flags(struct page_snapshot *ps, const struct folio *folio,
  			 const struct page *page)
  {
-@@ -1316,10 +1357,7 @@ static int mmap_action_finish(struct vm_area_struct *vma,
+@@ -1316,10 +1356,7 @@ static int mmap_action_finish(struct vm_area_struct *vma,
  	 * invoked if we do NOT merge, so we only clean up the VMA we created.
  	 */
  	if (err) {
@@ -282,10 +306,10 @@ index 0c602b0b4ac6a..ac90cd9b1aacc 100644
  			/* We may want to filter the error. */
  			err = action->error_hook(err);
 diff --git a/mm/vma.c b/mm/vma.c
-index dcef6028133f9..c2cbdbddf5525 100644
+index 2a86c7575000e..3a0fb2caa1c66 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -2703,21 +2703,35 @@ static bool can_set_ksm_flags_early(struct mmap_state *map)
+@@ -2731,21 +2731,35 @@ static bool can_set_ksm_flags_early(struct mmap_state *map)
  	return false;
  }
  
@@ -332,7 +356,7 @@ index dcef6028133f9..c2cbdbddf5525 100644
  }
  
  static unsigned long __mmap_region(struct file *file, unsigned long addr,
-@@ -2771,8 +2785,11 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+@@ -2799,8 +2813,11 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
  	__mmap_complete(&map, vma);
  
  	if (have_mmap_prepare && allocated_new) {
@@ -346,21 +370,10 @@ index dcef6028133f9..c2cbdbddf5525 100644
  			return error;
  	}
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index c4455247c6d4a..596b7e72b7204 100644
+index ccf1f061c65a5..4570ec77f153f 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
-@@ -609,12 +609,34 @@ struct vm_area_struct {
- } __randomize_layout;
- 
- struct vm_operations_struct {
--	void (*open)(struct vm_area_struct * area);
-+	/**
-+	 * @open: Called when a VMA is remapped or split. Not called upon first
-+	 * mapping a VMA.
-+	 * Context: User context.  May sleep.  Caller holds mmap_lock.
-+	 */
-+	void (*open)(struct vm_area_struct *vma);
- 	/**
+@@ -642,7 +642,24 @@ struct vm_operations_struct {
  	 * @close: Called when the VMA is being removed from the MM.
  	 * Context: User context.  May sleep.  Caller holds mmap_lock.
  	 */
@@ -386,16 +399,16 @@ index c4455247c6d4a..596b7e72b7204 100644
  	/* Called any time before splitting to check if it's allowed */
  	int (*may_split)(struct vm_area_struct *area, unsigned long addr);
  	int (*mremap)(struct vm_area_struct *area);
-@@ -1354,3 +1376,11 @@ static inline int get_sysctl_max_map_count(void)
- {
- 	return READ_ONCE(sysctl_max_map_count);
+@@ -1500,3 +1517,11 @@ static inline pgprot_t vma_get_page_prot(vma_flags_t vma_flags)
+ 
+ 	return vm_get_page_prot(vm_flags);
  }
 +
 +static inline void unmap_vma_locked(struct vm_area_struct *vma)
 +{
 +	const size_t len = vma_pages(vma) << PAGE_SHIFT;
 +
-+	mmap_assert_locked(vma->vm_mm);
++	mmap_assert_write_locked(vma->vm_mm);
 +	do_munmap(vma->vm_mm, vma->vm_start, len, NULL);
 +}
 -- 

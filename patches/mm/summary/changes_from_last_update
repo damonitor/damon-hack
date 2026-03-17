@@ -5,43 +5,19 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 40 -> 46 commits
-  - series: 7 (38) -> 8 (43)
+- mm-unstable: 46 -> 46 commits (no change)
+  - series: 8 (43) -> 8 (43) (no change)
     - no role, maintainer: 2 -> 2 commits (no change)
-    - maintainer, nobody: 31 -> 37 commits
+    - maintainer, nobody: 37 -> 37 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
+- mm-new: 0 -> 1 commits
+  - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 0 -> 1 commits
   - new commits
-    - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
-      - 046bd9023a96 "mm/damon/core: fix wrong damon_set_regions() argument (3/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260314001854.79623-1-sj@kernel.org
-  - changed commits
-    - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
-      - 342c26d008de "mm/damon/core: fix wrong end address assignment on walk_system_ram() (0/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260131015643.79158-1-sj@kernel.org [1]
-      - 16f853d205f0 "mm/damon/core: support addr_unit on damon_find_biggest_system_ram() (1/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-3-sj@kernel.org
-      - 74e8f130e609 "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default() (2/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-4-sj@kernel.org
-      - 30558e76ce1a "mm/damon/reclaim: respect addr_unit on default monitoring region setup (4/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lkml.kernel.org/r/20260311052927.93921-5-sj@kernel.org
-    - b448c4d27664 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lkml.kernel.org/r/20260311052927.93921-6-sj@kernel.org
-- mm-new: 5 -> 0 commits
-  - series: 1 (5) -> 0 (0)
-    - maintainer, nobody: 5 -> 0 commits
+    - 03075da4e491 "Docs/mm/damon: document exclusivity of special-purpose modules"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260315162945.80994-1-sj@kernel.org
+      - Link: https://lore.kernel.org/damon/20260314002119.79742-1-sj@kernel.org/T/#t [1]
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
