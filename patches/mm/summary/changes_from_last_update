@@ -1,8 +1,13 @@
 - baseline: v7.0-rc3-16-gb4f0dd314b39e -> v7.0-rc3-16-gb4f0dd314b39e (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 0 commits (no change)
+- mm-hotfixes-unstable: 0 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
+    - maintainer, nobody: 0 -> 1 commits
+  - new commits
+    - bea64c09cf05 "mm/damon/stat: monitor all System RAM resources"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260316235118.873-1-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 46 -> 46 commits (no change)
@@ -10,14 +15,9 @@
     - no role, maintainer: 2 -> 2 commits (no change)
     - maintainer, nobody: 37 -> 37 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
-- mm-new: 0 -> 1 commits
+- mm-new: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 0 -> 1 commits
-  - new commits
-    - 03075da4e491 "Docs/mm/damon: document exclusivity of special-purpose modules"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lkml.kernel.org/r/20260315162945.80994-1-sj@kernel.org
-      - Link: https://lore.kernel.org/damon/20260314002119.79742-1-sj@kernel.org/T/#t [1]
+    - no role, maintainer: 1 -> 1 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
