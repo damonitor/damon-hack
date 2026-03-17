@@ -5,9 +5,9 @@ Subject: [PATCH] mm/damon: introduce damon_set_region_system_rams_default()
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  5 +++
- mm/damon/core.c       | 78 +++++++++++++++++++++++++++++++++++++++++++
- mm/damon/stat.c       | 51 ++--------------------------
- 3 files changed, 86 insertions(+), 48 deletions(-)
+ mm/damon/core.c       | 75 ++++++++++++++++++++++++++++++++++++++++---
+ mm/damon/stat.c       | 49 ++--------------------------
+ 3 files changed, 77 insertions(+), 52 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 2c9d2d9181ffe..2dc6a0306dbbc 100644
@@ -26,43 +26,39 @@ index 2c9d2d9181ffe..2dc6a0306dbbc 100644
  				unsigned long *start, unsigned long *end,
  				unsigned long addr_unit,
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index bbe9475983981..1c84f24afa81d 100644
+index bbe9475983981..151230719da9f 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -3102,6 +3102,84 @@ static int kdamond_fn(void *data)
+@@ -3102,14 +3102,20 @@ static int kdamond_fn(void *data)
  	return 0;
  }
  
+-static int walk_system_ram(struct resource *res, void *arg)
 +struct damon_system_ram_range_walk_arg {
 +	bool walked;
 +	struct resource res;
 +};
 +
 +static int damon_system_ram_walk_fn(struct resource *res, void *arg)
-+{
+ {
+-	struct resource *a = arg;
 +	struct damon_system_ram_range_walk_arg *a = arg;
-+
+ 
+-	if (resource_size(a) < resource_size(res)) {
+-		a->start = res->start;
+-		a->end = res->end;
 +	if (!a->walked) {
 +		a->walked = true;
 +		a->res.start = res->start;
-+	}
+ 	}
 +	a->res.end = res->end;
-+	return 0;
-+}
-+
-+static unsigned long damon_res_to_core_addr(resource_size_t ra,
-+		unsigned long addr_unit)
-+{
-+	/*
-+	 * Use div_u64() for avoiding linking errors related with __udivdi3,
-+	 * __aeabi_uldivmod, or similar problems.  This should also improve the
-+	 * performance optimization (read div_u64() comment for the detail).
-+	 */
-+	if (sizeof(ra) == 8 && sizeof(addr_unit) == 4)
-+		return div_u64(ra, addr_unit);
-+	return ra / addr_unit;
-+}
-+
+ 	return 0;
+ }
+ 
+@@ -3126,6 +3132,65 @@ static unsigned long damon_res_to_core_addr(resource_size_t ra,
+ 	return ra / addr_unit;
+ }
+ 
 +static bool damon_find_system_ram_range(unsigned long *start,
 +		unsigned long *end, unsigned long addr_unit)
 +{
@@ -111,11 +107,22 @@ index bbe9475983981..1c84f24afa81d 100644
 +	return damon_set_regions(t, &addr_range, 1, min_region_sz);
 +}
 +
- static int walk_system_ram(struct resource *res, void *arg)
- {
- 	struct resource *a = arg;
++static int walk_system_ram(struct resource *res, void *arg)
++{
++	struct resource *a = arg;
++
++	if (resource_size(a) < resource_size(res)) {
++		a->start = res->start;
++		a->end = res->end;
++	}
++	return 0;
++}
++
+ /*
+  * Find biggest 'System RAM' resource and store its start and end address in
+  * @start and @end, respectively.  If no System RAM is found, returns false.
 diff --git a/mm/damon/stat.c b/mm/damon/stat.c
-index 3a42a8f9b55d5..38f404b4322c9 100644
+index 2acb445bf9fb5..38f404b4322c9 100644
 --- a/mm/damon/stat.c
 +++ b/mm/damon/stat.c
 @@ -154,57 +154,12 @@ static int damon_stat_damon_call_fn(void *data)
@@ -177,17 +184,15 @@ index 3a42a8f9b55d5..38f404b4322c9 100644
  
  	ctx = damon_new_ctx();
  	if (!ctx)
-@@ -234,8 +189,8 @@ static struct damon_ctx *damon_stat_build_ctx(void)
+@@ -234,7 +189,7 @@ static struct damon_ctx *damon_stat_build_ctx(void)
  	if (!target)
  		goto free_out;
  	damon_add_target(ctx, target);
--	if (damon_stat_set_monitoring_region(target, ctx->addr_unit,
--				ctx->min_region_sz))
+-	if (damon_stat_set_monitoring_region(target,
 +	if (damon_set_region_system_rams_default(target, &start, &end,
-+				ctx->addr_unit, ctx->min_region_sz))
+ 				ctx->addr_unit, ctx->min_region_sz))
  		goto free_out;
  	return ctx;
- free_out:
 -- 
 2.47.3
 
