@@ -1,0 +1,90 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Mon, 16 Mar 2026 21:02:38 -0700
+Subject: [PATCH] selftests/damon/sysfs.py: fixup: pause all contexts during
+ dumping
+
+Fix "pause DAMON before dumping status".
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/sysfs.py | 50 ++++++++++++++------------
+ 1 file changed, 27 insertions(+), 23 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/sysfs.py b/tools/testing/selftests/damon/sysfs.py
+index a1a29f1a7c27b..704729c7a318e 100755
+--- a/tools/testing/selftests/damon/sysfs.py
++++ b/tools/testing/selftests/damon/sysfs.py
+@@ -193,15 +193,17 @@ def assert_ctx_committed(ctx, dump):
+     assert_true(dump['pause'] == ctx.pause, 'pause', dump)
+ 
+ def assert_ctxs_committed(kdamonds):
+-    paused_for_dump = False
+-    if kdamonds.kdamonds[0].contexts[0].pause is False:
+-        kdamonds.kdamonds[0].contexts[0].pause = True
+-        err = kdamonds.kdamonds[0].commit()
+-        if err is not None:
+-            print('pause fail (%s)' % err)
+-            kdamonds.stop()
+-            exit(1)
+-        paused_for_dump = True
++    ctxs_paused_for_dump = []
++    for kd in kdamonds.kdamonds:
++        for ctx in kd.contexts:
++            if ctx.pause is False:
++                ctx.pause = True
++                err = kd.commit()
++                if err is not None:
++                    print('pause fail (%s)' % err)
++                    kdamonds.stop()
++                    exit(1)
++                ctxs_paused_for_dump.append(ctx)
+ 
+     status, err = dump_damon_status_dict(kdamonds.kdamonds[0].pid)
+     if err is not None:
+@@ -209,17 +211,17 @@ def assert_ctxs_committed(kdamonds):
+         kdamonds.stop()
+         exit(1)
+ 
+-    if paused_for_dump:
+-        # resume
+-        kdamonds.kdamonds[0].contexts[0].pause = False
+-        err = kdamonds.kdamonds[0].commit()
+-        if err is not None:
+-            print('resume fail (%s)' % err)
+-            kdamonds.stop()
+-            exit(1)
+-
+-        # restore for comparison
+-        kdamonds.kdamonds[0].contexts[0].pause = True
++    for kd in kdamonds.kdamonds:
++        for ctx in kd.contexts:
++            if ctx in ctxs_paused_for_dump:
++                ctx.pause = False
++                err = kd.commit()
++                if err is not None:
++                    print('resume fail (%s)' % err)
++                    kdamonds.stop()
++                    exit(1)
++                # restore for comparison
++                ctx.pause = True
+ 
+     ctxs = kdamonds.kdamonds[0].contexts
+     dump = status['contexts']
+@@ -227,9 +229,11 @@ def assert_ctxs_committed(kdamonds):
+     for idx, ctx in enumerate(ctxs):
+         assert_ctx_committed(ctx, dump[idx])
+ 
+-    if paused_for_dump:
+-        # restore for the caller
+-        kdamonds.kdamonds[0].contexts[0].pause = False
++    # restore for the caller
++    for kd in kdamonds.kdamonds:
++        for ctx in kd.contexts:
++            if ctx in ctxs_paused_for_dump:
++                ctx.pause = False
+ 
+ def main():
+     kdamonds = _damon_sysfs.Kdamonds(
+-- 
+2.47.3
+
