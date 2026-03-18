@@ -1,0 +1,145 @@
+From: Michal Clapinski <mclapinski@google.com>
+Date: Tue, 17 Mar 2026 15:15:33 +0100
+Subject: [PATCH] kho: fix deferred init of kho scratch
+
+Currently, if DEFERRED is enabled, kho_release_scratch will initialize the
+struct pages and set migratetype of kho scratch.  Unless the whole scratch
+fit below first_deferred_pfn, some of that will be overwritten either by
+deferred_init_pages or memmap_init_reserved_pages.
+
+To fix it, I modified kho_release_scratch to only set the migratetype on
+already initialized pages.  Then, modified init_pageblock_migratetype to
+set the migratetype to CMA if the page is located inside scratch.
+
+Link: https://lkml.kernel.org/r/20260317141534.815634-3-mclapinski@google.com
+Signed-off-by: Michal Clapinski <mclapinski@google.com>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Evangelos Petrongonas <epetron@amazon.de>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Pratyush Yadav (Google) <pratyush@kernel.org>
+Cc: Samiullah Khawaja <skhawaja@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memblock.h           |  2 --
+ kernel/liveupdate/kexec_handover.c | 10 ++++++----
+ mm/memblock.c                      | 22 ----------------------
+ mm/page_alloc.c                    |  7 +++++++
+ 4 files changed, 13 insertions(+), 28 deletions(-)
+
+diff --git a/include/linux/memblock.h b/include/linux/memblock.h
+index 6ec5e9ac06992..3e217414e12de 100644
+--- a/include/linux/memblock.h
++++ b/include/linux/memblock.h
+@@ -614,11 +614,9 @@ static inline void memtest_report_meminfo(struct seq_file *m) { }
+ #ifdef CONFIG_MEMBLOCK_KHO_SCRATCH
+ void memblock_set_kho_scratch_only(void);
+ void memblock_clear_kho_scratch_only(void);
+-void memmap_init_kho_scratch_pages(void);
+ #else
+ static inline void memblock_set_kho_scratch_only(void) { }
+ static inline void memblock_clear_kho_scratch_only(void) { }
+-static inline void memmap_init_kho_scratch_pages(void) {}
+ #endif
+ 
+ #endif /* _LINUX_MEMBLOCK_H */
+diff --git a/kernel/liveupdate/kexec_handover.c b/kernel/liveupdate/kexec_handover.c
+index c9b982372d6e2..e511a50fab9c7 100644
+--- a/kernel/liveupdate/kexec_handover.c
++++ b/kernel/liveupdate/kexec_handover.c
+@@ -1477,8 +1477,7 @@ static void __init kho_release_scratch(void)
+ {
+ 	phys_addr_t start, end;
+ 	u64 i;
+-
+-	memmap_init_kho_scratch_pages();
++	int nid;
+ 
+ 	/*
+ 	 * Mark scratch mem as CMA before we return it. That way we
+@@ -1486,10 +1485,13 @@ static void __init kho_release_scratch(void)
+ 	 * we can reuse it as scratch memory again later.
+ 	 */
+ 	__for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE,
+-			     MEMBLOCK_KHO_SCRATCH, &start, &end, NULL) {
++			     MEMBLOCK_KHO_SCRATCH, &start, &end, &nid) {
+ 		ulong start_pfn = pageblock_start_pfn(PFN_DOWN(start));
+ 		ulong end_pfn = pageblock_align(PFN_UP(end));
+ 		ulong pfn;
++#ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
++		end_pfn = min(end_pfn, NODE_DATA(nid)->first_deferred_pfn);
++#endif
+ 
+ 		for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages)
+ 			init_pageblock_migratetype(pfn_to_page(pfn),
+@@ -1500,8 +1502,8 @@ static void __init kho_release_scratch(void)
+ void __init kho_memory_init(void)
+ {
+ 	if (kho_in.scratch_phys) {
+-		kho_scratch = phys_to_virt(kho_in.scratch_phys);
+ 		kho_release_scratch();
++		kho_scratch = phys_to_virt(kho_in.scratch_phys);
+ 
+ 		if (kho_mem_retrieve(kho_get_fdt()))
+ 			kho_in.fdt_phys = 0;
+diff --git a/mm/memblock.c b/mm/memblock.c
+index b3ddfdec7a809..ae6a5af46bd78 100644
+--- a/mm/memblock.c
++++ b/mm/memblock.c
+@@ -959,28 +959,6 @@ __init void memblock_clear_kho_scratch_only(void)
+ {
+ 	kho_scratch_only = false;
+ }
+-
+-__init void memmap_init_kho_scratch_pages(void)
+-{
+-	phys_addr_t start, end;
+-	unsigned long pfn;
+-	int nid;
+-	u64 i;
+-
+-	if (!IS_ENABLED(CONFIG_DEFERRED_STRUCT_PAGE_INIT))
+-		return;
+-
+-	/*
+-	 * Initialize struct pages for free scratch memory.
+-	 * The struct pages for reserved scratch memory will be set up in
+-	 * reserve_bootmem_region()
+-	 */
+-	__for_each_mem_range(i, &memblock.memory, NULL, NUMA_NO_NODE,
+-			     MEMBLOCK_KHO_SCRATCH, &start, &end, &nid) {
+-		for (pfn = PFN_UP(start); pfn < PFN_DOWN(end); pfn++)
+-			init_deferred_page(pfn, nid);
+-	}
+-}
+ #endif
+ 
+ /**
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index ee81f5c67c18f..5ca078dde61d6 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -55,6 +55,7 @@
+ #include <linux/cacheinfo.h>
+ #include <linux/pgalloc_tag.h>
+ #include <linux/mmzone_lock.h>
++#include <linux/kexec_handover.h>
+ #include <asm/div64.h>
+ #include "internal.h"
+ #include "shuffle.h"
+@@ -549,6 +550,12 @@ void __meminit init_pageblock_migratetype(struct page *page,
+ 		     migratetype < MIGRATE_PCPTYPES))
+ 		migratetype = MIGRATE_UNMOVABLE;
+ 
++	/*
++	 * Mark KHO scratch as CMA so no unmovable allocations are made there.
++	 */
++	if (unlikely(kho_scratch_overlap(page_to_phys(page), PAGE_SIZE)))
++		migratetype = MIGRATE_CMA;
++
+ 	flags = migratetype;
+ 
+ #ifdef CONFIG_MEMORY_ISOLATION
+-- 
+2.47.3
+

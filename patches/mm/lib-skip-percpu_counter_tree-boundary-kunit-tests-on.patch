@@ -1,0 +1,52 @@
+From: David Carlier <devnexen@gmail.com>
+Date: Tue, 17 Mar 2026 15:39:15 +0000
+Subject: [PATCH] lib: skip percpu_counter_tree boundary kunit tests on
+ single-CPU
+
+On single-CPU topologies, accuracy_multiplier is zero, making both
+approx_accuracy_range.under and .over zero.  The boundary tests in
+hpcc_test_compare_value_boundaries and
+hpcc_test_compare_counter_boundaries then degenerate to comparing 0 vs 0,
+which correctly returns 0 (equal) but the tests expect nonzero results.
+
+Skip these boundary tests with kunit_skip() when accuracy is zero, since
+approximation boundaries are meaningless without multi-CPU carry
+propagation.  Use percpu_counter_tree_items_size() as the topology check
+before any allocations to avoid leaking memory on skip.
+
+Link: https://lkml.kernel.org/r/20260317153915.43559-1-devnexen@gmail.com
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Reviewed-by: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Reviewed-by: Mark Brown <broonie@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/tests/percpu_counter_tree_kunit.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/lib/tests/percpu_counter_tree_kunit.c b/lib/tests/percpu_counter_tree_kunit.c
+index 4d058bc78f7d9..b773d20867d49 100644
+--- a/lib/tests/percpu_counter_tree_kunit.c
++++ b/lib/tests/percpu_counter_tree_kunit.c
+@@ -93,6 +93,9 @@ static void hpcc_test_compare_value_boundaries(struct kunit *test)
+ 	unsigned long under = 0, over = 0;
+ 	int ret;
+ 
++	if (!percpu_counter_tree_items_size())
++		kunit_skip(test, "no approximation accuracy on single-CPU topology");
++
+ 	counter_items = kzalloc(percpu_counter_tree_items_size(), GFP_KERNEL);
+ 	KUNIT_ASSERT_PTR_NE(test, counter_items, NULL);
+ 	ret = percpu_counter_tree_init(&pct, counter_items, 32, GFP_KERNEL);
+@@ -197,6 +200,9 @@ static void hpcc_test_compare_counter_boundaries(struct kunit *test)
+ 	unsigned long combined;
+ 	int ret;
+ 
++	if (!percpu_counter_tree_items_size())
++		kunit_skip(test, "no approximation accuracy on single-CPU topology");
++
+ 	counter_items = kzalloc(percpu_counter_tree_items_size() * 2,
+ 				GFP_KERNEL);
+ 	KUNIT_ASSERT_PTR_NE(test, counter_items, NULL);
+-- 
+2.47.3
+

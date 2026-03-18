@@ -1,0 +1,47 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Tue, 17 Mar 2026 14:58:18 +0100
+Subject: [PATCH] do_notify_parent: sanitize the valid_signal() checks
+
+Now that kernel_clone() checks valid_signal(args->exit_signal), the "sig"
+argument of do_notify_parent() must always be valid or we have a bug.
+
+However, do_notify_parent() only checks that sig != -1 at the start, then
+it does another valid_signal() check before __send_signal_locked().
+
+This is confusing.  Change do_notify_parent() to WARN and return early if
+valid_signal(sig) is false.
+
+Link: https://lkml.kernel.org/r/abld-ilvMEZ7VgMw@redhat.com
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Acked-by: Deepanshu Kartikey <Kartikey406@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/signal.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/signal.c b/kernel/signal.c
+index 86aad7badb9a5..683ef92f72346 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -2171,7 +2171,8 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
+ 	bool autoreap = false;
+ 	u64 utime, stime;
+ 
+-	WARN_ON_ONCE(sig == -1);
++	if (WARN_ON_ONCE(!valid_signal(sig)))
++		return false;
+ 
+ 	/* do_notify_parent_cldstop should have been called instead.  */
+ 	WARN_ON_ONCE(task_is_stopped_or_traced(tsk));
+@@ -2252,7 +2253,7 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
+ 	 * Send with __send_signal as si_pid and si_uid are in the
+ 	 * parent's namespaces.
+ 	 */
+-	if (valid_signal(sig) && sig)
++	if (sig)
+ 		__send_signal_locked(sig, &info, tsk->parent, PIDTYPE_TGID, false);
+ 	__wake_up_parent(tsk, tsk->parent);
+ 	spin_unlock_irqrestore(&psig->siglock, flags);
+-- 
+2.47.3
+
