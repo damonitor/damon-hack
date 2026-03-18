@@ -1,25 +1,16 @@
-- baseline: v7.0-rc3-16-gb4f0dd314b39e -> v7.0-rc4-25-gf0caa1d49cc07
+- baseline: v7.0-rc4-25-gf0caa1d49cc07 -> v7.0-rc4-25-gf0caa1d49cc07 (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 1 -> 2 commits
+- mm-hotfixes-unstable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 2 commits
-  - new commits
-    - 2fd3dc1c261a "mm/damon/stat: return error if monitoring target region is invalid"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
+    - maintainer, nobody: 2 -> 2 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 46 -> 47 commits
+- mm-unstable: 47 -> 47 commits (no change)
   - series: 8 (43) -> 8 (43) (no change)
     - no role, maintainer: 2 -> 2 commits (no change)
-    - maintainer, nobody: 37 -> 38 commits
+    - maintainer, nobody: 38 -> 38 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
-  - new commits
-    - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
-      - 180c73bbada3 "mm/damon/core: verify found biggest system ram (2/5)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lkml.kernel.org/r/20260317144725.88524-1-sj@kernel.org
 - mm-new: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
