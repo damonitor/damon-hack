@@ -2,58 +2,26 @@ From: Zhaoyang Huang <zhaoyang.huang@unisoc.com>
 Date: Thu, 12 Feb 2026 11:21:11 +0800
 Subject: [PATCH] mm: remove '!root_reclaim' checking in should_abort_scan()
 
-Nowadays, ANDROID system replaces madvise with memory.reclaim to
-implement user space memory management which desires to reclaim a
-certain amount of memcg's memory.  However, oversized reclaiming and
-high latency are observed [1] as there is no limitation over
-nr_reclaimed inside try_to_shrink_lruvec when MGLRU enabled.  Besides,
-this could also affect all none root_reclaim such as reclaim_high etc.
+Android systems usually use memory.reclaim interface to implement user
+space memory management which expects that the requested reclaim target
+and actually reclaimed amount memory are not diverging by too much. With
+the current MGRLU implementation there is, however, no bail out when the
+reclaim target is reached and this could lead to an excessive reclaim
+that scales with the reclaim hierarchy size.For example, we can get a
+nr_reclaimed=394/nr_to_reclaim=32 proactive reclaim under a common 1-N
+cgroup hierarchy.
 
-For try_to_free_mem_cgroup_pages -> shrink_node_memcgs -> shrink_lruvec
--> lru_gen_shrink_lruvec -> try_to_shrink_lruvec, the !root_reclaim(sc)
-check was there for reclaim fairness, which was necessary before commit
-b82b530740b9 ("mm: vmscan: restore incremental cgroup iteration")
-because the fairness depended on attempted proportional reclaim from
-every memcg under the target memcg.
+This defect arose from the goal of keeping fairness among memcgs that is,
+for try_to_free_mem_cgroup_pages -> shrink_node_memcgs -> shrink_lruvec ->
+lru_gen_shrink_lruvec -> try_to_shrink_lruvec, the !root_reclaim(sc) check
+was there for reclaim fairness, which was necessary before commit
+b82b530740b9 ("mm: vmscan: restore incremental cgroup iteration") because
+the fairness depended on attempted proportional reclaim from every memcg
+under the target memcg.  However after commit b82b530740b9 there is no
+longer a need to visit every memcg to ensure fairness.  Let's have
+try_to_shrink_lruvec bail out when the nr_reclaimed achieved.
 
-However after commit b82b530740b9 there is no longer a need to visit
-every memcg to ensure fairness, horray.  The problem is for large
-lruvecs, the lack of a check against sc->nr_to_reclaim inside
-try_to_shrink_lruvec (caused by the continued presence of the
-!root_reclaim(sc) check) can cause overreclaim.  The non-MGLRU
-implementation in shrink_lruvec already checks nr_reclaimed against
-nr_to_reclaim.
-
-[1]
-test log which shows a nr_to_reclaim=32 pages proactive reclaim ended with
-nr_reclaimed=394.
-
-[  485.100981] memcg iter ffffff8086535a00 nr_to_reclaim 32 nr_reclaimed 0
-[  485.106927] memcg iter ffffff8086535a00 nr_to_reclaim 32 nr_reclaimed 127
-[  485.109652] memcg iter ffffff80744e1400 nr_to_reclaim 32 nr_reclaimed 127
-[  485.112255] memcg iter ffffff80744e4600 nr_to_reclaim 32 nr_reclaimed 127
-[  485.115766] memcg iter ffffff8150306e00 nr_to_reclaim 32 nr_reclaimed 191
-[  485.125635] memcg iter ffffff8157608a00 nr_to_reclaim 32 nr_reclaimed 191
-[  485.131366] memcg iter ffffff8157754600 nr_to_reclaim 32 nr_reclaimed 216
-[  485.136688] memcg iter ffffff8157752800 nr_to_reclaim 32 nr_reclaimed 216
-[  485.140495] memcg iter ffffff8157755000 nr_to_reclaim 32 nr_reclaimed 216
-[  485.147322] memcg iter ffffff8159461400 nr_to_reclaim 32 nr_reclaimed 216
-[  485.150605] memcg iter ffffff8159466400 nr_to_reclaim 32 nr_reclaimed 216
-[  485.158260] memcg iter ffffff8159460a00 nr_to_reclaim 32 nr_reclaimed 216
-[  485.160819] memcg iter ffffff8159460000 nr_to_reclaim 32 nr_reclaimed 216
-[  485.163200] memcg iter ffffff8159463c00 nr_to_reclaim 32 nr_reclaimed 216
-[  485.171778] memcg iter ffffff808912ee00 nr_to_reclaim 32 nr_reclaimed 216
-[  485.174156] memcg iter ffffff808912a800 nr_to_reclaim 32 nr_reclaimed 216
-[  485.179110] memcg iter ffffff814bd3a800 nr_to_reclaim 32 nr_reclaimed 216
-[  485.181537] memcg iter ffffff814bd39e00 nr_to_reclaim 32 nr_reclaimed 216
-[  485.184877] memcg iter ffffff814bd3da00 nr_to_reclaim 32 nr_reclaimed 219
-[  485.187245] memcg iter ffffff814bd38a00 nr_to_reclaim 32 nr_reclaimed 219
-[  485.189654] memcg iter ffffff814bd38000 nr_to_reclaim 32 nr_reclaimed 219
-[  485.192029] memcg iter ffffff814bd3bc00 nr_to_reclaim 32 nr_reclaimed 219
-[  485.194509] memcg iter ffffff814bd39400 nr_to_reclaim 32 nr_reclaimed 283
-[  485.197107] memcg iter ffffff814bd3c600 nr_to_reclaim 32 nr_reclaimed 330
-[  485.201361] memcg iter ffffff814bd3ee00 nr_to_reclaim 32 nr_reclaimed 394
-
+Link: https://lkml.kernel.org/r/20260318011558.1696310-1-zhaoyang.huang@unisoc.com
 Link: https://lkml.kernel.org/r/20260212032111.408865-1-zhaoyang.huang@unisoc.com
 Signed-off-by: Zhaoyang Huang <zhaoyang.huang@unisoc.com>
 Suggested-by: T.J.Mercier <tjmercier@google.com>

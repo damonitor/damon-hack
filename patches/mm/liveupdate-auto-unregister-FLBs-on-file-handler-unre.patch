@@ -1,0 +1,198 @@
+From: Pasha Tatashin <pasha.tatashin@soleen.com>
+Date: Wed, 18 Mar 2026 10:16:44 -0400
+Subject: [PATCH] liveupdate: auto unregister FLBs on file handler
+ unregistration
+
+To ensure that unregistration is always successful and doesn't leave
+dangling resources, introduce auto-unregistration of FLBs: when a file
+handler is unregistered, all FLBs associated with it are automatically
+unregistered.
+
+Introduce a new helper luo_flb_unregister_all() which unregisters all FLBs
+linked to the given file handler.
+
+Link: https://lkml.kernel.org/r/20260318141637.1870220-16-pasha.tatashin@soleen.com
+Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: David Matlack <dmatlack@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/luo_file.c     | 17 +-----
+ kernel/liveupdate/luo_flb.c      | 93 ++++++++++++++++++++------------
+ kernel/liveupdate/luo_internal.h |  1 +
+ 3 files changed, 61 insertions(+), 50 deletions(-)
+
+diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
+index c0ce08d55747b..b9ba1b8dce84d 100644
+--- a/kernel/liveupdate/luo_file.c
++++ b/kernel/liveupdate/luo_file.c
+@@ -873,15 +873,6 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+  *
+  * Unregisters the file handler from the liveupdate core. This function
+  * reverses the operations of liveupdate_register_file_handler().
+- *
+- * It ensures safe removal by checking that:
+- * No FLB registered with this file handler.
+- *
+- * If the unregistration fails, the internal test state is reverted.
+- *
+- * Return: 0 Success. -EOPNOTSUPP when live update is not enabled. -EBUSY A live
+- * update is in progress, FLB is registred with
+- * this file handler.
+  */
+ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ {
+@@ -891,15 +882,9 @@ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ 	liveupdate_test_unregister(fh);
+ 
+ 	scoped_guard(rwsem_write, &luo_file_handler_lock) {
+-		if (!list_empty(&ACCESS_PRIVATE(fh, flb_list)))
+-			goto err_register;
+-
++		luo_flb_unregister_all(fh);
+ 		list_del(&ACCESS_PRIVATE(fh, list));
+ 	}
+ 
+ 	return 0;
+-
+-err_register:
+-	liveupdate_test_register(fh);
+-	return -EBUSY;
+ }
+diff --git a/kernel/liveupdate/luo_flb.c b/kernel/liveupdate/luo_flb.c
+index 8bbe11a7286be..5b61c0844a492 100644
+--- a/kernel/liveupdate/luo_flb.c
++++ b/kernel/liveupdate/luo_flb.c
+@@ -316,6 +316,64 @@ void luo_flb_file_finish(struct liveupdate_file_handler *fh)
+ 		luo_flb_file_finish_one(iter->flb);
+ }
+ 
++static void luo_flb_unregister_one(struct liveupdate_file_handler *fh,
++				   struct liveupdate_flb *flb)
++{
++	struct luo_flb_private *private = luo_flb_get_private(flb);
++	struct list_head *flb_list = &ACCESS_PRIVATE(fh, flb_list);
++	struct luo_flb_link *iter;
++	bool found = false;
++
++	/* Find and remove the link from the file handler's list */
++	list_for_each_entry(iter, flb_list, list) {
++		if (iter->flb == flb) {
++			list_del(&iter->list);
++			kfree(iter);
++			found = true;
++			break;
++		}
++	}
++
++	if (!found) {
++		pr_warn("Failed to unregister FLB '%s': not found in file handler '%s'\n",
++			flb->compatible, fh->compatible);
++		return;
++	}
++
++	private->users--;
++
++	/*
++	 * If this is the last file-handler with which we are registred, remove
++	 * from the global list.
++	 */
++	if (!private->users) {
++		list_del_init(&private->list);
++		luo_flb_global.count--;
++	}
++}
++
++/**
++ * luo_flb_unregister_all - Unregister all FLBs associated with a file handler.
++ * @fh: The file handler whose FLBs should be unregistered.
++ *
++ * This function iterates through the list of FLBs associated with the given
++ * file handler and unregisters them all one by one.
++ */
++void luo_flb_unregister_all(struct liveupdate_file_handler *fh)
++{
++	struct list_head *flb_list = &ACCESS_PRIVATE(fh, flb_list);
++	struct luo_flb_link *iter, *tmp;
++
++	if (!liveupdate_enabled())
++		return;
++
++	guard(rwsem_write)(&luo_flb_lock);
++	guard(rwsem_write)(&ACCESS_PRIVATE(fh, flb_lock));
++
++	list_for_each_entry_safe(iter, tmp, flb_list, list)
++		luo_flb_unregister_one(fh, iter->flb);
++}
++
+ /**
+  * liveupdate_register_flb - Associate an FLB with a file handler and register it globally.
+  * @fh:   The file handler that will now depend on the FLB.
+@@ -417,50 +475,17 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+  * the FLB is removed from the global registry and the reference to its
+  * owner module (acquired during registration) is released.
+  *
+- * Context: This function ensures the session is quiesced (no active FDs
+- *          being created) during the update. It is typically called from a
+- *          subsystem's module exit function.
+- * Return: 0 on success.
+- *         -EOPNOTSUPP if live update is disabled.
+- *         -EBUSY if the live update session is active and cannot be quiesced.
+- *         -ENOENT if the FLB was not found in the file handler's list.
+  */
+ int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+ 			      struct liveupdate_flb *flb)
+ {
+-	struct luo_flb_private *private = luo_flb_get_private(flb);
+-	struct list_head *flb_list = &ACCESS_PRIVATE(fh, flb_list);
+-	struct luo_flb_link *iter;
+-	int err = -ENOENT;
+-
+ 	if (!liveupdate_enabled())
+ 		return -EOPNOTSUPP;
+ 
+ 	guard(rwsem_write)(&luo_flb_lock);
+ 	guard(rwsem_write)(&ACCESS_PRIVATE(fh, flb_lock));
+ 
+-	/* Find and remove the link from the file handler's list */
+-	list_for_each_entry(iter, flb_list, list) {
+-		if (iter->flb == flb) {
+-			list_del(&iter->list);
+-			kfree(iter);
+-			err = 0;
+-			break;
+-		}
+-	}
+-
+-	if (err)
+-		return err;
+-
+-	private->users--;
+-	/*
+-	 * If this is the last file-handler with which we are registred, remove
+-	 * from the global list.
+-	 */
+-	if (!private->users) {
+-		list_del_init(&private->list);
+-		luo_flb_global.count--;
+-	}
++	luo_flb_unregister_one(fh, flb);
+ 
+ 	return 0;
+ }
+diff --git a/kernel/liveupdate/luo_internal.h b/kernel/liveupdate/luo_internal.h
+index ec949f91c8c15..730c3faa76169 100644
+--- a/kernel/liveupdate/luo_internal.h
++++ b/kernel/liveupdate/luo_internal.h
+@@ -101,6 +101,7 @@ void luo_file_set_destroy(struct luo_file_set *file_set);
+ int luo_flb_file_preserve(struct liveupdate_file_handler *fh);
+ void luo_flb_file_unpreserve(struct liveupdate_file_handler *fh);
+ void luo_flb_file_finish(struct liveupdate_file_handler *fh);
++void luo_flb_unregister_all(struct liveupdate_file_handler *fh);
+ int __init luo_flb_setup_outgoing(void *fdt);
+ int __init luo_flb_setup_incoming(void *fdt);
+ void luo_flb_serialize(void);
+-- 
+2.47.3
+

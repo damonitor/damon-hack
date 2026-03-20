@@ -1,0 +1,72 @@
+From: Bing Jiao <bingjiao@google.com>
+Date: Wed, 18 Mar 2026 22:19:46 +0000
+Subject: [PATCH] mm/memcontrol: fix reclaim_options leak in try_charge_memcg()
+
+In try_charge_memcg(), the 'reclaim_options' variable is initialized once
+at the start of the function.  However, the function contains a retry
+loop.  If reclaim_options were modified during an iteration (e.g., by
+encountering a memsw limit), the modified state would persist into
+subsequent retries.
+
+This leads to incorrect reclaim behavior.  Specifically,
+MEMCG_RECLAIM_MAY_SWAP is cleared when the combined memcg->memsw limit is
+reached.  After reclaimation attempts, a subsequent retry may successfully
+charge memcg->memsw but fail on the memcg->memory charge.  In this case,
+swapping should be permitted, but the carried-over state prevents it.
+
+Fix by moving the initialization of 'reclaim_options' inside the retry
+loop, ensuring a clean state for every reclaim attempt.
+
+Link: https://lkml.kernel.org/r/20260318221957.2979346-1-bingjiao@google.com
+Fixes: 6539cc053869 ("mm: memcontrol: fold mem_cgroup_do_charge()")
+Signed-off-by: Bing Jiao <bingjiao@google.com>
+Reviewed-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index f381cb6bdff1b..9f1cabacd56c6 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2558,7 +2558,7 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 	struct page_counter *counter;
+ 	unsigned long nr_reclaimed;
+ 	bool passed_oom = false;
+-	unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
++	unsigned int reclaim_options;
+ 	bool drained = false;
+ 	bool raised_max_event = false;
+ 	unsigned long pflags;
+@@ -2572,6 +2572,7 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 		/* Avoid the refill and flush of the older stock */
+ 		batch = nr_pages;
+ 
++	reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
+ 	if (!do_memsw_account() ||
+ 	    page_counter_try_charge(&memcg->memsw, batch, &counter)) {
+ 		if (page_counter_try_charge(&memcg->memory, batch, &counter))
+-- 
+2.47.3
+

@@ -1,0 +1,195 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 19 Mar 2026 13:00:07 +0000
+Subject: [PATCH] mm/huge_memory: simplify vma_is_specal_huge()
+
+Patch series "mm/huge_memory: refactor zap_huge_pmd()", v2.
+
+zap_huge_pmd() is overly complicated, clean it up and also add an assert
+in the case that we encounter a buggy PMD entry that doesn't match
+expectations.
+
+This is motivated by a bug discovered [0] where the PMD entry was none of:
+
+* A non-DAX, PFN or mixed map.
+* The huge zero folio
+* A present PMD entry
+* A softleaf entry
+
+In zap_huge_pmd(), but due to the bug we manged to reach this code.
+
+It is useful to explicitly call this out rather than have an arbitrary
+NULL pointer dereference happen, which also improves understanding of
+what's going on.
+
+
+This patch (of 9):
+
+This function is confused - it overloads the term 'special' yet again,
+checks for DAX but in many cases the code explicitly excludes DAX before
+invoking the predicate.
+
+It also unnecessarily checks for vma->vm_file - this has to be present for
+a driver to have set VMA_MIXEDMAP_BIT or VMA_PFNMAP_BIT.
+
+In fact, a far simpler form of this is to reverse the DAX predicate and
+return false if DAX is set.
+
+This makes sense from the point of view of 'special' as in
+vm_normal_page(), as DAX actually does potentially have retrievable
+folios.
+
+Also there's no need to have this in mm.h so move it to huge_memory.c.
+
+Link: https://lkml.kernel.org/r/cover.1773924928.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/613669b1b2082d34f5632907003ae3874eff2ed9.1773924928.git.ljs@kernel.org
+Link: https://lore.kernel.org/all/6b3d7ad7-49e1-407a-903d-3103704160d8@lucifer.local/ [0]
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Kiryl Shutsemau <kirill@shutemov.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/huge_mm.h |  4 ++--
+ include/linux/mm.h      | 16 ----------------
+ mm/huge_memory.c        | 30 +++++++++++++++++++++++-------
+ 3 files changed, 25 insertions(+), 25 deletions(-)
+
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index 8d801ed378dbe..af726f0aa30d3 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -83,7 +83,7 @@ extern struct kobj_attribute thpsize_shmem_enabled_attr;
+  * file is never split and the MAX_PAGECACHE_ORDER limit does not apply to
+  * it.  Same to PFNMAPs where there's neither page* nor pagecache.
+  */
+-#define THP_ORDERS_ALL_SPECIAL		\
++#define THP_ORDERS_ALL_SPECIAL_DAX	\
+ 	(BIT(PMD_ORDER) | BIT(PUD_ORDER))
+ #define THP_ORDERS_ALL_FILE_DEFAULT	\
+ 	((BIT(MAX_PAGECACHE_ORDER + 1) - 1) & ~BIT(0))
+@@ -92,7 +92,7 @@ extern struct kobj_attribute thpsize_shmem_enabled_attr;
+  * Mask of all large folio orders supported for THP.
+  */
+ #define THP_ORDERS_ALL	\
+-	(THP_ORDERS_ALL_ANON | THP_ORDERS_ALL_SPECIAL | THP_ORDERS_ALL_FILE_DEFAULT)
++	(THP_ORDERS_ALL_ANON | THP_ORDERS_ALL_SPECIAL_DAX | THP_ORDERS_ALL_FILE_DEFAULT)
+ 
+ enum tva_type {
+ 	TVA_SMAPS,		/* Exposing "THPeligible:" in smaps. */
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 8aadf115278e1..6b07ee99b38b9 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -5078,22 +5078,6 @@ long copy_folio_from_user(struct folio *dst_folio,
+ 			   const void __user *usr_src,
+ 			   bool allow_pagefault);
+ 
+-/**
+- * vma_is_special_huge - Are transhuge page-table entries considered special?
+- * @vma: Pointer to the struct vm_area_struct to consider
+- *
+- * Whether transhuge page-table entries are considered "special" following
+- * the definition in vm_normal_page().
+- *
+- * Return: true if transhuge page-table entries should be considered special,
+- * false otherwise.
+- */
+-static inline bool vma_is_special_huge(const struct vm_area_struct *vma)
+-{
+-	return vma_is_dax(vma) || (vma->vm_file &&
+-				   (vma->vm_flags & (VM_PFNMAP | VM_MIXEDMAP)));
+-}
+-
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE || CONFIG_HUGETLBFS */
+ 
+ #if MAX_NUMNODES > 1
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index e90d08db219d5..13b5a71d477d4 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -103,6 +103,14 @@ static inline bool file_thp_enabled(struct vm_area_struct *vma)
+ 	return !inode_is_open_for_write(inode) && S_ISREG(inode->i_mode);
+ }
+ 
++/* If returns true, we are unable to access the VMA's folios. */
++static bool vma_is_special_huge(struct vm_area_struct *vma)
++{
++	if (vma_is_dax(vma))
++		return false;
++	return vma_test_any(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT);
++}
++
+ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
+ 					 vm_flags_t vm_flags,
+ 					 enum tva_type type,
+@@ -116,8 +124,8 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
+ 	/* Check the intersection of requested and supported orders. */
+ 	if (vma_is_anonymous(vma))
+ 		supported_orders = THP_ORDERS_ALL_ANON;
+-	else if (vma_is_special_huge(vma))
+-		supported_orders = THP_ORDERS_ALL_SPECIAL;
++	else if (vma_is_dax(vma) || vma_is_special_huge(vma))
++		supported_orders = THP_ORDERS_ALL_SPECIAL_DAX;
+ 	else
+ 		supported_orders = THP_ORDERS_ALL_FILE_DEFAULT;
+ 
+@@ -2338,7 +2346,7 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 						tlb->fullmm);
+ 	arch_check_zapped_pmd(vma, orig_pmd);
+ 	tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
+-	if (!vma_is_dax(vma) && vma_is_special_huge(vma)) {
++	if (vma_is_special_huge(vma)) {
+ 		if (arch_needs_pgtable_deposit())
+ 			zap_deposited_table(tlb->mm, pmd);
+ 		spin_unlock(ptl);
+@@ -2840,7 +2848,7 @@ int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 	orig_pud = pudp_huge_get_and_clear_full(vma, addr, pud, tlb->fullmm);
+ 	arch_check_zapped_pud(vma, orig_pud);
+ 	tlb_remove_pud_tlb_entry(tlb, pud, addr);
+-	if (!vma_is_dax(vma) && vma_is_special_huge(vma)) {
++	if (vma_is_special_huge(vma)) {
+ 		spin_unlock(ptl);
+ 		/* No zero page support yet */
+ 	} else {
+@@ -2991,7 +2999,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
+ 		 */
+ 		if (arch_needs_pgtable_deposit())
+ 			zap_deposited_table(mm, pmd);
+-		if (!vma_is_dax(vma) && vma_is_special_huge(vma))
++		if (vma_is_special_huge(vma))
+ 			return;
+ 		if (unlikely(pmd_is_migration_entry(old_pmd))) {
+ 			const softleaf_t old_entry = softleaf_from_pmd(old_pmd);
+@@ -4517,8 +4525,16 @@ static void split_huge_pages_all(void)
+ 
+ static inline bool vma_not_suitable_for_thp_split(struct vm_area_struct *vma)
+ {
+-	return vma_is_special_huge(vma) || (vma->vm_flags & VM_IO) ||
+-		    is_vm_hugetlb_page(vma);
++	if (vma_is_dax(vma))
++		return true;
++	if (vma_is_special_huge(vma))
++		return true;
++	if (vma_test(vma, VMA_IO_BIT))
++		return true;
++	if (is_vm_hugetlb_page(vma))
++		return true;
++
++	return false;
+ }
+ 
+ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
+-- 
+2.47.3
+

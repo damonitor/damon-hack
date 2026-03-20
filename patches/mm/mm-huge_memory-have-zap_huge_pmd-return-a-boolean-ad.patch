@@ -1,0 +1,121 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 19 Mar 2026 13:00:09 +0000
+Subject: [PATCH] mm/huge_memory: have zap_huge_pmd return a boolean, add kdoc
+
+There's no need to use the ancient approach of returning an integer here,
+just return a boolean.
+
+Also update flush_needed to be a boolean, similarly.
+
+Also add a kdoc comment describing the function.
+
+Link: https://lkml.kernel.org/r/8bb854291383ff4713427e6d903d6d79435eb153.1773924928.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand (ARM) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Kiryl Shutsemau <kirill@shutemov.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/huge_mm.h |  4 ++--
+ mm/huge_memory.c        | 23 ++++++++++++++++-------
+ 2 files changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index af726f0aa30d3..1258fa37e85b5 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -27,8 +27,8 @@ static inline void huge_pud_set_accessed(struct vm_fault *vmf, pud_t orig_pud)
+ vm_fault_t do_huge_pmd_wp_page(struct vm_fault *vmf);
+ bool madvise_free_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 			   pmd_t *pmd, unsigned long addr, unsigned long next);
+-int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma, pmd_t *pmd,
+-		 unsigned long addr);
++bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma, pmd_t *pmd,
++		  unsigned long addr);
+ int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma, pud_t *pud,
+ 		 unsigned long addr);
+ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 00c54ba2cbf95..383d29929e8cb 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2325,11 +2325,20 @@ static inline void zap_deposited_table(struct mm_struct *mm, pmd_t *pmd)
+ 	mm_dec_nr_ptes(mm);
+ }
+ 
+-int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
++/**
++ * zap_huge_pmd - Zap a huge THP which is of PMD size.
++ * @tlb: The MMU gather TLB state associated with the operation.
++ * @vma: The VMA containing the range to zap.
++ * @pmd: A pointer to the leaf PMD entry.
++ * @addr: The virtual address for the range to zap.
++ *
++ * Returns: %true on success, %false otherwise.
++ */
++bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		 pmd_t *pmd, unsigned long addr)
+ {
+ 	struct folio *folio = NULL;
+-	int flush_needed = 1;
++	bool flush_needed = true;
+ 	spinlock_t *ptl;
+ 	pmd_t orig_pmd;
+ 
+@@ -2337,7 +2346,7 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 
+ 	ptl = __pmd_trans_huge_lock(pmd, vma);
+ 	if (!ptl)
+-		return 0;
++		return false;
+ 	/*
+ 	 * For architectures like ppc64 we look at deposited pgtable
+ 	 * when calling pmdp_huge_get_and_clear. So do the
+@@ -2352,13 +2361,13 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		if (arch_needs_pgtable_deposit())
+ 			zap_deposited_table(tlb->mm, pmd);
+ 		spin_unlock(ptl);
+-		return 1;
++		return true;
+ 	}
+ 	if (is_huge_zero_pmd(orig_pmd)) {
+ 		if (!vma_is_dax(vma) || arch_needs_pgtable_deposit())
+ 			zap_deposited_table(tlb->mm, pmd);
+ 		spin_unlock(ptl);
+-		return 1;
++		return true;
+ 	}
+ 
+ 	if (pmd_present(orig_pmd)) {
+@@ -2372,7 +2381,7 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		const softleaf_t entry = softleaf_from_pmd(orig_pmd);
+ 
+ 		folio = softleaf_to_folio(entry);
+-		flush_needed = 0;
++		flush_needed = false;
+ 
+ 		if (!thp_migration_supported())
+ 			WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
+@@ -2406,7 +2415,7 @@ int zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 	if (flush_needed)
+ 		tlb_remove_page_size(tlb, &folio->page, HPAGE_PMD_SIZE);
+ 
+-	return 1;
++	return true;
+ }
+ 
+ #ifndef pmd_move_must_withdraw
+-- 
+2.47.3
+

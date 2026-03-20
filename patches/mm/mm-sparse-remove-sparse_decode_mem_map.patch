@@ -1,0 +1,83 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Tue, 17 Mar 2026 17:56:46 +0100
+Subject: [PATCH] mm/sparse: remove sparse_decode_mem_map()
+
+section_deactivate() applies to CONFIG_SPARSEMEM_VMEMMAP only. So we can
+just use pfn_to_page() (after making sure we have the start PFN of the
+section), and remove sparse_decode_mem_map().
+
+Link: https://lkml.kernel.org/r/20260317165652.99114-9-david@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memory_hotplug.h |  2 --
+ mm/sparse.c                    | 16 +---------------
+ 2 files changed, 1 insertion(+), 17 deletions(-)
+
+diff --git a/include/linux/memory_hotplug.h b/include/linux/memory_hotplug.h
+index e77ef3d7ff733..815e908c4135b 100644
+--- a/include/linux/memory_hotplug.h
++++ b/include/linux/memory_hotplug.h
+@@ -308,8 +308,6 @@ extern int sparse_add_section(int nid, unsigned long pfn,
+ 		struct dev_pagemap *pgmap);
+ extern void sparse_remove_section(unsigned long pfn, unsigned long nr_pages,
+ 				  struct vmem_altmap *altmap);
+-extern struct page *sparse_decode_mem_map(unsigned long coded_mem_map,
+-					  unsigned long pnum);
+ extern struct zone *zone_for_pfn_range(enum mmop online_type,
+ 		int nid, struct memory_group *group, unsigned long start_pfn,
+ 		unsigned long nr_pages);
+diff --git a/mm/sparse.c b/mm/sparse.c
+index 636a4a0f1199d..2a1f662245bc4 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -274,18 +274,6 @@ static unsigned long sparse_encode_mem_map(struct page *mem_map, unsigned long p
+ 	return coded_mem_map;
+ }
+ 
+-#ifdef CONFIG_MEMORY_HOTPLUG
+-/*
+- * Decode mem_map from the coded memmap
+- */
+-struct page *sparse_decode_mem_map(unsigned long coded_mem_map, unsigned long pnum)
+-{
+-	/* mask off the extra low bits of information */
+-	coded_mem_map &= SECTION_MAP_MASK;
+-	return ((struct page *)coded_mem_map) + section_nr_to_pfn(pnum);
+-}
+-#endif /* CONFIG_MEMORY_HOTPLUG */
+-
+ static void __meminit sparse_init_one_section(struct mem_section *ms,
+ 		unsigned long pnum, struct page *mem_map,
+ 		struct mem_section_usage *usage, unsigned long flags)
+@@ -758,8 +746,6 @@ static void section_deactivate(unsigned long pfn, unsigned long nr_pages,
+ 
+ 	empty = is_subsection_map_empty(ms);
+ 	if (empty) {
+-		unsigned long section_nr = pfn_to_section_nr(pfn);
+-
+ 		/*
+ 		 * Mark the section invalid so that valid_section()
+ 		 * return false. This prevents code from dereferencing
+@@ -778,7 +764,7 @@ static void section_deactivate(unsigned long pfn, unsigned long nr_pages,
+ 			kfree_rcu(ms->usage, rcu);
+ 			WRITE_ONCE(ms->usage, NULL);
+ 		}
+-		memmap = sparse_decode_mem_map(ms->section_mem_map, section_nr);
++		memmap = pfn_to_page(SECTION_ALIGN_DOWN(pfn));
+ 	}
+ 
+ 	/*
+-- 
+2.47.3
+

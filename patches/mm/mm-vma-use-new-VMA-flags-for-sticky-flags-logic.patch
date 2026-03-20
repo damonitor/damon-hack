@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Mon, 16 Mar 2026 13:07:54 +0000
+Date: Wed, 18 Mar 2026 15:50:16 +0000
 Subject: [PATCH] mm/vma: use new VMA flags for sticky flags logic
 
 Use the new vma_flags_t flags implementation to perform the logic around
@@ -8,13 +8,11 @@ sticky flags and what flags are ignored on VMA merge.
 We make use of the new vma_flags_empty(), vma_flags_diff_pair(), and
 vma_flags_and_mask() functionality.
 
-Note that we cannot rely on VM_NONE convenience any longer, so have to
-explicitly check for cases where VMA flags would not be specified.
-
 Also update the VMA tests accordingly.
 
-Link: https://lkml.kernel.org/r/005cac3e37830a33f473edc780a5dae5e00a3845.1773665966.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/fd4276d39055290061f87e9fded20b6a6b712975.1773846935.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
 Cc: Alexandre Ghiti <alex@ghiti.fr>
@@ -58,11 +56,11 @@ Cc: Will Deacon <will@kernel.org>
 Cc: xu xin <xu.xin16@zte.com.cn>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/mm.h                 | 32 +++++++++++---------
- mm/vma.c                           | 47 ++++++++++++++++++++++--------
+ include/linux/mm.h                 | 32 ++++++++++++--------
+ mm/vma.c                           | 48 ++++++++++++++++++++++--------
  tools/testing/vma/include/custom.h |  5 ----
  tools/testing/vma/include/dup.h    |  9 ++++--
- 4 files changed, 61 insertions(+), 32 deletions(-)
+ 4 files changed, 62 insertions(+), 32 deletions(-)
 
 diff --git a/include/linux/mm.h b/include/linux/mm.h
 index 6d2c4bd2c61d1..b75e089dfd657 100644
@@ -123,7 +121,7 @@ index 6d2c4bd2c61d1..b75e089dfd657 100644
  /*
   * Flags which should result in page tables being copied on fork. These are
 diff --git a/mm/vma.c b/mm/vma.c
-index 4d21e7d8e93c4..15d643eee97fd 100644
+index 4d21e7d8e93c4..6af26619e020b 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
 @@ -86,10 +86,15 @@ static bool vma_is_fork_child(struct vm_area_struct *vma)
@@ -153,31 +151,32 @@ index 4d21e7d8e93c4..15d643eee97fd 100644
  	struct vm_area_struct *middle = vmg->middle;
  	struct vm_area_struct *prev = vmg->prev;
  	struct vm_area_struct *next;
-@@ -898,15 +904,21 @@ static __must_check struct vm_area_struct *vma_merge_existing_range(
+@@ -898,15 +904,22 @@ static __must_check struct vm_area_struct *vma_merge_existing_range(
  	vma_start_write(middle);
  
  	if (merge_right) {
-+		const vma_flags_t next_sticky =
-+			vma_flags_and_mask(&next->flags, VMA_STICKY_FLAGS);
++		vma_flags_t next_sticky;
 +
  		vma_start_write(next);
  		vmg->target = next;
 -		sticky_flags |= (next->vm_flags & VM_STICKY);
++		next_sticky = vma_flags_and_mask(&next->flags, VMA_STICKY_FLAGS);
 +		vma_flags_set_mask(&sticky_flags, next_sticky);
  	}
  
  	if (merge_left) {
-+		const vma_flags_t prev_sticky =
-+			vma_flags_and_mask(&prev->flags, VMA_STICKY_FLAGS);
++		vma_flags_t prev_sticky;
 +
  		vma_start_write(prev);
  		vmg->target = prev;
 -		sticky_flags |= (prev->vm_flags & VM_STICKY);
++
++		prev_sticky = vma_flags_and_mask(&prev->flags, VMA_STICKY_FLAGS);
 +		vma_flags_set_mask(&sticky_flags, prev_sticky);
  	}
  
  	if (merge_both) {
-@@ -976,7 +988,7 @@ static __must_check struct vm_area_struct *vma_merge_existing_range(
+@@ -976,7 +989,7 @@ static __must_check struct vm_area_struct *vma_merge_existing_range(
  	if (err || commit_merge(vmg))
  		goto abort;
  
@@ -186,19 +185,25 @@ index 4d21e7d8e93c4..15d643eee97fd 100644
  	khugepaged_enter_vma(vmg->target, vmg->vm_flags);
  	vmg->state = VMA_MERGE_SUCCESS;
  	return vmg->target;
-@@ -1154,7 +1166,10 @@ int vma_expand(struct vma_merge_struct *vmg)
+@@ -1154,12 +1167,16 @@ int vma_expand(struct vma_merge_struct *vmg)
  	struct vm_area_struct *target = vmg->target;
  	struct vm_area_struct *next = vmg->next;
  	bool remove_next = false;
 -	vm_flags_t sticky_flags;
 +	vma_flags_t sticky_flags =
 +		vma_flags_and_mask(&vmg->vma_flags, VMA_STICKY_FLAGS);
-+	const vma_flags_t target_sticky =
-+		vma_flags_and_mask(&target->flags, VMA_STICKY_FLAGS);
++	vma_flags_t target_sticky;
  	int ret = 0;
  
  	mmap_assert_write_locked(vmg->mm);
-@@ -1174,10 +1189,13 @@ int vma_expand(struct vma_merge_struct *vmg)
+ 	vma_start_write(target);
+ 
++	target_sticky = vma_flags_and_mask(&target->flags, VMA_STICKY_FLAGS);
++
+ 	if (next && target != next && vmg->end == next->vm_end)
+ 		remove_next = true;
+ 
+@@ -1174,10 +1191,7 @@ int vma_expand(struct vma_merge_struct *vmg)
  	VM_WARN_ON_VMG(target->vm_start < vmg->start ||
  		       target->vm_end > vmg->end, vmg);
  
@@ -207,16 +212,21 @@ index 4d21e7d8e93c4..15d643eee97fd 100644
 -	if (remove_next)
 -		sticky_flags |= next->vm_flags & VM_STICKY;
 +	vma_flags_set_mask(&sticky_flags, target_sticky);
-+	if (remove_next) {
-+		const vma_flags_t next_sticky =
-+			vma_flags_and_mask(&next->flags, VMA_STICKY_FLAGS);
-+
-+		vma_flags_set_mask(&sticky_flags, next_sticky);
-+	}
  
  	/*
  	 * If we are removing the next VMA or copying from a VMA
-@@ -1200,7 +1218,7 @@ int vma_expand(struct vma_merge_struct *vmg)
+@@ -1194,13 +1208,18 @@ int vma_expand(struct vma_merge_struct *vmg)
+ 		return ret;
+ 
+ 	if (remove_next) {
++		vma_flags_t next_sticky;
++
+ 		vma_start_write(next);
+ 		vmg->__remove_next = true;
++
++		next_sticky = vma_flags_and_mask(&next->flags, VMA_STICKY_FLAGS);
++		vma_flags_set_mask(&sticky_flags, next_sticky);
+ 	}
  	if (commit_merge(vmg))
  		goto nomem;
  
@@ -225,7 +235,7 @@ index 4d21e7d8e93c4..15d643eee97fd 100644
  	return 0;
  
  nomem:
-@@ -1950,10 +1968,15 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
+@@ -1950,10 +1969,15 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
   */
  static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *b)
  {
@@ -256,7 +266,7 @@ index 6200f938e5862..7cdd0f60600a5 100644
 -#define VMA_STICKY_FLAGS mk_vma_flags(VMA_MAYBE_GUARD_BIT)
 -#endif
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index 44f77453ee858..e5fdf6f5a0331 100644
+index 1dee78c348728..65134303b645f 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -338,6 +338,7 @@ enum {

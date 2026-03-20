@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Mon, 16 Mar 2026 13:08:11 +0000
+Date: Wed, 18 Mar 2026 15:50:33 +0000
 Subject: [PATCH] mm/vma: convert vma_modify_flags[_uffd]() to use vma_flags_t
 
 Update the vma_modify_flags() and vma_modify_flags_uffd() functions to
@@ -8,7 +8,7 @@ the changes as needed to implement this change.
 
 Finally, update the VMA tests to reflect this.
 
-Link: https://lkml.kernel.org/r/0737c1b5e3b3688ec3839058b95203c9e7622de9.1773665966.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/98a004bf89227ea9abaef5fef06ea7e584f77bcf.1773846935.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -48,6 +48,7 @@ Cc: Sven Schnelle <svens@linux.ibm.com>
 Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
 Cc: xu xin <xu.xin16@zte.com.cn>
@@ -57,12 +58,12 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  mm/madvise.c                    | 10 +++++----
  mm/mlock.c                      | 38 ++++++++++++++++++---------------
  mm/mprotect.c                   |  7 +++---
- mm/mseal.c                      | 10 +++++----
+ mm/mseal.c                      | 11 ++++++----
  mm/userfaultfd.c                | 21 ++++++++++++------
  mm/vma.c                        | 15 +++++++------
  mm/vma.h                        | 15 ++++++-------
  tools/testing/vma/tests/merge.c |  3 +--
- 9 files changed, 69 insertions(+), 53 deletions(-)
+ 9 files changed, 70 insertions(+), 53 deletions(-)
 
 diff --git a/include/linux/userfaultfd_k.h b/include/linux/userfaultfd_k.h
 index bf4e595ac9149..3bd2003328dcb 100644
@@ -257,10 +258,10 @@ index eaa724b999083..2b8a85689ab77 100644
  	perf_event_mmap(vma);
  	return 0;
 diff --git a/mm/mseal.c b/mm/mseal.c
-index 316b5e1dec781..fd299d60ad17e 100644
+index 316b5e1dec781..603df53ad2679 100644
 --- a/mm/mseal.c
 +++ b/mm/mseal.c
-@@ -68,14 +68,16 @@ static int mseal_apply(struct mm_struct *mm,
+@@ -68,14 +68,17 @@ static int mseal_apply(struct mm_struct *mm,
  	for_each_vma_range(vmi, vma, end) {
  		const unsigned long curr_end = MIN(vma->vm_end, end);
  
@@ -277,6 +278,7 @@ index 316b5e1dec781..fd299d60ad17e 100644
  			if (IS_ERR(vma))
  				return PTR_ERR(vma);
 -			vm_flags_set(vma, VM_SEALED);
++			vma_start_write(vma);
 +			vma_set_flags(vma, VMA_SEALED_BIT);
  		}
  
@@ -351,10 +353,10 @@ index 77b042d5415fe..ab14b650a080b 100644
  					    /* give_up_on_oom = */false);
  		if (IS_ERR(vma))
 diff --git a/mm/vma.c b/mm/vma.c
-index 456c8e2cc5bce..f52fe7f9bae40 100644
+index 80f710f91f936..fd47af6d857f3 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -1709,13 +1709,13 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
+@@ -1710,13 +1710,13 @@ static struct vm_area_struct *vma_modify(struct vma_merge_struct *vmg)
  struct vm_area_struct *vma_modify_flags(struct vma_iterator *vmi,
  		struct vm_area_struct *prev, struct vm_area_struct *vma,
  		unsigned long start, unsigned long end,
@@ -371,7 +373,7 @@ index 456c8e2cc5bce..f52fe7f9bae40 100644
  
  	ret = vma_modify(&vmg);
  	if (IS_ERR(ret))
-@@ -1727,7 +1727,7 @@ struct vm_area_struct *vma_modify_flags(struct vma_iterator *vmi,
+@@ -1728,7 +1728,7 @@ struct vm_area_struct *vma_modify_flags(struct vma_iterator *vmi,
  	 * them to the caller.
  	 */
  	if (vmg.state == VMA_MERGE_SUCCESS)
@@ -380,7 +382,7 @@ index 456c8e2cc5bce..f52fe7f9bae40 100644
  	return ret;
  }
  
-@@ -1757,12 +1757,13 @@ struct vm_area_struct *vma_modify_policy(struct vma_iterator *vmi,
+@@ -1758,12 +1758,13 @@ struct vm_area_struct *vma_modify_policy(struct vma_iterator *vmi,
  
  struct vm_area_struct *vma_modify_flags_uffd(struct vma_iterator *vmi,
  		struct vm_area_struct *prev, struct vm_area_struct *vma,

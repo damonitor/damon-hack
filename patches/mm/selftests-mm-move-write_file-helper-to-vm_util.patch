@@ -1,0 +1,199 @@
+From: Chunyu Hu <chuhu@redhat.com>
+Date: Fri, 20 Mar 2026 00:06:54 +0800
+Subject: [PATCH] selftests/mm: move write_file helper to vm_util
+
+thp_settings provides write_file() helper for safely writing to a file and
+exit when write failure happens.  It's a very low level helper and many
+sub tests need such a helper, not only thp tests.
+
+split_huge_page_test also defines a write_file locally.  The two have
+minior differences in return type and used exit api.  And there would be
+conflicts if split_huge_page_test wanted to include thp_settings.h because
+of different prototype, making it less convenient.
+
+It's possisble to merge the two, although some tests don't use the
+kselftest infrastrucutre for testing.  It would also work when using the
+ksft_exit_msg() to exit in my test, as the counters are all zero.  Output
+will be like:
+
+  TAP version 13
+  1..62
+  Bail out! /proc/sys/vm/drop_caches1 open failed: No such file or directory
+  # Totals: pass:0 fail:0 xfail:0 xpass:0 skip:0 error:0
+
+So here we just keep the version in split_huge_page_test, and move it into
+the vm_util.  This makes it easy to maitain and user could just include
+one vm_util.h when they don't need thp setting helpers.  Keep the
+prototype of void return as the function will exit on any error, return
+value is not necessary, and will simply the callers like write_num() and
+write_string().
+
+Link: https://lkml.kernel.org/r/20260319160656.1480279-4-chuhu@redhat.com
+Signed-off-by: Chunyu Hu <chuhu@redhat.com>
+Suggested-by: Mike Rapoport <rppt@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Li Wang <liwang@redhat.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../selftests/mm/split_huge_page_test.c       | 15 --------
+ tools/testing/selftests/mm/thp_settings.c     | 35 ++-----------------
+ tools/testing/selftests/mm/thp_settings.h     |  1 -
+ tools/testing/selftests/mm/vm_util.c          | 15 ++++++++
+ tools/testing/selftests/mm/vm_util.h          |  2 ++
+ 5 files changed, 20 insertions(+), 48 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/split_huge_page_test.c b/tools/testing/selftests/mm/split_huge_page_test.c
+index 57e8a1c9647a5..fdd6217e9f088 100644
+--- a/tools/testing/selftests/mm/split_huge_page_test.c
++++ b/tools/testing/selftests/mm/split_huge_page_test.c
+@@ -255,21 +255,6 @@ static int check_after_split_folio_orders(char *vaddr_start, size_t len,
+ 	return status;
+ }
+ 
+-static void write_file(const char *path, const char *buf, size_t buflen)
+-{
+-	int fd;
+-	ssize_t numwritten;
+-
+-	fd = open(path, O_WRONLY);
+-	if (fd == -1)
+-		ksft_exit_fail_msg("%s open failed: %s\n", path, strerror(errno));
+-
+-	numwritten = write(fd, buf, buflen - 1);
+-	close(fd);
+-	if (numwritten < 1)
+-		ksft_exit_fail_msg("Write failed\n");
+-}
+-
+ static void write_debugfs(const char *fmt, ...)
+ {
+ 	char input[INPUT_MAX];
+diff --git a/tools/testing/selftests/mm/thp_settings.c b/tools/testing/selftests/mm/thp_settings.c
+index 574bd0f8ae480..e748ebfb3d4e2 100644
+--- a/tools/testing/selftests/mm/thp_settings.c
++++ b/tools/testing/selftests/mm/thp_settings.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ #include <unistd.h>
+ 
++#include "vm_util.h"
+ #include "thp_settings.h"
+ 
+ #define THP_SYSFS "/sys/kernel/mm/transparent_hugepage/"
+@@ -64,29 +65,6 @@ int read_file(const char *path, char *buf, size_t buflen)
+ 	return (unsigned int) numread;
+ }
+ 
+-int write_file(const char *path, const char *buf, size_t buflen)
+-{
+-	int fd;
+-	ssize_t numwritten;
+-
+-	fd = open(path, O_WRONLY);
+-	if (fd == -1) {
+-		printf("open(%s)\n", path);
+-		exit(EXIT_FAILURE);
+-		return 0;
+-	}
+-
+-	numwritten = write(fd, buf, buflen - 1);
+-	close(fd);
+-	if (numwritten < 1) {
+-		printf("write(%s)\n", buf);
+-		exit(EXIT_FAILURE);
+-		return 0;
+-	}
+-
+-	return (unsigned int) numwritten;
+-}
+-
+ unsigned long read_num(const char *path)
+ {
+ 	char buf[21];
+@@ -104,10 +82,7 @@ void write_num(const char *path, unsigned long num)
+ 	char buf[21];
+ 
+ 	sprintf(buf, "%ld", num);
+-	if (!write_file(path, buf, strlen(buf) + 1)) {
+-		perror(path);
+-		exit(EXIT_FAILURE);
+-	}
++	write_file(path, buf, strlen(buf) + 1);
+ }
+ 
+ int thp_read_string(const char *name, const char * const strings[])
+@@ -165,11 +140,7 @@ void thp_write_string(const char *name, const char *val)
+ 		printf("%s: Pathname is too long\n", __func__);
+ 		exit(EXIT_FAILURE);
+ 	}
+-
+-	if (!write_file(path, val, strlen(val) + 1)) {
+-		perror(path);
+-		exit(EXIT_FAILURE);
+-	}
++	write_file(path, val, strlen(val) + 1);
+ }
+ 
+ unsigned long thp_read_num(const char *name)
+diff --git a/tools/testing/selftests/mm/thp_settings.h b/tools/testing/selftests/mm/thp_settings.h
+index 76eeb712e5f10..7748a90091915 100644
+--- a/tools/testing/selftests/mm/thp_settings.h
++++ b/tools/testing/selftests/mm/thp_settings.h
+@@ -63,7 +63,6 @@ struct thp_settings {
+ };
+ 
+ int read_file(const char *path, char *buf, size_t buflen);
+-int write_file(const char *path, const char *buf, size_t buflen);
+ unsigned long read_num(const char *path);
+ void write_num(const char *path, unsigned long num);
+ 
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index e00d248c0d2cb..4d159b7f508a1 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -774,3 +774,18 @@ int unpoison_memory(unsigned long pfn)
+ 
+ 	return ret > 0 ? 0 : -errno;
+ }
++
++void write_file(const char *path, const char *buf, size_t buflen)
++{
++	int fd;
++	ssize_t numwritten;
++
++	fd = open(path, O_WRONLY);
++	if (fd == -1)
++		ksft_exit_fail_msg("%s open failed: %s\n", path, strerror(errno));
++
++	numwritten = write(fd, buf, buflen - 1);
++	close(fd);
++	if (numwritten < 1)
++		ksft_exit_fail_msg("Write failed\n");
++}
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index e0b6ae1b12f5a..dc1d8a841582f 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -167,3 +167,5 @@ int unpoison_memory(unsigned long pfn);
+ 
+ #define PAGEMAP_PRESENT(ent)	(((ent) & (1ull << 63)) != 0)
+ #define PAGEMAP_PFN(ent)	((ent) & ((1ull << 55) - 1))
++
++void write_file(const char *path, const char *buf, size_t buflen);
+-- 
+2.47.3
+

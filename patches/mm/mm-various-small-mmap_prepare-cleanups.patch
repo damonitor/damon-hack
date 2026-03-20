@@ -1,8 +1,8 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Mon, 16 Mar 2026 21:11:57 +0000
+Date: Thu, 19 Mar 2026 18:23:25 +0000
 Subject: [PATCH] mm: various small mmap_prepare cleanups
 
-Patch series "mm: expand mmap_prepare functionality and usage", v2.
+Patch series "mm: expand mmap_prepare functionality and usage", v3.
 
 This series expands the mmap_prepare functionality, which is intended to
 replace the deprecated f_op->mmap hook which has been the source of bugs
@@ -27,17 +27,17 @@ The series uses this to correct the afs implementation which wrongly
 manipulated reference count at mmap_prepare time.
 
 It then adds an mmap_prepare equivalent of vm_iomap_memory() -
-mmap_action_simple_ioremap(), then uses this to update a number of
-drivers.
+mmap_action_simple_ioremap(), then uses this to update a number of drivers.
 
 It then splits out the mmap_prepare compatibility layer (which allows for
 invocation of mmap_prepare hooks in an mmap() hook) in such a way as to
 allow for more incremental implementation of mmap_prepare hooks.
 
-It then uses this to extend mmap_prepare usage in drivers.  Finally it
-adds an mmap_prepare equivalent of vm_map_pages(), which lays the
-foundation for future work which will extend mmap_prepare to DMA coherent
-mappings.
+It then uses this to extend mmap_prepare usage in drivers.
+
+Finally it adds an mmap_prepare equivalent of vm_map_pages(), which lays
+the foundation for future work which will extend mmap_prepare to DMA
+coherent mappings.
 
 
 This patch (of 16):
@@ -54,6 +54,10 @@ the input.
 Update remap_pfn_range_prepare() to properly check the input range for the
 CoW case.
 
+Also remove io_remap_pfn_range_complete(), as we can simply set up the
+fields correctly in io_remap_pfn_range_prepare() and use
+remap_pfn_range_complete() for this.
+
 While we're here, make remap_pfn_range_prepare_vma() a little neater, and
 pass mmap_action directly to call_action_complete().
 
@@ -65,8 +69,8 @@ calling the mmap_prepare op directly.
 
 Finally, update the VMA userland tests to reflect the changes.
 
-Link: https://lkml.kernel.org/r/cover.1773695307.git.ljs@kernel.org
-Link: https://lkml.kernel.org/r/afcb42b88acac93c6437b0dbbc71bba0b0e7429e.1773695307.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/498a579bfbcbb8b0e4a9c39243b4454347f03a46.1773944114.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/498a579bfbcbb8b0e4a9c39243b4454347f03a46.1773944114.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
 Cc: Alexandre Torgue <alexandre.torgue@foss.st.com>
@@ -85,7 +89,6 @@ Cc: Jann Horn <jannh@google.com>
 Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: K. Y. Srinivasan <kys@microsoft.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
-Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
 Cc: Long Li <longli@microsoft.com>
 Cc: Marc Dionne <marc.dionne@auristor.com>
 Cc: "Martin K. Petersen" <martin.petersen@oracle.com>
@@ -98,19 +101,18 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vignesh Raghavendra <vigneshr@ti.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/fs.h                |   2 -
  include/linux/mm.h                |   7 +-
- mm/internal.h                     |  27 ++++---
+ mm/internal.h                     |  32 ++++----
  mm/memory.c                       |  45 +++++++----
- mm/util.c                         | 119 +++++++++++++-----------------
+ mm/util.c                         | 121 +++++++++++++-----------------
  mm/vma.c                          |  24 +++---
  tools/testing/vma/include/dup.h   |   7 +-
  tools/testing/vma/include/stubs.h |   8 +-
- 8 files changed, 123 insertions(+), 116 deletions(-)
+ 8 files changed, 126 insertions(+), 120 deletions(-)
 
 diff --git a/include/linux/fs.h b/include/linux/fs.h
 index 8b3dd145b25ec..a2628a12bd2bc 100644
@@ -144,10 +146,10 @@ index 42cc40aa63d9c..1e63b3a44a47f 100644
  /* Look up the first VMA which exactly match the interval vm_start ... vm_end */
  static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
 diff --git a/mm/internal.h b/mm/internal.h
-index 708d240b41987..9e42a57e8a124 100644
+index 708d240b41987..0256ca44115ad 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -1793,26 +1793,31 @@ int walk_page_range_debug(struct mm_struct *mm, unsigned long start,
+@@ -1793,26 +1793,28 @@ int walk_page_range_debug(struct mm_struct *mm, unsigned long start,
  void dup_mm_exe_file(struct mm_struct *mm, struct mm_struct *oldmm);
  int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm);
  
@@ -164,29 +166,30 @@ index 708d240b41987..9e42a57e8a124 100644
  {
 +	struct mmap_action *action = &desc->action;
 +	const unsigned long orig_pfn = action->remap.start_pfn;
++	const pgprot_t orig_pgprot = action->remap.pgprot;
 +	const unsigned long size = action->remap.size;
  	const unsigned long pfn = io_remap_pfn_range_pfn(orig_pfn, size);
++	int err;
  
 -	return remap_pfn_range_prepare(desc, pfn);
+-}
 +	action->remap.start_pfn = pfn;
-+	return remap_pfn_range_prepare(desc);
- }
++	action->remap.pgprot = pgprot_decrypted(orig_pgprot);
++	err = remap_pfn_range_prepare(desc);
++	if (err)
++		return err;
  
- static inline int io_remap_pfn_range_complete(struct vm_area_struct *vma,
+-static inline int io_remap_pfn_range_complete(struct vm_area_struct *vma,
 -		unsigned long addr, unsigned long orig_pfn, unsigned long size,
 -		pgprot_t orig_prot)
-+					      struct mmap_action *action)
- {
+-{
 -	const unsigned long pfn = io_remap_pfn_range_pfn(orig_pfn, size);
 -	const pgprot_t prot = pgprot_decrypted(orig_prot);
-+	const unsigned long size = action->remap.size;
-+	const unsigned long orig_pfn = action->remap.start_pfn;
-+	const pgprot_t orig_prot = vma->vm_page_prot;
- 
+-
 -	return remap_pfn_range_complete(vma, addr, pfn, size, prot);
-+	action->remap.pgprot = pgprot_decrypted(orig_prot);
-+	action->remap.start_pfn  = io_remap_pfn_range_pfn(orig_pfn, size);
-+	return remap_pfn_range_complete(vma, action);
++	/* Remap does the actual work. */
++	action->type = MMAP_REMAP_PFN;
++	return 0;
  }
  
  #ifdef CONFIG_MMU_NOTIFIER
@@ -262,7 +265,7 @@ index 219b9bf6cae00..9dec67a181160 100644
  
  /**
 diff --git a/mm/util.c b/mm/util.c
-index ce7ae80047cf4..ac9dd6490523e 100644
+index ce7ae80047cf4..73c97a748d8e5 100644
 --- a/mm/util.c
 +++ b/mm/util.c
 @@ -1163,43 +1163,6 @@ void flush_dcache_folio(struct folio *folio)
@@ -406,7 +409,7 @@ index ce7ae80047cf4..ac9dd6490523e 100644
  {
  	int err = 0;
  
-@@ -1391,25 +1379,20 @@ int mmap_action_complete(struct mmap_action *action,
+@@ -1391,25 +1379,22 @@ int mmap_action_complete(struct mmap_action *action,
  	case MMAP_NOTHING:
  		break;
  	case MMAP_REMAP_PFN:
@@ -419,7 +422,9 @@ index ce7ae80047cf4..ac9dd6490523e 100644
 -		err = io_remap_pfn_range_complete(vma, action->remap.start,
 -				action->remap.start_pfn, action->remap.size,
 -				action->remap.pgprot);
-+		err = io_remap_pfn_range_complete(vma, action);
++		/* Should have been delegated. */
++		WARN_ON_ONCE(1);
++		err = -EINVAL;
  		break;
  	}
  
@@ -437,7 +442,7 @@ index ce7ae80047cf4..ac9dd6490523e 100644
  	case MMAP_NOTHING:
  		break;
  	case MMAP_REMAP_PFN:
-@@ -1417,11 +1400,13 @@ void mmap_action_prepare(struct mmap_action *action,
+@@ -1417,11 +1402,13 @@ void mmap_action_prepare(struct mmap_action *action,
  		WARN_ON_ONCE(1); /* nommu cannot handle these. */
  		break;
  	}
@@ -453,7 +458,7 @@ index ce7ae80047cf4..ac9dd6490523e 100644
  {
  	int err = 0;
  
-@@ -1436,7 +1421,7 @@ int mmap_action_complete(struct mmap_action *action,
+@@ -1436,7 +1423,7 @@ int mmap_action_complete(struct mmap_action *action,
  		break;
  	}
  
@@ -463,10 +468,10 @@ index ce7ae80047cf4..ac9dd6490523e 100644
  EXPORT_SYMBOL(mmap_action_complete);
  #endif
 diff --git a/mm/vma.c b/mm/vma.c
-index c1f1832357569..2a86c7575000e 100644
+index 8cccaeb8ccbb2..ee91f2b76acf5 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -2640,15 +2640,18 @@ static void __mmap_complete(struct mmap_state *map, struct vm_area_struct *vma)
+@@ -2641,15 +2641,18 @@ static void __mmap_complete(struct mmap_state *map, struct vm_area_struct *vma)
  	vma_set_page_prot(vma);
  }
  
@@ -490,7 +495,7 @@ index c1f1832357569..2a86c7575000e 100644
  }
  
  /*
-@@ -2672,7 +2675,9 @@ static int call_mmap_prepare(struct mmap_state *map,
+@@ -2673,7 +2676,9 @@ static int call_mmap_prepare(struct mmap_state *map,
  	if (err)
  		return err;
  
@@ -501,7 +506,7 @@ index c1f1832357569..2a86c7575000e 100644
  
  	/* Update fields permitted to be changed. */
  	map->pgoff = desc->pgoff;
-@@ -2727,13 +2732,12 @@ static bool can_set_ksm_flags_early(struct mmap_state *map)
+@@ -2728,13 +2733,12 @@ static bool can_set_ksm_flags_early(struct mmap_state *map)
  }
  
  static int call_action_complete(struct mmap_state *map,
@@ -517,7 +522,7 @@ index c1f1832357569..2a86c7575000e 100644
  
  	/* If we held the file rmap we need to release it. */
  	if (map->hold_file_rmap_lock) {
-@@ -2795,7 +2799,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+@@ -2796,7 +2800,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
  	__mmap_complete(&map, vma);
  
  	if (have_mmap_prepare && allocated_new) {
@@ -527,10 +532,10 @@ index c1f1832357569..2a86c7575000e 100644
  		if (error)
  			return error;
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index 999357e18eb08..9eada1e0949c6 100644
+index b69eefba4cf79..477a5be65dd2e 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
-@@ -1271,9 +1271,12 @@ static inline int __compat_vma_mmap(const struct file_operations *f_op,
+@@ -1273,9 +1273,12 @@ static inline int __compat_vma_mmap(const struct file_operations *f_op,
  	if (err)
  		return err;
  

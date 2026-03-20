@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Mon, 16 Mar 2026 13:08:06 +0000
+Date: Wed, 18 Mar 2026 15:50:28 +0000
 Subject: [PATCH] mm: convert do_brk_flags() to use vma_flags_t
 
 In order to be able to do this, we need to change VM_DATA_DEFAULT_FLAGS
@@ -40,7 +40,7 @@ values for the time being until further conversions are made.
 
 Finally, we update the VMA tests to reflect these changes.
 
-Link: https://lkml.kernel.org/r/063af0422d99bee0195589aa63f8f44edaf409fa.1773665966.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/981ed1afcd19115432e61778e7d226a36f8f5c2b.1773846935.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Acked-by: Paul Moore <paul@paul-moore.com>	[SELinux]
 Cc: Albert Ou <aou@eecs.berkeley.edu>
@@ -80,6 +80,7 @@ Cc: Sven Schnelle <svens@linux.ibm.com>
 Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
 Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
 Cc: xu xin <xu.xin16@zte.com.cn>
@@ -87,7 +88,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  arch/arc/include/asm/page.h        |  2 +-
  arch/arm/include/asm/page.h        |  2 +-
- arch/arm64/include/asm/page.h      |  3 +-
+ arch/arm64/include/asm/page.h      |  7 ++++-
  arch/hexagon/include/asm/page.h    |  2 +-
  arch/loongarch/include/asm/page.h  |  2 +-
  arch/mips/include/asm/page.h       |  2 +-
@@ -114,7 +115,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  tools/testing/vma/include/dup.h    | 42 ++++++++++++++------------
  tools/testing/vma/include/stubs.h  |  9 +++---
  tools/testing/vma/tests/merge.c    |  3 +-
- 29 files changed, 186 insertions(+), 139 deletions(-)
+ 29 files changed, 190 insertions(+), 139 deletions(-)
 
 diff --git a/arch/arc/include/asm/page.h b/arch/arc/include/asm/page.h
 index 38214e126c6de..facc7a03b2501 100644
@@ -143,16 +144,20 @@ index ef11b721230e2..fa4c1225dde57 100644
  #include <asm-generic/getorder.h>
  #include <asm-generic/memory_model.h>
 diff --git a/arch/arm64/include/asm/page.h b/arch/arm64/include/asm/page.h
-index b39cc1127e1f1..b98ac659e16f6 100644
+index b39cc1127e1f1..e25d0d18f6d77 100644
 --- a/arch/arm64/include/asm/page.h
 +++ b/arch/arm64/include/asm/page.h
-@@ -46,7 +46,8 @@ int pfn_is_map_memory(unsigned long pfn);
+@@ -46,7 +46,12 @@ int pfn_is_map_memory(unsigned long pfn);
  
  #endif /* !__ASSEMBLER__ */
  
 -#define VM_DATA_DEFAULT_FLAGS	(VM_DATA_FLAGS_TSK_EXEC | VM_MTE_ALLOWED)
++#ifdef CONFIG_ARM64_MTE
 +#define VMA_DATA_DEFAULT_FLAGS	append_vma_flags(VMA_DATA_FLAGS_TSK_EXEC, \
 +						 VMA_MTE_ALLOWED_BIT)
++#else
++#define VMA_DATA_DEFAULT_FLAGS	VMA_DATA_FLAGS_TSK_EXEC
++#endif
  
  #include <asm-generic/getorder.h>
  
@@ -756,10 +761,10 @@ index 36b3f1caebada..e9c8b1d05832b 100644
  
  	return 0;
 diff --git a/mm/vma.c b/mm/vma.c
-index 15d643eee97fd..b05fe785cb00c 100644
+index 6af26619e020b..9362860389ae4 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -2384,7 +2384,7 @@ static void vms_abort_munmap_vmas(struct vma_munmap_struct *vms,
+@@ -2385,7 +2385,7 @@ static void vms_abort_munmap_vmas(struct vma_munmap_struct *vms,
  
  static void update_ksm_flags(struct mmap_state *map)
  {
@@ -768,7 +773,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  }
  
  static void set_desc_from_map(struct vm_area_desc *desc,
-@@ -2445,7 +2445,7 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
+@@ -2446,7 +2446,7 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
  	}
  
  	/* Check against address space limit. */
@@ -777,7 +782,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  		return -ENOMEM;
  
  	/* Private writable mapping: check memory availability. */
-@@ -2865,20 +2865,22 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
+@@ -2866,20 +2866,22 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
  	return ret;
  }
  
@@ -803,7 +808,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  {
  	struct mm_struct *mm = current->mm;
  
-@@ -2886,9 +2888,12 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
+@@ -2887,9 +2889,12 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
  	 * Check against address space limits by the changed size
  	 * Note: This happens *after* clearing old mappings in some code paths.
  	 */
@@ -819,7 +824,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  		return -ENOMEM;
  
  	if (mm->map_count > get_sysctl_max_map_count())
-@@ -2902,7 +2907,7 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
+@@ -2903,7 +2908,7 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
  	 * occur after forking, so the expand will only happen on new VMAs.
  	 */
  	if (vma && vma->vm_end == addr) {
@@ -828,7 +833,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  
  		vmg.prev = vma;
  		/* vmi is positioned at prev, which this mode expects. */
-@@ -2923,8 +2928,8 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
+@@ -2924,8 +2929,8 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
  
  	vma_set_anonymous(vma);
  	vma_set_range(vma, addr, addr + len, addr >> PAGE_SHIFT);
@@ -839,7 +844,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  	vma_start_write(vma);
  	if (vma_iter_store_gfp(vmi, vma, GFP_KERNEL))
  		goto mas_store_fail;
-@@ -2935,10 +2940,10 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
+@@ -2936,10 +2941,10 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
  	perf_event_mmap(vma);
  	mm->total_vm += len >> PAGE_SHIFT;
  	mm->data_vm += len >> PAGE_SHIFT;
@@ -848,11 +853,11 @@ index 15d643eee97fd..b05fe785cb00c 100644
  		mm->locked_vm += (len >> PAGE_SHIFT);
  	if (pgtable_supports_soft_dirty())
 -		vm_flags_set(vma, VM_SOFTDIRTY);
-+		vma_flags_set(&vma_flags, VMA_SOFTDIRTY_BIT);
++		vma_set_flags(vma, VMA_SOFTDIRTY_BIT);
  	return 0;
  
  mas_store_fail:
-@@ -3069,7 +3074,7 @@ static int acct_stack_growth(struct vm_area_struct *vma,
+@@ -3070,7 +3075,7 @@ static int acct_stack_growth(struct vm_area_struct *vma,
  	unsigned long new_start;
  
  	/* address space limit tests */
@@ -861,7 +866,7 @@ index 15d643eee97fd..b05fe785cb00c 100644
  		return -ENOMEM;
  
  	/* Stack limit test */
-@@ -3288,7 +3293,6 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
+@@ -3289,7 +3294,6 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
  {
  	unsigned long charged = vma_pages(vma);
  
@@ -970,7 +975,7 @@ index b7d9eb0a44e41..744fe874c1688 100644
 -#define VMA_SPECIAL_FLAGS mk_vma_flags(VMA_IO_BIT, VMA_DONTEXPAND_BIT, \
 -				       VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT)
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index d4149d9837fb7..e68d3eb781787 100644
+index 244ee02dc21d3..36373b81ad24d 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -314,27 +314,33 @@ enum {

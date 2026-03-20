@@ -1,0 +1,96 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 19 Mar 2026 13:00:13 +0000
+Subject: [PATCH] mm/huge_memory: deduplicate zap deposited table call
+
+Rather than having separate logic for each case determining whether to zap
+the deposited table, simply track this via a boolean.
+
+We check separately if the architecture requires it.
+
+Link: https://lkml.kernel.org/r/29fa4129cd560681c67433b4c344b2c9a027d1b4.1773924928.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand (ARM) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Kiryl Shutsemau <kirill@shutemov.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 21 +++++++++------------
+ 1 file changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 6483cb32a4644..fc02255a251e8 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2338,6 +2338,7 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		 pmd_t *pmd, unsigned long addr)
+ {
+ 	struct folio *folio = NULL;
++	bool needs_deposit = false;
+ 	bool flush_needed = false;
+ 	spinlock_t *ptl;
+ 	pmd_t orig_pmd;
+@@ -2357,23 +2358,18 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 						tlb->fullmm);
+ 	arch_check_zapped_pmd(vma, orig_pmd);
+ 	tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
+-	if (vma_is_special_huge(vma)) {
+-		if (arch_needs_pgtable_deposit())
+-			zap_deposited_table(tlb->mm, pmd);
++	if (vma_is_special_huge(vma))
+ 		goto out;
+-	}
+ 	if (is_huge_zero_pmd(orig_pmd)) {
+-		if (!vma_is_dax(vma) || arch_needs_pgtable_deposit())
+-			zap_deposited_table(tlb->mm, pmd);
++		needs_deposit = !vma_is_dax(vma);
+ 		goto out;
+ 	}
+ 
+ 	if (pmd_present(orig_pmd)) {
+-		struct page *page = pmd_page(orig_pmd);
++		folio = pmd_folio(orig_pmd);
+ 
+ 		flush_needed = true;
+-		folio = page_folio(page);
+-		folio_remove_rmap_pmd(folio, page, vma);
++		folio_remove_rmap_pmd(folio, &folio->page, vma);
+ 		WARN_ON_ONCE(folio_mapcount(folio) < 0);
+ 	} else if (pmd_is_valid_softleaf(orig_pmd)) {
+ 		const softleaf_t entry = softleaf_from_pmd(orig_pmd);
+@@ -2388,11 +2384,9 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 	}
+ 
+ 	if (folio_test_anon(folio)) {
+-		zap_deposited_table(tlb->mm, pmd);
++		needs_deposit = true;
+ 		add_mm_counter(tlb->mm, MM_ANONPAGES, -HPAGE_PMD_NR);
+ 	} else {
+-		if (arch_needs_pgtable_deposit())
+-			zap_deposited_table(tlb->mm, pmd);
+ 		add_mm_counter(tlb->mm, mm_counter_file(folio),
+ 			       -HPAGE_PMD_NR);
+ 
+@@ -2412,6 +2406,9 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 	}
+ 
+ out:
++	if (arch_needs_pgtable_deposit() || needs_deposit)
++		zap_deposited_table(tlb->mm, pmd);
++
+ 	spin_unlock(ptl);
+ 	if (flush_needed)
+ 		tlb_remove_page_size(tlb, &folio->page, HPAGE_PMD_SIZE);
+-- 
+2.47.3
+

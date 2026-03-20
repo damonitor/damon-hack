@@ -1,0 +1,123 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Tue, 17 Mar 2026 17:56:48 +0100
+Subject: [PATCH] mm: prepare to move subsection_map_init() to
+ mm/sparse-vmemmap.c
+
+We want to move subsection_map_init() to mm/sparse-vmemmap.c.
+
+To prepare for getting rid of subsection_map_init() in mm/sparse.c
+completely, use a static inline function for !CONFIG_SPARSEMEM_VMEMMAP.
+
+While at it, move the declaration to internal.h and rename it to
+"sparse_init_subsection_map()".
+
+Link: https://lkml.kernel.org/r/20260317165652.99114-11-david@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmzone.h |  3 ---
+ mm/internal.h          | 12 ++++++++++++
+ mm/mm_init.c           |  2 +-
+ mm/sparse.c            |  6 +-----
+ 4 files changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 7bd0134c241ce..b694c69dee041 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -2002,8 +2002,6 @@ struct mem_section_usage {
+ 	unsigned long pageblock_flags[0];
+ };
+ 
+-void subsection_map_init(unsigned long pfn, unsigned long nr_pages);
+-
+ struct page;
+ struct page_ext;
+ struct mem_section {
+@@ -2396,7 +2394,6 @@ static inline unsigned long next_present_section_nr(unsigned long section_nr)
+ #define sparse_vmemmap_init_nid_early(_nid) do {} while (0)
+ #define sparse_vmemmap_init_nid_late(_nid) do {} while (0)
+ #define pfn_in_present_section pfn_valid
+-#define subsection_map_init(_pfn, _nr_pages) do {} while (0)
+ #endif /* CONFIG_SPARSEMEM */
+ 
+ /*
+diff --git a/mm/internal.h b/mm/internal.h
+index 2aa04d87ac106..c107707d9cbd2 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -968,12 +968,24 @@ void memmap_init_range(unsigned long, int, unsigned long, unsigned long,
+ 		unsigned long, enum meminit_context, struct vmem_altmap *, int,
+ 		bool);
+ 
++/*
++ * mm/sparse.c
++ */
+ #ifdef CONFIG_SPARSEMEM
+ void sparse_init(void);
+ #else
+ static inline void sparse_init(void) {}
+ #endif /* CONFIG_SPARSEMEM */
+ 
++#ifdef CONFIG_SPARSEMEM_VMEMMAP
++void sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages);
++#else
++static inline void sparse_init_subsection_map(unsigned long pfn,
++		unsigned long nr_pages)
++{
++}
++#endif /* CONFIG_SPARSEMEM_VMEMMAP */
++
+ #if defined CONFIG_COMPACTION || defined CONFIG_CMA
+ 
+ /*
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index cec7bb758bdd1..e0f1e36cb9e40 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1897,7 +1897,7 @@ static void __init free_area_init(void)
+ 		pr_info("  node %3d: [mem %#018Lx-%#018Lx]\n", nid,
+ 			(u64)start_pfn << PAGE_SHIFT,
+ 			((u64)end_pfn << PAGE_SHIFT) - 1);
+-		subsection_map_init(start_pfn, end_pfn - start_pfn);
++		sparse_init_subsection_map(start_pfn, end_pfn - start_pfn);
+ 	}
+ 
+ 	/* Initialise every node */
+diff --git a/mm/sparse.c b/mm/sparse.c
+index b57c81e993401..7b0bfea73a9b8 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -185,7 +185,7 @@ static void subsection_mask_set(unsigned long *map, unsigned long pfn,
+ 	bitmap_set(map, idx, end - idx + 1);
+ }
+ 
+-void __init subsection_map_init(unsigned long pfn, unsigned long nr_pages)
++void __init sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages)
+ {
+ 	int end_sec_nr = pfn_to_section_nr(pfn + nr_pages - 1);
+ 	unsigned long nr, start_sec_nr = pfn_to_section_nr(pfn);
+@@ -207,10 +207,6 @@ void __init subsection_map_init(unsigned long pfn, unsigned long nr_pages)
+ 		nr_pages -= pfns;
+ 	}
+ }
+-#else
+-void __init subsection_map_init(unsigned long pfn, unsigned long nr_pages)
+-{
+-}
+ #endif
+ 
+ /* Record a memory area against a node. */
+-- 
+2.47.3
+

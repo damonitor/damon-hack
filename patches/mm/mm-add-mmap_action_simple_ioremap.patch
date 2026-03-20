@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Mon, 16 Mar 2026 21:12:02 +0000
+Date: Thu, 19 Mar 2026 18:23:30 +0000
 Subject: [PATCH] mm: add mmap_action_simple_ioremap()
 
 Currently drivers use vm_iomap_memory() as a simple helper function for
@@ -23,7 +23,7 @@ this mode.
 We update the mmap_prepare documentation to describe this mode.  Finally,
 we update the VMA tests to reflect this change.
 
-Link: https://lkml.kernel.org/r/1e58aaf3cdb61cc317d890c12c9a558dfc206913.1773695307.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/cd8492e65adc48ab75596293c821efd21fea1283.1773944114.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Reviewed-by: Suren Baghdasaryan <surenb@google.com>
 Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
@@ -54,18 +54,17 @@ Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Richard Weinberger <richard@nod.at>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Vignesh Raghavendra <vigneshr@ti.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  Documentation/filesystems/mmap_prepare.rst |  3 +
  include/linux/mm.h                         | 24 +++++-
  include/linux/mm_types.h                   |  6 +-
- mm/internal.h                              |  2 +
- mm/memory.c                                | 87 +++++++++++++++-------
- mm/util.c                                  | 12 +++
+ mm/internal.h                              |  1 +
+ mm/memory.c                                | 85 +++++++++++++++-------
+ mm/util.c                                  |  5 ++
  tools/testing/vma/include/dup.h            |  6 +-
- 7 files changed, 112 insertions(+), 28 deletions(-)
+ 7 files changed, 102 insertions(+), 28 deletions(-)
 
 diff --git a/Documentation/filesystems/mmap_prepare.rst b/Documentation/filesystems/mmap_prepare.rst
 index 20db474915da4..be76ae475b9c4 100644
@@ -81,7 +80,7 @@ index 20db474915da4..be76ae475b9c4 100644
  **NOTE:** The ``action`` field should never normally be manipulated directly,
  rather you ought to use one of these helpers.
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index ad1b8c3c0cfd2..df8fa6e6402b9 100644
+index 68dee11013132..ef2e4dccfe8ef 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
 @@ -4337,11 +4337,33 @@ static inline void mmap_action_ioremap(struct vm_area_desc *desc,
@@ -118,9 +117,9 @@ index ad1b8c3c0cfd2..df8fa6e6402b9 100644
 +
  int mmap_action_prepare(struct vm_area_desc *desc);
  int mmap_action_complete(struct vm_area_struct *vma,
- 			 struct mmap_action *action);
+ 			 struct mmap_action *action,
 diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index 4a229cc0a06b5..50685cf29792b 100644
+index 16d31045e26e4..174286f9ecf0a 100644
 --- a/include/linux/mm_types.h
 +++ b/include/linux/mm_types.h
 @@ -814,6 +814,7 @@ enum mmap_action_type {
@@ -150,31 +149,29 @@ index 4a229cc0a06b5..50685cf29792b 100644
  	enum mmap_action_type type;
  
 diff --git a/mm/internal.h b/mm/internal.h
-index f5774892071ed..0eaca2f0eb6a0 100644
+index e0f5541781437..2aa04d87ac106 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -1804,6 +1804,8 @@ int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm);
+@@ -1804,6 +1804,7 @@ int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm);
  int remap_pfn_range_prepare(struct vm_area_desc *desc);
  int remap_pfn_range_complete(struct vm_area_struct *vma,
  			     struct mmap_action *action);
 +int simple_ioremap_prepare(struct vm_area_desc *desc);
-+/* No simple_ioremap_complete, is ultimately handled by remap complete. */
  
  static inline int io_remap_pfn_range_prepare(struct vm_area_desc *desc)
  {
 diff --git a/mm/memory.c b/mm/memory.c
-index 9dec67a181160..f3f4046aee973 100644
+index 9dec67a181160..b3bcc21af20a7 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
-@@ -3170,6 +3170,59 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
+@@ -3170,6 +3170,58 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
  	return do_remap_pfn_range(vma, start, pfn, size, prot);
  }
  
-+static int __simple_ioremap_prep(unsigned long vm_start, unsigned long vm_end,
-+				 pgoff_t vm_pgoff, phys_addr_t start_phys,
-+				 unsigned long size, unsigned long *pfnp)
++static int __simple_ioremap_prep(unsigned long vm_len, pgoff_t vm_pgoff,
++				 phys_addr_t start_phys, unsigned long size,
++				 unsigned long *pfnp)
 +{
-+	const unsigned long vm_len = vm_end - vm_start;
 +	unsigned long pfn, pages;
 +
 +	/* Check that the physical memory area passed in looks valid */
@@ -213,20 +210,20 @@ index 9dec67a181160..f3f4046aee973 100644
 +	unsigned long pfn;
 +	int err;
 +
-+	err = __simple_ioremap_prep(desc->start, desc->end, desc->pgoff,
++	err = __simple_ioremap_prep(vma_desc_size(desc), desc->pgoff,
 +				    start, size, &pfn);
 +	if (err)
 +		return err;
 +
 +	/* The I/O remap logic does the heavy lifting. */
-+	mmap_action_ioremap(desc, desc->start, pfn, vma_desc_size(desc));
-+	return mmap_action_prepare(desc);
++	mmap_action_ioremap_full(desc, pfn);
++	return io_remap_pfn_range_prepare(desc);
 +}
 +
  /**
   * vm_iomap_memory - remap memory to userspace
   * @vma: user vma to map to
-@@ -3187,32 +3240,16 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
+@@ -3187,32 +3239,15 @@ int remap_pfn_range_complete(struct vm_area_struct *vma,
   */
  int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
  {
@@ -261,18 +258,17 @@ index 9dec67a181160..f3f4046aee973 100644
 -	vm_len = vma->vm_end - vma->vm_start;
 -	if (vm_len >> PAGE_SHIFT > pages)
 -		return -EINVAL;
-+	err = __simple_ioremap_prep(vm_start, vm_end, vma->vm_pgoff, start,
-+				    len, &pfn);
++	err = __simple_ioremap_prep(vm_len, vma->vm_pgoff, start, len, &pfn);
 +	if (err)
 +		return err;
  
  	/* Ok, let it rip */
  	return io_remap_pfn_range(vma, vma->vm_start, pfn, vm_len, vma->vm_page_prot);
 diff --git a/mm/util.c b/mm/util.c
-index cdfba09e50d7f..aa92e471afe19 100644
+index fc1bd8a8f3ea0..879ba62b5f0c2 100644
 --- a/mm/util.c
 +++ b/mm/util.c
-@@ -1390,6 +1390,8 @@ int mmap_action_prepare(struct vm_area_desc *desc)
+@@ -1392,6 +1392,8 @@ int mmap_action_prepare(struct vm_area_desc *desc)
  		return remap_pfn_range_prepare(desc);
  	case MMAP_IO_REMAP_PFN:
  		return io_remap_pfn_range_prepare(desc);
@@ -281,22 +277,15 @@ index cdfba09e50d7f..aa92e471afe19 100644
  	}
  
  	WARN_ON_ONCE(1);
-@@ -1421,6 +1423,14 @@ int mmap_action_complete(struct vm_area_struct *vma,
- 	case MMAP_IO_REMAP_PFN:
- 		err = io_remap_pfn_range_complete(vma, action);
+@@ -1423,6 +1425,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
+ 		err = remap_pfn_range_complete(vma, action);
  		break;
+ 	case MMAP_IO_REMAP_PFN:
 +	case MMAP_SIMPLE_IO_REMAP:
-+		/*
-+		 * The simple I/O remap should have been delegated to an I/O
-+		 * remap.
-+		 */
-+		WARN_ON_ONCE(1);
-+		err = -EINVAL;
-+		break;
- 	}
- 
- 	return mmap_action_finish(vma, action, err);
-@@ -1434,6 +1444,7 @@ int mmap_action_prepare(struct vm_area_desc *desc)
+ 		/* Should have been delegated. */
+ 		WARN_ON_ONCE(1);
+ 		err = -EINVAL;
+@@ -1441,6 +1444,7 @@ int mmap_action_prepare(struct vm_area_desc *desc)
  		break;
  	case MMAP_REMAP_PFN:
  	case MMAP_IO_REMAP_PFN:
@@ -304,7 +293,7 @@ index cdfba09e50d7f..aa92e471afe19 100644
  		WARN_ON_ONCE(1); /* nommu cannot handle these. */
  		break;
  	}
-@@ -1452,6 +1463,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
+@@ -1460,6 +1464,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
  		break;
  	case MMAP_REMAP_PFN:
  	case MMAP_IO_REMAP_PFN:
@@ -313,7 +302,7 @@ index cdfba09e50d7f..aa92e471afe19 100644
  
  		err = -EINVAL;
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index 4570ec77f153f..114daaef4f735 100644
+index 84e92ba446770..bedc1e56a60b2 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -453,6 +453,7 @@ enum mmap_action_type {
@@ -336,8 +325,8 @@ index 4570ec77f153f..114daaef4f735 100644
  			pgprot_t pgprot;
  		} remap;
 +		struct {
-+			phys_addr_t start;
-+			unsigned long len;
++			phys_addr_t start_phys_addr;
++			unsigned long size;
 +		} simple_ioremap;
  	};
  	enum mmap_action_type type;

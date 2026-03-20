@@ -1,0 +1,285 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Wed, 18 Mar 2026 15:53:23 -0400
+Subject: [PATCH] mm: list_lru: introduce caller locking for additions and
+ deletions
+
+Locking is currently internal to the list_lru API.  However, a caller
+might want to keep auxiliary state synchronized with the LRU state.
+
+For example, the THP shrinker uses the lock of its custom LRU to keep
+PG_partially_mapped and vmstats consistent.
+
+To allow the THP shrinker to switch to list_lru, provide normal and
+irqsafe locking primitives as well as caller-locked variants of the
+addition and deletion functions.
+
+Link: https://lkml.kernel.org/r/20260318200352.1039011-6-hannes@cmpxchg.org
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/list_lru.h |  34 +++++++++++++
+ mm/list_lru.c            | 107 +++++++++++++++++++++++++++------------
+ 2 files changed, 110 insertions(+), 31 deletions(-)
+
+diff --git a/include/linux/list_lru.h b/include/linux/list_lru.h
+index fe739d35a864c..4afc02deb44de 100644
+--- a/include/linux/list_lru.h
++++ b/include/linux/list_lru.h
+@@ -83,6 +83,40 @@ int memcg_list_lru_alloc(struct mem_cgroup *memcg, struct list_lru *lru,
+ 			 gfp_t gfp);
+ void memcg_reparent_list_lrus(struct mem_cgroup *memcg, struct mem_cgroup *parent);
+ 
++/**
++ * list_lru_lock: lock the sublist for the given node and memcg
++ * @lru: the lru pointer
++ * @nid: the node id of the sublist to lock.
++ * @memcg: the cgroup of the sublist to lock.
++ *
++ * Returns the locked list_lru_one sublist. The caller must call
++ * list_lru_unlock() when done.
++ *
++ * You must ensure that the memcg is not freed during this call (e.g., with
++ * rcu or by taking a css refcnt).
++ *
++ * Return: the locked list_lru_one, or NULL on failure
++ */
++struct list_lru_one *list_lru_lock(struct list_lru *lru, int nid,
++		struct mem_cgroup *memcg);
++
++/**
++ * list_lru_unlock: unlock a sublist locked by list_lru_lock()
++ * @l: the list_lru_one to unlock
++ */
++void list_lru_unlock(struct list_lru_one *l);
++
++struct list_lru_one *list_lru_lock_irqsave(struct list_lru *lru, int nid,
++		struct mem_cgroup *memcg, unsigned long *irq_flags);
++void list_lru_unlock_irqrestore(struct list_lru_one *l,
++		unsigned long *irq_flags);
++
++/* Caller-locked variants, see list_lru_add() etc for documentation */
++bool __list_lru_add(struct list_lru *lru, struct list_lru_one *l,
++		struct list_head *item, int nid, struct mem_cgroup *memcg);
++bool __list_lru_del(struct list_lru *lru, struct list_lru_one *l,
++		struct list_head *item, int nid);
++
+ /**
+  * list_lru_add: add an element to the lru list's tail
+  * @lru: the lru pointer
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index 4d74c2e9c2a51..b817c0f48f73c 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -15,17 +15,23 @@
+ #include "slab.h"
+ #include "internal.h"
+ 
+-static inline void lock_list_lru(struct list_lru_one *l, bool irq)
++static inline void lock_list_lru(struct list_lru_one *l, bool irq,
++				 unsigned long *irq_flags)
+ {
+-	if (irq)
++	if (irq_flags)
++		spin_lock_irqsave(&l->lock, *irq_flags);
++	else if (irq)
+ 		spin_lock_irq(&l->lock);
+ 	else
+ 		spin_lock(&l->lock);
+ }
+ 
+-static inline void unlock_list_lru(struct list_lru_one *l, bool irq_off)
++static inline void unlock_list_lru(struct list_lru_one *l, bool irq_off,
++				   unsigned long *irq_flags)
+ {
+-	if (irq_off)
++	if (irq_flags)
++		spin_unlock_irqrestore(&l->lock, *irq_flags);
++	else if (irq_off)
+ 		spin_unlock_irq(&l->lock);
+ 	else
+ 		spin_unlock(&l->lock);
+@@ -78,7 +84,7 @@ list_lru_from_memcg_idx(struct list_lru *lru, int nid, int idx)
+ 
+ static inline struct list_lru_one *
+ lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+-		       bool irq, bool skip_empty)
++		       bool irq, unsigned long *irq_flags, bool skip_empty)
+ {
+ 	struct list_lru_one *l;
+ 
+@@ -86,12 +92,12 @@ lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+ again:
+ 	l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(memcg));
+ 	if (likely(l)) {
+-		lock_list_lru(l, irq);
++		lock_list_lru(l, irq, irq_flags);
+ 		if (likely(READ_ONCE(l->nr_items) != LONG_MIN)) {
+ 			rcu_read_unlock();
+ 			return l;
+ 		}
+-		unlock_list_lru(l, irq);
++		unlock_list_lru(l, irq, irq_flags);
+ 	}
+ 	/*
+ 	 * Caller may simply bail out if raced with reparenting or
+@@ -132,37 +138,81 @@ list_lru_from_memcg_idx(struct list_lru *lru, int nid, int idx)
+ 
+ static inline struct list_lru_one *
+ lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+-		       bool irq, bool skip_empty)
++		       bool irq, unsigned long *irq_flags, bool skip_empty)
+ {
+ 	struct list_lru_one *l = &lru->node[nid].lru;
+ 
+-	lock_list_lru(l, irq);
++	lock_list_lru(l, irq, irq_flags);
+ 
+ 	return l;
+ }
+ #endif /* CONFIG_MEMCG */
+ 
+-/* The caller must ensure the memcg lifetime. */
+-bool list_lru_add(struct list_lru *lru, struct list_head *item, int nid,
+-		  struct mem_cgroup *memcg)
++struct list_lru_one *list_lru_lock(struct list_lru *lru, int nid,
++				   struct mem_cgroup *memcg)
+ {
+-	struct list_lru_node *nlru = &lru->node[nid];
+-	struct list_lru_one *l;
++	return lock_list_lru_of_memcg(lru, nid, memcg, /*irq=*/false,
++				      /*irq_flags=*/NULL, /*skip_empty=*/false);
++}
++
++void list_lru_unlock(struct list_lru_one *l)
++{
++	unlock_list_lru(l, /*irq_off=*/false, /*irq_flags=*/NULL);
++}
++
++struct list_lru_one *list_lru_lock_irqsave(struct list_lru *lru, int nid,
++					   struct mem_cgroup *memcg,
++					   unsigned long *flags)
++{
++	return lock_list_lru_of_memcg(lru, nid, memcg, /*irq=*/true,
++				      /*irq_flags=*/flags, /*skip_empty=*/false);
++}
++
++void list_lru_unlock_irqrestore(struct list_lru_one *l, unsigned long *flags)
++{
++	unlock_list_lru(l, /*irq_off=*/true, /*irq_flags=*/flags);
++}
+ 
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, false, false);
++bool __list_lru_add(struct list_lru *lru, struct list_lru_one *l,
++		    struct list_head *item, int nid,
++		    struct mem_cgroup *memcg)
++{
+ 	if (list_empty(item)) {
+ 		list_add_tail(item, &l->list);
+ 		/* Set shrinker bit if the first element was added */
+ 		if (!l->nr_items++)
+ 			set_shrinker_bit(memcg, nid, lru_shrinker_id(lru));
+-		unlock_list_lru(l, false);
+-		atomic_long_inc(&nlru->nr_items);
++		atomic_long_inc(&lru->node[nid].nr_items);
++		return true;
++	}
++	return false;
++}
++
++bool __list_lru_del(struct list_lru *lru, struct list_lru_one *l,
++		    struct list_head *item, int nid)
++{
++	if (!list_empty(item)) {
++		list_del_init(item);
++		l->nr_items--;
++		atomic_long_dec(&lru->node[nid].nr_items);
+ 		return true;
+ 	}
+-	unlock_list_lru(l, false);
+ 	return false;
+ }
+ 
++/* The caller must ensure the memcg lifetime. */
++bool list_lru_add(struct list_lru *lru, struct list_head *item, int nid,
++		  struct mem_cgroup *memcg)
++{
++	struct list_lru_one *l;
++	bool ret;
++
++	l = list_lru_lock(lru, nid, memcg);
++	ret = __list_lru_add(lru, l, item, nid, memcg);
++	list_lru_unlock(l);
++	return ret;
++}
++
+ bool list_lru_add_obj(struct list_lru *lru, struct list_head *item)
+ {
+ 	bool ret;
+@@ -184,19 +234,13 @@ EXPORT_SYMBOL_GPL(list_lru_add_obj);
+ bool list_lru_del(struct list_lru *lru, struct list_head *item, int nid,
+ 		  struct mem_cgroup *memcg)
+ {
+-	struct list_lru_node *nlru = &lru->node[nid];
+ 	struct list_lru_one *l;
++	bool ret;
+ 
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, false, false);
+-	if (!list_empty(item)) {
+-		list_del_init(item);
+-		l->nr_items--;
+-		unlock_list_lru(l, false);
+-		atomic_long_dec(&nlru->nr_items);
+-		return true;
+-	}
+-	unlock_list_lru(l, false);
+-	return false;
++	l = list_lru_lock(lru, nid, memcg);
++	ret = __list_lru_del(lru, l, item, nid);
++	list_lru_unlock(l);
++	return ret;
+ }
+ 
+ bool list_lru_del_obj(struct list_lru *lru, struct list_head *item)
+@@ -269,7 +313,8 @@ __list_lru_walk_one(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+ 	unsigned long isolated = 0;
+ 
+ restart:
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, irq_off, true);
++	l = lock_list_lru_of_memcg(lru, nid, memcg, /*irq=*/irq_off,
++				   /*irq_flags=*/NULL, /*skip_empty=*/true);
+ 	if (!l)
+ 		return isolated;
+ 	list_for_each_safe(item, n, &l->list) {
+@@ -310,7 +355,7 @@ __list_lru_walk_one(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+ 			BUG();
+ 		}
+ 	}
+-	unlock_list_lru(l, irq_off);
++	unlock_list_lru(l, irq_off, NULL);
+ out:
+ 	return isolated;
+ }
+-- 
+2.47.3
+

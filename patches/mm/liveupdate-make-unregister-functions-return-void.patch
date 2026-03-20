@@ -1,0 +1,116 @@
+From: Pasha Tatashin <pasha.tatashin@soleen.com>
+Date: Wed, 18 Mar 2026 10:16:46 -0400
+Subject: [PATCH] liveupdate: make unregister functions return void
+
+Change liveupdate_unregister_file_handler and liveupdate_unregister_flb to
+return void instead of an error code.  This follows the design principle
+that unregistration during module unload should not fail, as the unload
+cannot be stopped at that point.
+
+Link: https://lkml.kernel.org/r/20260318141637.1870220-18-pasha.tatashin@soleen.com
+Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: David Matlack <dmatlack@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/liveupdate.h   | 14 ++++++--------
+ kernel/liveupdate/luo_file.c |  6 ++----
+ kernel/liveupdate/luo_flb.c  |  8 +++-----
+ 3 files changed, 11 insertions(+), 17 deletions(-)
+
+diff --git a/include/linux/liveupdate.h b/include/linux/liveupdate.h
+index 8394fb2d87749..636175432d622 100644
+--- a/include/linux/liveupdate.h
++++ b/include/linux/liveupdate.h
+@@ -231,12 +231,12 @@ bool liveupdate_enabled(void);
+ int liveupdate_reboot(void);
+ 
+ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh);
+-int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh);
++void liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh);
+ 
+ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 			    struct liveupdate_flb *flb);
+-int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+-			      struct liveupdate_flb *flb);
++void liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
++			       struct liveupdate_flb *flb);
+ 
+ int liveupdate_flb_get_incoming(struct liveupdate_flb *flb, void **objp);
+ int liveupdate_flb_get_outgoing(struct liveupdate_flb *flb, void **objp);
+@@ -258,9 +258,8 @@ static inline int liveupdate_register_file_handler(struct liveupdate_file_handle
+ 	return -EOPNOTSUPP;
+ }
+ 
+-static inline int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
++static inline void liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ {
+-	return -EOPNOTSUPP;
+ }
+ 
+ static inline int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+@@ -269,10 +268,9 @@ static inline int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 	return -EOPNOTSUPP;
+ }
+ 
+-static inline int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+-					    struct liveupdate_flb *flb)
++static inline void liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
++					     struct liveupdate_flb *flb)
+ {
+-	return -EOPNOTSUPP;
+ }
+ 
+ static inline int liveupdate_flb_get_incoming(struct liveupdate_flb *flb,
+diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
+index c9c26015020b7..a38ea49758249 100644
+--- a/kernel/liveupdate/luo_file.c
++++ b/kernel/liveupdate/luo_file.c
+@@ -874,15 +874,13 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+  * Unregisters the file handler from the liveupdate core. This function
+  * reverses the operations of liveupdate_register_file_handler().
+  */
+-int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
++void liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ {
+ 	if (!liveupdate_enabled())
+-		return -EOPNOTSUPP;
++		return;
+ 
+ 	scoped_guard(rwsem_write, &luo_file_handler_lock) {
+ 		luo_flb_unregister_all(fh);
+ 		list_del(&ACCESS_PRIVATE(fh, list));
+ 	}
+-
+-	return 0;
+ }
+diff --git a/kernel/liveupdate/luo_flb.c b/kernel/liveupdate/luo_flb.c
+index 5b61c0844a492..874830f8e44d8 100644
+--- a/kernel/liveupdate/luo_flb.c
++++ b/kernel/liveupdate/luo_flb.c
+@@ -476,18 +476,16 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+  * owner module (acquired during registration) is released.
+  *
+  */
+-int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+-			      struct liveupdate_flb *flb)
++void liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
++			       struct liveupdate_flb *flb)
+ {
+ 	if (!liveupdate_enabled())
+-		return -EOPNOTSUPP;
++		return;
+ 
+ 	guard(rwsem_write)(&luo_flb_lock);
+ 	guard(rwsem_write)(&ACCESS_PRIVATE(fh, flb_lock));
+ 
+ 	luo_flb_unregister_one(fh, flb);
+-
+-	return 0;
+ }
+ 
+ /**
+-- 
+2.47.3
+

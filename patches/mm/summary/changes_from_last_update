@@ -4,16 +4,43 @@
 - mm-hotfixes-unstable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 2 -> 2 commits (no change)
+  - new commits
+    - 155f19e70dc8 "mm/damon/core: avoid use of half-online-committed context"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260319145218.86197-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260319043309.97966-1-sj@kernel.org [1]
+  - changed commits
+    - 2de6c69982a9 "mm/damon/stat: monitor all System RAM resources"
+      - Authored by a maintainer, reviewed by nobody
+      - added "[sj@kernel.org: return error if monitoring target region is invalid]"
+      - added "Link: : https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org"
+      - Link: : https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
+      - Link: https://lkml.kernel.org/r/20260316235118.873-1-sj@kernel.org
+  - dropped commits
+    - abc2843c012f "mm/damon/stat: return error if monitoring target region is invalid"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 47 -> 47 commits (no change)
+- mm-unstable: 47 -> 48 commits
   - series: 8 (43) -> 8 (43) (no change)
-    - no role, maintainer: 2 -> 2 commits (no change)
+    - no role, maintainer: 2 -> 3 commits
     - maintainer, nobody: 38 -> 38 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
+  - changed commits
+    - f0bd57d13180 "Docs/mm/damon: document exclusivity of special-purpose modules"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lkml.kernel.org/r/20260315162945.80994-1-sj@kernel.org
+      - Link: https://lore.kernel.org/damon/20260314002119.79742-1-sj@kernel.org/T/#t [1]
 - mm-new: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
+  - new commits
+    - 826e835fe01e "Docs/mm/damon/design: document DAMON actions when TRANSPARENT_HUGEPAGE is off"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260318035349.88715-1-sj@kernel.org
+      - Link: https://lore.kernel.org/66131775-180b-4b9f-b7ce-61a3e077b6e6@huawei-partners.com/ [1]
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

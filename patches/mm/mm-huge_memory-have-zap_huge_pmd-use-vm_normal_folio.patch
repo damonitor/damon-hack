@@ -1,0 +1,91 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Thu, 19 Mar 2026 13:00:15 +0000
+Subject: [PATCH] mm/huge_memory: have zap_huge_pmd() use vm_normal_folio_pmd()
+
+Rather than having special handling for the 'special huge' and huge zero
+pages, have vm_normal_folio_pmd() figure this out for us, and use the
+presence of a folio to determine whether to exit early.
+
+We can therefore delete code, move the 'present or not' logic up and make
+things clearer this way.
+
+Link: https://lkml.kernel.org/r/d2bfe24c36ab1cc28f3dd6bea2835fd895c1ae4e.1773924928.git.ljs@kernel.org
+Suggested-by: David Hildenbrand (ARM) <david@kernel.org>
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Kiryl Shutsemau <kirill@shutemov.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 28 +++++++++++++---------------
+ 1 file changed, 13 insertions(+), 15 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 76e8eb114106a..87ad0c86792a8 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2338,9 +2338,9 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 		 pmd_t *pmd, unsigned long addr)
+ {
+ 	bool needs_remove_rmap = false;
+-	struct folio *folio = NULL;
+ 	bool needs_deposit = false;
+ 	bool is_present = false;
++	struct folio *folio;
+ 	spinlock_t *ptl;
+ 	pmd_t orig_pmd;
+ 
+@@ -2360,28 +2360,26 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 
+ 	arch_check_zapped_pmd(vma, orig_pmd);
+ 	tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
+-	if (vma_is_special_huge(vma))
+-		goto out;
+-	if (is_huge_zero_pmd(orig_pmd)) {
+-		needs_deposit = !vma_is_dax(vma);
+-		goto out;
+-	}
+ 
+-	is_present = pmd_present(orig_pmd);
+-	if (is_present) {
+-		folio = pmd_folio(orig_pmd);
+-		needs_remove_rmap = true;
++	if (pmd_present(orig_pmd)) {
++		folio = vm_normal_folio_pmd(vma, addr, orig_pmd);
++		if (folio) {
++			needs_remove_rmap = true;
++			is_present = true;
++		} else if (is_huge_zero_pmd(orig_pmd)) {
++			needs_deposit = !vma_is_dax(vma);
++		}
+ 	} else if (pmd_is_valid_softleaf(orig_pmd)) {
+-		const softleaf_t entry = softleaf_from_pmd(orig_pmd);
+-
+-		folio = softleaf_to_folio(entry);
++		folio = softleaf_to_folio(softleaf_from_pmd(orig_pmd));
+ 		needs_remove_rmap = folio_is_device_private(folio);
+ 		if (!thp_migration_supported())
+ 			WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
+ 	} else {
+ 		WARN_ON_ONCE(true);
+-		goto out;
++		folio = NULL;
+ 	}
++	if (!folio)
++		goto out;
+ 
+ 	if (folio_test_anon(folio)) {
+ 		needs_deposit = true;
+-- 
+2.47.3
+
