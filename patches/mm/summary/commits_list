@@ -1,197 +1,209 @@
 - baseline: v7.0-rc4-25-gf0caa1d49cc07
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-hotfixes-unstable: 2 total, 0 (0) series, 2 non-series commits
+- mm-hotfixes-unstable: 3 total, 0 (0) series, 3 non-series commits
   - author/reviewer role stat
-    - maintainer, nobody: 2 commits
+    - maintainer, nobody: 3 commits
   - full commits list
-    - 2de6c69982a9 "mm/damon/stat: monitor all System RAM resources"
+    - 3d92f10a4b71 "mm/damon/stat: monitor all System RAM resources"
       - Authored by a maintainer, reviewed by nobody
       - Link: : https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
       - Link: https://lkml.kernel.org/r/20260316235118.873-1-sj@kernel.org
-    - 155f19e70dc8 "mm/damon/core: avoid use of half-online-committed context"
+    - 18b1b3808145 "mm/damon/core: avoid use of half-online-committed context"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260319145218.86197-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260319043309.97966-1-sj@kernel.org [1]
+    - 87251192e5af "mm/damon/core: let kdamond_call() with cancel regardless of maybe_corrupted"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org
+      - Link: https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org [1]
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 48 total, 8 (43) series, 5 non-series commits
+- mm-unstable: 49 total, 8 (43) series, 6 non-series commits
   - author/reviewer role stat
-    - no role, maintainer: 3 commits
+    - no role, maintainer: 4 commits
     - maintainer, nobody: 38 commits
     - maintainer, no role : 7 commits
   - full commits list
-    - 1984746fbd57 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
+    - b9d083dbf970 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - 26925be943d1 "mm/damon: remove unused target param of get_scheme_score()"
+    - da99074f928a "mm/damon: remove unused target param of get_scheme_score()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
     - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2 commits)
-      - 7a5f616bbb19 "mm/damon/core: set quota-score histogram with core filters" (0/2)
+      - a5a7d69443b4 "mm/damon/core: set quota-score histogram with core filters" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - b9d0be955a67 "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
+      - 69f320aee95a "mm/damon/core: do non-safe region walk on kdamond_apply_schemes()" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
     - series "mm/damon: strictly respect min_nr_regions". (3 commits)
-      - 4df798598fdf "mm/damon/core: split regions for min_nr_regions" (0/3)
+      - 68941bd13239 "mm/damon/core: split regions for min_nr_regions" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
         - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - eaefb7525593 "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
+      - 3fb3e29d8aa4 "mm/damon/vaddr: do not split regions for min_nr_regions" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - fc1ef7a1ee09 "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
+      - eff1a9198897 "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
     - series "mm/damon: add optional debugging-purpose sanity checks". (10 commits)
-      - 432d3fcd94f5 "mm/damon: add CONFIG_DAMON_DEBUG_SANITY" (0/10)
+      - 85afc54cd49e "mm/damon: add CONFIG_DAMON_DEBUG_SANITY" (0/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260306152914.86303-2-sj@kernel.org
         - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org [1]
         - Link: https://github.com/damonitor/damon-tests/commit/a80fbee55e272f151b4e5809ee85898aea33e6ff [2]
-      - dd0af28fdd43 "mm/damon/core: add damon_new_region() debug_sanity check" (1/10)
+      - eff067442862 "mm/damon/core: add damon_new_region() debug_sanity check" (1/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-3-sj@kernel.org
-      - 4b2cdcccb57a "mm/damon/core: add damon_del_region() debug_sanity check" (2/10)
+      - 29802b237d67 "mm/damon/core: add damon_del_region() debug_sanity check" (2/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-4-sj@kernel.org
-      - 1b940862c904 "mm/damon/core: add damon_nr_regions() debug_sanity check" (3/10)
+      - 444534f64392 "mm/damon/core: add damon_nr_regions() debug_sanity check" (3/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-5-sj@kernel.org
-      - 0f1c9b15b49f "mm/damon/core: add damon_merge_two_regions() debug_sanity check" (4/10)
+      - facc2fd0fa65 "mm/damon/core: add damon_merge_two_regions() debug_sanity check" (4/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-6-sj@kernel.org
-      - faeb0e5c7ab6 "mm/damon/core: add damon_merge_regions_of() debug_sanity check" (5/10)
+      - e8a67acfcef3 "mm/damon/core: add damon_merge_regions_of() debug_sanity check" (5/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-7-sj@kernel.org
-      - 4409342d869d "mm/damon/core: add damon_split_region_at() debug_sanity check" (6/10)
+      - 549463d0d991 "mm/damon/core: add damon_split_region_at() debug_sanity check" (6/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-8-sj@kernel.org
-      - 0a5734517d9b "mm/damon/core: add damon_reset_aggregated() debug_sanity check" (7/10)
+      - 82a6cfeac3b6 "mm/damon/core: add damon_reset_aggregated() debug_sanity check" (7/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-9-sj@kernel.org
-      - ae5709116ff3 "mm/damon/tests/.kunitconifg: enable DAMON_DEBUG_SANITY" (8/10)
+      - aa6bf1945ab6 "mm/damon/tests/.kunitconifg: enable DAMON_DEBUG_SANITY" (8/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-10-sj@kernel.org
-      - 99a7e17ce0d0 "selftests/damon/config: enable DAMON_DEBUG_SANITY" (9/10)
+      - 06913cf87021 "selftests/damon/config: enable DAMON_DEBUG_SANITY" (9/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260306152914.86303-11-sj@kernel.org
     - series "mm/damon: test and document power-of-2 min_region_sz requirement". (2 commits)
-      - ae4b22dd7e6a "mm/damon/tests/core-kunit: add a test for damon_commit_ctx()" (0/2)
+      - c1e2200c6503 "mm/damon/tests/core-kunit: add a test for damon_commit_ctx()" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260307194222.202075-2-sj@kernel.org
-      - b02b554cd563 "Docs/mm/damon/design: document the power-of-two limitation for addr_unit" (1/2)
+      - fdb65d70794b "Docs/mm/damon/design: document the power-of-two limitation for addr_unit" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260307194222.202075-3-sj@kernel.org
     - series "mm/damon/core: make passed_sample_intervals comparisons overflow-safe". (3 commits)
-      - 46811059d9f5 "mm/damon/core: remove damos_set_next_apply_sis() duplicates" (0/3)
+      - c0e57bd5d941 "mm/damon/core: remove damos_set_next_apply_sis() duplicates" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260307194915.203169-2-sj@kernel.org
-      - 4b8b03f4a4bf "mm/damon/core: use time_before() for next_apply_sis" (1/3)
+      - 569259226ed6 "mm/damon/core: use time_before() for next_apply_sis" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260307194915.203169-3-sj@kernel.org
-      - 2e57d04083f5 "mm/damon/core: use time_after_eq() in kdamond_fn()" (2/3)
+      - 93cdf2291aa3 "mm/damon/core: use time_after_eq() in kdamond_fn()" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260307194915.203169-4-sj@kernel.org
     - series "mm/damon: improve/fixup/update ratio calculation, test and documentation". (7 commits)
-      - f557b5736422 "mm/damon/core: use mult_frac()" (0/7)
+      - dc98f5ae64ae "mm/damon/core: use mult_frac()" (0/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260307195356.203753-2-sj@kernel.org
-      - fcddf9206f18 "mm/damon/tests/core-kunit: add a test for damon_is_last_region()" (1/7)
+      - 76e8e1666832 "mm/damon/tests/core-kunit: add a test for damon_is_last_region()" (1/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260114152049.99727-1-sj@kernel.org/ [1]
-      - ab0c6071bea3 "mm/damon/core: clarify damon_set_attrs() usages" (2/7)
+      - 2d533ac49bb3 "mm/damon/core: clarify damon_set_attrs() usages" (2/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-4-sj@kernel.org
-      - 376952647682 "mm/damon: document non-zero length damon_region assumption" (3/7)
+      - 1decdc189b85 "mm/damon: document non-zero length damon_region assumption" (3/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-5-sj@kernel.org
         - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org/ [1]
-      - 3a95e11aa662 "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name" (4/7)
+      - 0b86b7e36ee4 "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name" (4/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-6-sj@kernel.org
-      - 0343861e6683 "Docs/mm/damon/maintainer-profile: use flexible review cadence" (5/7)
+      - 06cad7fc8c44 "Docs/mm/damon/maintainer-profile: use flexible review cadence" (5/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-7-sj@kernel.org
-      - 2423449009cf "Docs/mm/damon/index: fix typo: autoamted -> automated" (6/7)
+      - 8a38fc17b1a4 "Docs/mm/damon/index: fix typo: autoamted -> automated" (6/7)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lkml.kernel.org/r/20260307195356.203753-8-sj@kernel.org
     - series "mm/damon: support multiple goal-based quota tuning algorithms". (11 commits)
-      - 4a7eb3a1ff9c "mm/damon/core: introduce damos_quota_goal_tuner" (0/11)
+      - 299a29172fec "mm/damon/core: introduce damos_quota_goal_tuner" (0/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-2-sj@kernel.org
         - Link: https://lore.kernel.org/CALa+Y17__d=ZsM1yX+MXx0ozVdsXnFqF4p0g+kATEitrWyZFfg@mail.gmail.com [1]
         - Link: https://lore.kernel.org/20260204022537.814-1-yunjeong.mun@sk.com [2]
-      - 48644fa18abc "mm/damon/core: allow quota goals set zero effective size quota" (1/11)
+      - cda188065c6d "mm/damon/core: allow quota goals set zero effective size quota" (1/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-3-sj@kernel.org
-      - c7969a57ad4b "mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL" (2/11)
+      - 469e7c2de1c2 "mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL" (2/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-4-sj@kernel.org
-      - 67a4a0cc7243 "mm/damon/sysfs-schemes: implement quotas->goal_tuner file" (3/11)
+      - 60cd7febba07 "mm/damon/sysfs-schemes: implement quotas->goal_tuner file" (3/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-5-sj@kernel.org
-      - 0da2f77cec50 "Docs/mm/damon/design: document the goal-based quota tuner selections" (4/11)
+      - 67dc6ac7b730 "Docs/mm/damon/design: document the goal-based quota tuner selections" (4/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-6-sj@kernel.org
-      - 9cd8f11b2212 "Docs/admin-guide/mm/damon/usage: document goal_tuner sysfs file" (5/11)
+      - 4678fd413472 "Docs/admin-guide/mm/damon/usage: document goal_tuner sysfs file" (5/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-7-sj@kernel.org
-      - d3aa872c6a24 "Docs/ABI/damon: update for goal_tuner" (6/11)
+      - 0a9339aa5b88 "Docs/ABI/damon: update for goal_tuner" (6/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-8-sj@kernel.org
-      - ebc6e735dd12 "mm/damon/tests/core-kunit: test goal_tuner commit" (7/11)
+      - bc8673007d4b "mm/damon/tests/core-kunit: test goal_tuner commit" (7/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-9-sj@kernel.org
-      - cae774c309c4 "selftests/damon/_damon_sysfs: support goal_tuner setup" (8/11)
+      - fbb7253a66a3 "selftests/damon/_damon_sysfs: support goal_tuner setup" (8/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-10-sj@kernel.org
-      - 646b7d057217 "selftests/damon/drgn_dump_damon_status: support quota goal_tuner dumping" (9/11)
+      - 9168bfc89bc6 "selftests/damon/drgn_dump_damon_status: support quota goal_tuner dumping" (9/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-11-sj@kernel.org
-      - f9139241315a "selftests/damon/sysfs.py: test goal_tuner commit" (10/11)
+      - d9382d5fc1c5 "selftests/damon/sysfs.py: test goal_tuner commit" (10/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260310010529.91162-12-sj@kernel.org
     - series "mm/damon: support addr_unit on default monitoring targets for modules". (5 commits)
-      - ff6b3f5e2334 "mm/damon/core: fix wrong end address assignment on walk_system_ram()" (0/5)
+      - 7668fc7ae0b4 "mm/damon/core: fix wrong end address assignment on walk_system_ram()" (0/5)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260311052927.93921-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260311052927.93921-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260131015643.79158-1-sj@kernel.org [1]
-      - d8428fd83832 "mm/damon/core: support addr_unit on damon_find_biggest_system_ram()" (1/5)
+      - 6843660fa1af "mm/damon/core: support addr_unit on damon_find_biggest_system_ram()" (1/5)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260311052927.93921-3-sj@kernel.org
-      - 0e24d36f1e3d "mm/damon/core: verify found biggest system ram" (2/5)
+      - 87a149bcd657 "mm/damon/core: verify found biggest system ram" (2/5)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260317144725.88524-1-sj@kernel.org
-      - da9798d2982f "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default()" (3/5)
+      - 5dddeba6b2d1 "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default()" (3/5)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260311052927.93921-4-sj@kernel.org
-      - 1ba2e43f9225 "mm/damon/core: fix wrong damon_set_regions() argument" (4/5)
+      - 4dd774b835a6 "mm/damon/core: fix wrong damon_set_regions() argument" (4/5)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260314001854.79623-1-sj@kernel.org
-    - 8f3a0aca9610 "mm/damon/reclaim: respect addr_unit on default monitoring region setup"
+    - da43d9bd27ef "mm/damon/reclaim: respect addr_unit on default monitoring region setup"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260311052927.93921-5-sj@kernel.org
-    - 5822065afed9 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup"
+    - f49f4fd3c934 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260311052927.93921-6-sj@kernel.org
-    - f0bd57d13180 "Docs/mm/damon: document exclusivity of special-purpose modules"
+    - d86e36f9878e "Docs/mm/damon: document exclusivity of special-purpose modules"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260315162945.80994-1-sj@kernel.org
       - Link: https://lore.kernel.org/damon/20260314002119.79742-1-sj@kernel.org/T/#t [1]
-- mm-new: 1 total, 0 (0) series, 1 non-series commits
-  - author/reviewer role stat
-    - no role, maintainer: 1 commits
-  - full commits list
-    - 826e835fe01e "Docs/mm/damon/design: document DAMON actions when TRANSPARENT_HUGEPAGE is off"
+    - 65911ebd150e "Docs/mm/damon/design: document DAMON actions when TRANSPARENT_HUGEPAGE is off"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260318035349.88715-1-sj@kernel.org
       - Link: https://lore.kernel.org/66131775-180b-4b9f-b7ce-61a3e077b6e6@huawei-partners.com/ [1]
+- mm-new: 2 total, 0 (0) series, 2 non-series commits
+  - author/reviewer role stat
+    - no role, maintainer: 2 commits
+  - full commits list
+    - 6b74665a6368 "mm/damon/core: document damos_commit_dests() failure semantics"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260320143648.91673-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260318214939.36100-1-objecting@objecting.org [1]
+    - a44ce7309545 "Docs/mm/damon: document min_nr_regions constraint and rationale"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lkml.kernel.org/r/20260320052428.213230-1-aethernet65535@gmail.com
+      - Link: https://lore.kernel.org/damon/20260319151528.86490-1-sj@kernel.org/T/#t [1]
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

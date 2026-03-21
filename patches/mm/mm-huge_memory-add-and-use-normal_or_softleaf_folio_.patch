@@ -1,0 +1,124 @@
+From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
+Date: Fri, 20 Mar 2026 18:07:29 +0000
+Subject: [PATCH] mm/huge_memory: add and use normal_or_softleaf_folio_pmd()
+
+Now we have pmd_to_softleaf_folio() available to us which also raises a
+CONFIG_DEBUG_VM warning if unexpectedly an invalid softleaf entry, we can
+now abstract folio handling altogether.
+
+vm_normal_folio() deals with the huge zero page (which is present), as well
+as PFN map/mixed map mappings in both cases returning NULL.
+
+Otherwise, we try to obtain the softleaf folio.
+
+This makes the logic far easier to comprehend and has it use the standard
+vm_normal_folio_pmd() path for decoding of present entries.
+
+Finally, we have to update the flushing logic to only do so if a folio is
+established.
+
+This patch also makes the 'is_present' value more accurate - because PFN
+map, mixed map and zero huge pages are present, just not present and
+'normal'.
+
+Link: https://lkml.kernel.org/r/c2be872d64ef9573b80727d9ab5446cf002f17b5.1774029655.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 47 +++++++++++++++++++----------------------------
+ 1 file changed, 19 insertions(+), 28 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 9ddf38d68406e..5831966391bd2 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2342,10 +2342,6 @@ static void zap_huge_pmd_folio(struct mm_struct *mm, struct vm_area_struct *vma,
+ 		add_mm_counter(mm, mm_counter_file(folio),
+ 			       -HPAGE_PMD_NR);
+ 
+-		/*
+-		 * Use flush_needed to indicate whether the PMD entry
+-		 * is present, instead of checking pmd_present() again.
+-		 */
+ 		if (is_present && pmd_young(pmdval) &&
+ 		    likely(vma_has_recency(vma)))
+ 			folio_mark_accessed(folio);
+@@ -2356,6 +2352,17 @@ static void zap_huge_pmd_folio(struct mm_struct *mm, struct vm_area_struct *vma,
+ 		folio_put(folio);
+ }
+ 
++static struct folio *normal_or_softleaf_folio_pmd(struct vm_area_struct *vma,
++		unsigned long addr, pmd_t pmdval, bool is_present)
++{
++	if (is_present)
++		return vm_normal_folio_pmd(vma, addr, pmdval);
++
++	if (!thp_migration_supported())
++		WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
++	return pmd_to_softleaf_folio(pmdval);
++}
++
+ /**
+  * zap_huge_pmd - Zap a huge THP which is of PMD size.
+  * @tlb: The MMU gather TLB state associated with the operation.
+@@ -2390,36 +2397,20 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 						tlb->fullmm);
+ 	arch_check_zapped_pmd(vma, orig_pmd);
+ 	tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
+-	if (vma_is_special_huge(vma))
+-		goto out;
+-	if (is_huge_zero_pmd(orig_pmd)) {
+-		if (!vma_is_dax(vma))
+-			has_deposit = true;
+-		goto out;
+-	}
+ 
+-	if (pmd_present(orig_pmd)) {
+-		folio = pmd_folio(orig_pmd);
+-		is_present = true;
+-	} else if (pmd_is_valid_softleaf(orig_pmd)) {
+-		const softleaf_t entry = softleaf_from_pmd(orig_pmd);
++	is_present = pmd_present(orig_pmd);
++	folio = normal_or_softleaf_folio_pmd(vma, addr, orig_pmd, is_present);
++	if (folio)
++		zap_huge_pmd_folio(mm, vma, orig_pmd, folio, is_present,
++				   &has_deposit);
++	else if (is_huge_zero_pmd(orig_pmd))
++		has_deposit = !vma_is_dax(vma);
+ 
+-		folio = softleaf_to_folio(entry);
+-		if (!thp_migration_supported())
+-			WARN_ONCE(1, "Non present huge pmd without pmd migration enabled!");
+-	} else {
+-		WARN_ON_ONCE(true);
+-		goto out;
+-	}
+-
+-	zap_huge_pmd_folio(mm, vma, orig_pmd, folio, is_present, &has_deposit);
+-
+-out:
+ 	if (has_deposit)
+ 		zap_deposited_table(mm, pmd);
+ 
+ 	spin_unlock(ptl);
+-	if (is_present)
++	if (is_present && folio)
+ 		tlb_remove_page_size(tlb, &folio->page, HPAGE_PMD_SIZE);
+ 	return true;
+ }
+-- 
+2.47.3
+

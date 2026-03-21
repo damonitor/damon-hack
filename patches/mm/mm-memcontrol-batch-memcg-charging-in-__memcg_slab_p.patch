@@ -1,0 +1,160 @@
+From: teawater <zhuhui@kylinos.cn>
+Date: Fri, 20 Mar 2026 10:07:45 +0800
+Subject: [PATCH] mm/memcontrol: batch memcg charging in
+ __memcg_slab_post_alloc_hook
+
+When kmem_cache_alloc_bulk() allocates multiple objects, the post-alloc
+hook __memcg_slab_post_alloc_hook() previously charged memcg one object at
+a time, even though consecutive objects may reside on slabs backed by the
+same pgdat node.
+
+Batch the memcg charging by scanning ahead from the current position to
+find a contiguous run of objects whose slabs share the same pgdat, then
+issue a single __obj_cgroup_charge() / __consume_obj_stock() call for the
+entire run.  The per-object obj_ext assignment loop is preserved as-is
+since it cannot be further collapsed.
+
+This implements the TODO comment left in commit bc730030f956 ("memcg:
+combine slab obj stock charging and accounting").
+
+The existing error-recovery contract is unchanged: if size == 1 then
+memcg_alloc_abort_single() will free the sole object, and for larger bulk
+allocations kmem_cache_free_bulk() will uncharge any objects that were
+already charged before the failure.
+
+Benchmark using kmem_cache_alloc_bulk() with SLAB_ACCOUNT (iters=100000):
+
+  bulk=32  before: 215 ns/object   after: 174 ns/object  (-19%)
+  bulk=1   before: 344 ns/object   after: 335 ns/object  (  ~)
+
+No measurable regression for bulk=1, as expected.
+
+Link: https://lkml.kernel.org/r/20260320020745.833792-1-hui.zhu@linux.dev
+Signed-off-by: teawater <zhuhui@kylinos.cn>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 77 +++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 58 insertions(+), 19 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 9f1cabacd56c6..23c57d950011c 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3449,51 +3449,90 @@ bool __memcg_slab_post_alloc_hook(struct kmem_cache *s, struct list_lru *lru,
+ 			return false;
+ 	}
+ 
+-	for (i = 0; i < size; i++) {
++	for (i = 0; i < size; ) {
+ 		unsigned long obj_exts;
+ 		struct slabobj_ext *obj_ext;
+ 		struct obj_stock_pcp *stock;
++		struct pglist_data *pgdat;
++		int batch_bytes;
++		size_t run_len = 0;
++		size_t j;
++		size_t max_size;
++		bool skip_next = false;
+ 
+ 		slab = virt_to_slab(p[i]);
+ 
+ 		if (!slab_obj_exts(slab) &&
+ 		    alloc_slab_obj_exts(slab, s, flags, false)) {
++			i++;
+ 			continue;
+ 		}
+ 
++		pgdat = slab_pgdat(slab);
++		run_len = 1;
++
++		/*
++		 * The value of batch_bytes must not exceed
++		 * (INT_MAX - PAGE_SIZE) to prevent integer overflow in
++		 * the final accumulation performed by __account_obj_stock().
++		 */
++		max_size = min((size_t)((INT_MAX - PAGE_SIZE) / obj_size),
++			       size);
++
++		for (j = i + 1; j < max_size; j++) {
++			struct slab *slab_j = virt_to_slab(p[j]);
++
++			if (slab_pgdat(slab_j) != pgdat)
++				break;
++
++			if (!slab_obj_exts(slab_j) &&
++			    alloc_slab_obj_exts(slab_j, s, flags, false)) {
++				skip_next = true;
++				break;
++			}
++
++			run_len++;
++		}
++
+ 		/*
+-		 * if we fail and size is 1, memcg_alloc_abort_single() will
++		 * If we fail and size is 1, memcg_alloc_abort_single() will
+ 		 * just free the object, which is ok as we have not assigned
+-		 * objcg to its obj_ext yet
+-		 *
+-		 * for larger sizes, kmem_cache_free_bulk() will uncharge
+-		 * any objects that were already charged and obj_ext assigned
++		 * objcg to its obj_ext yet.
+ 		 *
+-		 * TODO: we could batch this until slab_pgdat(slab) changes
+-		 * between iterations, with a more complicated undo
++		 * For larger sizes, kmem_cache_free_bulk() will uncharge
++		 * any objects that were already charged and obj_ext assigned.
+ 		 */
++		batch_bytes = obj_size * run_len;
+ 		stock = trylock_stock();
+-		if (!stock || !__consume_obj_stock(objcg, stock, obj_size)) {
++		if (!stock || !__consume_obj_stock(objcg, stock, batch_bytes)) {
+ 			size_t remainder;
+ 
+ 			unlock_stock(stock);
+-			if (__obj_cgroup_charge(objcg, flags, obj_size, &remainder))
++			if (__obj_cgroup_charge(objcg, flags, batch_bytes, &remainder))
+ 				return false;
+ 			stock = trylock_stock();
+ 			if (remainder)
+ 				__refill_obj_stock(objcg, stock, remainder, false);
+ 		}
+-		__account_obj_stock(objcg, stock, obj_size,
+-				    slab_pgdat(slab), cache_vmstat_idx(s));
++		__account_obj_stock(objcg, stock, batch_bytes,
++				    pgdat, cache_vmstat_idx(s));
+ 		unlock_stock(stock);
+ 
+-		obj_exts = slab_obj_exts(slab);
+-		get_slab_obj_exts(obj_exts);
+-		off = obj_to_index(s, slab, p[i]);
+-		obj_ext = slab_obj_ext(slab, obj_exts, off);
+-		obj_cgroup_get(objcg);
+-		obj_ext->objcg = objcg;
+-		put_slab_obj_exts(obj_exts);
++		for (j = 0; j < run_len; j++) {
++			slab = virt_to_slab(p[i + j]);
++			obj_exts = slab_obj_exts(slab);
++			get_slab_obj_exts(obj_exts);
++			off = obj_to_index(s, slab, p[i + j]);
++			obj_ext = slab_obj_ext(slab, obj_exts, off);
++			obj_cgroup_get(objcg);
++			obj_ext->objcg = objcg;
++			put_slab_obj_exts(obj_exts);
++		}
++
++		if (skip_next)
++			i = i + run_len + 1;
++		else
++			i += run_len;
+ 	}
+ 
+ 	return true;
+-- 
+2.47.3
+
