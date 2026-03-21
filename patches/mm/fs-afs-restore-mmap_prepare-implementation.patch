@@ -1,6 +1,6 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Thu, 19 Mar 2026 18:23:29 +0000
-Subject: [PATCH] fs: afs: correctly drop reference count on mapping failure
+Date: Fri, 20 Mar 2026 22:39:36 +0000
+Subject: [PATCH] fs: afs: restore mmap_prepare implementation
 
 Commit 9d5403b1036c ("fs: convert most other generic_file_*mmap() users to
 .mmap_prepare()") updated AFS to use the mmap_prepare callback in favour
@@ -10,6 +10,8 @@ However, it did not account for the fact that mmap_prepare is called
 pre-merge, and may then be merged, nor that mmap_prepare can fail to map
 due to an out of memory error.
 
+This change was therefore since reverted.
+
 Both of those are cases in which we should not be incrementing a reference
 count.
 
@@ -18,13 +20,16 @@ defer this operation to that callback which is only invoked once the
 mapping is successfully in place (but not yet visible to userspace as the
 mmap and VMA write locks are held).
 
+This allows us to once again reimplement the .mmap_prepare implementation
+for this file system.
+
 Therefore add afs_mapped() to implement this callback for AFS, and remove
 the code doing so in afs_mmap_prepare().
 
 Also update afs_vm_open(), afs_vm_close() and afs_vm_map_pages() to be
 consistent in how the vnode is accessed.
 
-Link: https://lkml.kernel.org/r/018cd0d8b2dae44de6d3952527e754e52ef02da8.1773944114.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/ad9a94350a9c7d2bdab79fc397ef0f64d3412d71.1774045440.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
 Cc: Alexandre Torgue <alexandre.torgue@foss.st.com>
@@ -55,17 +60,26 @@ Cc: Richard Weinberger <richard@nod.at>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vignesh Raghavendra <vigneshr@ti.com>
-Cc: Wei Liu <wei.liu@kernel.org>
 Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- fs/afs/file.c | 36 ++++++++++++++++++++++++++----------
- 1 file changed, 26 insertions(+), 10 deletions(-)
+ fs/afs/file.c | 42 +++++++++++++++++++++++++++++-------------
+ 1 file changed, 29 insertions(+), 13 deletions(-)
 
 diff --git a/fs/afs/file.c b/fs/afs/file.c
-index f609366fd2ac0..85696ac984cc3 100644
+index 74d04af51ff4a..85696ac984cc3 100644
 --- a/fs/afs/file.c
 +++ b/fs/afs/file.c
+@@ -19,7 +19,7 @@
+ #include <trace/events/netfs.h>
+ #include "internal.h"
+ 
+-static int afs_file_mmap(struct file *file, struct vm_area_struct *vma);
++static int afs_file_mmap_prepare(struct vm_area_desc *desc);
+ 
+ static ssize_t afs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter);
+ static ssize_t afs_file_splice_read(struct file *in, loff_t *ppos,
 @@ -28,6 +28,8 @@ static ssize_t afs_file_splice_read(struct file *in, loff_t *ppos,
  static void afs_vm_open(struct vm_area_struct *area);
  static void afs_vm_close(struct vm_area_struct *area);
@@ -75,6 +89,15 @@ index f609366fd2ac0..85696ac984cc3 100644
  
  const struct file_operations afs_file_operations = {
  	.open		= afs_open,
+@@ -35,7 +37,7 @@ const struct file_operations afs_file_operations = {
+ 	.llseek		= generic_file_llseek,
+ 	.read_iter	= afs_file_read_iter,
+ 	.write_iter	= netfs_file_write_iter,
+-	.mmap		= afs_file_mmap,
++	.mmap_prepare	= afs_file_mmap_prepare,
+ 	.splice_read	= afs_file_splice_read,
+ 	.splice_write	= iter_file_splice_write,
+ 	.fsync		= afs_fsync,
 @@ -61,6 +63,7 @@ const struct address_space_operations afs_file_aops = {
  };
  
@@ -83,23 +106,26 @@ index f609366fd2ac0..85696ac984cc3 100644
  	.open		= afs_vm_open,
  	.close		= afs_vm_close,
  	.fault		= filemap_fault,
-@@ -494,32 +497,45 @@ static void afs_drop_open_mmap(struct afs_vnode *vnode)
+@@ -492,34 +495,47 @@ static void afs_drop_open_mmap(struct afs_vnode *vnode)
+ /*
+  * Handle setting up a memory mapping on an AFS file.
   */
- static int afs_file_mmap_prepare(struct vm_area_desc *desc)
+-static int afs_file_mmap(struct file *file, struct vm_area_struct *vma)
++static int afs_file_mmap_prepare(struct vm_area_desc *desc)
  {
--	struct afs_vnode *vnode = AFS_FS_I(file_inode(desc->file));
+-	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
  	int ret;
  
 -	afs_add_open_mmap(vnode);
--
- 	ret = generic_file_mmap_prepare(desc);
--	if (ret == 0)
--		desc->vm_ops = &afs_vm_ops;
--	else
--		afs_drop_open_mmap(vnode);
++	ret = generic_file_mmap_prepare(desc);
 +	if (ret)
 +		return ret;
-+
+ 
+-	ret = generic_file_mmap(file, vma);
+-	if (ret == 0)
+-		vma->vm_ops = &afs_vm_ops;
+-	else
+-		afs_drop_open_mmap(vnode);
 +	desc->vm_ops = &afs_vm_ops;
  	return ret;
  }

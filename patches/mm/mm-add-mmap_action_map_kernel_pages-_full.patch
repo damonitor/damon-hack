@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (Oracle)" <ljs@kernel.org>
-Date: Thu, 19 Mar 2026 18:23:39 +0000
+Date: Fri, 20 Mar 2026 22:39:46 +0000
 Subject: [PATCH] mm: add mmap_action_map_kernel_pages[_full]()
 
 A user can invoke mmap_action_map_kernel_pages() to specify that the
@@ -24,7 +24,7 @@ We update the documentation to reflect the new features.
 
 Finally, we update the VMA tests accordingly to reflect the changes.
 
-Link: https://lkml.kernel.org/r/54ff3670662e10a66ce0c1a13c0ae93b99a5f201.1773944114.git.ljs@kernel.org
+Link: https://lkml.kernel.org/r/926ac961690d856e67ec847bee2370ab3c6b9046.1774045440.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Reviewed-by: Suren Baghdasaryan <surenb@google.com>
 Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
@@ -55,20 +55,20 @@ Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Richard Weinberger <richard@nod.at>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Vignesh Raghavendra <vigneshr@ti.com>
-Cc: Wei Liu <wei.liu@kernel.org>
 Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  Documentation/filesystems/mmap_prepare.rst |  8 ++
  include/linux/mm.h                         | 95 +++++++++++++++++++++-
  include/linux/mm_types.h                   |  7 ++
  mm/memory.c                                | 42 +++++++++-
- mm/util.c                                  |  6 ++
+ mm/util.c                                  |  7 ++
  tools/testing/vma/include/dup.h            |  7 ++
- 6 files changed, 159 insertions(+), 6 deletions(-)
+ 6 files changed, 160 insertions(+), 6 deletions(-)
 
 diff --git a/Documentation/filesystems/mmap_prepare.rst b/Documentation/filesystems/mmap_prepare.rst
-index be76ae475b9c4..e810aa4134eb1 100644
+index 14bb057be5645..82c99c95ad854 100644
 --- a/Documentation/filesystems/mmap_prepare.rst
 +++ b/Documentation/filesystems/mmap_prepare.rst
 @@ -156,5 +156,13 @@ pointer. These are:
@@ -86,7 +86,7 @@ index be76ae475b9c4..e810aa4134eb1 100644
  **NOTE:** The ``action`` field should never normally be manipulated directly,
  rather you ought to use one of these helpers.
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index 489c4b531c6f2..b4dffcd6c4918 100644
+index db8af7d413397..6b7e0202dc10c 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
 @@ -2910,7 +2910,7 @@ static inline bool folio_maybe_mapped_shared(struct folio *folio)
@@ -98,7 +98,7 @@ index 489c4b531c6f2..b4dffcd6c4918 100644
   */
  static inline int folio_expected_ref_count(const struct folio *folio)
  {
-@@ -4362,6 +4362,45 @@ static inline void mmap_action_simple_ioremap(struct vm_area_desc *desc,
+@@ -4353,6 +4353,45 @@ static inline void mmap_action_simple_ioremap(struct vm_area_desc *desc,
  	action->type = MMAP_SIMPLE_IO_REMAP;
  }
  
@@ -143,8 +143,8 @@ index 489c4b531c6f2..b4dffcd6c4918 100644
 +
  int mmap_action_prepare(struct vm_area_desc *desc);
  int mmap_action_complete(struct vm_area_struct *vma,
- 			 struct mmap_action *action,
-@@ -4379,10 +4418,59 @@ static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
+ 			 struct mmap_action *action);
+@@ -4369,10 +4408,59 @@ static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
  	return vma;
  }
  
@@ -205,7 +205,7 @@ index 489c4b531c6f2..b4dffcd6c4918 100644
  }
  
  #ifdef CONFIG_MMU
-@@ -4426,6 +4514,9 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
+@@ -4416,6 +4504,9 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
  int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
  int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
  			struct page **pages, unsigned long *num);
@@ -216,7 +216,7 @@ index 489c4b531c6f2..b4dffcd6c4918 100644
  				unsigned long num);
  int vm_map_pages_zero(struct vm_area_struct *vma, struct page **pages,
 diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index d60eefde1db8f..f9face579072c 100644
+index b702c63bf0e09..a308e2c23b829 100644
 --- a/include/linux/mm_types.h
 +++ b/include/linux/mm_types.h
 @@ -815,6 +815,7 @@ enum mmap_action_type {
@@ -304,10 +304,10 @@ index b3bcc21af20a7..53ef8ef3d04a8 100644
   * vm_insert_page - insert single page into user vma
   * @vma: user vma to map to
 diff --git a/mm/util.c b/mm/util.c
-index 8cf59267a9ac2..682d0d24e1c65 100644
+index 5ae20876ef2c9..f063fd4de1e8f 100644
 --- a/mm/util.c
 +++ b/mm/util.c
-@@ -1446,6 +1446,8 @@ int mmap_action_prepare(struct vm_area_desc *desc)
+@@ -1448,6 +1448,8 @@ int mmap_action_prepare(struct vm_area_desc *desc)
  		return io_remap_pfn_range_prepare(desc);
  	case MMAP_SIMPLE_IO_REMAP:
  		return simple_ioremap_prepare(desc);
@@ -316,7 +316,7 @@ index 8cf59267a9ac2..682d0d24e1c65 100644
  	}
  
  	WARN_ON_ONCE(1);
-@@ -1476,6 +1478,9 @@ int mmap_action_complete(struct vm_area_struct *vma,
+@@ -1475,6 +1477,9 @@ int mmap_action_complete(struct vm_area_struct *vma,
  	case MMAP_REMAP_PFN:
  		err = remap_pfn_range_complete(vma, action);
  		break;
@@ -326,7 +326,7 @@ index 8cf59267a9ac2..682d0d24e1c65 100644
  	case MMAP_IO_REMAP_PFN:
  	case MMAP_SIMPLE_IO_REMAP:
  		/* Should have been delegated. */
-@@ -1497,6 +1502,7 @@ int mmap_action_prepare(struct vm_area_desc *desc)
+@@ -1495,6 +1500,7 @@ int mmap_action_prepare(struct vm_area_desc *desc)
  	case MMAP_REMAP_PFN:
  	case MMAP_IO_REMAP_PFN:
  	case MMAP_SIMPLE_IO_REMAP:
@@ -334,8 +334,16 @@ index 8cf59267a9ac2..682d0d24e1c65 100644
  		WARN_ON_ONCE(1); /* nommu cannot handle these. */
  		break;
  	}
+@@ -1514,6 +1520,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
+ 	case MMAP_REMAP_PFN:
+ 	case MMAP_IO_REMAP_PFN:
+ 	case MMAP_SIMPLE_IO_REMAP:
++	case MMAP_MAP_KERNEL_PAGES:
+ 		WARN_ON_ONCE(1); /* nommu cannot handle this. */
+ 
+ 		err = -EINVAL;
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index 1d2325a2dd31f..41a553fc5c2a8 100644
+index ecd47d0f7d174..b4864aad2db0f 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -454,6 +454,7 @@ enum mmap_action_type {

@@ -1,39 +1,19 @@
 - baseline: v7.0-rc4-25-gf0caa1d49cc07 -> v7.0-rc4-25-gf0caa1d49cc07 (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 2 -> 3 commits
+- mm-hotfixes-unstable: 3 -> 3 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 3 commits
-  - new commits
-    - 87251192e5af "mm/damon/core: let kdamond_call() with cancel regardless of maybe_corrupted"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org
-      - Link: https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org [1]
+    - maintainer, nobody: 3 -> 3 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 48 -> 49 commits
+- mm-unstable: 49 -> 49 commits (no change)
   - series: 8 (43) -> 8 (43) (no change)
-    - no role, maintainer: 3 -> 4 commits
+    - no role, maintainer: 4 -> 4 commits (no change)
     - maintainer, nobody: 38 -> 38 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
-  - changed commits
-    - 65911ebd150e "Docs/mm/damon/design: document DAMON actions when TRANSPARENT_HUGEPAGE is off"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-new -> mm-unstable
-      - Link: https://lkml.kernel.org/r/20260318035349.88715-1-sj@kernel.org
-      - Link: https://lore.kernel.org/66131775-180b-4b9f-b7ce-61a3e077b6e6@huawei-partners.com/ [1]
-- mm-new: 1 -> 2 commits
+- mm-new: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 2 commits
-  - new commits
-    - 6b74665a6368 "mm/damon/core: document damos_commit_dests() failure semantics"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lkml.kernel.org/r/20260320143648.91673-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260318214939.36100-1-objecting@objecting.org [1]
-    - a44ce7309545 "Docs/mm/damon: document min_nr_regions constraint and rationale"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lkml.kernel.org/r/20260320052428.213230-1-aethernet65535@gmail.com
-      - Link: https://lore.kernel.org/damon/20260319151528.86490-1-sj@kernel.org/T/#t [1]
+    - no role, maintainer: 2 -> 2 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
