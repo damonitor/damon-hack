@@ -1,9 +1,24 @@
 - baseline: v7.0-rc4-25-gf0caa1d49cc07 -> v7.0-rc4-25-gf0caa1d49cc07 (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 3 -> 3 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
+- mm-hotfixes-unstable: 3 -> 6 commits
+  - series: 0 (0) -> 1 (3)
+    - no role, maintainer: 0 -> 3 commits
     - maintainer, nobody: 3 -> 3 commits (no change)
+  - new commits
+    - series "mm/damon/sysfs: fix memory leak and NULL dereference issues", v4. (3)
+      - c3deba0c4b3c "mm/damon/sysfs: fix param_ctx leak on damon_sysfs_new_test_ctx() failure (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lkml.kernel.org/r/20260321175427.86000-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260321175427.86000-2-sj@kernel.org
+      - 497010db1361 "mm/damon/sysfs: check contexts->nr before accessing contexts_arr[0] (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lkml.kernel.org/r/20260321175427.86000-3-sj@kernel.org
+      - 19f4f2f8d68a "mm/damon/sysfs: check contexts->nr in repeat_call_fn (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://patch.msgid.link/20260320163559.178101-3-objecting@objecting.org
+        - Link: https://lkml.kernel.org/r/20260321175427.86000-4-sj@kernel.org
+        - Link: https://github.com/damonitor/damo [1]
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 49 -> 49 commits (no change)

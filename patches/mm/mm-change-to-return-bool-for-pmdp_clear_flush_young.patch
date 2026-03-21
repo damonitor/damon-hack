@@ -1,0 +1,124 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Sat, 21 Mar 2026 14:42:52 +0800
+Subject: [PATCH] mm: change to return bool for pmdp_clear_flush_young()
+
+The pmdp_clear_flush_young() is used to clear the young flag and flush the
+TLB, returning whether the young flag was set for this PMD entry.  Change
+the return type to bool to make the intention clearer.
+
+Link: https://lkml.kernel.org/r/a668b9a974c0d675e7a41f6973bcbe3336e8b373.1774075004.git.baolin.wang@linux.alibaba.com
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/s390/include/asm/pgtable.h |  4 ++--
+ arch/x86/include/asm/pgtable.h  |  4 ++--
+ arch/x86/mm/pgtable.c           |  6 +++---
+ include/linux/pgtable.h         | 10 +++++-----
+ mm/pgtable-generic.c            |  7 ++++---
+ 5 files changed, 16 insertions(+), 15 deletions(-)
+
+diff --git a/arch/s390/include/asm/pgtable.h b/arch/s390/include/asm/pgtable.h
+index 87a5082da28e4..40a6fb19dd1dc 100644
+--- a/arch/s390/include/asm/pgtable.h
++++ b/arch/s390/include/asm/pgtable.h
+@@ -1693,8 +1693,8 @@ static inline bool pmdp_test_and_clear_young(struct vm_area_struct *vma,
+ }
+ 
+ #define __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+-static inline int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-					 unsigned long addr, pmd_t *pmdp)
++static inline bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long addr, pmd_t *pmdp)
+ {
+ 	VM_BUG_ON(addr & ~HPAGE_MASK);
+ 	return pmdp_test_and_clear_young(vma, addr, pmdp);
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index ba867bac6096c..6c8f2b17d3f98 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1301,8 +1301,8 @@ extern int pudp_test_and_clear_young(struct vm_area_struct *vma,
+ 				     unsigned long addr, pud_t *pudp);
+ 
+ #define __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+-extern int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-				  unsigned long address, pmd_t *pmdp);
++bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long address, pmd_t *pmdp);
+ 
+ 
+ #define __HAVE_ARCH_PMDP_HUGE_GET_AND_CLEAR
+diff --git a/arch/x86/mm/pgtable.c b/arch/x86/mm/pgtable.c
+index b09e8c5dadf93..fc1c996c5b2d7 100644
+--- a/arch/x86/mm/pgtable.c
++++ b/arch/x86/mm/pgtable.c
+@@ -503,10 +503,10 @@ bool ptep_clear_flush_young(struct vm_area_struct *vma,
+ }
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-			   unsigned long address, pmd_t *pmdp)
++bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long address, pmd_t *pmdp)
+ {
+-	int young;
++	bool young;
+ 
+ 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
+ 
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 6db900a5d38b4..cdd68ed3ae1a9 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -536,18 +536,18 @@ bool ptep_clear_flush_young(struct vm_area_struct *vma,
+ 
+ #ifndef __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-extern int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-				  unsigned long address, pmd_t *pmdp);
++bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long address, pmd_t *pmdp);
+ #else
+ /*
+  * Despite relevant to THP only, this API is called from generic rmap code
+  * under PageTransHuge(), hence needs a dummy implementation for !THP
+  */
+-static inline int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-					 unsigned long address, pmd_t *pmdp)
++static inline bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long address, pmd_t *pmdp)
+ {
+ 	BUILD_BUG();
+-	return 0;
++	return false;
+ }
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ #endif
+diff --git a/mm/pgtable-generic.c b/mm/pgtable-generic.c
+index db0ee918b08a4..b91b1a98029c7 100644
+--- a/mm/pgtable-generic.c
++++ b/mm/pgtable-generic.c
+@@ -124,10 +124,11 @@ int pmdp_set_access_flags(struct vm_area_struct *vma,
+ #endif
+ 
+ #ifndef __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+-int pmdp_clear_flush_young(struct vm_area_struct *vma,
+-			   unsigned long address, pmd_t *pmdp)
++bool pmdp_clear_flush_young(struct vm_area_struct *vma,
++		unsigned long address, pmd_t *pmdp)
+ {
+-	int young;
++	bool young;
++
+ 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
+ 	young = pmdp_test_and_clear_young(vma, address, pmdp);
+ 	if (young)
+-- 
+2.47.3
+
