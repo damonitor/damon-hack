@@ -1,0 +1,80 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 20 Feb 2026 17:35:21 -0800
+Subject: [PATCH 01/10] mm/damon/core: introduce damon_ctx->paused
+
+DAMON supports only start and stop of the execution.  When it is
+stopped, its internal data that it self-trained goes away.  It will be
+useful if the execution can be paused and resumed with the previous
+self-trained data.
+
+Introduce per-context API parameter, 'paused', for the purpose.  The
+parameter can be set and unset while DAMON is running and paused, using
+the online parameters commit helper functions (damon_commit_ctx() and
+damon_call()).  Once 'paused' is set, the kdamond_fn() main loop does
+only limited works with sampling interval sleep during the works.  The
+limited works include the handling of the online parameters update, so
+that users can unset the 'pause' and resume the execution when they
+want.  It also keep checking DAMON stop conditions and handling of it,
+so that DAMON can be stopped while paused if needed.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 2 ++
+ mm/damon/core.c       | 9 +++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index d9a3babbafc16..ea1649a09395d 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -787,6 +787,7 @@ struct damon_attrs {
+  * @ops:	Set of monitoring operations for given use cases.
+  * @addr_unit:	Scale factor for core to ops address conversion.
+  * @min_region_sz:	Minimum region size.
++ * @pause:	Pause kdamond main loop.
+  * @adaptive_targets:	Head of monitoring targets (&damon_target) list.
+  * @schemes:		Head of schemes (&damos) list.
+  */
+@@ -838,6 +839,7 @@ struct damon_ctx {
+ 	struct damon_operations ops;
+ 	unsigned long addr_unit;
+ 	unsigned long min_region_sz;
++	bool pause;
+ 
+ 	struct list_head adaptive_targets;
+ 	struct list_head schemes;
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index db6c67e52d2b8..ce010009ca136 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1349,6 +1349,7 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 		if (err)
+ 			return err;
+ 	}
++	dst->pause = src->pause;
+ 	dst->ops = src->ops;
+ 	dst->addr_unit = src->addr_unit;
+ 	dst->min_region_sz = src->min_region_sz;
+@@ -3003,6 +3004,14 @@ static int kdamond_fn(void *data)
+ 		kdamond_call(ctx, false);
+ 		if (ctx->maybe_corrupted)
+ 			break;
++		while (ctx->pause) {
++			if (kdamond_need_stop(ctx))
++				goto done;
++			kdamond_usleep(ctx->attrs.sample_interval);
++			/* allow caller unset pause via damon_call() */
++			kdamond_call(ctx, false);
++			damos_walk_cancel(ctx);
++		}
+ 		if (!list_empty(&ctx->schemes))
+ 			kdamond_apply_schemes(ctx);
+ 		else
+-- 
+2.47.3

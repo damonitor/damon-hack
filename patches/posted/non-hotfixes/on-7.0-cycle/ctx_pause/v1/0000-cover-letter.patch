@@ -1,0 +1,148 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: "Liam R. Howlett" <Liam.Howlett@oracle.com>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kunit-dev@googlegroups.com
+Cc: linux-doc@vger.kernel.org
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 21 Mar 2026 11:12:58 -0700
+Subject: [PATCH 00/10] mm/damon: let DAMON be paused and resumed
+
+DAMON utilizes a few mechanisms that enhance itself over time. Adaptive
+regions adjustment, goal-based DAMOS quota auto-tuning and monitoring
+intervals auto-tuning like self-training mechanisms are such examples.
+It also adds access frequency stability information (age) to the
+monitoring results, which makes it enhanced over time.
+
+Sometimes users have to stop DAMON.  In this case, DAMON internal state
+that enhanced over the time of the last execution simply goes away.
+Restarted DAMON have to train itself and enhance its output from the
+scratch.  This makes DAMON less useful in such cases.  Introducing three
+such use cases below.
+
+Investigation of DAMON.  It is best to do the investigation online,
+especially when it is a production environment.  DAMON therefore
+provides features for such online investigations, including DAMOS stats,
+monitoring result snapshot exposure, and multiple tracepoints.  When
+those are insufficient, and there are additional clues that could be
+interfered by DAMON, users have to temporarily stop DAMON to collect the
+additional clues.  It is not very useful since many of DAMON internal
+clues are gone when DAMON is stopped.  The loss of the monitoring
+results that improved over time is also problematic, especially in
+production environments.
+
+Monitoring of workloads that have different user-known phases.  For
+example, in Android, applications are known to have very different
+access patterns and behaviors when they are running on the foreground
+and the background.  It can therefore be useful to separate monitoring
+of apps based on whether they are running on the foreground and on the
+background.  Having two DAMON threads per application that paused and
+resumed for the apps foreground/background switches can be useful for
+the purpose.  But such pause/resume of the execution is not supported.
+
+Tests of DAMON.  A few DAMON selftests are using drgn to dump the
+internal DAMON status.  The tests show if the dumped status is the same
+as what the test code expected.  Because DAMON keeps running and
+modifying its internal status, there are chances of data races that can
+cause false test results.  Stopping DAMON can avoid the race.  But,
+since the internal state of DAMON is dropped, the test coverage will be
+limited.
+
+Let DAMON execution be paused and resumed without loss of the internal
+state, to overhaul the limitations.  For this, introduce a new DAMON
+context parameter, namely 'pause'.  API callers can update it while the
+context is running, using the online parameters update functions
+(damon_commit_ctx() and damon_call()).  Once it is set, kdamond_fn()
+main loop will do only limited works excluding the monitoring and DAMOS
+works, while sleeping sampling intervals per the work.  The limited
+works include handling of the online parameters update.  Hence users can
+unset the 'pause' parameter again.  Once it is unset, kdamond_fn() main
+loop will do all the work again (resumed).  Under the paused state, it
+also does stop condition checks and handling of it, so that paused DAMON
+can also be stopped if needed.  Expose the feature to the user space via
+DAMON sysfs interface.  Also, update existing drgn-based tests to test
+and use the feature.
+
+Tests
+=====
+
+I confirmed the feature functionality using real time tracing ('perf
+trace' or 'trace-cmd stream') of damon:damon_aggregated DAMON
+tracepoint.  By pausing and resuming the DAMON execution, I was able to
+see the trace stops and continued as expected.  Note that the pause
+feature support is added to DAMON user-space tool (damo) after v3.1.9.
+Users can use '--pause_ctx' command line option of damo for that, and I
+actually used it for my test.  The extended drgn-based selftests are
+also testing a part of the functionality.
+
+Patches Sequence
+================
+
+Patch 1 introduces the new core API for the pause feature.  Patch 2
+extend DAMON sysfs interface for the new parameter.  Patches 3-5 update
+design, usage and ABI documents for the new sysfs file, respectively.
+The following five patches are for tests.  Patch 6 implements a new
+kunit test for the pause parameter online commitment.  Patches 7 and 8
+extend DAMON selftest helpers to support the new feature.  Patch 9
+extends selftest to test the commitment of the feature.  Finally, patch
+10 updates existing selftest to be safe from the race condition using
+the pause/resume feature.
+
+Changelog
+=========
+
+Changes from RFC v2
+(https://lore.kernel.org/20260319052157.99433-1-sj@kernel.org)
+- Move damon_ctx->pause to public fields section.
+- Wordsmith design doc change.
+- Fix unintended resume of contexts in multiple contexts use case.
+- Rebase to latest mm-new.
+Changes from RFC v1
+(https://lore.kernel.org/20260315210012.94846-1-sj@kernel.org)
+- Continuously cancel new damos_walk() requests when paused.
+- Initialize damon_sysfs_context->pause.
+- Make sysfs.py dump-purpose pausing to work for all contexts.
+
+SeongJae Park (10):
+  mm/damon/core: introduce damon_ctx->paused
+  mm/damon/sysfs: add pause file under context dir
+  Docs/mm/damon/design: update for context pause/resume feature
+  Docs/admin-guide/mm/damon/usage: update for pause file
+  Docs/ABI/damon: update for pause sysfs file
+  mm/damon/tests/core-kunit: test pause commitment
+  selftests/damon/_damon_sysfs: support pause file staging
+  selftests/damon/drgn_dump_damon_status: dump pause
+  selftests/damon/sysfs.py: check pause on assert_ctx_committed()
+  selftets/damon/sysfs.py: pause DAMON before dumping status
+
+ .../ABI/testing/sysfs-kernel-mm-damon         |  7 ++++
+ Documentation/admin-guide/mm/damon/usage.rst  | 12 ++++--
+ Documentation/mm/damon/design.rst             |  7 ++++
+ include/linux/damon.h                         |  2 +
+ mm/damon/core.c                               |  9 +++++
+ mm/damon/sysfs.c                              | 31 ++++++++++++++++
+ mm/damon/tests/core-kunit.h                   |  4 ++
+ tools/testing/selftests/damon/_damon_sysfs.py | 10 ++++-
+ .../selftests/damon/drgn_dump_damon_status.py |  1 +
+ tools/testing/selftests/damon/sysfs.py        | 37 +++++++++++++++++++
+ 10 files changed, 115 insertions(+), 5 deletions(-)
+
+
+base-commit: 7580a23dc3d9af23b4911f9cc1d9da2f519d63a5
+-- 
+2.47.3
