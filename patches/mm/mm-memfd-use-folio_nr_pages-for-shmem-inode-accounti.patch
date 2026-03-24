@@ -1,0 +1,69 @@
+From: Chenghao Duan <duanchenghao@kylinos.cn>
+Date: Mon, 23 Mar 2026 19:07:44 +0800
+Subject: [PATCH] mm/memfd: use folio_nr_pages() for shmem inode accounting
+
+Patch series "Modify memfd_luo code", v2.
+
+Various fixes and cleanups for the memfd LUO code.
+
+
+This patch (of 4):
+
+memfd_luo_retrieve_folios() called shmem_inode_acct_blocks() and
+shmem_recalc_inode() with hardcoded 1 instead of the actual folio page
+count.  memfd may use large folios (THP/hugepages), causing quota/limit
+under-accounting and incorrect stat output.
+
+Fix by using folio_nr_pages(folio) for both functions.
+
+Issue found by AI review and suggested by Pratyush Yadav <pratyush@kernel.org>.
+https://sashiko.dev/#/patchset/20260319012845.29570-1-duanchenghao%40kylinos.cn
+
+Link: https://lkml.kernel.org/r/20260323110747.193569-1-duanchenghao@kylinos.cn
+Link: https://lkml.kernel.org/r/20260323110747.193569-2-duanchenghao@kylinos.cn
+Signed-off-by: Chenghao Duan <duanchenghao@kylinos.cn>
+Suggested-by: Pratyush Yadav <pratyush@kernel.org>
+Cc: Haoran Jiang <jianghaoran@kylinos.cn>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memfd_luo.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/mm/memfd_luo.c b/mm/memfd_luo.c
+index bc7f4f045edff..be13618cdc3ec 100644
+--- a/mm/memfd_luo.c
++++ b/mm/memfd_luo.c
+@@ -410,6 +410,7 @@ static int memfd_luo_retrieve_folios(struct file *file,
+ 	struct inode *inode = file_inode(file);
+ 	struct address_space *mapping = inode->i_mapping;
+ 	struct folio *folio;
++	long npages;
+ 	int err = -EIO;
+ 	long i;
+ 
+@@ -456,14 +457,15 @@ static int memfd_luo_retrieve_folios(struct file *file,
+ 		if (flags & MEMFD_LUO_FOLIO_DIRTY)
+ 			folio_mark_dirty(folio);
+ 
+-		err = shmem_inode_acct_blocks(inode, 1);
++		npages = folio_nr_pages(folio);
++		err = shmem_inode_acct_blocks(inode, npages);
+ 		if (err) {
+-			pr_err("shmem: failed to account folio index %ld: %d\n",
+-			       i, err);
++			pr_err("shmem: failed to account folio index %ld(%ld pages): %d\n",
++			       i, npages, err);
+ 			goto unlock_folio;
+ 		}
+ 
+-		shmem_recalc_inode(inode, 1, 0);
++		shmem_recalc_inode(inode, npages, 0);
+ 		folio_add_lru(folio);
+ 		folio_unlock(folio);
+ 		folio_put(folio);
+-- 
+2.47.3
+

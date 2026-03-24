@@ -1,5 +1,5 @@
 From: Sasha Levin <sashal@kernel.org>
-Date: Wed, 11 Mar 2026 23:06:47 -0400
+Date: Sun, 22 Mar 2026 09:15:42 -0400
 Subject: [PATCH] kallsyms: delta-compress lineinfo tables for ~2.7x size
  reduction
 
@@ -43,11 +43,10 @@ Booted in QEMU and verified with SysRq-l that annotations still work:
   cpu_startup_entry+0x4e/0x60 (kernel/sched/idle.c:429)
   rest_init+0x1aa/0x1b0 (init/main.c:760)
 
-Link: https://lkml.kernel.org/r/20260312030649.674699-4-sashal@kernel.org
+Assisted-by: Claude:claude-opus-4-6
+Link: https://lkml.kernel.org/r/20260322131543.971079-4-sashal@kernel.org
 Signed-off-by: Sasha Levin <sashal@kernel.org>
 Suggested-by: Juergen Gross <jgross@suse.com>
-Assisted-by: Claude:claude-opus-4-6
-Cc: David Gow <david@davidgow.net>
 Cc: Geert Uytterhoeven <geert@linux-m68k.org>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
 Cc: Helge Deller <deller@gmx.de>
@@ -72,11 +71,11 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  init/Kconfig                                  |   8 +-
  kernel/kallsyms.c                             |  46 ++--
  kernel/kallsyms_internal.h                    |   8 +-
- kernel/module/kallsyms.c                      |  77 +++---
+ kernel/module/kallsyms.c                      |  85 +++----
  scripts/empty_lineinfo.S                      |  20 +-
  scripts/gen_lineinfo.c                        | 189 +++++++++------
  scripts/kallsyms.c                            |   7 +-
- 9 files changed, 400 insertions(+), 189 deletions(-)
+ 9 files changed, 406 insertions(+), 191 deletions(-)
 
 diff --git a/Documentation/admin-guide/kallsyms-lineinfo.rst b/Documentation/admin-guide/kallsyms-lineinfo.rst
 index 5cae995eb118e..dd264830c8d5b 100644
@@ -478,7 +477,7 @@ index d7374ce444d81..ffe4c658067ec 100644
  extern const u32 lineinfo_filenames_size;
  extern const char lineinfo_filenames[];
 diff --git a/kernel/module/kallsyms.c b/kernel/module/kallsyms.c
-index 5b46293e957ab..743cf7033c37f 100644
+index 5b46293e957ab..8715a923ba536 100644
 --- a/kernel/module/kallsyms.c
 +++ b/kernel/module/kallsyms.c
 @@ -509,16 +509,11 @@ bool module_lookup_lineinfo(struct module *mod, unsigned long addr,
@@ -500,7 +499,7 @@ index 5b46293e957ab..743cf7033c37f 100644
  
  	if (!IS_ENABLED(CONFIG_KALLSYMS_LINEINFO_MODULES))
  		return false;
-@@ -527,27 +522,30 @@ bool module_lookup_lineinfo(struct module *mod, unsigned long addr,
+@@ -527,61 +522,55 @@ bool module_lookup_lineinfo(struct module *mod, unsigned long addr,
  	if (!base)
  		return false;
  
@@ -523,30 +522,25 @@ index 5b46293e957ab..743cf7033c37f 100644
 -	    mod_lineinfo_filenames_off(num_entries, num_files) + filenames_size)
 +	/* Validate each sub-array fits within the section */
 +	if (hdr->blocks_offset + hdr->blocks_size > section_size)
-+		return false;
-+	if (hdr->data_offset + hdr->data_size > section_size)
-+		return false;
-+	if (hdr->files_offset + hdr->files_size > section_size)
-+		return false;
-+	if (hdr->filenames_offset + hdr->filenames_size > section_size)
  		return false;
- 
+-
 -	addrs = base + mod_lineinfo_addrs_off();
 -	file_ids = base + mod_lineinfo_file_ids_off(num_entries);
 -	lines = base + mod_lineinfo_lines_off(num_entries);
 -	file_offsets = base + mod_lineinfo_file_offsets_off(num_entries);
 -	filenames = base + mod_lineinfo_filenames_off(num_entries, num_files);
-+	/* Validate array sizes match declared counts */
-+	if (hdr->blocks_size < hdr->num_blocks * 2 * sizeof(u32))
+-
+-	/* Compute offset from module .text base */
+-	text_base = (unsigned long)mod->mem[MOD_TEXT].base;
+-	if (addr < text_base)
++	if (hdr->data_offset + hdr->data_size > section_size)
+ 		return false;
+-
+-	raw_offset = addr - text_base;
+-	if (raw_offset > UINT_MAX)
++	if (hdr->files_offset + hdr->files_size > section_size)
 +		return false;
-+	if (hdr->files_size < hdr->num_files * sizeof(u32))
-+		return false;
- 
- 	/* Compute offset from module .text base */
- 	text_base = (unsigned long)mod->mem[MOD_TEXT].base;
-@@ -557,31 +555,18 @@ bool module_lookup_lineinfo(struct module *mod, unsigned long addr,
- 	raw_offset = addr - text_base;
- 	if (raw_offset > UINT_MAX)
++	if (hdr->filenames_offset + hdr->filenames_size > section_size)
  		return false;
 -	offset = (unsigned int)raw_offset;
 -
@@ -560,18 +554,31 @@ index 5b46293e957ab..743cf7033c37f 100644
 -		else
 -			high = mid;
 -	}
--
+ 
 -	if (low == 0)
--		return false;
++	/* Validate array sizes match declared counts */
++	if (hdr->blocks_size < hdr->num_blocks * 2 * sizeof(u32))
++		return false;
++	if (hdr->files_size < hdr->num_files * sizeof(u32))
+ 		return false;
 -	low--;
--
+ 
 -	file_id = file_ids[low];
 -	if (file_id >= num_files)
--		return false;
++	/*
++	 * Compute offset from module .text base.
++	 * NOTE: This assumes .text is at the start of the MOD_TEXT segment.
++	 * A proper fix would use ELF relocations to reference .text directly.
++	 */
++	text_base = (unsigned long)mod->mem[MOD_TEXT].base;
++	if (addr < text_base)
+ 		return false;
  
 -	if (file_offsets[file_id] >= filenames_size)
--		return false;
--
++	raw_offset = addr - text_base;
++	if (raw_offset > U32_MAX)
+ 		return false;
+ 
 -	*file = &filenames[file_offsets[file_id]];
 -	*line = lines[low];
 -	return true;
@@ -621,10 +628,10 @@ index e058c41137123..edd5b1092f050 100644
  lineinfo_file_offsets:
  	.globl lineinfo_filenames_size
 diff --git a/scripts/gen_lineinfo.c b/scripts/gen_lineinfo.c
-index 5ced6897cbbee..fe46e2fa45d8a 100644
+index 7d06701549345..45b1c1081164d 100644
 --- a/scripts/gen_lineinfo.c
 +++ b/scripts/gen_lineinfo.c
-@@ -550,6 +550,35 @@ static void deduplicate(void)
+@@ -548,6 +548,35 @@ static void deduplicate(void)
  	num_entries = j + 1;
  }
  
@@ -660,7 +667,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  static void compute_file_offsets(void)
  {
  	unsigned int offset = 0;
-@@ -573,6 +602,11 @@ static void print_escaped_asciz(const char *s)
+@@ -571,6 +600,11 @@ static void print_escaped_asciz(const char *s)
  
  static void output_assembly(void)
  {
@@ -672,7 +679,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  	printf("/* SPDX-License-Identifier: GPL-2.0 */\n");
  	printf("/*\n");
  	printf(" * Automatically generated by scripts/gen_lineinfo\n");
-@@ -593,29 +627,40 @@ static void output_assembly(void)
+@@ -591,29 +625,40 @@ static void output_assembly(void)
  	printf("lineinfo_num_files:\n");
  	printf("\t.long %u\n\n", num_files);
  
@@ -734,7 +741,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  
  	/* File string offset table */
  	printf("\t.globl lineinfo_file_offsets\n");
-@@ -623,34 +668,27 @@ static void output_assembly(void)
+@@ -621,34 +666,27 @@ static void output_assembly(void)
  	printf("lineinfo_file_offsets:\n");
  	for (unsigned int i = 0; i < num_files; i++)
  		printf("\t.long %u\n", files[i].str_offset);
@@ -777,7 +784,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  
  	printf("/* SPDX-License-Identifier: GPL-2.0 */\n");
  	printf("/*\n");
-@@ -660,46 +698,56 @@ static void output_module_assembly(void)
+@@ -658,46 +696,56 @@ static void output_module_assembly(void)
  
  	printf("\t.section .mod_lineinfo, \"a\"\n\n");
  
@@ -865,7 +872,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  }
  
  int main(int argc, char *argv[])
-@@ -779,8 +827,10 @@ int main(int argc, char *argv[])
+@@ -777,8 +825,10 @@ int main(int argc, char *argv[])
  	deduplicate();
  	compute_file_offsets();
  
@@ -878,7 +885,7 @@ index 5ced6897cbbee..fe46e2fa45d8a 100644
  
  	if (module_mode)
  		output_module_assembly();
-@@ -796,6 +846,5 @@ int main(int argc, char *argv[])
+@@ -794,6 +844,5 @@ int main(int argc, char *argv[])
  	for (unsigned int i = 0; i < num_files; i++)
  		free(files[i].name);
  	free(files);

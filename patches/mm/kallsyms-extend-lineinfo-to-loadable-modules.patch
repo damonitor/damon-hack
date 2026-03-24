@@ -1,5 +1,5 @@
 From: Sasha Levin <sashal@kernel.org>
-Date: Wed, 11 Mar 2026 23:06:46 -0400
+Date: Sun, 22 Mar 2026 09:15:41 -0400
 Subject: [PATCH] kallsyms: extend lineinfo to loadable modules
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -28,10 +28,9 @@ The gen_lineinfo tool gains --module mode which:
 
 Per-module overhead is approximately 10 bytes per DWARF line entry.
 
-Link: https://lkml.kernel.org/r/20260312030649.674699-3-sashal@kernel.org
-Signed-off-by: Sasha Levin <sashal@kernel.org>
 Assisted-by: Claude:claude-opus-4-6
-Cc: David Gow <david@davidgow.net>
+Link: https://lkml.kernel.org/r/20260322131543.971079-3-sashal@kernel.org
+Signed-off-by: Sasha Levin <sashal@kernel.org>
 Cc: Geert Uytterhoeven <geert@linux-m68k.org>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
 Cc: Helge Deller <deller@gmx.de>
@@ -60,11 +59,10 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  kernel/kallsyms.c                             |  18 +-
  kernel/module/kallsyms.c                      |  91 +++++
  kernel/module/main.c                          |   3 +
- scripts/Makefile                              |   1 +
  scripts/Makefile.modfinal                     |   6 +
  scripts/gen-mod-lineinfo.sh                   |  48 +++
- scripts/gen_lineinfo.c                        | 349 ++++++++++++++++--
- 12 files changed, 604 insertions(+), 40 deletions(-)
+ scripts/gen_lineinfo.c                        | 347 ++++++++++++++++--
+ 11 files changed, 601 insertions(+), 40 deletions(-)
  create mode 100644 include/linux/mod_lineinfo.h
  create mode 100755 scripts/gen-mod-lineinfo.sh
 
@@ -406,18 +404,6 @@ index c3ce106c70af1..acfb5ed248a59 100644
  #ifdef CONFIG_JUMP_LABEL
  	mod->jump_entries = section_objs(info, "__jump_table",
  					sizeof(*mod->jump_entries),
-diff --git a/scripts/Makefile b/scripts/Makefile
-index ffe89875b3295..651df2a867ffb 100644
---- a/scripts/Makefile
-+++ b/scripts/Makefile
-@@ -5,6 +5,7 @@
- 
- hostprogs-always-$(CONFIG_KALLSYMS)			+= kallsyms
- hostprogs-always-$(CONFIG_KALLSYMS_LINEINFO)		+= gen_lineinfo
-+hostprogs-always-$(CONFIG_KALLSYMS_LINEINFO_MODULES)	+= gen_lineinfo
- hostprogs-always-$(BUILD_C_RECORDMCOUNT)		+= recordmcount
- hostprogs-always-$(CONFIG_BUILDTIME_TABLE_SORT)		+= sorttable
- hostprogs-always-$(CONFIG_ASN1)				+= asn1_compiler
 diff --git a/scripts/Makefile.modfinal b/scripts/Makefile.modfinal
 index adcbcde16a071..3941cf624526b 100644
 --- a/scripts/Makefile.modfinal
@@ -497,7 +483,7 @@ index 0000000000000..d0663b862d31b
 +
 +exit 0
 diff --git a/scripts/gen_lineinfo.c b/scripts/gen_lineinfo.c
-index 37d5e84971be4..5ced6897cbbee 100644
+index 37d5e84971be4..7d06701549345 100644
 --- a/scripts/gen_lineinfo.c
 +++ b/scripts/gen_lineinfo.c
 @@ -23,8 +23,16 @@
@@ -564,7 +550,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  		}
  
  		/*
-@@ -194,9 +200,45 @@ static const char *make_relative(const char *path, const char *comp_dir)
+@@ -194,9 +200,42 @@ static const char *make_relative(const char *path, const char *comp_dir)
  		return p ? p + 1 : path;
  	}
  
@@ -577,14 +563,11 @@ index 37d5e84971be4..5ced6897cbbee 100644
 +	 */
 +	{
 +		size_t len = strlen(path);
++		size_t mid = len / 2;
 +
-+		for (p = path; (p = strchr(p, '/')) != NULL; p++) {
-+			size_t prefix = p - path;
-+			size_t rest = len - prefix - 1;
-+
-+			if (rest == prefix && !memcmp(path, p + 1, prefix))
-+				return p + 1;
-+		}
++		if (len > 1 && path[mid] == '/' &&
++		    !memcmp(path, path + mid + 1, mid))
++			return path + mid + 1;
 +	}
 +
 +	/*
@@ -613,7 +596,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  }
  
  static int compare_entries(const void *a, const void *b)
-@@ -248,6 +290,159 @@ static unsigned long long find_text_addr(Elf *elf)
+@@ -248,6 +287,159 @@ static unsigned long long find_text_addr(Elf *elf)
  	exit(1);
  }
  
@@ -667,17 +650,17 @@ index 37d5e84971be4..5ced6897cbbee 100644
 +static unsigned int r_type_abs32(unsigned int e_machine)
 +{
 +	switch (e_machine) {
-+	case EM_X86_64:		return 10;	/* R_X86_64_32 */
-+	case EM_386:		return 1;	/* R_386_32 */
-+	case EM_AARCH64:	return 258;	/* R_AARCH64_ABS32 */
-+	case EM_ARM:		return 2;	/* R_ARM_ABS32 */
-+	case EM_RISCV:		return 1;	/* R_RISCV_32 */
-+	case EM_S390:		return 4;	/* R_390_32 */
-+	case EM_MIPS:		return 2;	/* R_MIPS_32 */
-+	case EM_PPC64:		return 1;	/* R_PPC64_ADDR32 */
-+	case EM_PPC:		return 1;	/* R_PPC_ADDR32 */
-+	case EM_LOONGARCH:	return 1;	/* R_LARCH_32 */
-+	case EM_PARISC:		return 1;	/* R_PARISC_DIR32 */
++	case EM_X86_64:		return R_X86_64_32;
++	case EM_386:		return R_386_32;
++	case EM_AARCH64:	return R_AARCH64_ABS32;
++	case EM_ARM:		return R_ARM_ABS32;
++	case EM_RISCV:		return R_RISCV_32;
++	case EM_S390:		return R_390_32;
++	case EM_MIPS:		return R_MIPS_32;
++	case EM_PPC64:		return R_PPC64_ADDR32;
++	case EM_PPC:		return R_PPC_ADDR32;
++	case EM_LOONGARCH:	return R_LARCH_32;
++	case EM_PARISC:		return R_PARISC_DIR32;
 +	default:		return 0;
 +	}
 +}
@@ -773,15 +756,16 @@ index 37d5e84971be4..5ced6897cbbee 100644
  static void process_dwarf(Dwarf *dwarf, unsigned long long text_addr)
  {
  	Dwarf_Off off = 0, next_off;
-@@ -295,6 +490,16 @@ static void process_dwarf(Dwarf *dwarf, unsigned long long text_addr)
+@@ -295,6 +487,17 @@ static void process_dwarf(Dwarf *dwarf, unsigned long long text_addr)
  			if (addr < text_addr)
  				continue;
  
 +			/*
 +			 * In module mode, keep only .text addresses.
-+			 * In ET_REL .ko files, .init.text/.exit.text may
-+			 * overlap with .text address ranges, so we must
-+			 * explicitly check against the .text bounds.
++			 * In ET_REL .ko files, .text, .init.text and
++			 * .exit.text all have sh_addr == 0 and therefore
++			 * overlapping address ranges.  Explicitly check
++			 * against the .text bounds.
 +			 */
 +			if (module_mode && text_section_end > text_section_start &&
 +			    (addr < text_section_start || addr >= text_section_end))
@@ -790,7 +774,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  			{
  				unsigned long long raw_offset = addr - text_addr;
  
-@@ -440,6 +645,63 @@ static void output_assembly(void)
+@@ -440,6 +643,63 @@ static void output_assembly(void)
  	printf("\n");
  }
  
@@ -854,7 +838,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  int main(int argc, char *argv[])
  {
  	int fd;
-@@ -447,12 +709,23 @@ int main(int argc, char *argv[])
+@@ -447,12 +707,23 @@ int main(int argc, char *argv[])
  	Dwarf *dwarf;
  	unsigned long long text_addr;
  
@@ -880,7 +864,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  	if (fd < 0) {
  		fprintf(stderr, "Cannot open %s: %s\n", argv[1],
  			strerror(errno));
-@@ -460,7 +733,7 @@ int main(int argc, char *argv[])
+@@ -460,7 +731,7 @@ int main(int argc, char *argv[])
  	}
  
  	elf_version(EV_CURRENT);
@@ -889,7 +873,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  	if (!elf) {
  		fprintf(stderr, "elf_begin failed: %s\n",
  			elf_errmsg(elf_errno()));
-@@ -468,7 +741,22 @@ int main(int argc, char *argv[])
+@@ -468,7 +739,22 @@ int main(int argc, char *argv[])
  		return 1;
  	}
  
@@ -913,7 +897,7 @@ index 37d5e84971be4..5ced6897cbbee 100644
  
  	dwarf = dwarf_begin_elf(elf, DWARF_C_READ, NULL);
  	if (!dwarf) {
-@@ -494,7 +782,10 @@ int main(int argc, char *argv[])
+@@ -494,7 +780,10 @@ int main(int argc, char *argv[])
  	fprintf(stderr, "lineinfo: %u entries, %u files\n",
  		num_entries, num_files);
  

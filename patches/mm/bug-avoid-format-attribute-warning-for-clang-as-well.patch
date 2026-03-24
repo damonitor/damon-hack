@@ -1,9 +1,9 @@
 From: Arnd Bergmann <arnd@arndb.de>
-Date: Fri, 20 Mar 2026 22:14:25 +0100
-Subject: [PATCH] lib/bug.c: shut up format attribute warning for clang as well
+Date: Mon, 23 Mar 2026 21:55:16 +0100
+Subject: [PATCH] bug: avoid format attribute warning for clang as well
 
-Like gcc, clang-22 now also warns about a function that it
-incorrectly identifies as a printf-style format:
+Like gcc, clang-22 now also warns about a function that it incorrectly
+identifies as a printf-style format:
 
 lib/bug.c:190:22: error: diagnostic behavior may be improved by adding the 'format(printf, 1, 0)' attribute to the declaration of '__warn_printf' [-Werror,-Wmissing-format-attribute]
   179 | static void __warn_printf(const char *fmt, struct pt_regs *regs)
@@ -21,36 +21,50 @@ lib/bug.c:190:22: error: diagnostic behavior may be improved by adding the 'form
   190 |                         vprintk(fmt, *args);
       |                                           ^
 
-Turn off this warning for all compilers and versions.
+Revert the change that added a gcc-specific workaround, and instead add
+the generic annotation that avoid the warning.
 
-Link: https://lkml.kernel.org/r/20260320211528.2474389-1-arnd@kernel.org
+Link: https://lkml.kernel.org/r/20260323205534.1284284-1-arnd@kernel.org
 Fixes: d36067d6ea00 ("bug: Hush suggest-attribute=format for __warn_printf()")
+Suggested-by: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
+Suggested-by: Brendan Jackman <jackmanb@google.com>
+Link: https://lore.kernel.org/all/20251208141618.2805983-1-andriy.shevchenko@linux.intel.com/T/#u
 Signed-off-by: Arnd Bergmann <arnd@arndb.de>
-Reviewed-by: Nathan Chancellor <nathan@kernel.org>
 Cc: Bill Wendling <morbo@google.com>
-Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Ingo Molnar <mingo@kernel.org>
 Cc: Justin Stitt <justinstitt@google.com>
+Cc: Nathan Chancellor <nathan@kernel.org>
 Cc: Peter Zijlstra <peterz@infradead.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- lib/bug.c | 3 +--
- 1 file changed, 1 insertion(+), 2 deletions(-)
+ lib/bug.c | 7 ++-----
+ 1 file changed, 2 insertions(+), 5 deletions(-)
 
 diff --git a/lib/bug.c b/lib/bug.c
-index 623c467a8b76c..18ac2b3d45f0c 100644
+index 623c467a8b76c..aab9e6a40c5f9 100644
 --- a/lib/bug.c
 +++ b/lib/bug.c
-@@ -174,8 +174,7 @@ struct bug_entry *find_bug(unsigned long bugaddr)
+@@ -173,10 +173,8 @@ struct bug_entry *find_bug(unsigned long bugaddr)
+ 	return module_find_bug(bugaddr);
  }
  
- __diag_push();
+-__diag_push();
 -__diag_ignore(GCC, all, "-Wsuggest-attribute=format",
 -	      "Not a valid __printf() conversion candidate.");
-+__diag_ignore_all("-Wmissing-format-attribute", "Not a valid __printf() conversion candidate.");
- static void __warn_printf(const char *fmt, struct pt_regs *regs)
+-static void __warn_printf(const char *fmt, struct pt_regs *regs)
++static __printf(1, 0)
++void __warn_printf(const char *fmt, struct pt_regs *regs)
  {
  	if (!fmt)
+ 		return;
+@@ -195,7 +193,6 @@ static void __warn_printf(const char *fmt, struct pt_regs *regs)
+ 
+ 	printk("%s", fmt);
+ }
+-__diag_pop();
+ 
+ static enum bug_trap_type __report_bug(struct bug_entry *bug, unsigned long bugaddr, struct pt_regs *regs)
+ {
 -- 
 2.47.3
 

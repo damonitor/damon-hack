@@ -1,14 +1,7 @@
 From: Chenghao Duan <duanchenghao@kylinos.cn>
-Date: Thu, 19 Mar 2026 09:28:43 +0800
+Date: Mon, 23 Mar 2026 19:07:45 +0800
 Subject: [PATCH] mm/memfd_luo: optimize shmem_recalc_inode calls in retrieve
  path
-
-Patch series "Modify memfd_luo code".
-
-I found several modifiable points while reading the code.
-
-
-This patch (of 3):
 
 Move shmem_recalc_inode() out of the loop in memfd_luo_retrieve_folios()
 to improve performance when restoring large memfds.
@@ -21,53 +14,51 @@ loop completes, reducing complexity to O(1).
 Additionally, fix the error path to also call shmem_recalc_inode() for the
 folios that were successfully added before the error occurred.
 
-Link: https://lkml.kernel.org/r/20260319012845.29570-1-duanchenghao@kylinos.cn
-Link: https://lkml.kernel.org/r/20260319012845.29570-2-duanchenghao@kylinos.cn
+Link: https://lkml.kernel.org/r/20260323110747.193569-3-duanchenghao@kylinos.cn
 Signed-off-by: Chenghao Duan <duanchenghao@kylinos.cn>
 Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
 Cc: Haoran Jiang <jianghaoran@kylinos.cn>
-Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: Pratyush Yadav <pratyush@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/memfd_luo.c | 9 ++++++++-
- 1 file changed, 8 insertions(+), 1 deletion(-)
+ mm/memfd_luo.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
 
 diff --git a/mm/memfd_luo.c b/mm/memfd_luo.c
-index bc7f4f045edff..8aecdb29b9cb8 100644
+index be13618cdc3ec..2d683a6f258ff 100644
 --- a/mm/memfd_luo.c
 +++ b/mm/memfd_luo.c
-@@ -412,6 +412,7 @@ static int memfd_luo_retrieve_folios(struct file *file,
+@@ -410,7 +410,7 @@ static int memfd_luo_retrieve_folios(struct file *file,
+ 	struct inode *inode = file_inode(file);
+ 	struct address_space *mapping = inode->i_mapping;
  	struct folio *folio;
+-	long npages;
++	long npages, nr_added_pages = 0;
  	int err = -EIO;
  	long i;
-+	u64 nr_added = 0;
  
- 	for (i = 0; i < nr_folios; i++) {
- 		const struct memfd_luo_folio_ser *pfolio = &folios_ser[i];
-@@ -463,12 +464,15 @@ static int memfd_luo_retrieve_folios(struct file *file,
+@@ -465,12 +465,14 @@ static int memfd_luo_retrieve_folios(struct file *file,
  			goto unlock_folio;
  		}
  
--		shmem_recalc_inode(inode, 1, 0);
-+		nr_added++;
+-		shmem_recalc_inode(inode, npages, 0);
++		nr_added_pages += npages;
  		folio_add_lru(folio);
  		folio_unlock(folio);
  		folio_put(folio);
  	}
  
-+	if (nr_added)
-+		shmem_recalc_inode(inode, nr_added, 0);
++	shmem_recalc_inode(inode, nr_added_pages, 0);
 +
  	return 0;
  
  unlock_folio:
-@@ -487,6 +491,9 @@ static int memfd_luo_retrieve_folios(struct file *file,
+@@ -489,6 +491,8 @@ static int memfd_luo_retrieve_folios(struct file *file,
  			folio_put(folio);
  	}
  
-+	if (nr_added)
-+		shmem_recalc_inode(inode, nr_added, 0);
++	shmem_recalc_inode(inode, nr_added_pages, 0);
 +
  	return err;
  }

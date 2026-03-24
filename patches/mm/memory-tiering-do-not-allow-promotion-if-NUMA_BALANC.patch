@@ -1,0 +1,87 @@
+From: Donet Tom <donettom@linux.ibm.com>
+Date: Mon, 23 Mar 2026 04:48:49 -0500
+Subject: [PATCH] memory tiering: do not allow promotion if
+ NUMA_BALANCING_MEMORY_TIERING is disabled
+
+In the current implementation, if NUMA_BALANCING_MEMORY_TIERING is
+disabled and the pages are on the lower tier, the pages may still be
+promoted.
+
+This happens because task_numa_work() updates the last_cpupid field to
+record the last access time only when NUMA_BALANCING_MEMORY_TIERING is
+enabled and the folio is on the lower tier.  If
+NUMA_BALANCING_MEMORY_TIERING is disabled, the last_cpupid field can
+retains a valid last CPU id.
+
+In should_numa_migrate_memory(), the decision checks whether
+NUMA_BALANCING_MEMORY_TIERING is disabled, the folio is on the lower tier,
+and last_cpupid is invalid.  However, the last_cpupid can be valid when
+NUMA_BALANCING_MEMORY_TIERING is disabled, the condition evaluates to
+false and migration is allowed.
+
+This patch prevents promotion when NUMA_BALANCING_MEMORY_TIERING is
+disabled and the folio is on the lower tier.
+
+Behavior before this change:
+============================
+  - If NUMA_BALANCING_NORMAL is enabled, migration occurs between
+    nodes within the same memory tier, and promotion from lower
+    tier to higher tier may also happen.
+
+  - If NUMA_BALANCING_MEMORY_TIERING is enabled, promotion from
+    lower tier to higher tier nodes is allowed.
+
+Behavior after this change:
+===========================
+  - If NUMA_BALANCING_NORMAL is enabled, migration will occur only
+    between nodes within the same memory tier.
+
+  - If NUMA_BALANCING_MEMORY_TIERING is enabled, promotion from lower
+    tier to higher tier nodes will be allowed.
+
+  - If both NUMA_BALANCING_MEMORY_TIERING and NUMA_BALANCING_NORMAL are
+    enabled, both migration (same tier) and promotion (cross tier) are
+    allowed.
+
+Link: https://lkml.kernel.org/r/20260323094849.3903-1-donettom@linux.ibm.com
+Fixes: 33024536bafd ("memory tiering: hot page selection with hint page fault latency")
+Signed-off-by: Donet Tom <donettom@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Ben Segall <bsegall@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dietmar Eggemann <dietmar.eggemann@arm.com>
+Cc: "Huang, Ying" <huang.ying.caritas@gmail.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Juri Lelli <juri.lelli@redhat.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Valentin Schneider <vschneid@redhat.com>
+Cc: Vincent Guittot <vincent.guittot@linaro.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/sched/fair.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index bf948db905ed1..4b43809a3fb17 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -2024,8 +2024,12 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
+ 	this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
+ 	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
+ 
++	/*
++	 * Do not allow promotion if NUMA_BALANCING_MEMORY_TIERING is disabled
++	 * and the pages are on the lower tier.
++	 */
+ 	if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
+-	    !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
++	    !node_is_toptier(src_nid))
+ 		return false;
+ 
+ 	/*
+-- 
+2.47.3
+

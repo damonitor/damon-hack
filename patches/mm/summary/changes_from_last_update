@@ -1,32 +1,10 @@
 - baseline: v7.0-rc4-25-gf0caa1d49cc07 -> v7.0-rc4-25-gf0caa1d49cc07 (no change)
-- mm-hotfixes-stable: 0 -> 2 commits
+- mm-hotfixes-stable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 2 commits
-  - changed commits
-    - 26f775a054c3 "mm/damon/core: avoid use of half-online-committed context"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - added "[sj@kernel.org: let kdamond_call() with cancel regardless of maybe_corrupted]"
-      - added "Link: : https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org"
-      - added "Link: : https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org"
-      - Link: : https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org
-      - Link: : https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org
-      - Link: https://lkml.kernel.org/r/20260319145218.86197-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260319043309.97966-1-sj@kernel.org [1]
-    - b4fc8fab13f7 "mm/damon/stat: monitor all System RAM resources"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: : https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
-      - Link: https://lkml.kernel.org/r/20260316235118.873-1-sj@kernel.org
-- mm-hotfixes-unstable: 6 -> 3 commits
+    - maintainer, nobody: 2 -> 2 commits (no change)
+- mm-hotfixes-unstable: 3 -> 3 commits (no change)
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
-    - maintainer, nobody: 3 -> 0 commits
-  - dropped commits
-    - 9cdca4d7f004 "mm/damon/core: let kdamond_call() with cancel regardless of maybe_corrupted"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org
-      - Link: https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org [1]
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 49 -> 49 commits (no change)

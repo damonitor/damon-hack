@@ -1,0 +1,94 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Sun, 22 Mar 2026 19:53:54 -0400
+Subject: [PATCH] selftests/mm: fix sashiko complains on folio_split_race_test
+
+1. use PRIu64 for uint64_t
+2. add pthread_barrier_t to ensure main thread starts to punch holes when
+   all reader threads are spawned.
+
+Link: https://lkml.kernel.org/r/B0985749-939D-4256-B9B9-C54C0734CF72@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Cc: Adam Bratschi-Kaye <adam.bratschikaye@dfinity.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Bas van Dijk <bas@dfinity.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../selftests/mm/folio_split_race_test.c        | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/folio_split_race_test.c b/tools/testing/selftests/mm/folio_split_race_test.c
+index c264cc625a7cb..ab6868e7e2efe 100644
+--- a/tools/testing/selftests/mm/folio_split_race_test.c
++++ b/tools/testing/selftests/mm/folio_split_race_test.c
+@@ -46,6 +46,7 @@ struct shared_ctl {
+ 	atomic_uint_fast32_t stop;
+ 	atomic_size_t reader_failures;
+ 	atomic_size_t reader_verified;
++	pthread_barrier_t barrier;
+ };
+ 
+ static void fill_page(unsigned char *base, size_t page_idx)
+@@ -78,14 +79,14 @@ static bool check_page(unsigned char *base, size_t page_idx)
+ 		}
+ 		if (all_zero) {
+ 			ksft_print_msg(
+-				"CORRUPTED: page %zu (huge page %zu) is ALL ZEROS\n",
++				"CORRUPTED: page %zu (huge page %" PRIu64 ") is ALL ZEROS\n",
+ 				page_idx,
+ 				(page_idx * page_size) / pmd_pagesize);
+ 		} else {
+ 			ksft_print_msg(
+-				"CORRUPTED: page %zu (huge page %zu): expected idx %zu, got %lu\n",
++				"CORRUPTED: page %zu (huge page %" PRIu64 "): expected idx %zu, got %" PRIu64 "\n",
+ 				page_idx, (page_idx * page_size) / pmd_pagesize,
+-				page_idx, (unsigned long)got_idx);
++				page_idx, got_idx);
+ 		}
+ 		return false;
+ 	}
+@@ -110,6 +111,8 @@ static void *reader_thread(void *arg)
+ 	atomic_size_t *verified = ra->verified;
+ 	size_t page_idx;
+ 
++	pthread_barrier_wait(&ctl->barrier);
++
+ 	while (atomic_load_explicit(&ctl->stop, memory_order_acquire) == 0) {
+ 		for (page_idx = (size_t)tid; page_idx < TOTAL_PAGES;
+ 		     page_idx += NUM_READER_THREADS) {
+@@ -178,8 +181,14 @@ static size_t run_iteration(void)
+ 	if (!check_huge_shmem(mmap_base, NR_PMD_PAGE, pmd_pagesize))
+ 		ksft_exit_fail_msg("No shmem THP is allocated\n");
+ 
++	if (pthread_barrier_init(&ctl.barrier, NULL, NUM_READER_THREADS + 1) != 0)
++		ksft_exit_fail_msg("pthread_barrier_init failed\n");
++
+ 	create_readers(threads, args, mmap_base, &ctl);
+ 
++	/* Wait for all reader threads to be ready before punching holes. */
++	pthread_barrier_wait(&ctl.barrier);
++
+ 	for (i = 0; i < TOTAL_PAGES; i++) {
+ 		if (i % PUNCH_INTERVAL != 0)
+ 			continue;
+@@ -198,6 +207,8 @@ static size_t run_iteration(void)
+ 	for (i = 0; i < NUM_READER_THREADS; i++)
+ 		pthread_join(threads[i], NULL);
+ 
++	pthread_barrier_destroy(&ctl.barrier);
++
+ 	reader_failures = atomic_load_explicit(&ctl.reader_failures,
+ 					       memory_order_acquire);
+ 	reader_verified = atomic_load_explicit(&ctl.reader_verified,
+-- 
+2.47.3
+
