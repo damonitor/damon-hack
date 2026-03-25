@@ -1,16 +1,17 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Wed, 11 Mar 2026 08:03:57 +0100
+Date: Tue, 24 Mar 2026 07:22:01 +0100
 Subject: [PATCH] xor: use static_call for xor_gen
 
 Avoid the indirect call for xor_generation by using a static_call.
 
-Link: https://lkml.kernel.org/r/20260311070416.972667-26-hch@lst.de
+Link: https://lkml.kernel.org/r/20260324062211.3216301-26-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
 Cc: Alexandre Ghiti <alex@ghiti.fr>
 Cc: Andreas Larsson <andreas@gaisler.com>
 Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Ard Biesheuvel <ardb@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
 Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
@@ -44,29 +45,14 @@ Cc: WANG Xuerui <kernel@xen0n.name>
 Cc: Will Deacon <will@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- lib/raid/xor/xor-32regs.c |  2 +-
- lib/raid/xor/xor-core.c   | 29 ++++++++++++++---------------
- lib/raid/xor/xor_impl.h   |  4 ++++
- 3 files changed, 19 insertions(+), 16 deletions(-)
+ lib/raid/xor/xor-core.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
 
-diff --git a/lib/raid/xor/xor-32regs.c b/lib/raid/xor/xor-32regs.c
-index acb4a10d1e95b..759a31f764148 100644
---- a/lib/raid/xor/xor-32regs.c
-+++ b/lib/raid/xor/xor-32regs.c
-@@ -209,7 +209,7 @@ xor_32regs_5(unsigned long bytes, unsigned long * __restrict p1,
- 	} while (--lines > 0);
- }
- 
--DO_XOR_BLOCKS(32regs, xor_32regs_2, xor_32regs_3, xor_32regs_4, xor_32regs_5);
-+__DO_XOR_BLOCKS(32regs, xor_32regs_2, xor_32regs_3, xor_32regs_4, xor_32regs_5);
- 
- struct xor_block_template xor_block_32regs = {
- 	.name		= "32regs",
 diff --git a/lib/raid/xor/xor-core.c b/lib/raid/xor/xor-core.c
-index c3523f92ab83a..331da1afc0e4e 100644
+index a9b984d47d8c1..67dc8ade7f0be 100644
 --- a/lib/raid/xor/xor-core.c
 +++ b/lib/raid/xor/xor-core.c
-@@ -11,10 +11,14 @@
+@@ -11,10 +11,10 @@
  #include <linux/raid/xor.h>
  #include <linux/jiffies.h>
  #include <linux/preempt.h>
@@ -75,15 +61,11 @@ index c3523f92ab83a..331da1afc0e4e 100644
  
 -/* The xor routine to use.  */
 -static struct xor_block_template *active_template;
-+/*
-+ * Provide a temporary default until the fastest or forced implementation is
-+ * picked.
-+ */
-+DEFINE_STATIC_CALL(xor_gen_impl, xor_gen_32regs);
++DEFINE_STATIC_CALL_NULL(xor_gen_impl, *xor_block_8regs.xor_gen);
  
  /**
   * xor_gen - generate RAID-style XOR information
-@@ -36,13 +40,13 @@ void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
+@@ -36,13 +36,13 @@ void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
  	lockdep_assert_preemption_enabled();
  	WARN_ON_ONCE(bytes & 511);
  
@@ -99,7 +81,7 @@ index c3523f92ab83a..331da1afc0e4e 100644
  
  /**
   * xor_register - register a XOR template
-@@ -68,7 +72,7 @@ void __init xor_register(struct xor_block_template *tmpl)
+@@ -68,7 +68,7 @@ void __init xor_register(struct xor_block_template *tmpl)
   */
  void __init xor_force(struct xor_block_template *tmpl)
  {
@@ -108,7 +90,7 @@ index c3523f92ab83a..331da1afc0e4e 100644
  }
  
  #define BENCH_SIZE	4096
-@@ -110,7 +114,7 @@ static int __init calibrate_xor_blocks(void)
+@@ -110,7 +110,7 @@ static int __init calibrate_xor_blocks(void)
  	void *b1, *b2;
  	struct xor_block_template *f, *fastest;
  
@@ -117,7 +99,7 @@ index c3523f92ab83a..331da1afc0e4e 100644
  		return 0;
  
  	b1 = (void *) __get_free_pages(GFP_KERNEL, 2);
-@@ -127,7 +131,7 @@ static int __init calibrate_xor_blocks(void)
+@@ -127,7 +127,7 @@ static int __init calibrate_xor_blocks(void)
  		if (f->speed > fastest->speed)
  			fastest = f;
  	}
@@ -126,7 +108,7 @@ index c3523f92ab83a..331da1afc0e4e 100644
  	pr_info("xor: using function: %s (%d MB/sec)\n",
  	       fastest->name, fastest->speed);
  
-@@ -155,21 +159,16 @@ static int __init xor_init(void)
+@@ -155,10 +155,10 @@ static int __init xor_init(void)
  	 * If this arch/cpu has a short-circuited selection, don't loop through
  	 * all the possible functions, just use the best one.
  	 */
@@ -140,32 +122,15 @@ index c3523f92ab83a..331da1afc0e4e 100644
  		return 0;
  	}
  
- #ifdef MODULE
- 	return calibrate_xor_blocks();
- #else
--	/*
--	 * Pick the first template as the temporary default until calibration
--	 * happens.
--	 */
+@@ -169,7 +169,7 @@ static int __init xor_init(void)
+ 	 * Pick the first template as the temporary default until calibration
+ 	 * happens.
+ 	 */
 -	active_template = template_list;
++	static_call_update(xor_gen_impl, template_list->xor_gen);
  	return 0;
  #endif
  }
-diff --git a/lib/raid/xor/xor_impl.h b/lib/raid/xor/xor_impl.h
-index 09ae2916f71ec..59c801777219a 100644
---- a/lib/raid/xor/xor_impl.h
-+++ b/lib/raid/xor/xor_impl.h
-@@ -50,6 +50,10 @@ extern struct xor_block_template xor_block_32regs;
- extern struct xor_block_template xor_block_8regs_p;
- extern struct xor_block_template xor_block_32regs_p;
- 
-+/* default call until updated */
-+void xor_gen_32regs(void *dest, void **srcs, unsigned int src_cnt,
-+		unsigned int bytes);
-+
- void __init xor_register(struct xor_block_template *tmpl);
- void __init xor_force(struct xor_block_template *tmpl);
- 
 -- 
 2.47.3
 

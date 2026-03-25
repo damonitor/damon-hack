@@ -9,6 +9,7 @@ Instead of simply referring to the folio mapcount in both places, let's
 factor out the odd-looking PTL sync into sync_with_folio_pmd_zap(), and
 add centralized documentation why this is required.
 
+[akpm@linux-foundation.org: update comment per Matthew and David]
 Link: https://lkml.kernel.org/r/20260223163920.287720-1-david@kernel.org
 Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
@@ -28,7 +29,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  3 files changed, 22 insertions(+), 16 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index cb0af847d7d99..e0ef192b0be36 100644
+index cb0af847d7d99..39ab37bb0e1dd 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -516,6 +516,25 @@ void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
@@ -40,10 +41,10 @@ index cb0af847d7d99..e0ef192b0be36 100644
 + * @mm: The mm_struct.
 + * @pmdp: Pointer to the pmd that was found to be pmd_none().
 + *
-+ * When we stumble over a pmd_none() without holding the PTL while unmapping a
-+ * folio that could have been mapped at that PMD, it could be that concurrent
-+ * zapping of the PMD is not complete yet. While the PMD might be pmd_none()
-+ * already, the folio might still appear to be mapped (folio_mapped()).
++ * When we find a pmd_none() while unmapping a folio without holding the PTL,
++ * zap_huge_pmd() may have cleared the PMD but not yet modified the folio to
++ * indicate that it's unmapped. Skipping the PMD without synchronization could
++ * make folio unmapping code assume that unmapping failed.
 + *
 + * Wait for concurrent zapping to complete by grabbing the PTL.
 + */
@@ -58,7 +59,7 @@ index cb0af847d7d99..e0ef192b0be36 100644
  void unmap_page_range(struct mmu_gather *tlb,
  			     struct vm_area_struct *vma,
 diff --git a/mm/memory.c b/mm/memory.c
-index 2b04d24d5cd4b..c08bf34e918f8 100644
+index af26a697562bb..f78ab3869f8db 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
 @@ -1993,13 +1993,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,

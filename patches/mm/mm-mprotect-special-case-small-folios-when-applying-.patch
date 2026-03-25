@@ -1,0 +1,78 @@
+From: Pedro Falcato <pfalcato@suse.de>
+Date: Tue, 24 Mar 2026 15:43:42 +0000
+Subject: [PATCH] mm/mprotect: special-case small folios when applying write
+ permissions
+
+The common order-0 case is important enough to want its own branch, and
+avoids the hairy, large loop logic that the CPU does not seem to handle
+particularly well.
+
+While at it, encourage the compiler to inline batch PTE logic and resolve
+constant branches by adding __always_inline strategically.
+
+Link: https://lkml.kernel.org/r/20260324154342.156640-3-pfalcato@suse.de
+Signed-off-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Jiri Hladky <jhladky@redhat.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mprotect.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index a1d075ed66826..a60570872096f 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -103,7 +103,7 @@ bool can_change_pte_writable(struct vm_area_struct *vma, unsigned long addr,
+ 	return can_change_shared_pte_writable(vma, pte);
+ }
+ 
+-static int mprotect_folio_pte_batch(struct folio *folio, pte_t *ptep,
++static __always_inline int mprotect_folio_pte_batch(struct folio *folio, pte_t *ptep,
+ 				    pte_t pte, int max_nr_ptes, fpb_t flags)
+ {
+ 	/* No underlying folio, so cannot batch */
+@@ -117,9 +117,9 @@ static int mprotect_folio_pte_batch(struct folio *folio, pte_t *ptep,
+ }
+ 
+ /* Set nr_ptes number of ptes, starting from idx */
+-static void prot_commit_flush_ptes(struct vm_area_struct *vma, unsigned long addr,
+-		pte_t *ptep, pte_t oldpte, pte_t ptent, int nr_ptes,
+-		int idx, bool set_write, struct mmu_gather *tlb)
++static __always_inline void prot_commit_flush_ptes(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, pte_t oldpte, pte_t ptent,
++		int nr_ptes, int idx, bool set_write, struct mmu_gather *tlb)
+ {
+ 	/*
+ 	 * Advance the position in the batch by idx; note that if idx > 0,
+@@ -169,7 +169,7 @@ static int page_anon_exclusive_sub_batch(int start_idx, int max_len,
+  * pte of the batch. Therefore, we must individually check all pages and
+  * retrieve sub-batches.
+  */
+-static void commit_anon_folio_batch(struct vm_area_struct *vma,
++static __always_inline void commit_anon_folio_batch(struct vm_area_struct *vma,
+ 		struct folio *folio, struct page *first_page, unsigned long addr, pte_t *ptep,
+ 		pte_t oldpte, pte_t ptent, int nr_ptes, struct mmu_gather *tlb)
+ {
+@@ -177,6 +177,13 @@ static void commit_anon_folio_batch(struct vm_area_struct *vma,
+ 	int sub_batch_idx = 0;
+ 	int len;
+ 
++	/* Optimize for the common order-0 case. */
++	if (likely(nr_ptes == 1)) {
++		prot_commit_flush_ptes(vma, addr, ptep, oldpte, ptent, 1,
++				       0, PageAnonExclusive(first_page), tlb);
++		return;
++	}
++
+ 	while (nr_ptes) {
+ 		expected_anon_exclusive = PageAnonExclusive(first_page + sub_batch_idx);
+ 		len = page_anon_exclusive_sub_batch(sub_batch_idx, nr_ptes,
+-- 
+2.47.3
+
