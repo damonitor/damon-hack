@@ -1,63 +1,17 @@
-- baseline: v7.0-rc4-25-gf0caa1d49cc07 -> v7.0-rc5-46-g24f9515de8778
-- mm-hotfixes-stable: 2 -> 0 commits
+- baseline: v7.0-rc5-46-g24f9515de8778 -> v7.0-rc5-46-g24f9515de8778 (no change)
+- mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 0 commits
-  - dropped commits
-    - 26f775a054c3 "mm/damon/core: avoid use of half-online-committed context"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: : https://lkml.kernel.org/r/20260320031553.2479-1-sj@kernel.org
-      - Link: : https://sashiko.dev/#/patchset/20260319145218.86197-1-sj%40kernel.org
-      - Link: https://lkml.kernel.org/r/20260319145218.86197-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260319043309.97966-1-sj@kernel.org [1]
-    - 84481e705ab0 "mm/damon/stat: monitor all System RAM resources"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: : https://lkml.kernel.org/r/20260317053631.87907-1-sj@kernel.org
-      - Link: https://lkml.kernel.org/r/20260316235118.873-1-sj@kernel.org
 - mm-hotfixes-unstable: 3 -> 3 commits (no change)
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
-- mm-stable: 0 -> 7 commits
-  - series: 0 (0) -> 2 (5)
-    - no role, maintainer: 0 -> 2 commits
-    - maintainer, nobody: 0 -> 5 commits
-  - changed commits
-    - b8a4b0883818 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-unstable -> mm-stable
-      - Link: https://lkml.kernel.org/r/20260203095400.2465255-1-qin.yuA@h3c.com
-    - e5c1ab5cf844 "mm/damon: remove unused target param of get_scheme_score()"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-unstable -> mm-stable
-      - Link: https://lkml.kernel.org/r/20260213145032.1740407-1-gutierrez.asier@huawei-partners.com
-    - series "mm/damon/core: improve DAMOS quota efficiency for core layer filters". (2)
-      - ea4880b857a5 "mm/damon/core: set quota-score histogram with core filters (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-stable
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-2-sj@kernel.org
-      - a6ffc2bcfbbc "mm/damon/core: do non-safe region walk on kdamond_apply_schemes() (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-stable
-        - Link: https://lkml.kernel.org/r/20260227170623.95384-3-sj@kernel.org
-    - series "mm/damon: strictly respect min_nr_regions". (3)
-      - 5f33289bdf36 "mm/damon/core: split regions for min_nr_regions (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-stable
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-2-sj@kernel.org
-        - Link: https://lore.kernel.org/CAC5umyjmJE9SBqjbetZZecpY54bHpn2AvCGNv3aF6J=1cfoPXQ@mail.gmail.com [1]
-      - aef1e3ed7015 "mm/damon/vaddr: do not split regions for min_nr_regions (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-stable
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-3-sj@kernel.org
-      - 9e2d0414f72b "mm/damon/test/core-kunit: add damon_apply_min_nr_regions() test (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-stable
-        - Link: https://lkml.kernel.org/r/20260228222831.7232-4-sj@kernel.org
-- mm-unstable: 49 -> 42 commits
-  - series: 8 (43) -> 6 (38)
-    - no role, maintainer: 4 -> 2 commits
-    - maintainer, nobody: 38 -> 33 commits
+- mm-stable: 7 -> 7 commits (no change)
+  - series: 2 (5) -> 2 (5) (no change)
+    - no role, maintainer: 2 -> 2 commits (no change)
+    - maintainer, nobody: 5 -> 5 commits (no change)
+- mm-unstable: 42 -> 42 commits (no change)
+  - series: 6 (38) -> 6 (38) (no change)
+    - no role, maintainer: 2 -> 2 commits (no change)
+    - maintainer, nobody: 33 -> 33 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
 - mm-new: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
