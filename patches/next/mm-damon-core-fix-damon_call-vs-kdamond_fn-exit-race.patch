@@ -26,10 +26,10 @@ threads infinitely waits.
 
 Fix this by introducing another damon_ctx field, namely
 call_controls_obsolete.  It is protected by the
-damon_ctx->call_controls_lock, which protects damon_call() registration,
-and set just before the cancelling of remaining damon_call() is
-executed.  damon_call() shows the obsolete field under the lock and
-avoid adding a new request.
+damon_ctx->call_controls_lock, which protects damon_call() registration.
+Initialize (unset) it in kdamond_init_ctx() and set just before the
+cancelling of remaining damon_call() is executed.  damon_call() reads
+the obsolete field under the lock and avoid adding a new request.
 
 After this change, only requests that guaranteed to be handled or
 cancelled are registered.  Hence the after-registration DAMON context
@@ -44,8 +44,8 @@ Cc: <stable@vger.kernel.org> # 6.14.x
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  1 +
- mm/damon/core.c       | 38 +++++++-------------------------------
- 2 files changed, 8 insertions(+), 31 deletions(-)
+ mm/damon/core.c       | 41 ++++++++++-------------------------------
+ 2 files changed, 11 insertions(+), 31 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index d9a3babbafc16..5129de70e7b70 100644
@@ -60,7 +60,7 @@ index d9a3babbafc16..5129de70e7b70 100644
  
  	struct damos_walk_control *walk_control;
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index db6c67e52d2b8..41b18ce4b161e 100644
+index db6c67e52d2b8..a2b553e2c5a81 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1573,35 +1573,6 @@ int damon_kdamond_pid(struct damon_ctx *ctx)
@@ -114,7 +114,17 @@ index db6c67e52d2b8..41b18ce4b161e 100644
  	if (control->repeat)
  		return 0;
  	wait_for_completion(&control->completion);
-@@ -3062,6 +3035,9 @@ static int kdamond_fn(void *data)
+@@ -2939,6 +2912,9 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ 		damos_set_next_apply_sis(scheme, ctx);
+ 		damos_set_filters_default_reject(scheme);
+ 	}
++	mutex_lock(&ctx->call_controls_lock);
++	ctx->call_controls_obsolete = false;
++	mutex_unlock(&ctx->call_controls_lock);
+ }
+ 
+ /*
+@@ -3062,6 +3038,9 @@ static int kdamond_fn(void *data)
  	damon_destroy_targets(ctx);
  
  	kfree(ctx->regions_score_histogram);
