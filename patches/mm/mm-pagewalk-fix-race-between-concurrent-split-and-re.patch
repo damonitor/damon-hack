@@ -1,5 +1,5 @@
 From: Max Boone <mboone@akamai.com>
-Date: Tue, 17 Mar 2026 15:03:04 +0100
+Date: Wed, 25 Mar 2026 10:59:16 +0100
 Subject: [PATCH] mm/pagewalk: fix race between concurrent split and refault
 
 The splitting of a PUD entry in walk_pud_range() can race with a
@@ -71,16 +71,17 @@ R13: 0000000000000003 R14: 0000000000020000 R15: 0000000000020000
 Fix this by validating the PUD entry in walk_pmd_range() using a stable
 snapshot (pudp_get()).  If the PUD is not present or is a leaf, retry the
 walk via ACTION_AGAIN instead of descending further.  This mirrors the
-retry logic in walk_pmd_range().
+retry logic in walk_pte_range(), which lets walk_pmd_range() retry if the
+PTE is not being got by pte_offset_map_lock().
 
-Link: https://lkml.kernel.org/r/20260317-pagewalk-check-pmd-refault-v1-1-f699a010f2b3@akamai.com
-Fixes: a00cc7d9dd93 ("mm, x86: add support for PUD-sized transparent hugepages")
+Link: https://lkml.kernel.org/r/20260325-pagewalk-check-pmd-refault-v2-1-707bff33bc60@akamai.com
+Fixes: f9e54c3a2f5b ("vfio/pci: implement huge_fault support")
 Co-developed-by: David Hildenbrand (Arm) <david@kernel.org>
 Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
 Signed-off-by: Max Boone <mboone@akamai.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
-Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
@@ -88,11 +89,11 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/pagewalk.c | 20 +++++++++++++++++---
- 1 file changed, 17 insertions(+), 3 deletions(-)
+ mm/pagewalk.c | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
 
 diff --git a/mm/pagewalk.c b/mm/pagewalk.c
-index a94c401ab2cfe..c74b4d80018d4 100644
+index a94c401ab2cfe..4e7bcd975c540 100644
 --- a/mm/pagewalk.c
 +++ b/mm/pagewalk.c
 @@ -97,6 +97,7 @@ static int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
@@ -103,16 +104,22 @@ index a94c401ab2cfe..c74b4d80018d4 100644
  	pmd_t *pmd;
  	unsigned long next;
  	const struct mm_walk_ops *ops = walk->ops;
-@@ -105,6 +106,18 @@ static int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
+@@ -105,6 +106,24 @@ static int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
  	int err = 0;
  	int depth = real_depth(3);
  
 +	/*
 +	 * For PTE handling, pte_offset_map_lock() takes care of checking
 +	 * whether there actually is a page table. But it also has to be
-+	 * very careful about concurrent page table reclaim. If we spot a PMD
-+	 * table, it cannot go away, so we can just walk it. However, if we find
-+	 * something else, we have to retry.
++	 * very careful about concurrent page table reclaim.
++	 *
++	 * Similarly, we have to be careful here - a PUD entry that points
++	 * to a PMD table cannot go away, so we can just walk it. But if
++	 * it's something else, we need to ensure we didn't race something,
++	 * so need to retry.
++	 *
++	 * A pertinent example of this is a PUD refault after PUD split -
++	 * we will need to split again or risk accessing invalid memory.
 +	 */
 +	if (!pud_present(pudval) || pud_leaf(pudval)) {
 +		walk->action = ACTION_AGAIN;
@@ -122,7 +129,7 @@ index a94c401ab2cfe..c74b4d80018d4 100644
  	pmd = pmd_offset(pud, addr);
  	do {
  again:
-@@ -218,12 +231,13 @@ static int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
+@@ -218,12 +237,12 @@ static int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
  		else if (pud_leaf(*pud) || !pud_present(*pud))
  			continue; /* Nothing to do. */
  
@@ -135,7 +142,6 @@ index a94c401ab2cfe..c74b4d80018d4 100644
 +
 +		if (walk->action == ACTION_AGAIN)
 +			goto again;
-+
  	} while (pud++, addr = next, addr != end);
  
  	return err;

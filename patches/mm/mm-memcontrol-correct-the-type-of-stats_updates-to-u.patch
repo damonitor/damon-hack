@@ -1,0 +1,140 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Wed, 25 Mar 2026 22:13:22 +0800
+Subject: [PATCH] mm: memcontrol: correct the type of stats_updates to unsigned
+ long
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "fix unexpected type conversions and potential overflows", v2.
+
+As Harry Yoo pointed out [1], in scenarios where massive state updates
+occur (e.g., during the reparenting of LRU folios), the values passed to
+memcg stat update functions can accumulate and exceed the upper limit of a
+32-bit integer.
+
+If the parameter types are not large enough (like 'int') or are handled
+incorrectly, it can lead to severe truncation, potential overflow issues,
+and unexpected type conversion bugs.
+
+This series aims to address these issues by correcting the parameter types
+in the relevant functions, and fixing an implicit conversion bug in
+memcg_state_val_in_pages().
+
+
+This patch (of 4):
+
+memcg_rstat_updated() tracks updates for vmstats_percpu->state and
+lruvec_stats_percpu->state.  Since these state values are of type long,
+change the val parameter passed to memcg_rstat_updated() to long as well.
+
+Correspondingly, change the type of stats_updates in struct
+memcg_vmstats_percpu and struct memcg_vmstats from unsigned int and
+atomic_t to unsigned long and atomic_long_t respectively to prevent
+potential overflow when handling large state updates during the
+reparenting of LRU folios.
+
+Link: https://lkml.kernel.org/r/158fa0b1296168047342f02050e9d2bda6888d27.1774447069.git.zhengqi.arch@bytedance.com
+Link: https://lore.kernel.org/all/acDxaEgnqPI-Z4be@hyeyoo/ [1]
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Harry Yoo (Oracle) <harry@kernel.org>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index ac7b46c4d67e4..3daab9b46429a 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -608,7 +608,7 @@ static inline int memcg_events_index(enum vm_event_item idx)
+ 
+ struct memcg_vmstats_percpu {
+ 	/* Stats updates since the last flush */
+-	unsigned int			stats_updates;
++	unsigned long			stats_updates;
+ 
+ 	/* Cached pointers for fast iteration in memcg_rstat_updated() */
+ 	struct memcg_vmstats_percpu __percpu	*parent_pcpu;
+@@ -639,7 +639,7 @@ struct memcg_vmstats {
+ 	unsigned long		events_pending[NR_MEMCG_EVENTS];
+ 
+ 	/* Stats updates since the last flush */
+-	atomic_t		stats_updates;
++	atomic_long_t		stats_updates;
+ };
+ 
+ /*
+@@ -665,16 +665,16 @@ static u64 flush_last_time;
+ 
+ static bool memcg_vmstats_needs_flush(struct memcg_vmstats *vmstats)
+ {
+-	return atomic_read(&vmstats->stats_updates) >
++	return atomic_long_read(&vmstats->stats_updates) >
+ 		MEMCG_CHARGE_BATCH * num_online_cpus();
+ }
+ 
+-static inline void memcg_rstat_updated(struct mem_cgroup *memcg, int val,
++static inline void memcg_rstat_updated(struct mem_cgroup *memcg, long val,
+ 				       int cpu)
+ {
+ 	struct memcg_vmstats_percpu __percpu *statc_pcpu;
+ 	struct memcg_vmstats_percpu *statc;
+-	unsigned int stats_updates;
++	unsigned long stats_updates;
+ 
+ 	if (!val)
+ 		return;
+@@ -697,7 +697,7 @@ static inline void memcg_rstat_updated(struct mem_cgroup *memcg, int val,
+ 			continue;
+ 
+ 		stats_updates = this_cpu_xchg(statc_pcpu->stats_updates, 0);
+-		atomic_add(stats_updates, &statc->vmstats->stats_updates);
++		atomic_long_add(stats_updates, &statc->vmstats->stats_updates);
+ 	}
+ }
+ 
+@@ -705,7 +705,7 @@ static void __mem_cgroup_flush_stats(struct mem_cgroup *memcg, bool force)
+ {
+ 	bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats);
+ 
+-	trace_memcg_flush_stats(memcg, atomic_read(&memcg->vmstats->stats_updates),
++	trace_memcg_flush_stats(memcg, atomic_long_read(&memcg->vmstats->stats_updates),
+ 		force, needs_flush);
+ 
+ 	if (!force && !needs_flush)
+@@ -4446,8 +4446,8 @@ static void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
+ 	}
+ 	WRITE_ONCE(statc->stats_updates, 0);
+ 	/* We are in a per-cpu loop here, only do the atomic write once */
+-	if (atomic_read(&memcg->vmstats->stats_updates))
+-		atomic_set(&memcg->vmstats->stats_updates, 0);
++	if (atomic_long_read(&memcg->vmstats->stats_updates))
++		atomic_long_set(&memcg->vmstats->stats_updates, 0);
+ }
+ 
+ static void mem_cgroup_fork(struct task_struct *task)
+-- 
+2.47.3
+

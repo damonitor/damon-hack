@@ -1,5 +1,5 @@
 From: Nico Pache <npache@redhat.com>
-Date: Wed, 11 Mar 2026 15:13:15 -0600
+Date: Wed, 25 Mar 2026 05:40:22 -0600
 Subject: [PATCH] mm/khugepaged: unify khugepaged and madv_collapse with
  collapse_single_pmd()
 MIME-Version: 1.0
@@ -11,26 +11,36 @@ implementations that do almost the same thing.  Create collapse_single_pmd
 to increase code reuse and create an entry point to these two users.
 
 Refactor madvise_collapse and collapse_scan_mm_slot to use the new
-collapse_single_pmd function.  This introduces a minor behavioral change
-that is most likely an undiscovered bug.  The current implementation of
-khugepaged tests collapse_test_exit_or_disable before calling
-collapse_pte_mapped_thp, but we weren't doing it in the madvise_collapse
-case.  By unifying these two callers madvise_collapse now also performs
-this check.  We also modify the return value to be SCAN_ANY_PROCESS which
-properly indicates that this process is no longer valid to operate on.
+collapse_single_pmd function.  To help reduce confusion around the
+mmap_locked variable, we rename mmap_locked to lock_dropped in the
+collapse_scan_mm_slot() function, and remove the redundant mmap_locked in
+madvise_collapse(); this further unifies the code readiblity.  the
+SCAN_PTE_MAPPED_HUGEPAGE enum is no longer reachable in the
+madvise_collapse() function, so we drop it from the list of "continuing"
+enums.
+
+This introduces a minor behavioral change that is most likely an
+undiscovered bug.  The current implementation of khugepaged tests
+collapse_test_exit_or_disable() before calling collapse_pte_mapped_thp,
+but we weren't doing it in the madvise_collapse case.  By unifying these
+two callers madvise_collapse now also performs this check.  We also modify
+the return value to be SCAN_ANY_PROCESS which properly indicates that this
+process is no longer valid to operate on.
 
 By moving the madvise_collapse writeback-retry logic into the helper
 function we can also avoid having to revalidate the VMA.
 
-We also guard the khugepaged_pages_collapsed variable to ensure its only
+We guard the khugepaged_pages_collapsed variable to ensure its only
 incremented for khugepaged.
 
-Link: https://lkml.kernel.org/r/20260311211315.450947-6-npache@redhat.com
+As requested we also convert a VM_BUG_ON to a VM_WARN_ON.
+
+Link: https://lkml.kernel.org/r/20260325114022.444081-6-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
-Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
-Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
@@ -50,6 +60,7 @@ Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
 Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <lorenzo.stoakes@oracle.com>
 Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: Matthew Brost <matthew.brost@intel.com>
@@ -78,14 +89,32 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 120 +++++++++++++++++++++++++-----------------------
- 1 file changed, 63 insertions(+), 57 deletions(-)
+ mm/khugepaged.c | 142 ++++++++++++++++++++++++------------------------
+ 1 file changed, 72 insertions(+), 70 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index c99e330949631..4b0e59c7c0e6c 100644
+index c99e330949631..d21348b85a59f 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -2417,6 +2417,65 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -1250,7 +1250,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+ 
+ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 		struct vm_area_struct *vma, unsigned long start_addr,
+-		bool *mmap_locked, struct collapse_control *cc)
++		bool *lock_dropped, struct collapse_control *cc)
+ {
+ 	pmd_t *pmd;
+ 	pte_t *pte, *_pte;
+@@ -1425,7 +1425,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 		result = collapse_huge_page(mm, start_addr, referenced,
+ 					    unmapped, cc);
+ 		/* collapse_huge_page will return with the mmap_lock released */
+-		*mmap_locked = false;
++		*lock_dropped = true;
+ 	}
+ out:
+ 	trace_mm_khugepaged_scan_pmd(mm, folio, referenced,
+@@ -2417,6 +2417,67 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  	return result;
  }
  
@@ -94,7 +123,7 @@ index c99e330949631..4b0e59c7c0e6c 100644
 + * the results.
 + */
 +static enum scan_result collapse_single_pmd(unsigned long addr,
-+		struct vm_area_struct *vma, bool *mmap_locked,
++		struct vm_area_struct *vma, bool *lock_dropped,
 +		struct collapse_control *cc)
 +{
 +	struct mm_struct *mm = vma->vm_mm;
@@ -103,8 +132,10 @@ index c99e330949631..4b0e59c7c0e6c 100644
 +	struct file *file;
 +	pgoff_t pgoff;
 +
++	mmap_assert_locked(mm);
++
 +	if (vma_is_anonymous(vma)) {
-+		result = collapse_scan_pmd(mm, vma, addr, mmap_locked, cc);
++		result = collapse_scan_pmd(mm, vma, addr, lock_dropped, cc);
 +		goto end;
 +	}
 +
@@ -112,7 +143,7 @@ index c99e330949631..4b0e59c7c0e6c 100644
 +	pgoff = linear_page_index(vma, addr);
 +
 +	mmap_read_unlock(mm);
-+	*mmap_locked = false;
++	*lock_dropped = true;
 +retry:
 +	result = collapse_scan_file(mm, addr, file, pgoff, cc);
 +
@@ -151,8 +182,19 @@ index c99e330949631..4b0e59c7c0e6c 100644
  static void collapse_scan_mm_slot(unsigned int progress_max,
  		enum scan_result *result, struct collapse_control *cc)
  	__releases(&khugepaged_mm_lock)
-@@ -2487,34 +2546,9 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
- 			VM_BUG_ON(khugepaged_scan.address < hstart ||
+@@ -2478,46 +2539,21 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+ 		VM_BUG_ON(khugepaged_scan.address & ~HPAGE_PMD_MASK);
+ 
+ 		while (khugepaged_scan.address < hend) {
+-			bool mmap_locked = true;
++			bool lock_dropped = false;
+ 
+ 			cond_resched();
+ 			if (unlikely(collapse_test_exit_or_disable(mm)))
+ 				goto breakouterloop;
+ 
+-			VM_BUG_ON(khugepaged_scan.address < hstart ||
++			VM_WARN_ON_ONCE(khugepaged_scan.address < hstart ||
  				  khugepaged_scan.address + HPAGE_PMD_SIZE >
  				  hend);
 -			if (!vma_is_anonymous(vma)) {
@@ -184,24 +226,43 @@ index c99e330949631..4b0e59c7c0e6c 100644
 -				++khugepaged_pages_collapsed;
  
 +			*result = collapse_single_pmd(khugepaged_scan.address,
-+						      vma, &mmap_locked, cc);
++						      vma, &lock_dropped, cc);
  			/* move to next address */
  			khugepaged_scan.address += HPAGE_PMD_SIZE;
- 			if (!mmap_locked)
-@@ -2814,9 +2848,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+-			if (!mmap_locked)
++			if (lock_dropped)
+ 				/*
+ 				 * We released mmap_lock so break loop.  Note
+ 				 * that we drop mmap_lock before all hugepage
+@@ -2792,7 +2828,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 	unsigned long hstart, hend, addr;
+ 	enum scan_result last_fail = SCAN_FAIL;
+ 	int thps = 0;
+-	bool mmap_locked = true;
+ 
+ 	BUG_ON(vma->vm_start > start);
+ 	BUG_ON(vma->vm_end < end);
+@@ -2814,13 +2849,11 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  
  	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
  		enum scan_result result = SCAN_FAIL;
 -		bool triggered_wb = false;
  
 -retry:
- 		if (!mmap_locked) {
+-		if (!mmap_locked) {
++		if (*lock_dropped) {
  			cond_resched();
  			mmap_read_lock(mm);
-@@ -2831,46 +2863,20 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+-			mmap_locked = true;
++			*lock_dropped = false;
+ 			result = hugepage_vma_revalidate(mm, addr, false, &vma,
+ 							 cc);
+ 			if (result  != SCAN_SUCCEED) {
+@@ -2830,45 +2863,14 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 
  			hend = min(hend, vma->vm_end & HPAGE_PMD_MASK);
  		}
- 		mmap_assert_locked(mm);
+-		mmap_assert_locked(mm);
 -		if (!vma_is_anonymous(vma)) {
 -			struct file *file = get_file(vma->vm_file);
 -			pgoff_t pgoff = linear_page_index(vma, addr);
@@ -215,8 +276,7 @@ index c99e330949631..4b0e59c7c0e6c 100644
 -			    mapping_can_writeback(file->f_mapping)) {
 -				loff_t lstart = (loff_t)pgoff << PAGE_SHIFT;
 -				loff_t lend = lstart + HPAGE_PMD_SIZE - 1;
-+		result = collapse_single_pmd(addr, vma, &mmap_locked, cc);
- 
+-
 -				filemap_write_and_wait_range(file->f_mapping, lstart, lend);
 -				triggered_wb = true;
 -				fput(file);
@@ -226,8 +286,9 @@ index c99e330949631..4b0e59c7c0e6c 100644
 -		} else {
 -			result = collapse_scan_pmd(mm, vma, addr, &mmap_locked, cc);
 -		}
- 		if (!mmap_locked)
- 			*lock_dropped = true;
+-		if (!mmap_locked)
+-			*lock_dropped = true;
++		result = collapse_single_pmd(addr, vma, lock_dropped, cc);
  
 -handle_result:
  		switch (result) {
@@ -243,10 +304,16 @@ index c99e330949631..4b0e59c7c0e6c 100644
 -			goto handle_result;
  		/* Whitelisted set of results where continuing OK */
  		case SCAN_NO_PTE_TABLE:
-+		case SCAN_PTE_MAPPED_HUGEPAGE:
  		case SCAN_PTE_NON_PRESENT:
- 		case SCAN_PTE_UFFD_WP:
- 		case SCAN_LACK_REFERENCED_PAGE:
+@@ -2891,7 +2893,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 
+ out_maybelock:
+ 	/* Caller expects us to hold mmap_lock on return */
+-	if (!mmap_locked)
++	if (*lock_dropped)
+ 		mmap_read_lock(mm);
+ out_nolock:
+ 	mmap_assert_locked(mm);
 -- 
 2.47.3
 

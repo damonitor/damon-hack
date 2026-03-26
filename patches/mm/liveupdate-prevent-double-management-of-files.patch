@@ -1,8 +1,8 @@
 From: Pasha Tatashin <pasha.tatashin@soleen.com>
-Date: Mon, 23 Mar 2026 20:31:44 +0000
+Date: Wed, 25 Mar 2026 18:20:25 +0000
 Subject: [PATCH] liveupdate: prevent double management of files
 
-Patch series "liveupdate: prevent double preservation", v2.
+Patch series "liveupdate: prevent double preservation", v3.
 
 Currently, LUO does not prevent the same file from being preserved twice
 across different active sessions.
@@ -14,36 +14,38 @@ same file is not preserved twice beside using inode or some slower and
 expensive method like hashtables.
 
 
+This patch (of 2):
 
 Currently, LUO does not prevent the same file from being managed twice
 across different active sessions.
 
-Use a global xarray `luo_preserved_files_xa` to keep track of file
-pointers being preserved by LUO.  Update luo_preserve_file() to check and
-insert the file pointer into this xarray when it is preserved, and erase
-it in luo_file_unpreserve_files() when it is released.
+Use a global xarray luo_preserved_files to keep track of file pointers
+being preserved by LUO.  Update luo_preserve_file() to check and insert
+the file pointer into this xarray when it is preserved, and erase it in
+luo_file_unpreserve_files() when it is released.
 
 This ensures that the same file (struct file) cannot be managed by
 multiple sessions.  If another session attempts to preserve an already
 managed file, it will now fail with -EBUSY.
 
-Link: https://lkml.kernel.org/r/20260323203145.148057-1-pasha.tatashin@soleen.com
-Link: https://lkml.kernel.org/r/20260323203145.148057-2-pasha.tatashin@soleen.com
+Link: https://lkml.kernel.org/r/20260325182026.467307-1-pasha.tatashin@soleen.com
+Link: https://lkml.kernel.org/r/20260325182026.467307-2-pasha.tatashin@soleen.com
 Link: https://lore.kernel.org/all/20260129212510.967611-1-dmatlack@google.com [1]
 Link: https://lore.kernel.org/all/20260203220948.2176157-1-skhawaja@google.com [2]
 Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Acked-by: Pratyush Yadav (Google) <pratyush@kernel.org>
 Reviewed-by: Samiullah Khawaja <skhawaja@google.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: David Matlack <dmatlack@google.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Samiullah Khawaja <skhawaja@google.com>
 Cc: Shuah Khan <shuah@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- kernel/liveupdate/luo_file.c | 17 +++++++++++++++--
- 1 file changed, 15 insertions(+), 2 deletions(-)
+ kernel/liveupdate/luo_file.c | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
 
 diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
-index a38ea49758249..5f48c3c8c561c 100644
+index a38ea49758249..d1bb4213fd148 100644
 --- a/kernel/liveupdate/luo_file.c
 +++ b/kernel/liveupdate/luo_file.c
 @@ -110,11 +110,15 @@
@@ -57,7 +59,7 @@ index a38ea49758249..5f48c3c8c561c 100644
  static LIST_HEAD(luo_file_handler_list);
  
 +/* Keep track of files being preserved by LUO */
-+static DEFINE_XARRAY(luo_preserved_files_xa);
++static DEFINE_XARRAY(luo_preserved_files);
 +
  /* 2 4K pages, give space for 128 files per file_set */
  #define LUO_FILE_PGCNT		2ul
@@ -74,7 +76,7 @@ index a38ea49758249..5f48c3c8c561c 100644
  	if (err)
  		goto  err_fput;
  
-+	err = xa_insert(&luo_preserved_files_xa, (unsigned long)file,
++	err = xa_insert(&luo_preserved_files, (unsigned long)file,
 +			file, GFP_KERNEL);
 +	if (err)
 +		goto err_free_files_mem;
@@ -101,7 +103,7 @@ index a38ea49758249..5f48c3c8c561c 100644
  err_flb_unpreserve:
  	luo_flb_file_unpreserve(fh);
 +err_erase_xa:
-+	xa_erase(&luo_preserved_files_xa, (unsigned long)file);
++	xa_erase(&luo_preserved_files, (unsigned long)file);
  err_free_files_mem:
  	luo_free_files_mem(file_set);
  err_fput:
@@ -109,10 +111,34 @@ index a38ea49758249..5f48c3c8c561c 100644
  		luo_file->fh->ops->unpreserve(&args);
  		luo_flb_file_unpreserve(luo_file->fh);
  
-+		xa_erase(&luo_preserved_files_xa, (unsigned long)luo_file->file);
++		xa_erase(&luo_preserved_files, (unsigned long)luo_file->file);
  		list_del(&luo_file->list);
  		file_set->count--;
  
+@@ -609,6 +622,10 @@ int luo_retrieve_file(struct luo_file_set *file_set, u64 token,
+ 	luo_file->file = args.file;
+ 	/* Get reference so we can keep this file in LUO until finish */
+ 	get_file(luo_file->file);
++
++	WARN_ON(xa_insert(&luo_preserved_files, (unsigned long)luo_file->file,
++			  luo_file->file, GFP_KERNEL));
++
+ 	*filep = luo_file->file;
+ 	luo_file->retrieve_status = 1;
+ 
+@@ -704,8 +721,11 @@ int luo_file_finish(struct luo_file_set *file_set)
+ 
+ 		luo_file_finish_one(file_set, luo_file);
+ 
+-		if (luo_file->file)
++		if (luo_file->file) {
++			xa_erase(&luo_preserved_files,
++				 (unsigned long)luo_file->file);
+ 			fput(luo_file->file);
++		}
+ 		list_del(&luo_file->list);
+ 		file_set->count--;
+ 		mutex_destroy(&luo_file->mutex);
 -- 
 2.47.3
 

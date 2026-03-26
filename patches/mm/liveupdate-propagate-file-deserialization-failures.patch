@@ -1,0 +1,65 @@
+From: Leo Timmins <leotimmins1974@gmail.com>
+Date: Wed, 25 Mar 2026 12:46:07 +0800
+Subject: [PATCH] liveupdate: propagate file deserialization failures
+
+Patch series "liveupdate: fix incoming error handling and teardown paths",
+v2.
+
+This series fixes two issues in LUO's incoming-side error handling and
+teardown paths.
+
+The first patch makes session deserialization fail when file
+deserialization fails, instead of silently continuing with a partially
+restored session.
+
+The second patch initializes incoming FLB state before the finish
+pathdecrements its refcount, so the last-user cleanup path does not run
+from an uninitialized count.  (and now utilises pr_warn instead of
+WARN_ON).
+
+
+This patch (of 2):
+
+luo_session_deserialize() ignored the return value from
+luo_file_deserialize().  As a result, a session could be left partially
+restored even though the /dev/liveupdate open path treats deserialization
+failures as fatal.
+
+Propagate the error so a failed file deserialization aborts session
+deserialization instead of silently continuing.
+
+Link: https://lkml.kernel.org/r/20260325044608.8407-1-leotimmins1974@gmail.com
+Link: https://lkml.kernel.org/r/20260325044608.8407-2-leotimmins1974@gmail.com
+Fixes: 16cec0d26521 ("liveupdate: luo_session: add ioctls for file preservation")
+Signed-off-by: Leo Timmins <leotimmins1974@gmail.com>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/luo_session.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/liveupdate/luo_session.c b/kernel/liveupdate/luo_session.c
+index 7836772956406..25ae704d77873 100644
+--- a/kernel/liveupdate/luo_session.c
++++ b/kernel/liveupdate/luo_session.c
+@@ -558,8 +558,13 @@ int luo_session_deserialize(void)
+ 		}
+ 
+ 		scoped_guard(mutex, &session->mutex) {
+-			luo_file_deserialize(&session->file_set,
+-					     &sh->ser[i].file_set_ser);
++			err = luo_file_deserialize(&session->file_set,
++						   &sh->ser[i].file_set_ser);
++		}
++		if (err) {
++			pr_warn("Failed to deserialize files for session [%s] %pe\n",
++				session->name, ERR_PTR(err));
++			return err;
+ 		}
+ 	}
+ 
+-- 
+2.47.3
+
