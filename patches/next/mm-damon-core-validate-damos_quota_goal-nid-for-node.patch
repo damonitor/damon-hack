@@ -1,17 +1,24 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Thu, 26 Mar 2026 21:41:27 -0700
-Subject: [PATCH] mm/damon/core: validate goal->nid for node_mem_{used,free}_bp
+Subject: [PATCH] mm/damon/core: validate damos_quota_goal->nid for
+ node_mem_{used,free}_bp
 
-Otherwise, out of bounds memory access could happen.
+Users can set damos_quota_goal->nid with arbitrary value for
+node_mem_{used,free}_bp.  But DAMON core is using those for
+si_meminfo_node() without the validation of the value.  This can result
+in out of bounds memory access.  The issue can actually triggered from
+privileged user, like below.
 
-Repro:
+    $ sudo ./damo start --damos_action stat \
+    	--damos_quota_goal node_mem_used_bp 50% -1 \
+    	--damos_quota_interval 1s
+    $ sudo dmesg
+    [...]
+    [   65.565986] Unable to handle kernel NULL pointer dereference at virtual address 0000000000000098
 
-$ sudo ./damo start --damos_action stat \
-	--damos_quota_goal node_mem_used_bp 50% -1 \
-	--damos_quota_interval 1s
-$ sudo dmesg
-[...]
-[   65.565986] Unable to handle kernel NULL pointer dereference at virtual address 0000000000000098
+Fix this issue by adding the validation of the given node.  If an
+invalid node id is given, it returns 0% for used memory ratio, and 100%
+for free memory ratio.
 
 Fixes: 0e1c773b501f ("mm/damon/core: introduce damos quota goal metrics for memory node utilization")
 Cc: <stable@vger.kernel.org> # 6.16.x
