@@ -10,6 +10,8 @@ is retried with locks dropped.
 Move the code that establishes a PMD into a helper function so it can be
 reused later during refactoring of mfill_atomic_pte_copy().
 
+[rppt@kernel.org: s/mfill_get_pmd/mfill_establish_pmd/, update ex-THP test]
+  Link: https://lkml.kernel.org/r/acQ3EPSwizyClHKc@kernel.org
 Link: https://lkml.kernel.org/r/20260306171815.3160826-4-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
@@ -33,14 +35,14 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/userfaultfd.c | 103 ++++++++++++++++++++++++-----------------------
- 1 file changed, 53 insertions(+), 50 deletions(-)
+ mm/userfaultfd.c | 102 ++++++++++++++++++++++++-----------------------
+ 1 file changed, 52 insertions(+), 50 deletions(-)
 
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index f2e2f67348fc6..a2e146abf2d3e 100644
+index 6105176a5cc8..236a8326f5c8 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
-@@ -157,6 +157,57 @@ static void uffd_mfill_unlock(struct vm_area_struct *vma)
+@@ -157,6 +157,56 @@ static void uffd_mfill_unlock(struct vm_area_struct *vma)
  }
  #endif
  
@@ -65,11 +67,10 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
 +	return pmd_alloc(mm, pud, address);
 +}
 +
-+static int mfill_get_pmd(struct mfill_state *state)
++static int mfill_establish_pmd(struct mfill_state *state)
 +{
 +	struct mm_struct *dst_mm = state->ctx->mm;
-+	pmd_t *dst_pmd;
-+	pmd_t dst_pmdval;
++	pmd_t *dst_pmd, dst_pmdval;
 +
 +	dst_pmd = mm_alloc_pmd(dst_mm, state->dst_addr);
 +	if (unlikely(!dst_pmd))
@@ -86,7 +87,7 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
 +	 * (This includes the case where the PMD used to be THP and
 +	 * changed back to none after __pte_alloc().)
 +	 */
-+	if (unlikely(!pmd_present(dst_pmdval) || pmd_trans_huge(dst_pmdval)))
++	if (unlikely(!pmd_present(dst_pmdval) || pmd_leaf(dst_pmdval)))
 +		return -EEXIST;
 +	if (unlikely(pmd_bad(dst_pmdval)))
 +		return -EFAULT;
@@ -98,7 +99,7 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
  /* Check if dst_addr is outside of file's size. Must be called with ptl held. */
  static bool mfill_file_over_size(struct vm_area_struct *dst_vma,
  				 unsigned long dst_addr)
-@@ -489,27 +540,6 @@ static int mfill_atomic_pte_poison(struct mfill_state *state)
+@@ -489,27 +539,6 @@ static int mfill_atomic_pte_poison(struct mfill_state *state)
  	return ret;
  }
  
@@ -126,7 +127,7 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
  #ifdef CONFIG_HUGETLB_PAGE
  /*
   * mfill_atomic processing for HUGETLB vmas.  Note that this routine is
-@@ -742,7 +772,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -742,7 +771,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  	struct vm_area_struct *dst_vma;
  	long copied = 0;
  	ssize_t err;
@@ -134,7 +135,7 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
  
  	/*
  	 * Sanitize the command parameters:
-@@ -809,41 +838,15 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -809,41 +837,15 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  	while (state.src_addr < src_start + len) {
  		VM_WARN_ON_ONCE(state.dst_addr >= dst_start + len);
  
@@ -143,7 +144,7 @@ index f2e2f67348fc6..a2e146abf2d3e 100644
 -		dst_pmd = mm_alloc_pmd(dst_mm, state.dst_addr);
 -		if (unlikely(!dst_pmd)) {
 -			err = -ENOMEM;
-+		err = mfill_get_pmd(&state);
++		err = mfill_establish_pmd(&state);
 +		if (err)
  			break;
 -		}

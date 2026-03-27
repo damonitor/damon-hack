@@ -1,14 +1,14 @@
 From: "David Hildenbrand (Arm)" <david@kernel.org>
-Date: Tue, 17 Mar 2026 17:56:52 +0100
+Date: Fri, 20 Mar 2026 23:13:47 +0100
 Subject: [PATCH] mm/sparse: move memory hotplug bits to sparse-vmemmap.c
 
 Let's move all memory hoptplug related code to sparse-vmemmap.c.
 
-We only have to expose sparse_index_init(). While at it, drop the
+We only have to expose sparse_index_init().  While at it, drop the
 definition of sparse_index_init() for !CONFIG_SPARSEMEM, which is unused,
 and place the declaration in internal.h.
 
-Link: https://lkml.kernel.org/r/20260317165652.99114-15-david@kernel.org
+Link: https://lkml.kernel.org/r/20260320-sparsemem_cleanups-v2-15-096addc8800d@kernel.org
 Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
 Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
@@ -16,6 +16,7 @@ Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Sidhartha Kumar <sidhartha.kumar@oracle.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
@@ -24,15 +25,15 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/mmzone.h |   1 -
  mm/internal.h          |   4 +
- mm/sparse-vmemmap.c    | 308 ++++++++++++++++++++++++++++++++++++++++
- mm/sparse.c            | 314 +----------------------------------------
- 4 files changed, 314 insertions(+), 313 deletions(-)
+ mm/sparse-vmemmap.c    | 304 ++++++++++++++++++++++++++++++++++++++++
+ mm/sparse.c            | 310 +----------------------------------------
+ 4 files changed, 310 insertions(+), 309 deletions(-)
 
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
-index db181849f7dec..20f920dede656 100644
+index ed335567d64e..4a20df132258 100644
 --- a/include/linux/mmzone.h
 +++ b/include/linux/mmzone.h
-@@ -2387,7 +2387,6 @@ static inline unsigned long next_present_section_nr(unsigned long section_nr)
+@@ -2370,7 +2370,6 @@ static inline unsigned long next_present_section_nr(unsigned long section_nr)
  #endif
  
  #else
@@ -41,7 +42,7 @@ index db181849f7dec..20f920dede656 100644
  #define sparse_vmemmap_init_nid_late(_nid) do {} while (0)
  #define pfn_in_present_section pfn_valid
 diff --git a/mm/internal.h b/mm/internal.h
-index c985366d9a701..8003e50142f80 100644
+index dec801b05ffd..45772e60f10e 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -965,6 +965,7 @@ void memmap_init_range(unsigned long, int, unsigned long, unsigned long,
@@ -63,10 +64,10 @@ index c985366d9a701..8003e50142f80 100644
  void sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages);
  #else
 diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
-index 842ed2f0bce66..cb11c502c6635 100644
+index 842ed2f0bce6..24a37676cecb 100644
 --- a/mm/sparse-vmemmap.c
 +++ b/mm/sparse-vmemmap.c
-@@ -591,3 +591,311 @@ void __init sparse_vmemmap_init_nid_late(int nid)
+@@ -591,3 +591,307 @@ void __init sparse_vmemmap_init_nid_late(int nid)
  	hugetlb_vmemmap_init_late(nid);
  }
  #endif
@@ -204,11 +205,9 @@ index 842ed2f0bce66..cb11c502c6635 100644
 +}
 +
 +/*
-+ * To deactivate a memory region, there are 3 cases to handle across
-+ * two configurations (SPARSEMEM_VMEMMAP={y,n}):
++ * To deactivate a memory region, there are 3 cases to handle:
 + *
-+ * 1. deactivation of a partial hot-added section (only possible in
-+ *    the SPARSEMEM_VMEMMAP=y case).
++ * 1. deactivation of a partial hot-added section:
 + *      a) section was present at memory init.
 + *      b) section was hot-added post memory init.
 + * 2. deactivation of a complete hot-added section.
@@ -216,8 +215,6 @@ index 842ed2f0bce66..cb11c502c6635 100644
 + *
 + * For 1, when subsection_map does not empty we will not be freeing the
 + * usage map, but still need to free the vmemmap range.
-+ *
-+ * For 2 and 3, the SPARSEMEM_VMEMMAP={y,n} cases are unified
 + */
 +static void section_deactivate(unsigned long pfn, unsigned long nr_pages,
 +		struct vmem_altmap *altmap)
@@ -379,7 +376,7 @@ index 842ed2f0bce66..cb11c502c6635 100644
 +}
 +#endif /* CONFIG_MEMORY_HOTPLUG */
 diff --git a/mm/sparse.c b/mm/sparse.c
-index bf620f3fe05dd..007fd52c621e8 100644
+index ecd4c41c0ff0..007fd52c621e 100644
 --- a/mm/sparse.c
 +++ b/mm/sparse.c
 @@ -79,7 +79,7 @@ static noinline struct mem_section __ref *sparse_index_alloc(int nid)
@@ -441,7 +438,7 @@ index bf620f3fe05dd..007fd52c621e8 100644
  /* Record a memory area against a node. */
  static void __init memory_present(int nid, unsigned long start, unsigned long end)
  {
-@@ -482,279 +448,3 @@ void __init sparse_init(void)
+@@ -482,275 +448,3 @@ void __init sparse_init(void)
  	sparse_init_nid(nid_begin, pnum_begin, pnum_end, map_count);
  	vmemmap_populate_print_last();
  }
@@ -547,11 +544,9 @@ index bf620f3fe05dd..007fd52c621e8 100644
 -}
 -
 -/*
-- * To deactivate a memory region, there are 3 cases to handle across
-- * two configurations (SPARSEMEM_VMEMMAP={y,n}):
+- * To deactivate a memory region, there are 3 cases to handle:
 - *
-- * 1. deactivation of a partial hot-added section (only possible in
-- *    the SPARSEMEM_VMEMMAP=y case).
+- * 1. deactivation of a partial hot-added section:
 - *      a) section was present at memory init.
 - *      b) section was hot-added post memory init.
 - * 2. deactivation of a complete hot-added section.
@@ -559,8 +554,6 @@ index bf620f3fe05dd..007fd52c621e8 100644
 - *
 - * For 1, when subsection_map does not empty we will not be freeing the
 - * usage map, but still need to free the vmemmap range.
-- *
-- * For 2 and 3, the SPARSEMEM_VMEMMAP={y,n} cases are unified
 - */
 -static void section_deactivate(unsigned long pfn, unsigned long nr_pages,
 -		struct vmem_altmap *altmap)

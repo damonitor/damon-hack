@@ -1,10 +1,10 @@
 From: Pasha Tatashin <pasha.tatashin@soleen.com>
-Date: Wed, 25 Mar 2026 18:20:25 +0000
+Date: Thu, 26 Mar 2026 16:39:41 +0000
 Subject: [PATCH] liveupdate: prevent double management of files
 
-Patch series "liveupdate: prevent double preservation", v3.
+Patch series "liveupdate: prevent double preservation", v4.
 
-Currently, LUO does not prevent the same file from being preserved twice
+Currently, LUO does not prevent the same file from being managed twice
 across different active sessions.
 
 Because LUO preserves files of absolutely different types: memfd, and
@@ -14,48 +14,74 @@ same file is not preserved twice beside using inode or some slower and
 expensive method like hashtables.
 
 
-This patch (of 2):
+This patch (of 4)
 
 Currently, LUO does not prevent the same file from being managed twice
 across different active sessions.
 
-Use a global xarray luo_preserved_files to keep track of file pointers
+Use a global xarray luo_preserved_files to keep track of file identifiers
 being preserved by LUO.  Update luo_preserve_file() to check and insert
-the file pointer into this xarray when it is preserved, and erase it in
+the file identifier into this xarray when it is preserved, and erase it in
 luo_file_unpreserve_files() when it is released.
 
-This ensures that the same file (struct file) cannot be managed by
+To allow handlers to define what constitutes a "unique" file (e.g.,
+different struct file objects pointing to the same hardware resource), add
+a get_id() callback to struct liveupdate_file_ops.  If not provided, the
+default identifier is the struct file pointer itself.
+
+This ensures that the same file (or resource) cannot be managed by
 multiple sessions.  If another session attempts to preserve an already
 managed file, it will now fail with -EBUSY.
 
-Link: https://lkml.kernel.org/r/20260325182026.467307-1-pasha.tatashin@soleen.com
-Link: https://lkml.kernel.org/r/20260325182026.467307-2-pasha.tatashin@soleen.com
+Link: https://lkml.kernel.org/r/20260326163943.574070-1-pasha.tatashin@soleen.com
+Link: https://lkml.kernel.org/r/20260326163943.574070-2-pasha.tatashin@soleen.com
 Link: https://lore.kernel.org/all/20260129212510.967611-1-dmatlack@google.com [1]
 Link: https://lore.kernel.org/all/20260203220948.2176157-1-skhawaja@google.com [2]
 Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
-Acked-by: Pratyush Yadav (Google) <pratyush@kernel.org>
 Reviewed-by: Samiullah Khawaja <skhawaja@google.com>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: David Matlack <dmatlack@google.com>
-Cc: Samiullah Khawaja <skhawaja@google.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
 Cc: Shuah Khan <shuah@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- kernel/liveupdate/luo_file.c | 26 +++++++++++++++++++++++---
- 1 file changed, 23 insertions(+), 3 deletions(-)
+ include/linux/liveupdate.h   |  2 ++
+ kernel/liveupdate/luo_file.c | 32 ++++++++++++++++++++++++++++++--
+ 2 files changed, 32 insertions(+), 2 deletions(-)
 
+diff --git a/include/linux/liveupdate.h b/include/linux/liveupdate.h
+index dd11fdc76a5f..61325ad26526 100644
+--- a/include/linux/liveupdate.h
++++ b/include/linux/liveupdate.h
+@@ -63,6 +63,7 @@ struct liveupdate_file_op_args {
+  *                finish, in order to do successful finish calls for all
+  *                resources in the session.
+  * @finish:       Required. Final cleanup in the new kernel.
++ * @get_id:       Optional. Returns a unique identifier for the file.
+  * @owner:        Module reference
+  *
+  * All operations (except can_preserve) receive a pointer to a
+@@ -78,6 +79,7 @@ struct liveupdate_file_ops {
+ 	int (*retrieve)(struct liveupdate_file_op_args *args);
+ 	bool (*can_finish)(struct liveupdate_file_op_args *args);
+ 	void (*finish)(struct liveupdate_file_op_args *args);
++	unsigned long (*get_id)(struct file *file);
+ 	struct module *owner;
+ };
+ 
 diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
-index a38ea49758249..d1bb4213fd148 100644
+index 5acee4174bf0..09103cf81107 100644
 --- a/kernel/liveupdate/luo_file.c
 +++ b/kernel/liveupdate/luo_file.c
-@@ -110,11 +110,15 @@
+@@ -108,12 +108,16 @@
+ #include <linux/liveupdate.h>
+ #include <linux/module.h>
  #include <linux/sizes.h>
++#include <linux/xarray.h>
  #include <linux/slab.h>
  #include <linux/string.h>
-+#include <linux/xarray.h>
  #include "luo_internal.h"
  
- static DECLARE_RWSEM(luo_file_handler_lock);
  static LIST_HEAD(luo_file_handler_list);
  
 +/* Keep track of files being preserved by LUO */
@@ -64,7 +90,20 @@ index a38ea49758249..d1bb4213fd148 100644
  /* 2 4K pages, give space for 128 files per file_set */
  #define LUO_FILE_PGCNT		2ul
  #define LUO_FILE_MAX							\
-@@ -249,6 +253,7 @@ static bool luo_token_is_used(struct luo_file_set *file_set, u64 token)
+@@ -203,6 +207,12 @@ static void luo_free_files_mem(struct luo_file_set *file_set)
+ 	file_set->files = NULL;
+ }
+ 
++static unsigned long luo_get_id(struct liveupdate_file_handler *fh,
++				struct file *file)
++{
++	return fh->ops->get_id ? fh->ops->get_id(file) : (unsigned long)file;
++}
++
+ static bool luo_token_is_used(struct luo_file_set *file_set, u64 token)
+ {
+ 	struct luo_file *iter;
+@@ -248,6 +258,7 @@ static bool luo_token_is_used(struct luo_file_set *file_set, u64 token)
   * Context: Can be called from an ioctl handler during normal system operation.
   * Return: 0 on success. Returns a negative errno on failure:
   *         -EEXIST if the token is already used.
@@ -72,68 +111,61 @@ index a38ea49758249..d1bb4213fd148 100644
   *         -EBADF if the file descriptor is invalid.
   *         -ENOSPC if the file_set is full.
   *         -ENOENT if no compatible handler is found.
-@@ -277,6 +282,11 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
+@@ -288,10 +299,15 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
  	if (err)
- 		goto  err_fput;
+ 		goto err_free_files_mem;
  
-+	err = xa_insert(&luo_preserved_files, (unsigned long)file,
+-	err = luo_flb_file_preserve(fh);
++	err = xa_insert(&luo_preserved_files, luo_get_id(fh, file),
 +			file, GFP_KERNEL);
+ 	if (err)
+ 		goto err_free_files_mem;
+ 
++	err = luo_flb_file_preserve(fh);
 +	if (err)
-+		goto err_free_files_mem;
++		goto err_erase_xa;
 +
- 	err = -ENOENT;
- 	scoped_guard(rwsem_read, &luo_file_handler_lock) {
- 		list_private_for_each_entry(fh, &luo_file_handler_list, list) {
-@@ -289,11 +299,11 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
- 
- 	/* err is still -ENOENT if no handler was found */
- 	if (err)
--		goto err_free_files_mem;
-+		goto err_erase_xa;
- 
- 	err = luo_flb_file_preserve(fh);
- 	if (err)
--		goto err_free_files_mem;
-+		goto err_erase_xa;
- 
  	luo_file = kzalloc_obj(*luo_file);
  	if (!luo_file) {
-@@ -323,6 +333,8 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
+ 		err = -ENOMEM;
+@@ -320,6 +336,8 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
  	kfree(luo_file);
  err_flb_unpreserve:
  	luo_flb_file_unpreserve(fh);
 +err_erase_xa:
-+	xa_erase(&luo_preserved_files, (unsigned long)file);
++	xa_erase(&luo_preserved_files, luo_get_id(fh, file));
  err_free_files_mem:
  	luo_free_files_mem(file_set);
  err_fput:
-@@ -366,6 +378,7 @@ void luo_file_unpreserve_files(struct luo_file_set *file_set)
+@@ -363,6 +381,8 @@ void luo_file_unpreserve_files(struct luo_file_set *file_set)
  		luo_file->fh->ops->unpreserve(&args);
  		luo_flb_file_unpreserve(luo_file->fh);
  
-+		xa_erase(&luo_preserved_files, (unsigned long)luo_file->file);
++		xa_erase(&luo_preserved_files,
++			 luo_get_id(luo_file->fh, luo_file->file));
  		list_del(&luo_file->list);
  		file_set->count--;
  
-@@ -609,6 +622,10 @@ int luo_retrieve_file(struct luo_file_set *file_set, u64 token,
+@@ -606,6 +626,11 @@ int luo_retrieve_file(struct luo_file_set *file_set, u64 token,
  	luo_file->file = args.file;
  	/* Get reference so we can keep this file in LUO until finish */
  	get_file(luo_file->file);
 +
-+	WARN_ON(xa_insert(&luo_preserved_files, (unsigned long)luo_file->file,
++	WARN_ON(xa_insert(&luo_preserved_files,
++			  luo_get_id(luo_file->fh, luo_file->file),
 +			  luo_file->file, GFP_KERNEL));
 +
  	*filep = luo_file->file;
  	luo_file->retrieve_status = 1;
  
-@@ -704,8 +721,11 @@ int luo_file_finish(struct luo_file_set *file_set)
+@@ -701,8 +726,11 @@ int luo_file_finish(struct luo_file_set *file_set)
  
  		luo_file_finish_one(file_set, luo_file);
  
 -		if (luo_file->file)
 +		if (luo_file->file) {
 +			xa_erase(&luo_preserved_files,
-+				 (unsigned long)luo_file->file);
++				 luo_get_id(luo_file->fh, luo_file->file));
  			fput(luo_file->file);
 +		}
  		list_del(&luo_file->list);
