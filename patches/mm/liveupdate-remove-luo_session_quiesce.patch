@@ -1,0 +1,298 @@
+From: Pasha Tatashin <pasha.tatashin@soleen.com>
+Date: Fri, 27 Mar 2026 03:33:30 +0000
+Subject: [PATCH] liveupdate: remove luo_session_quiesce()
+
+Now that FLB module references are handled dynamically during active
+sessions, we can safely remove the luo_session_quiesce() and
+luo_session_resume() mechanism.
+
+Link: https://lkml.kernel.org/r/20260327033335.696621-7-pasha.tatashin@soleen.com
+Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: David Matlack <dmatlack@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Samiullah Khawaja <skhawaja@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/luo_file.c     | 21 +-----------
+ kernel/liveupdate/luo_flb.c      | 59 ++++++--------------------------
+ kernel/liveupdate/luo_internal.h |  2 --
+ kernel/liveupdate/luo_session.c  | 43 -----------------------
+ 4 files changed, 11 insertions(+), 114 deletions(-)
+
+diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
+index 91edbf4e44ac..97342b8b8b69 100644
+--- a/kernel/liveupdate/luo_file.c
++++ b/kernel/liveupdate/luo_file.c
+@@ -875,14 +875,6 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+ 		return -EINVAL;
+ 	}
+ 
+-	/*
+-	 * Ensure the system is quiescent (no active sessions).
+-	 * This prevents registering new handlers while sessions are active or
+-	 * while deserialization is in progress.
+-	 */
+-	if (!luo_session_quiesce())
+-		return -EBUSY;
+-
+ 	down_write(&luo_register_rwlock);
+ 	/* Check for duplicate compatible strings */
+ 	list_private_for_each_entry(fh_iter, &luo_file_handler_list, list) {
+@@ -905,15 +897,12 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+ 	list_add_tail(&ACCESS_PRIVATE(fh, list), &luo_file_handler_list);
+ 	up_write(&luo_register_rwlock);
+ 
+-	luo_session_resume();
+-
+ 	liveupdate_test_register(fh);
+ 
+ 	return 0;
+ 
+ err_unlock:
+ 	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+ 	return err;
+ }
+ 
+@@ -925,14 +914,12 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+  * reverses the operations of liveupdate_register_file_handler().
+  *
+  * It ensures safe removal by checking that:
+- * No live update session is currently in progress.
+  * No FLB registered with this file handler.
+  *
+  * If the unregistration fails, the internal test state is reverted.
+  *
+  * Return: 0 Success. -EOPNOTSUPP when live update is not enabled. -EBUSY A live
+- * update is in progress, can't quiesce live update or FLB is registred with
+- * this file handler.
++ * update is in progress, FLB is registred with this file handler.
+  */
+ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ {
+@@ -943,9 +930,6 @@ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ 
+ 	liveupdate_test_unregister(fh);
+ 
+-	if (!luo_session_quiesce())
+-		goto err_register;
+-
+ 	down_write(&luo_register_rwlock);
+ 	if (!list_empty(&ACCESS_PRIVATE(fh, flb_list)))
+ 		goto err_unlock;
+@@ -954,14 +938,11 @@ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ 	up_write(&luo_register_rwlock);
+ 
+ 	module_put(fh->ops->owner);
+-	luo_session_resume();
+ 
+ 	return 0;
+ 
+ err_unlock:
+ 	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+-err_register:
+ 	liveupdate_test_register(fh);
+ 	return err;
+ }
+diff --git a/kernel/liveupdate/luo_flb.c b/kernel/liveupdate/luo_flb.c
+index 9daa09767b80..d5f9b8a7dbc8 100644
+--- a/kernel/liveupdate/luo_flb.c
++++ b/kernel/liveupdate/luo_flb.c
+@@ -364,7 +364,6 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 	struct luo_flb_link *link __free(kfree) = NULL;
+ 	struct liveupdate_flb *gflb;
+ 	struct luo_flb_link *iter;
+-	int err;
+ 
+ 	if (!liveupdate_enabled())
+ 		return -EOPNOTSUPP;
+@@ -385,21 +384,12 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 	if (!link)
+ 		return -ENOMEM;
+ 
+-	/*
+-	 * Ensure the system is quiescent (no active sessions).
+-	 * This acts as a global lock for registration: no other thread can
+-	 * be in this section, and no sessions can be creating/using FDs.
+-	 */
+-	if (!luo_session_quiesce())
+-		return -EBUSY;
+-
+-	down_write(&luo_register_rwlock);
++	guard(rwsem_write)(&luo_register_rwlock);
+ 
+ 	/* Check that this FLB is not already linked to this file handler */
+-	err = -EEXIST;
+ 	list_for_each_entry(iter, flb_list, list) {
+ 		if (iter->flb == flb)
+-			goto err_resume;
++			return -EEXIST;
+ 	}
+ 
+ 	/*
+@@ -407,20 +397,16 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 	 * is registered
+ 	 */
+ 	if (!private->users) {
+-		if (WARN_ON(!list_empty(&private->list))) {
+-			err = -EINVAL;
+-			goto err_resume;
+-		}
++		if (WARN_ON(!list_empty(&private->list)))
++			return -EINVAL;
+ 
+-		if (luo_flb_global.count == LUO_FLB_MAX) {
+-			err = -ENOSPC;
+-			goto err_resume;
+-		}
++		if (luo_flb_global.count == LUO_FLB_MAX)
++			return -ENOSPC;
+ 
+ 		/* Check that compatible string is unique in global list */
+ 		list_private_for_each_entry(gflb, &luo_flb_global.list, private.list) {
+ 			if (!strcmp(gflb->compatible, flb->compatible))
+-				goto err_resume;
++				return -EEXIST;
+ 		}
+ 
+ 		list_add_tail(&private->list, &luo_flb_global.list);
+@@ -431,15 +417,8 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+ 	private->users++;
+ 	link->flb = flb;
+ 	list_add_tail(&no_free_ptr(link)->list, flb_list);
+-	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+ 
+ 	return 0;
+-
+-err_resume:
+-	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+-	return err;
+ }
+ 
+ /**
+@@ -455,12 +434,9 @@ int liveupdate_register_flb(struct liveupdate_file_handler *fh,
+  * the FLB is removed from the global registry and the reference to its
+  * owner module (acquired during registration) is released.
+  *
+- * Context: This function ensures the session is quiesced (no active FDs
+- *          being created) during the update. It is typically called from a
+- *          subsystem's module exit function.
++ * Context: It is typically called from a subsystem's module exit function.
+  * Return: 0 on success.
+  *         -EOPNOTSUPP if live update is disabled.
+- *         -EBUSY if the live update session is active and cannot be quiesced.
+  *         -ENOENT if the FLB was not found in the file handler's list.
+  */
+ int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+@@ -474,14 +450,7 @@ int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+ 	if (!liveupdate_enabled())
+ 		return -EOPNOTSUPP;
+ 
+-	/*
+-	 * Ensure the system is quiescent (no active sessions).
+-	 * This acts as a global lock for unregistration.
+-	 */
+-	if (!luo_session_quiesce())
+-		return -EBUSY;
+-
+-	down_write(&luo_register_rwlock);
++	guard(rwsem_write)(&luo_register_rwlock);
+ 
+ 	/* Find and remove the link from the file handler's list */
+ 	list_for_each_entry(iter, flb_list, list) {
+@@ -494,7 +463,7 @@ int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+ 	}
+ 
+ 	if (err)
+-		goto err_resume;
++		return err;
+ 
+ 	private->users--;
+ 	/*
+@@ -506,15 +475,7 @@ int liveupdate_unregister_flb(struct liveupdate_file_handler *fh,
+ 		luo_flb_global.count--;
+ 	}
+ 
+-	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+-
+ 	return 0;
+-
+-err_resume:
+-	up_write(&luo_register_rwlock);
+-	luo_session_resume();
+-	return err;
+ }
+ 
+ /**
+diff --git a/kernel/liveupdate/luo_internal.h b/kernel/liveupdate/luo_internal.h
+index 4bfe00ac8866..40a011bdfa55 100644
+--- a/kernel/liveupdate/luo_internal.h
++++ b/kernel/liveupdate/luo_internal.h
+@@ -85,8 +85,6 @@ int __init luo_session_setup_outgoing(void *fdt);
+ int __init luo_session_setup_incoming(void *fdt);
+ int luo_session_serialize(void);
+ int luo_session_deserialize(void);
+-bool luo_session_quiesce(void);
+-void luo_session_resume(void);
+ 
+ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd);
+ void luo_file_unpreserve_files(struct luo_file_set *file_set);
+diff --git a/kernel/liveupdate/luo_session.c b/kernel/liveupdate/luo_session.c
+index 8c76dece679b..a3327a28fc1f 100644
+--- a/kernel/liveupdate/luo_session.c
++++ b/kernel/liveupdate/luo_session.c
+@@ -607,46 +607,3 @@ int luo_session_serialize(void)
+ 	return err;
+ }
+ 
+-/**
+- * luo_session_quiesce - Ensure no active sessions exist and lock session lists.
+- *
+- * Acquires exclusive write locks on both incoming and outgoing session lists.
+- * It then validates no sessions exist in either list.
+- *
+- * This mechanism is used during file handler un/registration to ensure that no
+- * sessions are currently using the handler, and no new sessions can be created
+- * while un/registration is in progress.
+- *
+- * This prevents registering new handlers while sessions are active or
+- * while deserialization is in progress.
+- *
+- * Return:
+- * true  - System is quiescent (0 sessions) and locked.
+- * false - Active sessions exist. The locks are released internally.
+- */
+-bool luo_session_quiesce(void)
+-{
+-	down_write(&luo_session_global.incoming.rwsem);
+-	down_write(&luo_session_global.outgoing.rwsem);
+-
+-	if (luo_session_global.incoming.count ||
+-	    luo_session_global.outgoing.count) {
+-		up_write(&luo_session_global.outgoing.rwsem);
+-		up_write(&luo_session_global.incoming.rwsem);
+-		return false;
+-	}
+-
+-	return true;
+-}
+-
+-/**
+- * luo_session_resume - Unlock session lists and resume normal activity.
+- *
+- * Releases the exclusive locks acquired by a successful call to
+- * luo_session_quiesce().
+- */
+-void luo_session_resume(void)
+-{
+-	up_write(&luo_session_global.outgoing.rwsem);
+-	up_write(&luo_session_global.incoming.rwsem);
+-}
+-- 
+2.47.3
+

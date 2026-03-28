@@ -1,0 +1,159 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Fri, 27 Mar 2026 18:16:29 +0800
+Subject: [PATCH] mm: memcontrol: change val type to long in
+ __mod_memcg_{lruvec_}state()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The __mod_memcg_state() and __mod_memcg_lruvec_state() functions are also
+used to reparent non-hierarchical stats.  In this scenario, the values
+passed to them are accumulated statistics that might be extremely large
+and exceed the upper limit of a 32-bit integer.
+
+Change the val parameter type from int to long in these functions and
+their corresponding tracepoints (memcg_rstat_stats) to prevent potential
+overflow issues.
+
+After that, in memcg_state_val_in_pages(), if the passed val is negative,
+the expression val * unit / PAGE_SIZE could be implicitly converted to a
+massive positive number when compared with 1UL in the max() macro.  This
+leads to returning an incorrect massive positive value.
+
+Fix this by using abs(val) to calculate the magnitude first, and then
+restoring the sign of the value before returning the result.
+Additionally, use mult_frac() to prevent potential overflow during the
+multiplication of val and unit.
+
+Link: https://lkml.kernel.org/r/70a9440e49c464b4dca88bcabc6b491bd335c9f0.1774604356.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reported-by: Harry Yoo (Oracle) <harry@kernel.org>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Allen Pais <apais@linux.microsoft.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <bhe@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hamza Mahfooz <hamzamahfooz@linux.microsoft.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Imran Khan <imran.f.khan@oracle.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kamalesh Babulal <kamalesh.babulal@oracle.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/memcg.h | 10 +++++-----
+ mm/memcontrol.c              | 18 ++++++++++++------
+ 2 files changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/include/trace/events/memcg.h b/include/trace/events/memcg.h
+index dfe2f51019b4..51b62c5931fc 100644
+--- a/include/trace/events/memcg.h
++++ b/include/trace/events/memcg.h
+@@ -11,14 +11,14 @@
+ 
+ DECLARE_EVENT_CLASS(memcg_rstat_stats,
+ 
+-	TP_PROTO(struct mem_cgroup *memcg, int item, int val),
++	TP_PROTO(struct mem_cgroup *memcg, int item, long val),
+ 
+ 	TP_ARGS(memcg, item, val),
+ 
+ 	TP_STRUCT__entry(
+ 		__field(u64, id)
+ 		__field(int, item)
+-		__field(int, val)
++		__field(long, val)
+ 	),
+ 
+ 	TP_fast_assign(
+@@ -27,20 +27,20 @@ DECLARE_EVENT_CLASS(memcg_rstat_stats,
+ 		__entry->val = val;
+ 	),
+ 
+-	TP_printk("memcg_id=%llu item=%d val=%d",
++	TP_printk("memcg_id=%llu item=%d val=%ld",
+ 		  __entry->id, __entry->item, __entry->val)
+ );
+ 
+ DEFINE_EVENT(memcg_rstat_stats, mod_memcg_state,
+ 
+-	TP_PROTO(struct mem_cgroup *memcg, int item, int val),
++	TP_PROTO(struct mem_cgroup *memcg, int item, long val),
+ 
+ 	TP_ARGS(memcg, item, val)
+ );
+ 
+ DEFINE_EVENT(memcg_rstat_stats, mod_memcg_lruvec_state,
+ 
+-	TP_PROTO(struct mem_cgroup *memcg, int item, int val),
++	TP_PROTO(struct mem_cgroup *memcg, int item, long val),
+ 
+ 	TP_ARGS(memcg, item, val)
+ );
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 4ee668c20fa6..685e6dd48ce5 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -527,7 +527,7 @@ unsigned long lruvec_page_state_local(struct lruvec *lruvec,
+ 
+ #ifdef CONFIG_MEMCG_V1
+ static void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
+-				     enum node_stat_item idx, int val);
++				     enum node_stat_item idx, long val);
+ 
+ void reparent_memcg_lruvec_state_local(struct mem_cgroup *memcg,
+ 				       struct mem_cgroup *parent, int idx)
+@@ -784,14 +784,20 @@ static int memcg_page_state_unit(int item);
+  * Normalize the value passed into memcg_rstat_updated() to be in pages. Round
+  * up non-zero sub-page updates to 1 page as zero page updates are ignored.
+  */
+-static int memcg_state_val_in_pages(int idx, int val)
++static long memcg_state_val_in_pages(int idx, long val)
+ {
+ 	int unit = memcg_page_state_unit(idx);
++	long res;
+ 
+ 	if (!val || unit == PAGE_SIZE)
+ 		return val;
+-	else
+-		return max(val * unit / PAGE_SIZE, 1UL);
++
++	/* Get the absolute value of (val * unit / PAGE_SIZE). */
++	res = mult_frac(abs(val), unit, PAGE_SIZE);
++	/* Round up zero values. */
++	res = res ? : 1;
++
++	return val < 0 ? -res : res;
+ }
+ 
+ #ifdef CONFIG_MEMCG_V1
+@@ -831,7 +837,7 @@ static inline void get_non_dying_memcg_end(void)
+ #endif
+ 
+ static void __mod_memcg_state(struct mem_cgroup *memcg,
+-			      enum memcg_stat_item idx, int val)
++			      enum memcg_stat_item idx, long val)
+ {
+ 	int i = memcg_stats_index(idx);
+ 	int cpu;
+@@ -896,7 +902,7 @@ void reparent_memcg_state_local(struct mem_cgroup *memcg,
+ #endif
+ 
+ static void __mod_memcg_lruvec_state(struct mem_cgroup_per_node *pn,
+-				     enum node_stat_item idx, int val)
++				     enum node_stat_item idx, long val)
+ {
+ 	struct mem_cgroup *memcg = pn->memcg;
+ 	int i = memcg_stats_index(idx);
+-- 
+2.47.3
+

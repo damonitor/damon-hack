@@ -1,0 +1,163 @@
+From: Pasha Tatashin <pasha.tatashin@soleen.com>
+Date: Fri, 27 Mar 2026 03:33:27 +0000
+Subject: [PATCH] liveupdate: protect file handler list with rwsem
+
+Because liveupdate file handlers will no longer hold a module reference
+when registered, we must ensure that the access to the handler list is
+protected against concurrent module unloading.
+
+Utilize the global luo_register_rwlock to protect the global registry of
+file handlers.  Read locks are taken during list traversals in
+luo_preserve_file() and luo_file_deserialize().  Write locks are taken
+during registration and unregistration.
+
+Link: https://lkml.kernel.org/r/20260327033335.696621-4-pasha.tatashin@soleen.com
+Signed-off-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: David Matlack <dmatlack@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Samiullah Khawaja <skhawaja@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/luo_core.c     |  6 ++++++
+ kernel/liveupdate/luo_file.c     | 22 +++++++++++++++++-----
+ kernel/liveupdate/luo_internal.h |  2 ++
+ 3 files changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/kernel/liveupdate/luo_core.c b/kernel/liveupdate/luo_core.c
+index 48b25c9abeda..803f51c84275 100644
+--- a/kernel/liveupdate/luo_core.c
++++ b/kernel/liveupdate/luo_core.c
+@@ -54,6 +54,7 @@
+ #include <linux/liveupdate.h>
+ #include <linux/miscdevice.h>
+ #include <linux/mm.h>
++#include <linux/rwsem.h>
+ #include <linux/sizes.h>
+ #include <linux/string.h>
+ #include <linux/unaligned.h>
+@@ -68,6 +69,11 @@ static struct {
+ 	u64 liveupdate_num;
+ } luo_global;
+ 
++/*
++ * luo_register_rwlock - Protects registration of file handlers and FLBs.
++ */
++DECLARE_RWSEM(luo_register_rwlock);
++
+ static int __init early_liveupdate_param(char *buf)
+ {
+ 	return kstrtobool(buf, &luo_global.enabled);
+diff --git a/kernel/liveupdate/luo_file.c b/kernel/liveupdate/luo_file.c
+index 8fcf302c73b6..91edbf4e44ac 100644
+--- a/kernel/liveupdate/luo_file.c
++++ b/kernel/liveupdate/luo_file.c
+@@ -288,12 +288,14 @@ int luo_preserve_file(struct luo_file_set *file_set, u64 token, int fd)
+ 		goto  err_fput;
+ 
+ 	err = -ENOENT;
++	down_read(&luo_register_rwlock);
+ 	list_private_for_each_entry(fh, &luo_file_handler_list, list) {
+ 		if (fh->ops->can_preserve(fh, file)) {
+ 			err = 0;
+ 			break;
+ 		}
+ 	}
++	up_read(&luo_register_rwlock);
+ 
+ 	/* err is still -ENOENT if no handler was found */
+ 	if (err)
+@@ -805,12 +807,14 @@ int luo_file_deserialize(struct luo_file_set *file_set,
+ 		bool handler_found = false;
+ 		struct luo_file *luo_file;
+ 
++		down_read(&luo_register_rwlock);
+ 		list_private_for_each_entry(fh, &luo_file_handler_list, list) {
+ 			if (!strcmp(fh->compatible, file_ser[i].compatible)) {
+ 				handler_found = true;
+ 				break;
+ 			}
+ 		}
++		up_read(&luo_register_rwlock);
+ 
+ 		if (!handler_found) {
+ 			pr_warn("No registered handler for compatible '%.*s'\n",
+@@ -879,32 +883,36 @@ int liveupdate_register_file_handler(struct liveupdate_file_handler *fh)
+ 	if (!luo_session_quiesce())
+ 		return -EBUSY;
+ 
++	down_write(&luo_register_rwlock);
+ 	/* Check for duplicate compatible strings */
+ 	list_private_for_each_entry(fh_iter, &luo_file_handler_list, list) {
+ 		if (!strcmp(fh_iter->compatible, fh->compatible)) {
+ 			pr_err("File handler registration failed: Compatible string '%s' already registered.\n",
+ 			       fh->compatible);
+ 			err = -EEXIST;
+-			goto err_resume;
++			goto err_unlock;
+ 		}
+ 	}
+ 
+ 	/* Pin the module implementing the handler */
+ 	if (!try_module_get(fh->ops->owner)) {
+ 		err = -EAGAIN;
+-		goto err_resume;
++		goto err_unlock;
+ 	}
+ 
+ 	INIT_LIST_HEAD(&ACCESS_PRIVATE(fh, flb_list));
+ 	INIT_LIST_HEAD(&ACCESS_PRIVATE(fh, list));
+ 	list_add_tail(&ACCESS_PRIVATE(fh, list), &luo_file_handler_list);
++	up_write(&luo_register_rwlock);
++
+ 	luo_session_resume();
+ 
+ 	liveupdate_test_register(fh);
+ 
+ 	return 0;
+ 
+-err_resume:
++err_unlock:
++	up_write(&luo_register_rwlock);
+ 	luo_session_resume();
+ 	return err;
+ }
+@@ -938,16 +946,20 @@ int liveupdate_unregister_file_handler(struct liveupdate_file_handler *fh)
+ 	if (!luo_session_quiesce())
+ 		goto err_register;
+ 
++	down_write(&luo_register_rwlock);
+ 	if (!list_empty(&ACCESS_PRIVATE(fh, flb_list)))
+-		goto err_resume;
++		goto err_unlock;
+ 
+ 	list_del(&ACCESS_PRIVATE(fh, list));
++	up_write(&luo_register_rwlock);
++
+ 	module_put(fh->ops->owner);
+ 	luo_session_resume();
+ 
+ 	return 0;
+ 
+-err_resume:
++err_unlock:
++	up_write(&luo_register_rwlock);
+ 	luo_session_resume();
+ err_register:
+ 	liveupdate_test_register(fh);
+diff --git a/kernel/liveupdate/luo_internal.h b/kernel/liveupdate/luo_internal.h
+index 8083d8739b09..4bfe00ac8866 100644
+--- a/kernel/liveupdate/luo_internal.h
++++ b/kernel/liveupdate/luo_internal.h
+@@ -77,6 +77,8 @@ struct luo_session {
+ 	struct mutex mutex;
+ };
+ 
++extern struct rw_semaphore luo_register_rwlock;
++
+ int luo_session_create(const char *name, struct file **filep);
+ int luo_session_retrieve(const char *name, struct file **filep);
+ int __init luo_session_setup_outgoing(void *fdt);
+-- 
+2.47.3
+

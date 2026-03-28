@@ -1,0 +1,77 @@
+From: Suren Baghdasaryan <surenb@google.com>
+Date: Sun, 22 Mar 2026 00:08:43 -0700
+Subject: [PATCH] mm/vmscan: prevent MGLRU reclaim from pinning address space
+
+When shrinking lruvec, MGLRU pins address space before walking it.  This
+is excessive since all it needs for walking the page range is a stable
+mm_struct to be able to take and release mmap_read_lock and a stable
+mm->mm_mt tree to walk.  This address space pinning results in delays when
+releasing the memory of a dying process.  This also prevents mm reapers
+(both in-kernel oom-reaper and userspace process_mrelease()) from doing
+their job during MGLRU scan because they check task_will_free_mem() which
+will yield negative result due to the elevated mm->mm_users.
+
+This affects the system in the sense that if the MM of the killed
+process is being reclaimed by kswapd then reapers won't be able to reap
+it.  Even the process itself (which might have higher-priority than
+kswapd) will not free its memory until kswapd drops the last reference.
+IOW, we delay freeing the memory because kswapd is reclaiming it.  In
+Android the visible result for us is that process_mrelease() (userspace
+reaper) skips MM in such cases and we see process memory not released
+for an unusually long time (secs).
+
+Replace unnecessary address space pinning with mm_struct pinning by
+replacing mmget/mmput with mmgrab/mmdrop calls.  mm_mt is contained within
+mm_struct itself, therefore it won't be freed as long as mm_struct is
+stable and it won't change during the walk because mmap_read_lock is being
+held.
+
+Link: https://lkml.kernel.org/r/20260322070843.941997-1-surenb@google.com
+Fixes: bd74fdaea146 ("mm: multi-gen LRU: support page table walks")
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Kalesh Singh <kaleshsingh@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index fe89fff85c18..5a8c8fcccbfc 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2863,8 +2863,9 @@ static struct mm_struct *get_next_mm(struct lru_gen_mm_walk *walk)
+ 		return NULL;
+ 
+ 	clear_bit(key, &mm->lru_gen.bitmap);
++	mmgrab(mm);
+ 
+-	return mmget_not_zero(mm) ? mm : NULL;
++	return mm;
+ }
+ 
+ void lru_gen_add_mm(struct mm_struct *mm)
+@@ -3064,7 +3065,7 @@ static bool iterate_mm_list(struct lru_gen_mm_walk *walk, struct mm_struct **ite
+ 		reset_bloom_filter(mm_state, walk->seq + 1);
+ 
+ 	if (*iter)
+-		mmput_async(*iter);
++		mmdrop(*iter);
+ 
+ 	*iter = mm;
+ 
+-- 
+2.47.3
+

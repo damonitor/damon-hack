@@ -1,5 +1,5 @@
 From: Christoph Hellwig <hch@lst.de>
-Date: Tue, 24 Mar 2026 07:22:00 +0100
+Date: Fri, 27 Mar 2026 07:16:58 +0100
 Subject: [PATCH] xor: pass the entire operation to the low-level ops
 
 Currently the high-level xor code chunks up all operations into small
@@ -13,7 +13,7 @@ This reduce the number of indirect calls and FPU/vector context switches
 by a factor approaching nr_stripes / 4, and also reduces source and binary
 code size.
 
-Link: https://lkml.kernel.org/r/20260324062211.3216301-25-hch@lst.de
+Link: https://lkml.kernel.org/r/20260327061704.3707577-27-hch@lst.de
 Signed-off-by: Christoph Hellwig <hch@lst.de>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
@@ -78,9 +78,9 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  lib/raid/xor/xor-32regs.c              |  9 ++--
  lib/raid/xor/xor-8regs-prefetch.c      | 11 +++--
  lib/raid/xor/xor-8regs.c               |  9 ++--
- lib/raid/xor/xor-core.c                | 47 ++-----------------
+ lib/raid/xor/xor-core.c                | 48 ++-----------------
  lib/raid/xor/xor_impl.h                | 48 +++++++++++++------
- 26 files changed, 224 insertions(+), 504 deletions(-)
+ 26 files changed, 224 insertions(+), 505 deletions(-)
 
 diff --git a/include/linux/raid/xor.h b/include/linux/raid/xor.h
 index 6d9a39fd85dd..870558c9d36e 100644
@@ -1365,7 +1365,7 @@ index 72a44e898c55..1edaed8acffe 100644
  };
  #endif /* NO_TEMPLATE */
 diff --git a/lib/raid/xor/xor-core.c b/lib/raid/xor/xor-core.c
-index fdd0cf5584e7..a9b984d47d8c 100644
+index 2e46b6b83b0a..9e043d8c3a7a 100644
 --- a/lib/raid/xor/xor-core.c
 +++ b/lib/raid/xor/xor-core.c
 @@ -13,39 +13,9 @@
@@ -1381,7 +1381,7 @@ index fdd0cf5584e7..a9b984d47d8c 100644
 -{
 -	unsigned long *p1, *p2, *p3, *p4;
 -
--	lockdep_assert_preemption_enabled();
+-	WARN_ON_ONCE(!in_task() || irqs_disabled() || softirq_count());
 -
 -	p1 = (unsigned long *) srcs[0];
 -	if (src_count == 1) {
@@ -1409,13 +1409,15 @@ index fdd0cf5584e7..a9b984d47d8c 100644
  /**
   * xor_gen - generate RAID-style XOR information
   * @dest:	destination vector
-@@ -63,18 +33,10 @@ EXPORT_SYMBOL(xor_blocks);
+@@ -63,20 +33,11 @@ EXPORT_SYMBOL(xor_blocks);
   */
  void xor_gen(void *dest, void **srcs, unsigned int src_cnt, unsigned int bytes)
  {
 -	unsigned int src_off = 0;
 -
-+	lockdep_assert_preemption_enabled();
+-	WARN_ON_ONCE(in_interrupt());
++	WARN_ON_ONCE(!in_task() || irqs_disabled() || softirq_count());
+ 	WARN_ON_ONCE(bytes == 0);
  	WARN_ON_ONCE(bytes & 511);
  
 -	while (src_cnt > 0) {
@@ -1430,7 +1432,7 @@ index fdd0cf5584e7..a9b984d47d8c 100644
  }
  EXPORT_SYMBOL(xor_gen);
  
-@@ -118,6 +80,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
+@@ -120,6 +81,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
  	int speed;
  	unsigned long reps;
  	ktime_t min, start, t0;
@@ -1438,7 +1440,7 @@ index fdd0cf5584e7..a9b984d47d8c 100644
  
  	preempt_disable();
  
-@@ -128,7 +91,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
+@@ -130,7 +92,7 @@ do_xor_speed(struct xor_block_template *tmpl, void *b1, void *b2)
  		cpu_relax();
  	do {
  		mb(); /* prevent loop optimization */
