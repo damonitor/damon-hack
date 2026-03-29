@@ -26,6 +26,8 @@ This work was inspired by the following link:
 
 While at it, move the sanity check for page pool to on the free path.
 
+[byungchul@sk.com: gate the sanity check, per Johannes]
+  Link: https://lkml.kernel.org/r/20260316223113.20097-1-byungchul@sk.com
 Link: https://lkml.kernel.org/r/20260224051347.19621-1-byungchul@sk.com
 Co-developed-by: Pavel Begunkov <asml.silence@gmail.com>
 Signed-off-by: Pavel Begunkov <asml.silence@gmail.com>
@@ -45,7 +47,6 @@ Cc: Andrew Lunn <andrew+netdev@lunn.ch>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Christian Brauner <brauner@kernel.org>
-Cc: Daniel Borkman <daniel@iogearbox.net>
 Cc: Daniel Borkmann <daniel@iogearbox.net>
 Cc: David S. Miller <davem@davemloft.net>
 Cc: David Wei <dw@davidwei.uk>
@@ -75,10 +76,10 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  include/linux/mm.h                            | 27 +++----------------
  include/linux/page-flags.h                    |  6 +++++
  include/net/netmem.h                          | 15 +++++++++--
- mm/page_alloc.c                               | 11 +++++---
+ mm/page_alloc.c                               | 13 ++++++---
  net/core/netmem_priv.h                        | 23 +++++++---------
  net/core/page_pool.c                          | 24 +++++++++++++++--
- 7 files changed, 62 insertions(+), 46 deletions(-)
+ 7 files changed, 64 insertions(+), 46 deletions(-)
 
 diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.c b/drivers/net/ethernet/mellanox/mlx5/core/en/xdp.c
 index 80f9fc10877a..7d90d2485c78 100644
@@ -199,7 +200,7 @@ index a96b3e5e5574..85e3b26ec547 100644
  })
  
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index f11f38ba2e12..7253c75603d9 100644
+index f11f38ba2e12..fdcc2fde565b 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
 @@ -1043,7 +1043,6 @@ static inline bool page_expected_state(struct page *page,
@@ -219,16 +220,18 @@ index f11f38ba2e12..7253c75603d9 100644
  	return bad_reason;
  }
  
-@@ -1380,9 +1377,15 @@ __always_inline bool __free_pages_prepare(struct page *page,
+@@ -1380,9 +1377,17 @@ __always_inline bool __free_pages_prepare(struct page *page,
  		mod_mthp_stat(order, MTHP_STAT_NR_ANON, -1);
  		folio->mapping = NULL;
  	}
 -	if (unlikely(page_has_type(page)))
 +	if (unlikely(page_has_type(page))) {
 +		/* networking expects to clear its page type before releasing */
-+		if (unlikely(PageNetpp(page))) {
-+			bad_page(page, "page_pool leak");
-+			return false;
++		if (is_check_pages_enabled()) {
++			if (unlikely(PageNetpp(page))) {
++				bad_page(page, "page_pool leak");
++				return false;
++			}
 +		}
  		/* Reset the page_type (which overlays _mapcount) */
  		page->page_type = UINT_MAX;

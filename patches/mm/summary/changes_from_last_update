@@ -1,43 +1,214 @@
 - baseline: v7.0-rc5-46-g24f9515de877 -> v7.0-rc5-46-g24f9515de877 (no change)
-- mm-hotfixes-stable: 0 -> 3 commits
-  - series: 0 (0) -> 1 (3)
-    - no role, maintainer: 0 -> 3 commits
-  - changed commits
-    - series "mm/damon/sysfs: fix memory leak and NULL dereference issues", v4. (3)
-      - 7fe000eb3290 "mm/damon/sysfs: fix param_ctx leak on damon_sysfs_new_test_ctx() failure (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lkml.kernel.org/r/20260321175427.86000-1-sj@kernel.org
-        - Link: https://lkml.kernel.org/r/20260321175427.86000-2-sj@kernel.org
-      - 1bfe9fb5ed26 "mm/damon/sysfs: check contexts->nr before accessing contexts_arr[0] (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lkml.kernel.org/r/20260321175427.86000-3-sj@kernel.org
-      - 6557004a8b59 "mm/damon/sysfs: check contexts->nr in repeat_call_fn (2/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://patch.msgid.link/20260320163559.178101-3-objecting@objecting.org
-        - Link: https://lkml.kernel.org/r/20260321175427.86000-4-sj@kernel.org
-        - Link: https://github.com/damonitor/damo [1]
-- mm-hotfixes-unstable: 4 -> 1 commits
-  - series: 1 (3) -> 0 (0)
-    - no role, maintainer: 3 -> 0 commits
+- mm-hotfixes-stable: 3 -> 3 commits (no change)
+  - series: 1 (3) -> 1 (3) (no change)
+    - no role, maintainer: 3 -> 3 commits (no change)
+- mm-hotfixes-unstable: 1 -> 1 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 1 -> 1 commits (no change)
-- mm-stable: 7 -> 7 commits (no change)
-  - series: 2 (5) -> 2 (5) (no change)
-    - no role, maintainer: 2 -> 2 commits (no change)
-    - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-unstable: 43 -> 43 commits (no change)
-  - series: 6 (38) -> 6 (38) (no change)
-    - no role, maintainer: 4 -> 4 commits (no change)
-    - maintainer, nobody: 32 -> 32 commits (no change)
-    - maintainer, no role : 7 -> 7 commits (no change)
+- mm-stable: 7 -> 50 commits
+  - series: 2 (5) -> 8 (43)
+    - no role, maintainer: 2 -> 6 commits
+    - maintainer, nobody: 5 -> 37 commits
+    - maintainer, no role : 0 -> 7 commits
   - changed commits
-    - cfcd1ec2d1c2 "mm/damon/core: document damos_commit_dests() failure semantics"
+    - series "mm/damon: add optional debugging-purpose sanity checks". (10)
+      - baca6a44cdab "mm/damon: add CONFIG_DAMON_DEBUG_SANITY (0/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org [1]
+        - Link: https://github.com/damonitor/damon-tests/commit/a80fbee55e272f151b4e5809ee85898aea33e6ff [2]
+      - aa498c95b42f "mm/damon/core: add damon_new_region() debug_sanity check (1/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-3-sj@kernel.org
+      - 006aad9ba0ef "mm/damon/core: add damon_del_region() debug_sanity check (2/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-4-sj@kernel.org
+      - 642c0d68657b "mm/damon/core: add damon_nr_regions() debug_sanity check (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-5-sj@kernel.org
+      - 5ea7608dea48 "mm/damon/core: add damon_merge_two_regions() debug_sanity check (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-6-sj@kernel.org
+      - 5482a1dca44d "mm/damon/core: add damon_merge_regions_of() debug_sanity check (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-7-sj@kernel.org
+      - f93d80ab896d "mm/damon/core: add damon_split_region_at() debug_sanity check (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-8-sj@kernel.org
+      - 5a3b95dac9c1 "mm/damon/core: add damon_reset_aggregated() debug_sanity check (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-9-sj@kernel.org
+      - 9d29ae41d7aa "mm/damon/tests/.kunitconifg: enable DAMON_DEBUG_SANITY (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-10-sj@kernel.org
+      - e9b705955faf "selftests/damon/config: enable DAMON_DEBUG_SANITY (9/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260306152914.86303-11-sj@kernel.org
+    - series "mm/damon: test and document power-of-2 min_region_sz requirement". (2)
+      - bd77060171a8 "mm/damon/tests/core-kunit: add a test for damon_commit_ctx() (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307194222.202075-2-sj@kernel.org
+      - 35862263efcb "Docs/mm/damon/design: document the power-of-two limitation for addr_unit (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307194222.202075-3-sj@kernel.org
+    - series "mm/damon/core: make passed_sample_intervals comparisons overflow-safe". (3)
+      - a8aa5535c6cd "mm/damon/core: remove damos_set_next_apply_sis() duplicates (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-2-sj@kernel.org
+      - 29bd5057d262 "mm/damon/core: use time_before() for next_apply_sis (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-3-sj@kernel.org
+      - 0c89b5bbc0d0 "mm/damon/core: use time_after_eq() in kdamond_fn() (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307194915.203169-4-sj@kernel.org
+    - series "mm/damon: improve/fixup/update ratio calculation, test and documentation". (7)
+      - 81ec9535f2d4 "mm/damon/core: use mult_frac() (0/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-2-sj@kernel.org
+      - 0144aa59312a "mm/damon/tests/core-kunit: add a test for damon_is_last_region() (1/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260114152049.99727-1-sj@kernel.org/ [1]
+      - a07b3d17e31c "mm/damon/core: clarify damon_set_attrs() usages (2/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-4-sj@kernel.org
+      - b79303b7a83e "mm/damon: document non-zero length damon_region assumption (3/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20251231070029.79682-1-sj@kernel.org/ [1]
+      - 798a6c72ebed "Docs/admin-guide/mm/damn/lru_sort: fix intervals autotune parameter name (4/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-6-sj@kernel.org
+      - a79c1bb29d20 "Docs/mm/damon/maintainer-profile: use flexible review cadence (5/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-7-sj@kernel.org
+      - 68e3929b2789 "Docs/mm/damon/index: fix typo: autoamted -> automated (6/7)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260307195356.203753-8-sj@kernel.org
+    - series "mm/damon: support multiple goal-based quota tuning algorithms". (11)
+      - 8b7fe22f3269 "mm/damon/core: introduce damos_quota_goal_tuner (0/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-2-sj@kernel.org
+        - Link: https://lore.kernel.org/CALa+Y17__d=ZsM1yX+MXx0ozVdsXnFqF4p0g+kATEitrWyZFfg@mail.gmail.com [1]
+        - Link: https://lore.kernel.org/20260204022537.814-1-yunjeong.mun@sk.com [2]
+      - 90363bc4ff9e "mm/damon/core: allow quota goals set zero effective size quota (1/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-3-sj@kernel.org
+      - 3bdb6af985b4 "mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL (2/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-4-sj@kernel.org
+      - be6bc24dd700 "mm/damon/sysfs-schemes: implement quotas->goal_tuner file (3/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-5-sj@kernel.org
+      - 868bd070428e "Docs/mm/damon/design: document the goal-based quota tuner selections (4/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-6-sj@kernel.org
+      - c90100ed7ed4 "Docs/admin-guide/mm/damon/usage: document goal_tuner sysfs file (5/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-7-sj@kernel.org
+      - 6099ddef2fb7 "Docs/ABI/damon: update for goal_tuner (6/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-8-sj@kernel.org
+      - 55e54f4c6949 "mm/damon/tests/core-kunit: test goal_tuner commit (7/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-9-sj@kernel.org
+      - 467e001d5fc9 "selftests/damon/_damon_sysfs: support goal_tuner setup (8/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-10-sj@kernel.org
+      - 824181b013c3 "selftests/damon/drgn_dump_damon_status: support quota goal_tuner dumping (9/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-11-sj@kernel.org
+      - 6d980b0fff02 "selftests/damon/sysfs.py: test goal_tuner commit (10/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260310010529.91162-12-sj@kernel.org
+    - series "mm/damon: support addr_unit on default monitoring targets for modules". (5)
+      - 39202ab62a8d "mm/damon/core: fix wrong end address assignment on walk_system_ram() (0/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260311052927.93921-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260311052927.93921-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260131015643.79158-1-sj@kernel.org [1]
+      - cf018705d5d5 "mm/damon/core: support addr_unit on damon_find_biggest_system_ram() (1/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: : https://lkml.kernel.org/r/20260317144725.88524-1-sj@kernel.org
+        - Link: https://lkml.kernel.org/r/20260311052927.93921-3-sj@kernel.org
+      - d4f206e410cf "mm/damon/core: receive addr_unit on damon_set_region_biggest_system_ram_default() (2/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260311052927.93921-4-sj@kernel.org
+      - b87ac1c5ad64 "mm/damon/core: fix wrong damon_set_regions() argument (3/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260314001854.79623-1-sj@kernel.org
+      - 366a1a179714 "mm/damon/reclaim: respect addr_unit on default monitoring region setup (4/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lkml.kernel.org/r/20260311052927.93921-5-sj@kernel.org
+    - ad2c875f68c7 "mm/damon/lru_sort: respect addr_unit on default monitoring region setup"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lkml.kernel.org/r/20260311052927.93921-6-sj@kernel.org
+    - 999be0959f89 "Docs/mm/damon: document exclusivity of special-purpose modules"
       - Authored by no role player, reviewed by a maintainer
-      - dropped "Cc: Andrew Morton <akpm@linux-foundation.org>"
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lkml.kernel.org/r/20260315162945.80994-1-sj@kernel.org
+      - Link: https://lore.kernel.org/damon/20260314002119.79742-1-sj@kernel.org/T/#t [1]
+    - c0ac84ea5543 "Docs/mm/damon/design: document DAMON actions when TRANSPARENT_HUGEPAGE is off"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lkml.kernel.org/r/20260318035349.88715-1-sj@kernel.org
+      - Link: https://lore.kernel.org/66131775-180b-4b9f-b7ce-61a3e077b6e6@huawei-partners.com/ [1]
+    - b2b29425406a "mm/damon/core: document damos_commit_dests() failure semantics"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
       - Link: https://lkml.kernel.org/r/20260320143648.91673-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260318214939.36100-1-objecting@objecting.org [1]
+    - cfb3a14c057e "Docs/mm/damon: document min_nr_regions constraint and rationale"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lkml.kernel.org/r/20260320052428.213230-1-aethernet65535@gmail.com
+      - Link: https://lore.kernel.org/damon/20260319151528.86490-1-sj@kernel.org/T/#t [1]
+- mm-unstable: 43 -> 0 commits
+  - series: 6 (38) -> 0 (0)
+    - no role, maintainer: 4 -> 0 commits
+    - maintainer, nobody: 32 -> 0 commits
+    - maintainer, no role : 7 -> 0 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
