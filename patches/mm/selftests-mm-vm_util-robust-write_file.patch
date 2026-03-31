@@ -1,67 +1,60 @@
 From: Chunyu Hu <chuhu@redhat.com>
-Date: Tue, 24 Mar 2026 09:33:14 +0800
+Date: Mon, 30 Mar 2026 23:15:01 +0800
 Subject: [PATCH] selftests/mm/vm_util: robust write_file()
 
-Add two more checks for buflen and numwritten.  The buflen should be at
-least one, otherwise the 'buflen - 1' could underflow and cause trouble.
-The numwritten should be equal to 'buflen - 1'.  The test will exit if any
-of these conditions aren't met.
+Add three more checks for buflen and numwritten. The buflen should be at
+least two, that means at least one char and the null-end. The error case
+check is added by checking numwriten < 0 instead of numwritten < 1. And the
+truncate case is checked. The test will exit if any of these conditions
+aren't met.
 
 Additionally, add more print information when a write failure occurs or
 a truncated write happens, providing clearer diagnostics.
 
-Link: https://lkml.kernel.org/r/20260324013316.2590422-5-chuhu@redhat.com
+Link: https://lkml.kernel.org/r/20260330151503.670415-6-chuhu@redhat.com
 Signed-off-by: Chunyu Hu <chuhu@redhat.com>
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: Barry Song <baohua@kernel.org>
 Cc: David Hildenbrand (Arm) <david@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Li Wang <liwang@redhat.com>
 Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
-Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Cc: Nico Pache <npache@redhat.com>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Shuah Khan <shuah@kernel.org>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/vm_util.c | 12 ++++++++++--
- 1 file changed, 10 insertions(+), 2 deletions(-)
+ tools/testing/selftests/mm/vm_util.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
-index ad96d19d1b85..572ccb99de8e 100644
+index 8dcfa47e63d0..8c437489740a 100644
 --- a/tools/testing/selftests/mm/vm_util.c
 +++ b/tools/testing/selftests/mm/vm_util.c
-@@ -767,15 +767,23 @@ int unpoison_memory(unsigned long pfn)
+@@ -779,15 +779,24 @@ int unpoison_memory(unsigned long pfn)
  
  void write_file(const char *path, const char *buf, size_t buflen)
  {
 -	int fd;
 +	int fd, saved_errno;
  	ssize_t numwritten;
-+	if (buflen < 1)
-+		ksft_exit_fail_msg("Incorrect buffer len: %zu\n", buflen);
  
++	if (buflen < 2)
++		ksft_exit_fail_msg("Incorrect buffer len: %zu\n", buflen);
++
  	fd = open(path, O_WRONLY);
  	if (fd == -1)
- 		ksft_exit_fail_msg("%s open failed: %s\n", path, strerror(errno));
+-		ksft_exit_fail_msg("%s open failed: %s\n", path, strerror(errno));
++		ksft_exit_fail_perror("%s open failed", path);
  
  	numwritten = write(fd, buf, buflen - 1);
 +	saved_errno = errno;
  	close(fd);
-+	errno = saved_errno;
- 	if (numwritten < 1)
+-	if (numwritten < 1)
 -		ksft_exit_fail_msg("Write failed\n");
-+		ksft_exit_fail_msg("%s write(%s) failed: %s\n", path, buf,
-+				strerror(errno));
++	errno = saved_errno;
++	if (numwritten < 0)
++		ksft_exit_fail_perror("%s write(%.*s) failed", path, (int)(buflen - 1),
++				buf);
 +	if (numwritten != buflen - 1)
-+		ksft_exit_fail_msg("%s write(%s) is truncated, expected %zu bytes, got %zd bytes\n",
-+				path, buf, buflen - 1, numwritten);
++		ksft_exit_fail_msg("%s write(%.*s) is truncated, expected %zu bytes, got %zd bytes\n",
++				path, (int)(buflen - 1), buf, buflen - 1, numwritten);
  }
 -- 
 2.47.3

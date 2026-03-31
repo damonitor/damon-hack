@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Fri, 6 Mar 2026 19:18:10 +0200
+Date: Mon, 30 Mar 2026 13:11:11 +0300
 Subject: [PATCH] shmem, userfaultfd: implement shmem uffd operations using
  vm_uffd_ops
 
@@ -16,13 +16,15 @@ include if linux/shmem_fs.h from mm/userfaultfd.c
 mfill_atomic_install_pte() is not used anywhere outside of mm/userfaultfd,
 make it static.
 
-Link: https://lkml.kernel.org/r/20260306171815.3160826-11-rppt@kernel.org
+Link: https://lkml.kernel.org/r/20260330101116.1117699-11-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Reviewed-by: James Houghton <jthoughton@google.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Andrei Vagin <avagin@google.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Harry Yoo <harry.yoo@oracle.com>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
@@ -40,10 +42,10 @@ Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/shmem_fs.h      |  14 ----
- include/linux/userfaultfd_k.h |  21 +++--
+ include/linux/userfaultfd_k.h |  19 +++--
  mm/shmem.c                    | 148 ++++++++++++----------------------
- mm/userfaultfd.c              |  79 +++++++++---------
- 4 files changed, 106 insertions(+), 156 deletions(-)
+ mm/userfaultfd.c              |  80 +++++++++---------
+ 4 files changed, 106 insertions(+), 155 deletions(-)
 
 diff --git a/include/linux/shmem_fs.h b/include/linux/shmem_fs.h
 index a8273b32e041..1a345142af7d 100644
@@ -71,22 +73,17 @@ index a8273b32e041..1a345142af7d 100644
   * Used space is stored as unsigned 64-bit value in bytes but
   * quota core supports only signed 64-bit values so use that
 diff --git a/include/linux/userfaultfd_k.h b/include/linux/userfaultfd_k.h
-index 3df73a43da82..3bd2003328dc 100644
+index 0f508c752741..d2920f98ab86 100644
 --- a/include/linux/userfaultfd_k.h
 +++ b/include/linux/userfaultfd_k.h
-@@ -96,10 +96,24 @@ struct vm_uffd_ops {
- 	struct folio *(*get_folio_noalloc)(struct inode *inode, pgoff_t pgoff);
- 	/*
- 	 * Called during resolution of UFFDIO_COPY request.
--	 * Should return allocate a and return folio or NULL if allocation fails.
-+	 * Should allocate and return a folio or NULL if allocation
-+	 * fails.
+@@ -100,6 +100,20 @@ struct vm_uffd_ops {
  	 */
  	struct folio *(*alloc_folio)(struct vm_area_struct *vma,
  				     unsigned long addr);
 +	/*
 +	 * Called during resolution of UFFDIO_COPY request.
-+	 * Should lock the folio and add it to VMA's page cache.
++	 * Should only be called with a folio returned by alloc_folio() above.
++	 * The folio will be set to locked.
 +	 * Returns 0 on success, error code on failure.
 +	 */
 +	int (*filemap_add)(struct folio *folio, struct vm_area_struct *vma,
@@ -296,7 +293,7 @@ index ed07d0c03312..5aa43657886c 100644
  #endif /* CONFIG_USERFAULTFD */
  
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index fc056d700ae6..0ae8de6a7e9d 100644
+index 8335d2552ce2..8cf90d614829 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
 @@ -14,7 +14,6 @@
@@ -396,7 +393,7 @@ index fc056d700ae6..0ae8de6a7e9d 100644
  		return mfill_atomic_pte_zeroed_folio(state);
  
  	_dst_pte = pte_mkspecial(pfn_pte(zero_pfn(dst_addr),
-@@ -607,11 +628,10 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
+@@ -609,11 +630,10 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
  	}
  
  	ret = mfill_atomic_install_pte(dst_pmd, dst_vma, dst_addr,
@@ -409,7 +406,7 @@ index fc056d700ae6..0ae8de6a7e9d 100644
  	return 0;
  
  out_release:
-@@ -834,41 +854,18 @@ extern ssize_t mfill_atomic_hugetlb(struct userfaultfd_ctx *ctx,
+@@ -836,41 +856,19 @@ extern ssize_t mfill_atomic_hugetlb(struct userfaultfd_ctx *ctx,
  
  static __always_inline ssize_t mfill_atomic_pte(struct mfill_state *state)
  {
@@ -452,6 +449,7 @@ index fc056d700ae6..0ae8de6a7e9d 100644
 -	}
 -
 -	return err;
++	VM_WARN_ONCE(1, "Unknown UFFDIO operation, flags: %x", flags);
 +	return -EOPNOTSUPP;
  }
  

@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Fri, 6 Mar 2026 19:18:08 +0200
+Date: Mon, 30 Mar 2026 13:11:09 +0300
 Subject: [PATCH] shmem, userfaultfd: use a VMA callback to handle
  UFFDIO_CONTINUE
 
@@ -15,13 +15,15 @@ Implement get_folio_noalloc() method for shmem and slightly refactor
 userfaultfd's mfill_get_vma() and mfill_atomic_pte_continue() to support
 this new API.
 
-Link: https://lkml.kernel.org/r/20260306171815.3160826-9-rppt@kernel.org
+Link: https://lkml.kernel.org/r/20260330101116.1117699-9-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Reviewed-by: James Houghton <jthoughton@google.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Andrei Vagin <avagin@google.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Harry Yoo <harry.yoo@oracle.com>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
@@ -40,8 +42,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/userfaultfd_k.h |  7 +++++++
  mm/shmem.c                    | 15 ++++++++++++++-
- mm/userfaultfd.c              | 32 ++++++++++++++++----------------
- 3 files changed, 37 insertions(+), 17 deletions(-)
+ mm/userfaultfd.c              | 34 ++++++++++++++++++----------------
+ 3 files changed, 39 insertions(+), 17 deletions(-)
 
 diff --git a/include/linux/userfaultfd_k.h b/include/linux/userfaultfd_k.h
 index 6d445dbfe8ff..4bda632dae88 100644
@@ -94,7 +96,7 @@ index 389b2d76396e..ed07d0c03312 100644
  #endif /* CONFIG_USERFAULTFD */
  
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index 043fe739579a..4b2ea873cfa1 100644
+index 043fe739579a..76a332c74151 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
 @@ -191,6 +191,7 @@ static int mfill_get_vma(struct mfill_state *state)
@@ -129,16 +131,12 @@ index 043fe739579a..4b2ea873cfa1 100644
  	unsigned long dst_addr = state->dst_addr;
  	pgoff_t pgoff = linear_page_index(dst_vma, dst_addr);
  	struct inode *inode = file_inode(dst_vma->vm_file);
-@@ -584,16 +588,13 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
+@@ -584,17 +588,16 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
  	struct page *page;
  	int ret;
  
 -	ret = shmem_get_folio(inode, pgoff, 0, &folio, SGP_NOALLOC);
-+	if (!ops)
-+		return -EOPNOTSUPP;
-+
-+	folio = ops->get_folio_noalloc(inode, pgoff);
- 	/* Our caller expects us to return -EFAULT if we failed to find folio */
+-	/* Our caller expects us to return -EFAULT if we failed to find folio */
 -	if (ret == -ENOENT)
 -		ret = -EFAULT;
 -	if (ret)
@@ -146,13 +144,20 @@ index 043fe739579a..4b2ea873cfa1 100644
 -	if (!folio) {
 -		ret = -EFAULT;
 -		goto out;
--	}
++	if (!ops) {
++		VM_WARN_ONCE(1, "UFFDIO_CONTINUE for unsupported VMA");
++		return -EOPNOTSUPP;
+ 	}
+ 
++	folio = ops->get_folio_noalloc(inode, pgoff);
++	/* Our caller expects us to return -EFAULT if we failed to find folio */
 +	if (IS_ERR_OR_NULL(folio))
 +		return -EFAULT;
- 
++
  	page = folio_file_page(folio, pgoff);
  	if (PageHWPoison(page)) {
-@@ -607,13 +608,12 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
+ 		ret = -EIO;
+@@ -607,13 +610,12 @@ static int mfill_atomic_pte_continue(struct mfill_state *state)
  		goto out_release;
  
  	folio_unlock(folio);

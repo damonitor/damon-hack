@@ -1,0 +1,68 @@
+From: Chunyu Hu <chuhu@redhat.com>
+Date: Mon, 30 Mar 2026 23:15:00 +0800
+Subject: [PATCH] selftests: ksft_exit_fail_perror: support printf style
+ arguments
+
+The ksft_exit_fail_perror function previously only accepted a single string
+argument, which limited its flexibility for providing specific context to
+failure messages.
+
+This change updates ksft_exit_fail_perror to support variable arguments,
+similar to ksft_exit_fail_msg.  Adding the __printf(1, 2) attribute enables
+compile-time checking for format string correctness.
+
+Link: https://lkml.kernel.org/r/20260330151503.670415-5-chuhu@redhat.com
+Signed-off-by: Chunyu Hu <chuhu@redhat.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Li Wang <liwang@redhat.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/kselftest.h | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/tools/testing/selftests/kselftest.h b/tools/testing/selftests/kselftest.h
+index afbcf8412ae5..11cabdabb3f6 100644
+--- a/tools/testing/selftests/kselftest.h
++++ b/tools/testing/selftests/kselftest.h
+@@ -43,7 +43,7 @@
+  * the program is aborting before finishing all tests):
+  *
+  *    ksft_exit_fail_msg(fmt, ...);
+- *    ksft_exit_fail_perror(msg);
++ *    ksft_exit_fail_perror(fmt, ...);
+  *
+  */
+ #ifndef __KSELFTEST_H
+@@ -417,9 +417,24 @@ static inline __noreturn __printf(1, 2) void ksft_exit_fail_msg(const char *msg,
+ 	exit(KSFT_FAIL);
+ }
+ 
+-static inline __noreturn void ksft_exit_fail_perror(const char *msg)
++static inline __noreturn __printf(1, 2) void ksft_exit_fail_perror(const char *msg, ...)
+ {
+-	ksft_exit_fail_msg("%s: %s (%d)\n", msg, strerror(errno), errno);
++	va_list args;
++	char *buf = NULL;
++	int saved_errno = errno;
++
++	va_start(args, msg);
++	if (vasprintf(&buf, msg, args) == -1) {
++		va_end(args);
++		ksft_exit_fail_msg("vasprintf failed: %s (%d)\n", strerror(saved_errno),
++				saved_errno);
++	}
++	va_end(args);
++
++	errno = saved_errno;
++	ksft_exit_fail_msg("%s: %s (%d)\n", buf, strerror(errno), errno);
++
++	free(buf);
+ }
+ 
+ static inline __noreturn void ksft_exit_xfail(void)
+-- 
+2.47.3
+
