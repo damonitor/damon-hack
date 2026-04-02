@@ -1,0 +1,118 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Wed, 1 Apr 2026 06:57:50 -0700
+Subject: [PATCH] mm/vmstat: spread vmstat_update requeue across the stat
+ interval
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vmstat_update uses round_jiffies_relative() when re-queuing itself, which
+aligns all CPUs' timers to the same second boundary.  When many CPUs have
+pending PCP pages to drain, they all call decay_pcp_high() ->
+free_pcppages_bulk() simultaneously, serializing on zone->lock and hitting
+contention.
+
+Introduce vmstat_spread_delay() which distributes each CPU's vmstat_update
+evenly across the stat interval instead of aligning them.
+
+This does not increase the number of timer interrupts — each CPU still
+fires once per interval.  The timers are simply staggered rather than
+aligned.  Additionally, vmstat_work is DEFERRABLE_WORK, so it does not
+wake idle CPUs regardless of scheduling; the spread only affects CPUs that
+are already active
+
+`perf lock contention` shows 7.5x reduction in zone->lock contention (872
+-> 117 contentions, 199ms -> 81ms total wait) on a 72-CPU aarch64 system
+under memory pressure.
+
+Tested on a 72-CPU aarch64 system using stress-ng --vm to generate memory
+allocation bursts.  Lock contention was measured with:
+
+  perf lock contention -a -b -S free_pcppages_bulk
+
+Results with KASAN enabled:
+
+ free_pcppages_bulk contention (KASAN):
+  +--------------+----------+----------+
+  | Metric       | No fix   | With fix |
+  +--------------+----------+----------+
+  | Contentions  |      872 |      117 |
+  | Total wait   | 199.43ms | 80.76ms  |
+  | Max wait     |  35.76ms | 4.19ms   |
+  +--------------+----------+----------+
+
+Results without KASAN:
+
+  free_pcppages_bulk contention (no KASAN):
+  +--------------+----------+----------+
+  | Metric       | No fix   | With fix |
+  +--------------+----------+----------+
+  | Contentions  |      240 |      133 |
+  | Total wait   |  34.01ms | 24.61ms  |
+  | Max wait     |   1.35ms |   965us  |
+  +--------------+----------+----------+
+
+Link: https://lkml.kernel.org/r/20260401-vmstat-v1-1-b68ce4a35055@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmstat.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index 2370c6fb1fcd..2e94bd765606 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -2032,6 +2032,29 @@ static int vmstat_refresh(const struct ctl_table *table, int write,
+ }
+ #endif /* CONFIG_PROC_FS */
+ 
++/*
++ * Return a per-cpu delay that spreads vmstat_update work across the stat
++ * interval.  Without this, round_jiffies_relative() aligns every CPU's
++ * timer to the same second boundary, causing a thundering-herd on
++ * zone->lock when multiple CPUs drain PCP pages simultaneously via
++ * decay_pcp_high() -> free_pcppages_bulk().
++ */
++static unsigned long vmstat_spread_delay(void)
++{
++	unsigned long interval = sysctl_stat_interval;
++	unsigned int nr_cpus = num_online_cpus();
++
++	if (nr_cpus <= 1)
++		return round_jiffies_relative(interval);
++
++	/*
++	 * Spread per-cpu vmstat work evenly across the interval.  Don't
++	 * use round_jiffies_relative() here -- it would snap every CPU
++	 * back to the same second boundary, defeating the spread.
++	 */
++	return interval + (interval * (smp_processor_id() % nr_cpus)) / nr_cpus;
++}
++
+ static void vmstat_update(struct work_struct *w)
+ {
+ 	if (refresh_cpu_vm_stats(true)) {
+@@ -2042,7 +2065,7 @@ static void vmstat_update(struct work_struct *w)
+ 		 */
+ 		queue_delayed_work_on(smp_processor_id(), mm_percpu_wq,
+ 				this_cpu_ptr(&vmstat_work),
+-				round_jiffies_relative(sysctl_stat_interval));
++				vmstat_spread_delay());
+ 	}
+ }
+ 
+-- 
+2.47.3
+
