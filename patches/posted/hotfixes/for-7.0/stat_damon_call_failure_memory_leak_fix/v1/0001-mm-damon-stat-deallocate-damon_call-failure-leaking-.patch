@@ -1,0 +1,49 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org> # 6.17.x
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 31 Mar 2026 21:03:50 -0700
+Subject: [PATCH] mm/damon/stat: deallocate damon_call() failure leaking
+         damon_ctx
+
+DAMON_STAT does not deallocate its dynamically allocated damon_ctx
+object when damon_call() is failed.  As a result, the memory is leaked.
+Check the failure and deallocate the damon_ctx object.
+
+The issue was discovered [1] by sashiko.
+
+[1] https://lore.kernel.org/20260401012428.86694-1-sj@kernel.org
+
+Fixes: 405f61996d9d ("mm/damon/stat: use damon_call() repeat mode instead of damon_callback")
+Cc: <stable@vger.kernel.org> # 6.17.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/stat.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index 5a742fc157e4..30aeb2c207ec 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -257,7 +257,12 @@ static int damon_stat_start(void)
+ 
+ 	damon_stat_last_refresh_jiffies = jiffies;
+ 	call_control.data = damon_stat_context;
+-	return damon_call(damon_stat_context, &call_control);
++	err = damon_call(damon_stat_context, &call_control);
++	if (err) {
++		damon_destroy_ctx(damon_stat_context);
++		damon_stat_context = NULL;
++	}
++	return err;
+ }
+ 
+ static void damon_stat_stop(void)
+
+base-commit: 4fd04f750d79667937931314ed64c9d79b0d82ef
+-- 
+2.47.3
