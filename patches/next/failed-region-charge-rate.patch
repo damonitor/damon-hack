@@ -4,96 +4,85 @@ Subject: [PATCH] ==== failed region charge rate ====
 
 mm/damon: introduce DAMOS failed region quota charge ratio
 
-One common issue we get reported from DAMON users is that the progress
-speed of DAMOS is sometimes get much slower than expected.  For example,
-a group of users reported they tried to run DAMOS-based proactive memory
-reclamation with DAMOS quota of 100 MiB per second.  The users set the
-quota because they don't didn't want too radical change on the system.
-There was no running workload so they were pretty sure all memory is
-cold, and actually they were able to show the system reclaims about 100
-MiB memory per second.  But from a point, the reclamation speed was
-significantly dropping down time to time.
+TL; DR: Let users set different DAMOS quota charge ratio for DAMOS
+action failed regions, for deterministic and consistent DAMOS action
+progress.
 
-A theory that can easily explain this is that the quota was exceeded
-with memory that the reclamation was failed.  DAMOS tries to apply the
-user-requested action to all access pattern matching memory, up to the
-quota per quota interval (100 MiB per second in the above example).
-DAMON region is set by only access pattern, not based on other
-information like whether the memory is reclaimable or not.  Hence
-applying the DAMOS action to a DAMON region can fail for some parts of
-the region.
+One common issue we get reported from DAMON users is that DAMOS action
+applying progress speed is sometimes get much slower than expected.  And
+one commit root cause is that the DAMOS quota is exceeded by the action
+applying failed memory regions.
 
-Using DAMOS, users can apply specific system operation (DAMOS action) to
-memory regions having access pattern of their interests.  For example,
-reclaiming memory that not accessed for two minutes or longer.  On
-systems and workloads that have dynamic access pattern, static DAMOS
-target access pattern could impose unexpected radical impacts.
+Case Study: Unexpectedly Slow DAMON_RECLAIM
+===========================================
 
-To avoid such undesired aggressive behavior, DAMOS quota feature is
-introduced.  It allows users to set the upper-limit memory amount that
-the system operation action can be applied in a give time period.  In
-other words, it sets maximum aggressiveness of a given DAMOS scheme.
+For example, a group of users tried to run DAMOS-based proactive memory
+reclamation (DAMON_RECLAIM) with 100 MiB per second DAMOS quota.  They
+ran it on a system having no active workload which means all memory
+ofthe system is cold.  The expectation was that the system will show 100
+MiB per second reclamation until (nearly) all memory is reclaimed.  But
+what they found is that the speed is inconsistent under the 100 MiB per
+second speed, and sometimes it becomes very slower than their hope.
 
-DAMOS action is applied to all entity of memory region of the access
-pattern.  For some of the entity, however, the action can fail.  For
-example, pageout DAMOS action will fail for mlock()-ed pages in the
-region.  Meanwhile, all entities that the action was tried to be applied
-are samely charged for the quota, regardless of the successfulness of
-the attempt.
+By showing the number of DAMOS quota exceeds in real time via DAMOS
+stat, we found DAMOS quota is always exceeded when the speed is slow.
+By showing the amount of DAMOS action (reclamation in this case) failed
+regions in realtime, again via DAMOS stat, we found the reclamation
+attempts were nearly always failed when the speed is slow.
 
-The charging rule arguably makes DAMOS quota difficult to understand and
-finely control.  Let's suppose there is a system having 1 GiB memory,
-and the 500 MiB memory at the end of the physical address space is
-mlock()-ed.  Entire memory is cold, and the user runs DAMOS-based
-proactive reclamation with a quota, say, 100 MiB per second.  The user
-will see the system is reclaiming 100 MiB memory per second, for the
-first five seconds.  But, for the following five seconds, DAMOS will
-attempt to reclaim the cold memory of the mlock()-ed region, fail, and
-only up to 100 MiB per second.  From user's perspective, it would look
-like DAMOS stopped working.  If the mlock()-ed region is randomly
-scattered around, the progress of the reclamation would look only very
-unpredictable to the user's perspective.
+DAMOS quota samely charges DAMOS action tried regions regardless of the
+successfulness of the try.  Hence in the example reported case, there
+were unreclaimable memory spread around the system memory.  Sometimes
+nearly 100 MiB of memory that DAMOS was tried to reclaim in the given
+quota interval was reclaimable, and therefore showed nearly 100 MiB per
+second speed.  Sometimes nearly 99 MiB of memory that DAMOS was tried to
+reclaim in the given quota interval was unreclaimable, and therefore
+showing only about 1 MiB per reclaim speed.
 
-Someone coudl argue the quota is working as documented and designed.
-It also provides DAMOS stat, which shows amount of memory that applying
-the action was successful and failed.  The user can understand the
-situation by reading the stats.  That is, it is not a bug but a feature.
+We explained it is an expected behavior of the feature rather than a
+bug, as DAMOS quota is there for only upper-limit of the speed.  The
+users agreed and later reported a huge win from the adoption of
+DAMON_RECLAIM on their products.
 
-But, the stat feature is not really helpful in this situation.  Afte
-all, monitoring DAMOS stat is arguably additional work for the users.
-Also, the DAMOS action progress depends on not only the quota, but also
-the access pattern.  Users should suspect and investigate two factors to
-understand the situation.  In many case this is not very simple.  Even
-if users figure out the situation is due to the quota and action-failed
-memory, there is no many things that the user can easily do to change
-the situation.
+It is a Feature, But...
+=======================
 
-Worse yet, the behavior is not really helpful for the initial intent:
-aggressiveness.  The basic idea behine the current behavior was that,
-even for action-failed memory, some of the overhead may be induced, so
-better to charge the memory in an extent.  We simply started with an
-extent that is same to that for the action successfully applied memory.
-In the real world, however, the overhead for action failed regions is
-much smaller than that for action succeeded regions.  For the above
-example, for mlock()-ed pages, DAMOS will just see it is mlock()-ed and
-skip to next page.  Meanwhile, for action-successful memory, it will
-also check if it is mlcok()-ed, and do the costly pageout work.
+So nothing is broken.  DAMOS quota is working as intended, as the upper
+limit of the speed.  It also provides its behavior observability via
+DAMOS stat.  On the real world production environment that runs long
+term workloads and stability matters, sometimes slow speed is no real
+problem.
 
-So it still makes sense to charge some of the quota for the
-action-failed memory.  But, charging it same as the action-success
-memory is not fair.
+But, the non-deterministic behavior is sometimes annoying, especially on
+lab environment.  Even on realistic production environment, when there
+are huge amount of unreclaimable memory, the speed could be
+problematically slow.  Let's suppose a virtual machines provider that
+utilizes a system having multiple TiB of memory but providing 99% of the
+memory to virtual machines as hugetlb pages that cannot be reclaimed.
+When aim-oriented DAMOS auto-tuning is applied, this could also make the
+internal feedback loop confused.
 
-Let users set the charge ratio for the action-failed memory, by
-specifying the numerator and denominator of the ratio.  For example,
-let's suppose the ratio is set to 1/4,096.  A DAMOS scheme action is
-applied to 5 GiB memory.  For 1 GiB of the memory, the action is
+The intention of the current behavior was that trying DAMOS action to
+regions would anyway impose some overhead, and therefore somehow be
+charged.  But in the real world, the overhead for failed action
+is much lighter than succeeded action.  Charging those in same rate may
+unfair, or at least suboptimum in some environments.
+
+DAMOS Action Failed Region Quota Charge Rate
+============================================
+
+Let users set the charge ratio for the action-failed memory, for more
+optimal and deterministic use of DAMOS.  It allows users to specify the
+numerator and the denominator of the ratio for flexible setup.  For
+example, let's suppose the numerator and the denominator are set to 1
+and 4,096, respectively.  The ratio is 1 / 4,096.  A DAMOS scheme action
+is applied to 5 GiB memory.  For 1 GiB of the memory, the action is
 succeeded.  For the rest (4 GiB), the action is failed.  Then, only 1
 GiB and 1 MiB quota is charged.
 
 The optimal charge ratio will depend on the use case and
-system/workload.  I recommend to starting from 1/4,096, since must DAMOS
-actions are applied in page granularity, and many systems have 4 KiB
-page size.
+system/workload.  I believe nominator of value 1 and denominator of
+value PAGE_SIZE can be a good starting point, though.
 
 Tests
 =====
@@ -138,8 +127,8 @@ Note that the option was added to 'damo' after v3.1.9.
             ` # quota-charge only 1/4096 for pageout-failed regions ` \
             --damos_quota_fail_charge_ratio 1 4096
 
-As expected, the progress of the reclamation was nearly 100 MiB per
-second until the goal is achieved.
+The progress of the reclamation was nearly 100 MiB per second until the
+goal is achieved, met the expectation.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
