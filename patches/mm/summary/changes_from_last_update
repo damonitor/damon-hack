@@ -2,12 +2,17 @@
 - mm-hotfixes-stable: 3 -> 3 commits (no change)
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
-- mm-hotfixes-unstable: 1 -> 1 commits (no change)
+- mm-hotfixes-unstable: 1 -> 2 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 1 commits (no change)
-- mm-stable: 50 -> 53 commits
-  - series: 8 (43) -> 9 (46)
-    - no role, maintainer: 6 -> 9 commits
+    - maintainer, nobody: 1 -> 2 commits
+  - new commits
+    - 2b9c6f786a66 "mm/damon/stat: deallocate damon_call() failure leaking damon_ctx"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260402134418.74121-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260401012428.86694-1-sj@kernel.org [1]
+- mm-stable: 53 -> 53 commits (no change)
+  - series: 9 (46) -> 9 (46) (no change)
+    - no role, maintainer: 9 -> 9 commits (no change)
     - maintainer, nobody: 37 -> 37 commits (no change)
     - maintainer, no role : 7 -> 7 commits (no change)
   - changed commits
@@ -28,7 +33,7 @@
         - Link: https://lkml.kernel.org/r/20260321175427.86000-4-sj@kernel.org
         - Link: https://github.com/damonitor/damo [1]
 - mm-unstable: 8 -> 8 commits (no change)
-  - series: 3 (4) -> 3 (5)
+  - series: 3 (5) -> 3 (6)
     - no role, maintainer: 1 -> 1 commits (no change)
     - maintainer, nobody: 7 -> 7 commits (no change)
 - mm-new: 0 -> 0 commits (no change)

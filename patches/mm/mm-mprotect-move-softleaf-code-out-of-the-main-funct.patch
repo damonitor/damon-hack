@@ -1,8 +1,8 @@
 From: Pedro Falcato <pfalcato@suse.de>
-Date: Tue, 24 Mar 2026 15:43:41 +0000
+Date: Thu, 2 Apr 2026 15:16:27 +0100
 Subject: [PATCH] mm/mprotect: move softleaf code out of the main function
 
-Patch series "mm/mprotect: micro-optimization work", v2.
+Patch series "mm/mprotect: micro-optimization work", v3.
 
 Micro-optimize the change_protection functionality and the
 change_pte_range() routine.  This set of functions works in an incredibly
@@ -16,8 +16,8 @@ further, but could easily pessimize cases where large folios are mapped
 (which is not as rare as it seems, particularly when it comes to the page
 cache these days).
 
-The micro-benchmark used for the tests was [0] (usable using google/benchmark
-and g++ -O2 -lbenchmark repro.cpp)
+The micro-benchmark used for the tests was [0] (usable using
+google/benchmark and g++ -O2 -lbenchmark repro.cpp)
 
 This resulted in the following (first entry is baseline):
 
@@ -25,10 +25,10 @@ This resulted in the following (first entry is baseline):
 Benchmark               Time             CPU   Iterations
 ---------------------------------------------------------
 mprotect_bench      85967 ns        85967 ns         6935
-mprotect_bench      73374 ns        73373 ns         9602
+mprotect_bench      70684 ns        70684 ns         9887
 
 
-After the patchset we can observe a 14% speedup in mprotect.  Wonderful
+After the patchset we can observe an ~18% speedup in mprotect.  Wonderful
 for the elusive mprotect-based workloads!
 
 Testing & more ideas welcome.  I suspect there is plenty of improvement
@@ -48,14 +48,15 @@ Luke Yang reported [1]:
 : maximum of 55%, with most improvements showing around a 25% speed up in
 : the libmicro/mprot_tw4m micro benchmark.
 
+
 This patch (of 2):
 
 Move softleaf change_pte_range code into a separate function.  This makes
 the change_pte_range() function a good bit smaller, and lessens cognitive
 load when reading through the function.
 
-Link: https://lkml.kernel.org/r/20260324154342.156640-1-pfalcato@suse.de
-Link: https://lkml.kernel.org/r/20260324154342.156640-2-pfalcato@suse.de
+Link: https://lkml.kernel.org/r/20260402141628.3367596-1-pfalcato@suse.de
+Link: https://lkml.kernel.org/r/20260402141628.3367596-2-pfalcato@suse.de
 Link: https://lore.kernel.org/all/aY8-XuFZ7zCvXulB@luyang-thinkpadp1gen7.toromso.csb/
 Link: https://gist.github.com/heatd/1450d273005aba91fa5744f44dfcd933 [0]
 Link: https://lkml.kernel.org/r/CAL2CeBxT4jtJ+LxYb6=BNxNMGinpgD_HYH5gGxOP-45Q2OncqQ@mail.gmail.com [1]
@@ -67,18 +68,16 @@ Cc: Dev Jain <dev.jain@arm.com>
 Cc: Jann Horn <jannh@google.com>
 Cc: Jiri Hladky <jhladky@redhat.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
-Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/mprotect.c | 129 +++++++++++++++++++++++++++-----------------------
- 1 file changed, 69 insertions(+), 60 deletions(-)
+ mm/mprotect.c | 127 ++++++++++++++++++++++++++------------------------
+ 1 file changed, 67 insertions(+), 60 deletions(-)
 
 diff --git a/mm/mprotect.c b/mm/mprotect.c
-index 110d47a36d4b..a1d075ed6682 100644
+index 110d47a36d4b..86b9895afe72 100644
 --- a/mm/mprotect.c
 +++ b/mm/mprotect.c
-@@ -211,6 +211,74 @@ static void set_write_prot_commit_flush_ptes(struct vm_area_struct *vma,
+@@ -211,6 +211,72 @@ static void set_write_prot_commit_flush_ptes(struct vm_area_struct *vma,
  	commit_anon_folio_batch(vma, folio, page, addr, ptep, oldpte, ptent, nr_ptes, tlb);
  }
  
@@ -98,8 +97,7 @@ index 110d47a36d4b..a1d075ed6682 100644
 +		 * just be safe and disable write
 +		 */
 +		if (folio_test_anon(folio))
-+			entry = make_readable_exclusive_migration_entry(
-+					     swp_offset(entry));
++			entry = make_readable_exclusive_migration_entry(swp_offset(entry));
 +		else
 +			entry = make_readable_migration_entry(swp_offset(entry));
 +		newpte = swp_entry_to_pte(entry);
@@ -110,8 +108,7 @@ index 110d47a36d4b..a1d075ed6682 100644
 +		 * We do not preserve soft-dirtiness. See
 +		 * copy_nonpresent_pte() for explanation.
 +		 */
-+		entry = make_readable_device_private_entry(
-+					swp_offset(entry));
++		entry = make_readable_device_private_entry(swp_offset(entry));
 +		newpte = swp_entry_to_pte(entry);
 +		if (pte_swp_uffd_wp(oldpte))
 +			newpte = pte_swp_mkuffd_wp(newpte);
@@ -153,7 +150,7 @@ index 110d47a36d4b..a1d075ed6682 100644
  static long change_pte_range(struct mmu_gather *tlb,
  		struct vm_area_struct *vma, pmd_t *pmd, unsigned long addr,
  		unsigned long end, pgprot_t newprot, unsigned long cp_flags)
-@@ -317,66 +385,7 @@ static long change_pte_range(struct mmu_gather *tlb,
+@@ -317,66 +383,7 @@ static long change_pte_range(struct mmu_gather *tlb,
  				pages++;
  			}
  		} else  {

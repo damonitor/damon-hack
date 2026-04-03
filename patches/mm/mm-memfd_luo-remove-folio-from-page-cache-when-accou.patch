@@ -7,32 +7,33 @@ In memfd_luo_retrieve_folios(), when shmem_inode_acct_blocks() fails
 after successfully adding the folio to the page cache, the code jumps
 to unlock_folio without removing the folio from the page cache.
 
-This leaves the folio permanently abandoned in the page cache:
-- The folio was added via shmem_add_to_page_cache() which set up
-  mapping, index, and incremented nrpages/shmem stats.
-- folio_unlock() and folio_put() do not remove it from the cache.
-- folio_add_lru() was never called, so it cannot be reclaimed.
+While the folio eventually will be freed when the file is released by
+memfd_luo_retrieve(), it is a good idea to directly remove a folio that
+was not fully added to the file.  This avoids the possibility of
+accounting mismatches in shmem or filemap core.
 
-Fix by adding a remove_from_cache label that calls filemap_remove_folio()
-before unlocking, matching the error handling pattern in
-shmem_alloc_and_add_folio().
+Fix by adding a remove_from_cache label that calls
+filemap_remove_folio() before unlocking, matching the error handling
+pattern in shmem_alloc_and_add_folio().
 
-This issue was identified by the AI review.
+This issue was identified by AI review:
 https://sashiko.dev/#/patchset/20260323110747.193569-1-duanchenghao@kylinos.cn
 
+[pratyush@kernel.org: changelog alterations]
+  Link: https://lkml.kernel.org/r/2vxzzf3lfujq.fsf@kernel.org
 Link: https://lkml.kernel.org/r/20260326084727.118437-7-duanchenghao@kylinos.cn
 Signed-off-by: Chenghao Duan <duanchenghao@kylinos.cn>
+Reviewed-by: Pasha Tatashin <pasha.tatashin@soleen.com>
+Reviewed-by: Pratyush Yadav <pratyush@kernel.org>
 Cc: Haoran Jiang <jianghaoran@kylinos.cn>
 Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
-Cc: Pratyush Yadav <pratyush@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  mm/memfd_luo.c | 4 +++-
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/mm/memfd_luo.c b/mm/memfd_luo.c
-index d3f396bfc484..fe8427c42d4e 100644
+index eb611527dedd..b02b503c750d 100644
 --- a/mm/memfd_luo.c
 +++ b/mm/memfd_luo.c
 @@ -461,7 +461,7 @@ static int memfd_luo_retrieve_folios(struct file *file,

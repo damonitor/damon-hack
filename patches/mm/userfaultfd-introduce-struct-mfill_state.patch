@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Mon, 30 Mar 2026 13:11:03 +0300
+Date: Thu, 2 Apr 2026 07:11:43 +0300
 Subject: [PATCH] userfaultfd: introduce struct mfill_state
 
 mfill_atomic() passes a lot of parameters down to its callees.
@@ -18,7 +18,7 @@ hence shmem_mfill_atomic_pte() is not updated.
 [harry.yoo@oracle.com: properly initialize mfill_state.len to fix
                        folio_add_new_anon_rmap() WARN]
 Link: https://lkml.kernel.org/r/abehBY7QakYF9bK4@hyeyoo
-Link: https://lkml.kernel.org/r/20260330101116.1117699-3-rppt@kernel.org
+Link: https://lkml.kernel.org/r/20260402041156.1377214-3-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Signed-off-by: Harry Yoo <harry.yoo@oracle.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
@@ -26,6 +26,7 @@ Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Andrei Vagin <avagin@google.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Harry Yoo (Oracle) <harry@kernel.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: James Houghton <jthoughton@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
@@ -43,11 +44,11 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/userfaultfd.c | 148 ++++++++++++++++++++++++++---------------------
- 1 file changed, 82 insertions(+), 66 deletions(-)
+ mm/userfaultfd.c | 147 ++++++++++++++++++++++++++---------------------
+ 1 file changed, 81 insertions(+), 66 deletions(-)
 
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index 795bafb2c6cc..6105176a5cc8 100644
+index 795bafb2c6cc..a12a8411e85e 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
 @@ -20,6 +20,20 @@
@@ -254,18 +255,24 @@ index 795bafb2c6cc..6105176a5cc8 100644
  retry:
  	/*
  	 * Make sure the vma is not shared, that the dst range is
-@@ -790,12 +804,14 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -750,6 +764,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+ 		err = PTR_ERR(dst_vma);
+ 		goto out;
+ 	}
++	state.vma = dst_vma;
+ 
+ 	/*
+ 	 * If memory mappings are changing because of non-cooperative
+@@ -790,12 +805,12 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  	    uffd_flags_mode_is(flags, MFILL_ATOMIC_CONTINUE))
  		goto out_unlock;
  
 -	while (src_addr < src_start + len) {
 -		pmd_t dst_pmdval;
-+	state.vma = dst_vma;
- 
--		VM_WARN_ON_ONCE(dst_addr >= dst_start + len);
 +	while (state.src_addr < src_start + len) {
 +		VM_WARN_ON_ONCE(state.dst_addr >= dst_start + len);
-+
+ 
+-		VM_WARN_ON_ONCE(dst_addr >= dst_start + len);
 +		pmd_t dst_pmdval;
  
 -		dst_pmd = mm_alloc_pmd(dst_mm, dst_addr);
@@ -273,7 +280,7 @@ index 795bafb2c6cc..6105176a5cc8 100644
  		if (unlikely(!dst_pmd)) {
  			err = -ENOMEM;
  			break;
-@@ -827,34 +843,34 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -827,34 +842,34 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  		 * tables under us; pte_offset_map_lock() will deal with that.
  		 */
  
@@ -318,7 +325,7 @@ index 795bafb2c6cc..6105176a5cc8 100644
  			copied += PAGE_SIZE;
  
  			if (fatal_signal_pending(current))
-@@ -866,10 +882,10 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -866,10 +881,10 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  
  out_unlock:
  	up_read(&ctx->map_changing_lock);

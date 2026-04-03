@@ -2,15 +2,15 @@
 - mm-hotfixes-stable: 3 total, 1 (3) series, 0 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 3 commits
-- mm-hotfixes-unstable: 1 total, 0 (0) series, 1 non-series commits
+- mm-hotfixes-unstable: 2 total, 0 (0) series, 2 non-series commits
   - author/reviewer role stat
-    - maintainer, nobody: 1 commits
+    - maintainer, nobody: 2 commits
 - mm-stable: 53 total, 9 (46) series, 7 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 9 commits
     - maintainer, nobody: 37 commits
     - maintainer, no role : 7 commits
-- mm-unstable: 8 total, 3 (5) series, 3 non-series commits
+- mm-unstable: 8 total, 3 (6) series, 2 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 1 commits
     - maintainer, nobody: 7 commits

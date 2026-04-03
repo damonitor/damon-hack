@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Mon, 30 Mar 2026 13:11:05 +0300
+Date: Thu, 2 Apr 2026 07:11:45 +0300
 Subject: [PATCH] userfaultfd: introduce mfill_get_vma() and mfill_put_vma()
 
 Split the code that finds, locks and verifies VMA from mfill_atomic() into
@@ -13,7 +13,7 @@ map_changing_lock.
 
 [avagin@google.com: fix lock leak in mfill_get_vma()]
 Link: https://lkml.kernel.org/r/20260316173829.1126728-1-avagin@google.com
-Link: https://lkml.kernel.org/r/20260330101116.1117699-5-rppt@kernel.org
+Link: https://lkml.kernel.org/r/20260402041156.1377214-5-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Signed-off-by: Andrei Vagin <avagin@google.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
@@ -21,6 +21,7 @@ Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Harry Yoo <harry.yoo@oracle.com>
+Cc: Harry Yoo (Oracle) <harry@kernel.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: James Houghton <jthoughton@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
@@ -38,11 +39,11 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/userfaultfd.c | 126 ++++++++++++++++++++++++++++-------------------
- 1 file changed, 75 insertions(+), 51 deletions(-)
+ mm/userfaultfd.c | 125 ++++++++++++++++++++++++++++-------------------
+ 1 file changed, 75 insertions(+), 50 deletions(-)
 
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index 236a8326f5c8..bcba57dc1aee 100644
+index 3f7ed93020bc..bcba57dc1aee 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
 @@ -157,6 +157,75 @@ static void uffd_mfill_unlock(struct vm_area_struct *vma)
@@ -130,7 +131,7 @@ index 236a8326f5c8..bcba57dc1aee 100644
  	long copied = 0;
  	ssize_t err;
  
-@@ -783,57 +850,17 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -783,56 +850,17 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  	VM_WARN_ON_ONCE(dst_start + len <= dst_start);
  
  retry:
@@ -145,6 +146,7 @@ index 236a8326f5c8..bcba57dc1aee 100644
 +	if (err)
  		goto out;
 -	}
+-	state.vma = dst_vma;
 -
 -	/*
 -	 * If memory mappings are changing because of non-cooperative
@@ -187,12 +189,10 @@ index 236a8326f5c8..bcba57dc1aee 100644
 -	    uffd_flags_mode_is(flags, MFILL_ATOMIC_CONTINUE))
 -		goto out_unlock;
 -
--	state.vma = dst_vma;
--
  	while (state.src_addr < src_start + len) {
  		VM_WARN_ON_ONCE(state.dst_addr >= dst_start + len);
  
-@@ -852,8 +879,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -851,8 +879,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  		if (unlikely(err == -ENOENT)) {
  			void *kaddr;
  
@@ -202,7 +202,7 @@ index 236a8326f5c8..bcba57dc1aee 100644
  			VM_WARN_ON_ONCE(!state.folio);
  
  			kaddr = kmap_local_folio(state.folio, 0);
-@@ -882,9 +908,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -881,9 +908,7 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  			break;
  	}
  

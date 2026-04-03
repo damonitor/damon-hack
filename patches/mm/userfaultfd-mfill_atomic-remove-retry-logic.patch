@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Mon, 30 Mar 2026 13:11:12 +0300
+Date: Thu, 2 Apr 2026 07:11:52 +0300
 Subject: [PATCH] userfaultfd: mfill_atomic(): remove retry logic
 
 Since __mfill_atomic_pte() handles the retry for both anonymous and shmem,
@@ -8,7 +8,9 @@ in mfill_atomic().
 
 Drop the retry logic from mfill_atomic().
 
-Link: https://lkml.kernel.org/r/20260330101116.1117699-12-rppt@kernel.org
+[rppt@kernel.org: remove safety measure of not returning ENOENT from _copy]
+  Link: https://lkml.kernel.org/r/ac5zcDUY8CFHr6Lw@kernel.org
+Link: https://lkml.kernel.org/r/20260402041156.1377214-12-rppt@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Andrei Vagin <avagin@google.com>
@@ -16,6 +18,7 @@ Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Harry Yoo <harry.yoo@oracle.com>
+Cc: Harry Yoo (Oracle) <harry@kernel.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: James Houghton <jthoughton@google.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
@@ -33,11 +36,11 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/userfaultfd.c | 24 ------------------------
- 1 file changed, 24 deletions(-)
+ mm/userfaultfd.c | 27 ---------------------------
+ 1 file changed, 27 deletions(-)
 
 diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
-index 8cf90d614829..1a9f915584e2 100644
+index 8cf90d614829..397fb8c20f43 100644
 --- a/mm/userfaultfd.c
 +++ b/mm/userfaultfd.c
 @@ -29,7 +29,6 @@ struct mfill_state {
@@ -48,7 +51,17 @@ index 8cf90d614829..1a9f915584e2 100644
  	pmd_t *pmd;
  };
  
-@@ -899,7 +898,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -531,9 +530,6 @@ static int __mfill_atomic_pte(struct mfill_state *state,
+ 		ops->filemap_remove(folio, state->vma);
+ err_folio_put:
+ 	folio_put(folio);
+-	/* Don't return -ENOENT so that our caller won't retry */
+-	if (ret == -ENOENT)
+-		ret = -EFAULT;
+ 	return ret;
+ }
+ 
+@@ -899,7 +895,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  	VM_WARN_ON_ONCE(src_start + len <= src_start);
  	VM_WARN_ON_ONCE(dst_start + len <= dst_start);
  
@@ -56,7 +69,7 @@ index 8cf90d614829..1a9f915584e2 100644
  	err = mfill_get_vma(&state);
  	if (err)
  		goto out;
-@@ -926,26 +924,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -926,26 +921,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  		err = mfill_atomic_pte(&state);
  		cond_resched();
  
@@ -83,7 +96,7 @@ index 8cf90d614829..1a9f915584e2 100644
  		if (!err) {
  			state.dst_addr += PAGE_SIZE;
  			state.src_addr += PAGE_SIZE;
-@@ -960,8 +938,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
+@@ -960,8 +935,6 @@ static __always_inline ssize_t mfill_atomic(struct userfaultfd_ctx *ctx,
  
  	mfill_put_vma(&state);
  out:
