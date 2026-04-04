@@ -16,9 +16,9 @@ flexible way, by setting the numerator and the denominator.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- include/linux/damon.h | 9 +++++++++
- mm/damon/core.c       | 9 ++++++++-
- 2 files changed, 17 insertions(+), 1 deletion(-)
+ include/linux/damon.h |  9 +++++++++
+ mm/damon/core.c       | 21 ++++++++++++++++++++-
+ 2 files changed, 29 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 4b69f4553267d..9ab7331775b9e 100644
@@ -55,7 +55,7 @@ index 4b69f4553267d..9ab7331775b9e 100644
  	unsigned int weight_nr_accesses;
  	unsigned int weight_age;
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index fe5a4a8d5b294..4cbf664c52021 100644
+index fe5a4a8d5b294..fdeab474b7456 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -918,6 +918,8 @@ static int damos_commit_quota(struct damos_quota *dst, struct damos_quota *src)
@@ -67,17 +67,36 @@ index fe5a4a8d5b294..4cbf664c52021 100644
  	dst->weight_sz = src->weight_sz;
  	dst->weight_nr_accesses = src->weight_nr_accesses;
  	dst->weight_age = src->weight_age;
-@@ -2098,7 +2100,12 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -2042,6 +2044,23 @@ static void damos_walk_cancel(struct damon_ctx *ctx)
+ 	mutex_unlock(&ctx->walk_control_lock);
+ }
+ 
++static void damos_charge_quota(struct damos_quota *quota,
++		unsigned long sz_region, unsigned long sz_applied)
++{
++	/*
++	 * sz_applied could be bigger than sz_region, depending on ops
++	 * implementation of the action, e.g., damos_pa_pageout().  Charge only
++	 * the region size in the case.
++	 */
++	if (!quota->fail_charge_denom || sz_applied > sz_region)
++		quota->charged_sz += sz_region;
++	else
++		quota->charged_sz += sz_applied + mult_frac(
++				(sz_region - sz_applied),
++				quota->fail_charge_num,
++				quota->fail_charge_denom);
++}
++
+ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s)
+ {
+@@ -2098,7 +2117,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		ktime_get_coarse_ts64(&end);
  		quota->total_charged_ns += timespec64_to_ns(&end) -
  			timespec64_to_ns(&begin);
 -		quota->charged_sz += sz;
-+		if (quota->fail_charge_denom)
-+			quota->charged_sz += sz_applied +
-+				(sz - sz_applied) * quota->fail_charge_num /
-+				quota->fail_charge_denom;
-+		else
-+			quota->charged_sz += sz;
++		damos_charge_quota(quota, sz, sz_applied);
  		if (damos_quota_is_set(quota) &&
  				quota->charged_sz >= quota->esz) {
  			quota->charge_target_from = t;
