@@ -1,0 +1,71 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Fri, 3 Apr 2026 17:08:02 +0800
+Subject: [PATCH] ocfs2: validate extent block list fields during block read
+
+Add extent list validation to ocfs2_validate_extent_block() so that
+corrupted on-disk fields are caught early at block read time rather than
+during extent tree traversal.
+
+Two checks are added:
+
+  - l_count must equal the expected value from
+    ocfs2_extent_recs_per_eb(), catching blocks with a corrupted record
+    count before any array iteration.
+
+  - l_next_free_rec must not exceed l_count, preventing out-of-bounds
+    access when iterating over extent records.
+
+Link: https://lkml.kernel.org/r/20260403090803.3860971-4-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Jun Piao <piaojun@huawei.com>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/alloc.c | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/alloc.c b/fs/ocfs2/alloc.c
+index 344fd4d95fbc..8639806bcbb8 100644
+--- a/fs/ocfs2/alloc.c
++++ b/fs/ocfs2/alloc.c
+@@ -917,11 +917,32 @@ static int ocfs2_validate_extent_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	if (le32_to_cpu(eb->h_fs_generation) != OCFS2_SB(sb)->fs_generation)
++	if (le32_to_cpu(eb->h_fs_generation) != OCFS2_SB(sb)->fs_generation) {
+ 		rc = ocfs2_error(sb,
+ 				 "Extent block #%llu has an invalid h_fs_generation of #%u\n",
+ 				 (unsigned long long)bh->b_blocknr,
+ 				 le32_to_cpu(eb->h_fs_generation));
++		goto bail;
++	}
++
++	if (le16_to_cpu(eb->h_list.l_count) != ocfs2_extent_recs_per_eb(sb)) {
++		rc = ocfs2_error(sb,
++				 "Extent block #%llu has invalid l_count %u (expected %u)\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(eb->h_list.l_count),
++				 ocfs2_extent_recs_per_eb(sb));
++		goto bail;
++	}
++
++	if (le16_to_cpu(eb->h_list.l_next_free_rec) > le16_to_cpu(eb->h_list.l_count)) {
++		rc = ocfs2_error(sb,
++				 "Extent block #%llu has invalid l_next_free_rec %u (l_count %u)\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(eb->h_list.l_next_free_rec),
++				 le16_to_cpu(eb->h_list.l_count));
++		goto bail;
++	}
++
+ bail:
+ 	return rc;
+ }
+-- 
+2.47.3
+

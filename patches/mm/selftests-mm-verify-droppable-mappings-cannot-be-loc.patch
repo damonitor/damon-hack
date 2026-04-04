@@ -1,18 +1,19 @@
 From: Anthony Yznaga <anthony.yznaga@oracle.com>
-Date: Wed, 1 Apr 2026 17:34:17 -0700
+Date: Thu, 2 Apr 2026 16:59:33 -0700
 Subject: [PATCH] selftests/mm: verify droppable mappings cannot be locked
 
-For configs that support MAP_DROPPABLE verify that a mapping created with
-MAP_DROPPABLE cannot be locked via mlock(), and that it will not be locked
-if it's created after mlockall(MCL_FUTURE).
+For configs that support MAP_DROPPABLE verify that a mapping created
+with MAP_DROPPABLE cannot be locked via mlock(), and that it will not
+be locked if it's created after mlockall(MCL_FUTURE).
 
-Link: https://lkml.kernel.org/r/20260402003417.438037-3-anthony.yznaga@oracle.com
+Link: https://lkml.kernel.org/r/20260402235933.10588-3-anthony.yznaga@oracle.com
 Signed-off-by: Anthony Yznaga <anthony.yznaga@oracle.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Jason A. Donenfeld <jason@zx2c4.com>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Pedro Falcato <pfalcato@suse.de>
@@ -21,11 +22,11 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/mlock2-tests.c | 91 ++++++++++++++++++++---
- 1 file changed, 82 insertions(+), 9 deletions(-)
+ tools/testing/selftests/mm/mlock2-tests.c | 87 ++++++++++++++++++++---
+ 1 file changed, 78 insertions(+), 9 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/mlock2-tests.c b/tools/testing/selftests/mm/mlock2-tests.c
-index b474f2b20def..2750a3d6e8e4 100644
+index b474f2b20def..353d0e5daa44 100644
 --- a/tools/testing/selftests/mm/mlock2-tests.c
 +++ b/tools/testing/selftests/mm/mlock2-tests.c
 @@ -1,6 +1,7 @@
@@ -77,7 +78,7 @@ index b474f2b20def..2750a3d6e8e4 100644
  	munmap(map, 2 * page_size);
  }
  
-@@ -336,7 +340,74 @@ static void test_munlockall1(void)
+@@ -336,7 +340,70 @@ static void test_munlockall1(void)
  		ksft_exit_fail_msg("munlockall() %s\n", strerror(errno));
  	}
  
@@ -97,28 +98,26 @@ index b474f2b20def..2750a3d6e8e4 100644
 +	/*
 +	 * Ensure MCL_FUTURE is not set.
 +	 */
-+	if (mlockall(MCL_CURRENT))
-+		ksft_exit_fail_msg("mlockall(MCL_CURRENT): %s\n", strerror(errno));
-+	if (munlockall())
-+		ksft_exit_fail_msg("munlockall() %s\n", strerror(errno));
++	if (munlockall()) {
++		ksft_test_result_fail("munlockall() %s\n", strerror(errno));
++		return;
++	}
 +
 +	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
 +		   MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
 +	if (map == MAP_FAILED) {
-+		if (errno == EOPNOTSUPP) {
++		if (errno == EOPNOTSUPP)
 +			ksft_test_result_skip("%s: MAP_DROPPABLE not supported\n", __func__);
-+			return;
-+		}
-+		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++		else
++			ksft_test_result_fail("mmap error: %s\n", strerror(errno));
++		return;
 +	}
 +
-+	if (mlock2_(map, 2 * page_size, 0)) {
-+		munmap(map, 2 * page_size);
-+		ksft_exit_fail_msg("mlock2(0): %s\n", strerror(errno));
-+	}
-+
-+	ksft_test_result(!unlock_lock_check(map, false), "%s: droppable memory not locked\n",
-+			__func__);
++	if (mlock2_(map, 2 * page_size, 0))
++		ksft_test_result_fail("mlock2(0): %s\n", strerror(errno));
++	else
++		ksft_test_result(!unlock_lock_check(map, false),
++				"%s: droppable memory not locked\n", __func__);
 +
 +	munmap(map, 2 * page_size);
 +}
@@ -128,32 +127,30 @@ index b474f2b20def..2750a3d6e8e4 100644
 +	char *map;
 +	unsigned long page_size = getpagesize();
 +
-+	if (mlockall(MCL_CURRENT | MCL_FUTURE))
-+		ksft_exit_fail_msg("mlockall(MCL_CURRENT | MCL_FUTURE): %s\n", strerror(errno));
++	if (mlockall(MCL_CURRENT | MCL_FUTURE)) {
++		ksft_test_result_fail("mlockall(MCL_CURRENT | MCL_FUTURE): %s\n", strerror(errno));
++		return;
++	}
 +
 +	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
 +		   MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
 +
 +	if (map == MAP_FAILED) {
-+		if (errno == EOPNOTSUPP) {
++		if (errno == EOPNOTSUPP)
 +			ksft_test_result_skip("%s: MAP_DROPPABLE not supported\n", __func__);
-+			return;
-+		}
-+		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++		else
++			ksft_test_result_fail("mmap error: %s\n", strerror(errno));
++		return;
 +	}
 +
 +	ksft_test_result(!unlock_lock_check(map, false), "%s: droppable memory not locked\n",
 +			__func__);
 +
-+	if (munlockall()) {
-+		munmap(map, 2 * page_size);
-+		ksft_exit_fail_msg("munlockall() %s\n", strerror(errno));
-+	}
-+
++	munlockall();
  	munmap(map, 2 * page_size);
  }
  
-@@ -442,7 +513,7 @@ int main(int argc, char **argv)
+@@ -442,7 +509,7 @@ int main(int argc, char **argv)
  
  	munmap(map, size);
  
@@ -162,7 +159,7 @@ index b474f2b20def..2750a3d6e8e4 100644
  
  	test_mlock_lock();
  	test_mlock_onfault();
-@@ -451,6 +522,8 @@ int main(int argc, char **argv)
+@@ -451,6 +518,8 @@ int main(int argc, char **argv)
  	test_lock_onfault_of_present();
  	test_vma_management(true);
  	test_mlockall();

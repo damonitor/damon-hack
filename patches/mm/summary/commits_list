@@ -20,11 +20,11 @@
   - author/reviewer role stat
     - maintainer, nobody: 2 commits
   - full commits list
-    - 4702667cc751 "mm/damon/sysfs: dealloc repeat_call_control if damon_call() fails"
+    - bba9070e4f7b "mm/damon/sysfs: dealloc repeat_call_control if damon_call() fails"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260327003224.55752-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260320020630.962-1-sj@kernel.org [1]
-    - aee64f18cdc9 "mm/damon/stat: deallocate damon_call() failure leaking damon_ctx"
+    - 8e4aef2d21a0 "mm/damon/stat: deallocate damon_call() failure leaking damon_ctx"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260402134418.74121-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260401012428.86694-1-sj@kernel.org [1]
@@ -229,38 +229,38 @@
     - maintainer, nobody: 7 commits
   - full commits list
     - series "mm/damon/core: fix damon_call()/damos_walk() vs kdmond exit race". (2 commits)
-      - b1666bff8808 "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
+      - 4b91608ef289 "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260327233319.3528-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260327233319.3528-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-      - 5cf64d77121e "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
+      - 6060000bf8b9 "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260327233319.3528-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-    - cfa6c2a7446d "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
+    - 4775f67ce321 "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260331101553.88422-1-liu.yun@linux.dev
     - series "mm/damon/core: validate damos_quota_goal->nid". (2 commits)
-      - 655d57670703 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
+      - 5688b9bbfaf3 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329043902.46163-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325073034.140353-1-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260327040924.68553-1-sj@kernel.org [2]
-      - 9f3b7cafe695 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
+      - 574eb63ba707 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329043902.46163-3-sj@kernel.org
-    - 07a320a5f626 "mm/damon/core: use time_in_range_open() for damos quota window start"
+    - 3dc9f2bcf0bd "mm/damon/core: use time_in_range_open() for damos quota window start"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260329152306.45796-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260324040722.57944-1-sj@kernel.org [1]
     - series "Docs/admin-guide/mm/damon: warn commit_inputs vs other params race". (2 commits)
-      - 7d900995ed12 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
+      - 31f57131a3e2 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329153052.46657-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-3-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [3]
-      - fc21ce260fdf "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
+      - 2475536b8b76 "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329153052.46657-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [1]
