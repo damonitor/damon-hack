@@ -1,4 +1,4 @@
-- baseline: v7.0-rc5-46-g24f9515de877 -> v7.0-rc5-46-g24f9515de8778
+- baseline: v7.0-rc5-46-g24f9515de8778 -> v7.0-rc5-46-g24f9515de8778 (no change)
 - mm-hotfixes-stable: 3 -> 3 commits (no change)
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
@@ -12,16 +12,16 @@
     - maintainer, no role : 7 -> 7 commits (no change)
   - changed commits
     - series "mm/damon/sysfs: fix memory leak and NULL dereference issues", v4. (3)
-      - be0d38762a44 "mm/damon/sysfs: fix param_ctx leak on damon_sysfs_new_test_ctx() failure (0/3)"
+      - eb1074ece72f "mm/damon/sysfs: fix param_ctx leak on damon_sysfs_new_test_ctx() failure (0/3)"
         - Authored by no role player, reviewed by a maintainer
         - branch: mm-hotfixes-stable -> mm-stable
         - Link: https://lkml.kernel.org/r/20260321175427.86000-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260321175427.86000-2-sj@kernel.org
-      - ebeda8d94fda "mm/damon/sysfs: check contexts->nr before accessing contexts_arr[0] (1/3)"
+      - a12479ed43b3 "mm/damon/sysfs: check contexts->nr before accessing contexts_arr[0] (1/3)"
         - Authored by no role player, reviewed by a maintainer
         - branch: mm-hotfixes-stable -> mm-stable
         - Link: https://lkml.kernel.org/r/20260321175427.86000-3-sj@kernel.org
-      - 34657eef2918 "mm/damon/sysfs: check contexts->nr in repeat_call_fn (2/3)"
+      - d0bde8e2f3d2 "mm/damon/sysfs: check contexts->nr in repeat_call_fn (2/3)"
         - Authored by no role player, reviewed by a maintainer
         - branch: mm-hotfixes-stable -> mm-stable
         - Link: https://patch.msgid.link/20260320163559.178101-3-objecting@objecting.org
