@@ -1,0 +1,96 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 5.16.x
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 5 Apr 2026 14:22:17 -0700
+Subject: [RFC PATCH] mm/damon/core: avoid time-quota permanently disabling
+         scheme
+
+When the throughput of a DAMOS scheme is very slow, DAMOS time quota can
+make the effective size quota smaller than damon_ctx->min_region_sz.  In
+the case, damos_apply_scheme() will skip applying the action, because
+the action is tried at region level, which requires >=min_region_sz
+size.  That is, the quota is effectively exceeded for the quota charge
+window.
+
+Because no action will be applied, the total_charged_sz and
+total_charged_ns are also not updated.  damos_set_effective_quota() will
+try to update the effective size quota before starting the next charge
+window.  However, because the total_charged_sz and total_charged_ns have
+not updated, the throughput and effective size quota are also not
+changed.  Since effective size quota can only be decreased, other
+effective size quota update factors including DAMOS quota goals and size
+quota cannot make any change, either.
+
+As a result, the scheme is unexpectedly deactivated until the user
+notices and mitigates the situation.  The users can mitigate this
+situation by changing the time quota online or re-install the scheme.
+While the mitigation is somewhat straightforward, finding the situation
+would be challenging, because DAMON is not providing good
+observabilities for that.  Even if such observability is provided, doing
+the additional monitoring and the mitigation is somewhat cumbersome and
+not aligned to the intention of the time quota.  The time quota was
+intended to help reduce the user's administration overhead.
+
+Fix the problem by setting time quota-modified effective size quota be
+at least min_region_sz always.
+
+The issue was discovered [1] by sashiko.
+
+[1] https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org
+
+Fixes: 1cd243030059 ("mm/damon/schemes: implement time quota")
+Cc: <stable@vger.kernel.org> # 5.16.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 3bc7a2bbfe7de..12544c60531d3 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2384,7 +2384,8 @@ static void damos_goal_tune_esz_bp_temporal(struct damos_quota *quota)
+ /*
+  * Called only if quota->ms, or quota->sz are set, or quota->goals is not empty
+  */
+-static void damos_set_effective_quota(struct damos_quota *quota)
++static void damos_set_effective_quota(struct damos_quota *quota,
++		struct damon_ctx *ctx)
+ {
+ 	unsigned long throughput;
+ 	unsigned long esz = ULONG_MAX;
+@@ -2409,6 +2410,7 @@ static void damos_set_effective_quota(struct damos_quota *quota)
+ 		else
+ 			throughput = PAGE_SIZE * 1024;
+ 		esz = min(throughput * quota->ms, esz);
++		esz = max(ctx->min_region_sz, esz);
+ 	}
+ 
+ 	if (quota->sz && quota->sz < esz)
+@@ -2445,7 +2447,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 	/* First charge window */
+ 	if (!quota->total_charged_sz && !quota->charged_from) {
+ 		quota->charged_from = jiffies;
+-		damos_set_effective_quota(quota);
++		damos_set_effective_quota(quota, c);
+ 	}
+ 
+ 	/* New charge window starts */
+@@ -2460,7 +2462,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 		quota->charged_sz = 0;
+ 		if (trace_damos_esz_enabled())
+ 			cached_esz = quota->esz;
+-		damos_set_effective_quota(quota);
++		damos_set_effective_quota(quota, c);
+ 		if (trace_damos_esz_enabled() && quota->esz != cached_esz)
+ 			damos_trace_esz(c, s, quota);
+ 	}
+
+base-commit: 8c08ea3625d4fa8c1c74b208c0c630fce76e14a9
+-- 
+2.47.3
