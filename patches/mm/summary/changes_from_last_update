@@ -1,22 +1,16 @@
 - baseline: v7.0-rc5-46-g24f9515de8778 -> v7.0-rc5-46-g24f9515de8778 (no change)
-- mm-hotfixes-stable: 3 -> 5 commits
+- mm-hotfixes-stable: 5 -> 5 commits (no change)
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
-    - maintainer, nobody: 0 -> 2 commits
-  - changed commits
-    - 0199390a6b92 "mm/damon/sysfs: dealloc repeat_call_control if damon_call() fails"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: https://lkml.kernel.org/r/20260327003224.55752-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260320020630.962-1-sj@kernel.org [1]
-    - 4c04c6b47c36 "mm/damon/stat: deallocate damon_call() failure leaking damon_ctx"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: https://lkml.kernel.org/r/20260402134418.74121-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260401012428.86694-1-sj@kernel.org [1]
-- mm-hotfixes-unstable: 2 -> 0 commits
+    - maintainer, nobody: 2 -> 2 commits (no change)
+- mm-hotfixes-unstable: 0 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 0 commits
+    - maintainer, nobody: 0 -> 1 commits
+  - new commits
+    - ca3fefe345ae "mm/damon/core: disallow time-quota setting zero esz"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lkml.kernel.org/r/20260407003153.79589-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org [1]
 - mm-stable: 53 -> 53 commits (no change)
   - series: 9 (46) -> 9 (46) (no change)
     - no role, maintainer: 9 -> 9 commits (no change)
