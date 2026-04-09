@@ -21,14 +21,14 @@ having less than min_region_sz remaining quota as fully charged.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 17 +++++++++++------
- 1 file changed, 11 insertions(+), 6 deletions(-)
+ mm/damon/core.c | 23 +++++++++++++++++------
+ 1 file changed, 17 insertions(+), 6 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index e680716972506..2a2f767d1a46e 100644
+index e680716972506..c7d05d2385fe8 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2042,6 +2042,14 @@ static void damos_walk_cancel(struct damon_ctx *ctx)
+@@ -2042,6 +2042,20 @@ static void damos_walk_cancel(struct damon_ctx *ctx)
  	mutex_unlock(&ctx->walk_control_lock);
  }
  
@@ -37,13 +37,19 @@ index e680716972506..2a2f767d1a46e 100644
 +{
 +	if (!damos_quota_is_set(quota))
 +		return false;
-+	return quota->charged_sz + min_region_sz > quota->esz;
++	if (quota->charged_sz >= quota->esz)
++		return true;
++	/*
++	 * DAMOS action is applied per region, so <min_region_sz remaining
++	 * quota means the quota is effectively full.
++	 */
++	return quota->esz - quota->charged_sz < min_region_sz;
 +}
 +
  static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		struct damon_region *r, struct damos *s)
  {
-@@ -2099,8 +2107,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -2099,8 +2113,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  		quota->total_charged_ns += timespec64_to_ns(&end) -
  			timespec64_to_ns(&begin);
  		quota->charged_sz += sz;
@@ -53,7 +59,7 @@ index e680716972506..2a2f767d1a46e 100644
  			quota->charge_target_from = t;
  			quota->charge_addr_from = r->ar.end + 1;
  		}
-@@ -2128,8 +2135,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+@@ -2128,8 +2141,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
  			continue;
  
  		/* Check the quota */
@@ -63,7 +69,7 @@ index e680716972506..2a2f767d1a46e 100644
  			continue;
  
  		if (damos_skip_charged_region(t, r, s, c->min_region_sz))
-@@ -2455,8 +2461,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+@@ -2455,8 +2467,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
  	if (!time_in_range_open(jiffies, quota->charged_from,
  				quota->charged_from +
  				msecs_to_jiffies(quota->reset_interval))) {

@@ -3,14 +3,24 @@ Date: Wed, 8 Apr 2026 22:10:23 -0700
 Subject: [PATCH] mm/damon/core: merge quota-sliced regions back
 
 damos_apply_scheme() splits the given region to avoid applying action to
-more than the quota-limit.  This could result in violating
-max_nr_regions limit.  The consequence is DAMON inducing overhead higher
-than the user-set limit.
+the region results in applying action to more than the quota limit
+memory.  When such a split happens multiple times, theoretically that
+could result in violating the user-set max_nr_regions limit.  If that
+happens, DAMON could impose overhead larger than the max_nr_regions
+based expectation.
 
-The impact should be negligible because only up to the number of schemes
-more regions could be added.  But the following commit will allow the
-action-failed region to be charged in a different ratio.  As a result,
-the split operation could be made much more frequently.
+Such cases should be rare since usually the real number of DAMON regions
+are much lower than the max_nr_regions.  Even if it happens, because the
+split operations could be made only up to the number of schemes per
+scheme apply interval, the impact will be negligible.  The impact could
+be higher after the following commit, though.  The following commit will
+allow the action-failed region to be charged in a different (less than
+region size) ratio.  As a result, the split operation could be made more
+frequently in a corner case.
+
+Still it is a theoretical corner case.  But it would still be better to
+be avoided unless it causes other issues, as max_nr_regions is one of
+the important user parameters.
 
 Avoid the violation and resulting overhead by merging the sliced regions
 back, as soon as the schemes handling for the slices are done.
@@ -21,10 +31,10 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 28 insertions(+), 4 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 2a2f767d1a46e..89b155b31ee28 100644
+index c7d05d2385fe8..98ee776d98cd0 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2153,6 +2153,33 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+@@ -2159,6 +2159,33 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
  	}
  }
  
@@ -58,7 +68,7 @@ index 2a2f767d1a46e..89b155b31ee28 100644
  /*
   * damon_feed_loop_next_input() - get next input to achieve a target score.
   * @last_input	The last input.
-@@ -2522,7 +2549,6 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
+@@ -2528,7 +2555,6 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
  static void kdamond_apply_schemes(struct damon_ctx *c)
  {
  	struct damon_target *t;
@@ -66,7 +76,7 @@ index 2a2f767d1a46e..89b155b31ee28 100644
  	struct damos *s;
  	bool has_schemes_to_apply = false;
  
-@@ -2545,9 +2571,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -2551,9 +2577,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  	damon_for_each_target(t, c) {
  		if (c->ops.target_valid && c->ops.target_valid(t) == false)
  			continue;
