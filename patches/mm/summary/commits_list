@@ -29,7 +29,7 @@
   - author/reviewer role stat
     - maintainer, nobody: 1 commits
   - full commits list
-    - ca3fefe345ae "mm/damon/core: disallow time-quota setting zero esz"
+    - 0d8afbfa01bf "mm/damon/core: disallow time-quota setting zero esz"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260407003153.79589-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org [1]
@@ -234,38 +234,38 @@
     - maintainer, nobody: 7 commits
   - full commits list
     - series "mm/damon/core: fix damon_call()/damos_walk() vs kdmond exit race". (2 commits)
-      - f7d995bd6e5b "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
+      - a84f1dd200d2 "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260327233319.3528-1-sj@kernel.org
         - Link: https://lkml.kernel.org/r/20260327233319.3528-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-      - 965f102ca4bb "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
+      - 81fdf413bee4 "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260327233319.3528-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-    - dab63c62a33f "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
+    - 5c3209146eb7 "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lkml.kernel.org/r/20260331101553.88422-1-liu.yun@linux.dev
     - series "mm/damon/core: validate damos_quota_goal->nid". (2 commits)
-      - fa6376df2f54 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
+      - 34dc2717d450 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329043902.46163-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325073034.140353-1-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260327040924.68553-1-sj@kernel.org [2]
-      - 21aba0c3b3b5 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
+      - 6f1ebe39a755 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329043902.46163-3-sj@kernel.org
-    - 7ec01eee7e4f "mm/damon/core: use time_in_range_open() for damos quota window start"
+    - 90100fbbb9fc "mm/damon/core: use time_in_range_open() for damos quota window start"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260329152306.45796-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260324040722.57944-1-sj@kernel.org [1]
     - series "Docs/admin-guide/mm/damon: warn commit_inputs vs other params race". (2 commits)
-      - 67eecf58d04e "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
+      - f456231711a2 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329153052.46657-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-3-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [3]
-      - 11c35252c8da "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
+      - 514d7bb0d7d1 "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lkml.kernel.org/r/20260329153052.46657-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [1]

@@ -3,14 +3,9 @@
   - series: 1 (3) -> 1 (3) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
     - maintainer, nobody: 2 -> 2 commits (no change)
-- mm-hotfixes-unstable: 0 -> 1 commits
+- mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - ca3fefe345ae "mm/damon/core: disallow time-quota setting zero esz"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lkml.kernel.org/r/20260407003153.79589-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org [1]
+    - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-stable: 53 -> 53 commits (no change)
   - series: 9 (46) -> 9 (46) (no change)
     - no role, maintainer: 9 -> 9 commits (no change)
