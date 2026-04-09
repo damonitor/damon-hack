@@ -1,0 +1,87 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Thu, 9 Apr 2026 05:26:36 -0700
+Subject: [PATCH] mm/vmstat: fix vmstat_shepherd double-scheduling
+ vmstat_update
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+vmstat_shepherd uses delayed_work_pending() to check whether vmstat_update
+is already scheduled for a given CPU before queuing it.  However,
+delayed_work_pending() only tests WORK_STRUCT_PENDING_BIT, which is
+cleared the moment a worker thread picks up the work to execute it.
+
+This means that while vmstat_update is actively running on a CPU,
+delayed_work_pending() returns false.  If need_update() also returns true
+at that point (per-cpu counters not yet zeroed mid-flush), the shepherd
+queues a second invocation with delay=0, causing vmstat_update to run
+again immediately after finishing.
+
+On a 72-CPU system this race is readily observable: before the fix, many
+CPUs show invocation gaps well below 500 jiffies (the minimum
+round_jiffies_relative() can produce), with the most extreme cases
+reaching 0 jiffies—vmstat_update called twice within the same jiffy.
+
+Fix this by replacing delayed_work_pending() with work_busy(), which
+returns non-zero for both WORK_BUSY_PENDING (timer armed or work queued)
+and WORK_BUSY_RUNNING (work currently executing).  The shepherd now
+correctly skips a CPU in all busy states.
+
+After the fix, all sub-jiffy and most sub-100-jiffie gaps disappear.  The
+remaining early invocations have gaps in the 700–999 jiffie range,
+attributable to round_jiffies_relative() aligning to a nearer
+jiffie-second boundary rather than to this race.
+
+Each spurious vmstat_update invocation has a measurable side effect:
+refresh_cpu_vm_stats() calls decay_pcp_high() for every zone, which drains
+idle per-CPU pages back to the buddy allocator via free_pcppages_bulk(),
+taking the zone spinlock each time.  Eliminating the double-scheduling
+therefore reduces zone lock contention directly.  On a 72-CPU stress-ng
+workload measured with perf lock contention:
+
+  free_pcppages_bulk contention count:  ~55% reduction
+  free_pcppages_bulk total wait time:   ~57% reduction
+  free_pcppages_bulk max wait time:     ~47% reduction
+
+Note: work_busy() is inherently racy—between the check and the
+subsequent queue_delayed_work_on() call, vmstat_update can finish
+execution, leaving the work neither pending nor running.  In that narrow
+window the shepherd can still queue a second invocation.  After the fix,
+this residual race is rare and produces only occasional small gaps, a
+significant improvement over the systematic double-scheduling seen with
+delayed_work_pending().
+
+Link: https://lkml.kernel.org/r/20260409-vmstat-v2-1-e9d9a6db08ad@debian.org
+Fixes: 7b8da4c7f07774 ("vmstat: get rid of the ugly cpu_stat_off variable")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmstat.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index 2370c6fb1fcd6..cc5fdc0d0f298 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -2139,7 +2139,7 @@ static void vmstat_shepherd(struct work_struct *w)
+ 			if (cpu_is_isolated(cpu))
+ 				continue;
+ 
+-			if (!delayed_work_pending(dw) && need_update(cpu))
++			if (!work_busy(&dw->work) && need_update(cpu))
+ 				queue_delayed_work_on(cpu, mm_percpu_wq, dw, 0);
+ 		}
+ 
+-- 
+2.47.3
+
