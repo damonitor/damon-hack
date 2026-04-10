@@ -27,31 +27,28 @@ back, as soon as the schemes handling for the slices are done.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 32 ++++++++++++++++++++++++++++----
- 1 file changed, 28 insertions(+), 4 deletions(-)
+ mm/damon/core.c | 39 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 35 insertions(+), 4 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index c7d05d2385fe8..98ee776d98cd0 100644
+index c7d05d2385fe8..b0f673efc53c8 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -2159,6 +2159,33 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+@@ -2159,6 +2159,40 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
  	}
  }
  
 +static void damos_apply_target(struct damon_ctx *c, struct damon_target *t)
 +{
-+	struct damon_region *r, *next, *orig_region = NULL;
++	struct damon_region *r, *orig_region = NULL;
 +	unsigned long orig_end_addr;
 +
-+	damon_for_each_region_safe(r, next, t) {
++	damon_for_each_region(r, t) {
 +		/*
-+		 * damon_do_apply_schemes() split the region if applying the
-+		 * action to the whole region can make quota exceeded.  That
-+		 * split can result in DAMON snapshot having more than
-+		 * max_nr_regions regions.
-+		 *
-+		 * Merge back the sliced regions to the original region, as
-+		 * soon as the schemes-handling of the slice is completed.
++		 * damon_do_apply_schemes() could split the region for the
++		 * quota.  Keeping the new slices is an overhead.  Merge back
++		 * the slices into the original region if there is no reason to
++		 * keep those.
 +		 */
 +		if (!orig_region || orig_end_addr <= r->ar.start) {
 +			orig_region = r;
@@ -60,15 +57,25 @@ index c7d05d2385fe8..98ee776d98cd0 100644
 +		damon_do_apply_schemes(c, t, r);
 +		if (r == orig_region)
 +			continue;
++		/*
++		 * If no scheme was applied to the sliced region, the age of
++		 * the slice ain't be reset.  Don't merge that back.
++		 * Otherwise, the monitored information of the region is lost.
++		 */
++		if (r->age) {
++			orig_region = NULL;
++			continue;
++		}
 +		orig_region->ar.end = r->ar.end;
 +		damon_destroy_region(r, t);
++		r = orig_region;
 +	}
 +}
 +
  /*
   * damon_feed_loop_next_input() - get next input to achieve a target score.
   * @last_input	The last input.
-@@ -2528,7 +2555,6 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
+@@ -2528,7 +2562,6 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
  static void kdamond_apply_schemes(struct damon_ctx *c)
  {
  	struct damon_target *t;
@@ -76,7 +83,7 @@ index c7d05d2385fe8..98ee776d98cd0 100644
  	struct damos *s;
  	bool has_schemes_to_apply = false;
  
-@@ -2551,9 +2577,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+@@ -2551,9 +2584,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
  	damon_for_each_target(t, c) {
  		if (c->ops.target_valid && c->ops.target_valid(t) == false)
  			continue;
