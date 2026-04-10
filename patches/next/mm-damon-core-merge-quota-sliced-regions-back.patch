@@ -2,28 +2,29 @@ From: SeongJae Park <sj@kernel.org>
 Date: Wed, 8 Apr 2026 22:10:23 -0700
 Subject: [PATCH] mm/damon/core: merge quota-sliced regions back
 
-damos_apply_scheme() splits the given region to avoid applying action to
-the region results in applying action to more than the quota limit
-memory.  When such a split happens multiple times, theoretically that
-could result in violating the user-set max_nr_regions limit.  If that
-happens, DAMON could impose overhead larger than the max_nr_regions
-based expectation.
+damos_apply_scheme() could split the given region if applying the
+scheme's action to the entire region can result in violating the
+quota-set upper limit.  Keeping regions that are created by such split
+operations is unnecessary overhead.
 
-Such cases should be rare since usually the real number of DAMON regions
-are much lower than the max_nr_regions.  Even if it happens, because the
-split operations could be made only up to the number of schemes per
-scheme apply interval, the impact will be negligible.  The impact could
-be higher after the following commit, though.  The following commit will
-allow the action-failed region to be charged in a different (less than
-region size) ratio.  As a result, the split operation could be made more
-frequently in a corner case.
+The overhead would be negligible in the common case because such split
+operations could happen only up to the number of installed schemes per
+scheme apply interval.  The following commit could make the impact
+larger, though.  The following commit will allow the action-failed
+region to be charged in a different ratio.  If both the ratio and the
+remaining quota is quite small, and the action is nearly always failing,
+a high number of split operations could be made.
 
-Still it is a theoretical corner case.  But it would still be better to
-be avoided unless it causes other issues, as max_nr_regions is one of
-the important user parameters.
+Remove the unnecessary overhead by merging the sliced regions back, as
+soon as the schemes handling for the slices are done, and there is no
+reason to keep the sliced regions.
 
-Avoid the violation and resulting overhead by merging the sliced regions
-back, as soon as the schemes handling for the slices are done.
+The sliced regions may need to be kept if no scheme action is applied to
+the slice due to the quota being fully charged.  That is, the 'age'
+field of a region is reset when a DAMOS action is applied to the region.
+If no DAMOS action is applied to the sliced region, the region keeps the
+age information.  If it is merged into the original region, the age
+information is lost.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
