@@ -1,0 +1,99 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 8 Apr 2026 22:10:23 -0700
+Subject: [RFC PATCH v5.1 02/11] mm/damon/core: merge regions after applying
+         DAMOS schemes
+
+damos_apply_scheme() could split the given region if applying the
+scheme's action to the entire region can result in violating the
+quota-set upper limit.  Keeping regions that are created by such split
+operations is unnecessary overhead.
+
+The overhead would be negligible in the common case because such split
+operations could happen only up to the number of installed schemes per
+scheme apply interval.  The following commit could make the impact
+larger, though.  The following commit will allow the action-failed
+region to be charged in a different ratio.  If both the ratio and the
+remaining quota is quite small while the region to apply the scheme is
+quite large and the action is nearly always failing, a high number of
+split operations could happen.
+
+Remove the unnecessary overhead by merging regions after applying
+schemes is done for each region.  The merge operation is made only if it
+will not lose monitoring information and keep min_nr_regions constraint.
+In the worst case, the max_nr_regions could still be violated until the
+next per-aggregation interval merge operation is made.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 36 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index c7d05d2385fe8..fea1b0722c6bf 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2159,6 +2159,37 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 	}
+ }
+ 
++static void damos_apply_target(struct damon_ctx *c, struct damon_target *t)
++{
++	struct damon_region *r;
++
++	damon_for_each_region(r, t) {
++		struct damon_region *prev_r;
++
++		damon_do_apply_schemes(c, t, r);
++		/*
++		 * damon_do_apply_scheems() could split the region for the
++		 * quota.  Keeping the new slices is an overhead.  Merge back
++		 * the slices into the previous region if it doesn't lose any
++		 * information.
++		 */
++		if (damon_first_region(t) == r)
++			continue;
++		prev_r = damon_prev_region(r);
++		if (prev_r->ar.end != r->ar.start)
++			continue;
++		if (prev_r->age != r->age)
++			continue;
++		if (prev_r->last_nr_accesses != r->last_nr_accesses)
++			continue;
++		if (prev_r->nr_accesses != r->nr_accesses)
++			continue;
++		prev_r->ar.end = r->ar.end;
++		damon_destroy_region(r, t);
++		r = prev_r;
++	}
++}
++
+ /*
+  * damon_feed_loop_next_input() - get next input to achieve a target score.
+  * @last_input	The last input.
+@@ -2528,7 +2559,6 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
+ static void kdamond_apply_schemes(struct damon_ctx *c)
+ {
+ 	struct damon_target *t;
+-	struct damon_region *r;
+ 	struct damos *s;
+ 	bool has_schemes_to_apply = false;
+ 
+@@ -2551,9 +2581,7 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	damon_for_each_target(t, c) {
+ 		if (c->ops.target_valid && c->ops.target_valid(t) == false)
+ 			continue;
+-
+-		damon_for_each_region(r, t)
+-			damon_do_apply_schemes(c, t, r);
++		damos_apply_target(c, t);
+ 	}
+ 
+ 	damon_for_each_scheme(s, c) {
+-- 
+2.47.3
