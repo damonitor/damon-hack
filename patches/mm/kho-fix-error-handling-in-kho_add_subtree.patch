@@ -1,0 +1,72 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Tue, 7 Apr 2026 10:01:47 -0700
+Subject: [PATCH] kho: fix error handling in kho_add_subtree()
+
+Fix two error handling issues in kho_add_subtree(), where it doesn't
+handle the error path correctly.
+
+1. If fdt_setprop() fails after the subnode has been created, the
+   subnode is not removed. This leaves an incomplete node in the FDT
+   (missing "preserved-data" or "blob-size" properties).
+
+2. The fdt_setprop() return value (an FDT error code) is stored
+   directly in err and returned to the caller, which expects -errno.
+
+Fix both by storing fdt_setprop() results in fdt_err, jumping to a new
+out_del_node label that removes the subnode on failure, and only setting
+err = 0 on the success path, otherwise returning -ENOMEM (instead of
+FDT_ERR_ errors that would come from fdt_setprop).
+
+Link: https://lkml.kernel.org/r/20260407-kho_fix_send-v1-1-b21977feb960@debian.org
+Fixes: 3dc92c311498 ("kexec: add Kexec HandOver (KHO) generation helpers")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Suggested-by: Pratyush Yadav <pratyush@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alexander Graf <graf@amazon.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/liveupdate/kexec_handover.c | 21 +++++++++++++--------
+ 1 file changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/kernel/liveupdate/kexec_handover.c b/kernel/liveupdate/kexec_handover.c
+index 94762de1fe5f0..18509d8082ea7 100644
+--- a/kernel/liveupdate/kexec_handover.c
++++ b/kernel/liveupdate/kexec_handover.c
+@@ -762,19 +762,24 @@ int kho_add_subtree(const char *name, void *blob, size_t size)
+ 		goto out_pack;
+ 	}
+ 
+-	err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_PROP_NAME,
+-			  &phys, sizeof(phys));
+-	if (err < 0)
+-		goto out_pack;
++	fdt_err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_PROP_NAME,
++			      &phys, sizeof(phys));
++	if (fdt_err < 0)
++		goto out_del_node;
+ 
+-	err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_SIZE_PROP_NAME,
+-			  &size_u64, sizeof(size_u64));
+-	if (err < 0)
+-		goto out_pack;
++	fdt_err = fdt_setprop(root_fdt, off, KHO_SUB_TREE_SIZE_PROP_NAME,
++			      &size_u64, sizeof(size_u64));
++	if (fdt_err < 0)
++		goto out_del_node;
+ 
+ 	WARN_ON_ONCE(kho_debugfs_blob_add(&kho_out.dbg, name, blob,
+ 					  size, false));
+ 
++	err = 0;
++	goto out_pack;
++
++out_del_node:
++	fdt_del_node(root_fdt, off);
+ out_pack:
+ 	fdt_pack(root_fdt);
+ 
+-- 
+2.47.3
+

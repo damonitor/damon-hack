@@ -1,0 +1,70 @@
+From: Guangshuo Li <lgs201920130244@gmail.com>
+Date: Sun, 12 Apr 2026 15:00:10 +0800
+Subject: [PATCH] device-dax: Fix refcount leak in __devm_create_dev_dax()
+ error path
+
+After device_initialize(), the embedded struct device in dev_dax is
+expected to be released through the device core with put_device().
+
+In __devm_create_dev_dax(), several failure paths after
+device_initialize() free dev_dax directly instead of dropping the device
+reference, which bypasses the normal device core lifetime handling and
+leaks the reference held on the embedded struct device.
+
+Fix this by assigning dev->type before device_initialize(), so the release
+callback is available, use put_device() in the post-initialization error
+paths, and keep dev_dax range cleanup explicit since it is not handled by
+dev_dax_release().
+
+Link: https://lkml.kernel.org/r/20260412070010.2402830-1-lgs201920130244@gmail.com
+Fixes: c2f3011ee697f ("device-dax: add an allocation interface for device-dax instances")
+Signed-off-by: Guangshuo Li <lgs201920130244@gmail.com>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Dave Jiang <dave.jiang@intel.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/dax/bus.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/dax/bus.c b/drivers/dax/bus.c
+index c94c09622516e..091562310812a 100644
+--- a/drivers/dax/bus.c
++++ b/drivers/dax/bus.c
+@@ -1453,6 +1453,7 @@ static struct dev_dax *__devm_create_dev_dax(struct dev_dax_data *data)
+ 	}
+ 
+ 	dev = &dev_dax->dev;
++	dev->type = &dev_dax_type;
+ 	device_initialize(dev);
+ 	dev_set_name(dev, "dax%d.%d", dax_region->id, dev_dax->id);
+ 
+@@ -1499,7 +1500,6 @@ static struct dev_dax *__devm_create_dev_dax(struct dev_dax_data *data)
+ 	dev->devt = inode->i_rdev;
+ 	dev->bus = &dax_bus_type;
+ 	dev->parent = parent;
+-	dev->type = &dev_dax_type;
+ 
+ 	rc = device_add(dev);
+ 	if (rc) {
+@@ -1522,14 +1522,13 @@ static struct dev_dax *__devm_create_dev_dax(struct dev_dax_data *data)
+ 	return dev_dax;
+ 
+ err_alloc_dax:
+-	kfree(dev_dax->pgmap);
+ err_pgmap:
+ 	free_dev_dax_ranges(dev_dax);
+ err_range:
+-	free_dev_dax_id(dev_dax);
++	put_device(dev);
++	return ERR_PTR(rc);
+ err_id:
+ 	kfree(dev_dax);
+-
+ 	return ERR_PTR(rc);
+ }
+ 
+-- 
+2.47.3
+
