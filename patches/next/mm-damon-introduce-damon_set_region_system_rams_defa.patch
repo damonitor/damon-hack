@@ -5,9 +5,8 @@ Subject: [PATCH] mm/damon: introduce damon_set_region_system_rams_default()
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  5 +++
- mm/damon/core.c       | 75 ++++++++++++++++++++++++++++++++++++++++---
- mm/damon/stat.c       | 53 ++----------------------------
- 3 files changed, 78 insertions(+), 55 deletions(-)
+ mm/damon/core.c       | 77 ++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 77 insertions(+), 5 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 5fb1dc585658b..c4cdaa01ea530 100644
@@ -26,7 +25,7 @@ index 5fb1dc585658b..c4cdaa01ea530 100644
  				unsigned long *start, unsigned long *end,
  				unsigned long addr_unit,
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 48633da449104..3047dd18fd418 100644
+index 48633da449104..3cef74ba7f0f4 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -3186,14 +3186,20 @@ static int kdamond_fn(void *data)
@@ -55,11 +54,11 @@ index 48633da449104..3047dd18fd418 100644
  	return 0;
  }
  
-@@ -3210,6 +3216,65 @@ static unsigned long damon_res_to_core_addr(resource_size_t ra,
+@@ -3210,6 +3216,67 @@ static unsigned long damon_res_to_core_addr(resource_size_t ra,
  	return ra / addr_unit;
  }
  
-+static bool damon_find_system_ram_range(unsigned long *start,
++static bool damon_find_system_rams_range(unsigned long *start,
 +		unsigned long *end, unsigned long addr_unit)
 +{
 +	struct damon_system_ram_range_walk_arg arg = {};
@@ -69,6 +68,8 @@ index 48633da449104..3047dd18fd418 100644
 +		return false;
 +	*start = damon_res_to_core_addr(arg.res.start, addr_unit);
 +	*end = damon_res_to_core_addr(arg.res.end + 1, addr_unit);
++	if (*end <= *start)
++		return false;
 +	return true;
 +}
 +
@@ -99,7 +100,7 @@ index 48633da449104..3047dd18fd418 100644
 +		return -EINVAL;
 +
 +	if (!*start && !*end &&
-+		!damon_find_system_ram_range(start, end, addr_unit))
++		!damon_find_system_rams_range(start, end, addr_unit))
 +		return -EINVAL;
 +
 +	addr_range.start = *start;
@@ -121,82 +122,6 @@ index 48633da449104..3047dd18fd418 100644
  /*
   * Find biggest 'System RAM' resource and store its start and end address in
   * @start and @end, respectively.  If no System RAM is found, returns false.
-diff --git a/mm/damon/stat.c b/mm/damon/stat.c
-index 21fa04d95eeac..ccee420ccd43c 100644
---- a/mm/damon/stat.c
-+++ b/mm/damon/stat.c
-@@ -154,59 +154,12 @@ static int damon_stat_damon_call_fn(void *data)
- 	return 0;
- }
- 
--struct damon_stat_system_ram_range_walk_arg {
--	bool walked;
--	struct resource res;
--};
--
--static int damon_stat_system_ram_walk_fn(struct resource *res, void *arg)
--{
--	struct damon_stat_system_ram_range_walk_arg *a = arg;
--
--	if (!a->walked) {
--		a->walked = true;
--		a->res.start = res->start;
--	}
--	a->res.end = res->end;
--	return 0;
--}
--
--static unsigned long damon_stat_res_to_core_addr(resource_size_t ra,
--		unsigned long addr_unit)
--{
--	/*
--	 * Use div_u64() for avoiding linking errors related with __udivdi3,
--	 * __aeabi_uldivmod, or similar problems.  This should also improve the
--	 * performance optimization (read div_u64() comment for the detail).
--	 */
--	if (sizeof(ra) == 8 && sizeof(addr_unit) == 4)
--		return div_u64(ra, addr_unit);
--	return ra / addr_unit;
--}
--
--static int damon_stat_set_monitoring_region(struct damon_target *t,
--		unsigned long addr_unit, unsigned long min_region_sz)
--{
--	struct damon_addr_range addr_range;
--	struct damon_stat_system_ram_range_walk_arg arg = {};
--
--	walk_system_ram_res(0, -1, &arg, damon_stat_system_ram_walk_fn);
--	if (!arg.walked)
--		return -EINVAL;
--	addr_range.start = damon_stat_res_to_core_addr(
--			arg.res.start, addr_unit);
--	addr_range.end = damon_stat_res_to_core_addr(
--			arg.res.end + 1, addr_unit);
--	if (addr_range.end <= addr_range.start)
--		return -EINVAL;
--	return damon_set_regions(t, &addr_range, 1, min_region_sz);
--}
--
- static struct damon_ctx *damon_stat_build_ctx(void)
- {
- 	struct damon_ctx *ctx;
- 	struct damon_attrs attrs;
- 	struct damon_target *target;
-+	unsigned long start = 0, end = 0;
- 
- 	ctx = damon_new_ctx();
- 	if (!ctx)
-@@ -236,8 +189,8 @@ static struct damon_ctx *damon_stat_build_ctx(void)
- 	if (!target)
- 		goto free_out;
- 	damon_add_target(ctx, target);
--	if (damon_stat_set_monitoring_region(target, ctx->addr_unit,
--				ctx->min_region_sz))
-+	if (damon_set_region_system_rams_default(target, &start, &end,
-+				ctx->addr_unit, ctx->min_region_sz))
- 		goto free_out;
- 	return ctx;
- free_out:
 -- 
 2.47.3
 
