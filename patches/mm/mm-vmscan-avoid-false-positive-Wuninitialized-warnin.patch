@@ -1,0 +1,70 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Tue, 14 Apr 2026 08:51:58 +0200
+Subject: [PATCH] mm/vmscan: avoid false-positive -Wuninitialized warning
+
+When the -fsanitize=bounds sanitizer is enabled, gcc-16 sometimes runs
+into a corner case in the read_ctrl_pos() pos function, where it sees
+possible undefined behavior from the 'tier' index overflowing, presumably
+in the case that this was called with a negative tier:
+
+In function 'get_tier_idx',
+    inlined from 'isolate_folios' at mm/vmscan.c:4671:14:
+mm/vmscan.c: In function 'isolate_folios':
+mm/vmscan.c:4645:29: error: 'pv.refaulted' is used uninitialized [-Werror=uninitialized]
+
+Part of the problem seems to be that read_ctrl_pos() has unusual calling
+conventions since commit 37a260870f2c ("mm/mglru: rework type selection")
+where passing MAX_NR_TIERS makes it accumulate all tiers but passing a
+smaller positive number makes it read a single tier instead.
+
+Shut up the warning by adding a fake initialization to the two instances
+of this variable that can run into that corner case.
+
+Link: https://lore.kernel.org/all/CAJHvVcjtFW86o5FoQC8MMEXCHAC0FviggaQsd5EmiCHP+1fBpg@mail.gmail.com/
+Link: https://lkml.kernel.org/r/20260414065206.3236176-1-arnd@kernel.org
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Koichiro Den <koichiro.den@canonical.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 5a8c8fcccbfc9..bd1b1aa125819 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4760,7 +4760,7 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ static int get_tier_idx(struct lruvec *lruvec, int type)
+ {
+ 	int tier;
+-	struct ctrl_pos sp, pv;
++	struct ctrl_pos sp, pv = {};
+ 
+ 	/*
+ 	 * To leave a margin for fluctuations, use a larger gain factor (2:3).
+@@ -4779,7 +4779,7 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
+ 
+ static int get_type_to_scan(struct lruvec *lruvec, int swappiness)
+ {
+-	struct ctrl_pos sp, pv;
++	struct ctrl_pos sp, pv = {};
+ 
+ 	if (swappiness <= MIN_SWAPPINESS + 1)
+ 		return LRU_GEN_FILE;
+-- 
+2.47.3
+
