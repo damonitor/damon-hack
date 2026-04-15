@@ -1,0 +1,93 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Mon, 13 Apr 2026 11:57:13 +0100
+Subject: [PATCH] mm/vma: remove __vma_check_mmap_hook()
+
+Commit c50ca15dd496 ("mm: add vm_ops->mapped hook") introduced
+__vma_check_mmap_hook() in order to assert that a driver doesn't
+incorrectly implement both an f_op->mmap() and a vm_ops->mapped hook, the
+latter of which would not ultimately get invoked.
+
+However, this did not correctly account for stacked drivers (or drivers
+that otherwise use the compatibility layer) which might recursively call
+an mmap_prepare hook via the compatibility layer.
+
+Thus the nested mmap_prepare() invocation might result in a VMA which has
+vm_ops->mapped set with an overlaying mmap() hook, causing the
+__vma_check_mmap_hook() to fail in vfs_mmap(), wrongly failing the
+operation.
+
+This patch resolves this by simply removing the check, as we can't be
+certain that an mmap() hook doesn't at some point invoke the compatibility
+layer, and it's not worth trying to track it.
+
+Link: https://lkml.kernel.org/r/20260413105713.92625-1-ljs@kernel.org
+Fixes: c50ca15dd496 ("mm: add vm_ops->mapped hook")
+Reported-by: Shinichiro Kawasaki <shinichiro.kawasaki@wdc.com>
+Closes: https://lore.kernel.org/all/adx2ws5z0NMIe5Yj@shinmob/
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Tested-by: Shinichiro Kawasaki <shinichiro.kawasaki@wdc.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/fs.h |  9 +--------
+ mm/util.c          | 10 ----------
+ 2 files changed, 1 insertion(+), 18 deletions(-)
+
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 0bdccfa70b44c..f3ca9b841892d 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -2062,20 +2062,13 @@ void compat_set_desc_from_vma(struct vm_area_desc *desc, const struct file *file
+ 			      const struct vm_area_struct *vma);
+ int __compat_vma_mmap(struct vm_area_desc *desc, struct vm_area_struct *vma);
+ int compat_vma_mmap(struct file *file, struct vm_area_struct *vma);
+-int __vma_check_mmap_hook(struct vm_area_struct *vma);
+ 
+ static inline int vfs_mmap(struct file *file, struct vm_area_struct *vma)
+ {
+-	int err;
+-
+ 	if (file->f_op->mmap_prepare)
+ 		return compat_vma_mmap(file, vma);
+ 
+-	err = file->f_op->mmap(file, vma);
+-	if (err)
+-		return err;
+-
+-	return __vma_check_mmap_hook(vma);
++	return file->f_op->mmap(file, vma);
+ }
+ 
+ static inline int vfs_mmap_prepare(struct file *file, struct vm_area_desc *desc)
+diff --git a/mm/util.c b/mm/util.c
+index f063fd4de1e8f..232c3930a662c 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -1281,16 +1281,6 @@ int compat_vma_mmap(struct file *file, struct vm_area_struct *vma)
+ }
+ EXPORT_SYMBOL(compat_vma_mmap);
+ 
+-int __vma_check_mmap_hook(struct vm_area_struct *vma)
+-{
+-	/* vm_ops->mapped is not valid if mmap() is specified. */
+-	if (vma->vm_ops && WARN_ON_ONCE(vma->vm_ops->mapped))
+-		return -EINVAL;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL(__vma_check_mmap_hook);
+-
+ static void set_ps_flags(struct page_snapshot *ps, const struct folio *folio,
+ 			 const struct page *page)
+ {
+-- 
+2.47.3
+
