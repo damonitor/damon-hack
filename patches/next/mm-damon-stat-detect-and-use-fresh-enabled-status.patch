@@ -1,0 +1,116 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 15 Apr 2026 22:01:20 -0700
+Subject: [PATCH] mm/damon/stat: detect and use fresh enabled status
+
+DAMON_STAT assumes the kdamond will keep running once damon_stat_start()
+succeeds, until it calls damon_stop() to stop it.  If the
+regions_score_histogram allocation in kdamond_fn() is tried after
+damon_stat_start() returns, however, and if the allocation fails, the
+kdamond can stop before DAMON_STAT calls damon_stop().  In this case,
+users will show the 'enabled' parameter value as 'true', while it is not
+working.  This could make users confused.
+
+The user impact should be mild, though.  First of all, the issue may
+happen only quite rarely.  The allocation failure is arguably too small
+to fail (100 unsigned long objects) in common setups.  The time window
+for the race is also quite small.  Even if the race and the allocation
+failure happen, users could find the fact that the kdamond is stopped
+using 'ps' like commands.  By writing 'N' and 'Y' to the 'enabled'
+parameter sequentially, the user can also easily restart DAMON_STAT.
+
+That said, the bug is a bug that needs to be fixed.  Instead of managing
+the complicated state in the variable, detect and use the real kdamond
+running status when the user reads the parameter, via the parameter read
+callback.  This will allow users to always read the correct 'enabled'
+value.
+
+Note that the 'enabled' variable is no longer the argument for the
+'enabled' parameter.  But it is still used for two use case.  For
+keeping the config/boot time user-set parameter value.  And for keeping
+the user request to compare against the current state, to see if the
+damon_start() or damon_stop() call are really needed.
+
+Fixes: 369c415e6073 ("mm/damon: introduce DAMON_STAT module")
+Cc: <stable@vger.kernel.org> # 6.17.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/stat.c | 30 ++++++++++++++++++++----------
+ 1 file changed, 20 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index 99ba346f9e325..3951b762cbddf 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -19,14 +19,17 @@
+ static int damon_stat_enabled_store(
+ 		const char *val, const struct kernel_param *kp);
+ 
++static int damon_stat_enabled_load(char *buffer,
++		const struct kernel_param *kp);
++
+ static const struct kernel_param_ops enabled_param_ops = {
+ 	.set = damon_stat_enabled_store,
+-	.get = param_get_bool,
++	.get = damon_stat_enabled_load,
+ };
+ 
+ static bool enabled __read_mostly = IS_ENABLED(
+ 	CONFIG_DAMON_STAT_ENABLED_DEFAULT);
+-module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
++module_param_cb(enabled, &enabled_param_ops, NULL, 0600);
+ MODULE_PARM_DESC(enabled, "Enable of disable DAMON_STAT");
+ 
+ static unsigned long estimated_memory_bandwidth __read_mostly;
+@@ -273,17 +276,23 @@ static void damon_stat_stop(void)
+ 	damon_stat_context = NULL;
+ }
+ 
++static bool damon_stat_enabled(void)
++{
++	if (!damon_stat_context)
++		return false;
++	return damon_is_running(damon_stat_context);
++}
++
+ static int damon_stat_enabled_store(
+ 		const char *val, const struct kernel_param *kp)
+ {
+-	bool is_enabled = enabled;
+ 	int err;
+ 
+ 	err = kstrtobool(val, &enabled);
+ 	if (err)
+ 		return err;
+ 
+-	if (is_enabled == enabled)
++	if (damon_stat_enabled() == enabled)
+ 		return 0;
+ 
+ 	if (!damon_initialized())
+@@ -293,16 +302,17 @@ static int damon_stat_enabled_store(
+ 		 */
+ 		return 0;
+ 
+-	if (enabled) {
+-		err = damon_stat_start();
+-		if (err)
+-			enabled = false;
+-		return err;
+-	}
++	if (enabled)
++		return damon_stat_start();
+ 	damon_stat_stop();
+ 	return 0;
+ }
+ 
++static int damon_stat_enabled_load(char *buffer, const struct kernel_param *kp)
++{
++	return sprintf(buffer, "%c\n", damon_stat_enabled() ? 'Y' : 'N');
++}
++
+ static int __init damon_stat_init(void)
+ {
+ 	int err = 0;
+-- 
+2.47.3
+
