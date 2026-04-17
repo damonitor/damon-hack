@@ -1,0 +1,52 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 17 Apr 2026 07:48:34 -0700
+Subject: [PATCH] ==== modules: fix stale status parameters ====
+
+mm/damon/modules: fix stale status parameters
+
+DAMON modules including DAMON_RECLAIM, DAMON_LRU_SORT and DAMON_STAT
+commonly expose the running status and the pid of their kdamond via
+'enabled' and 'kdamond_pid' parameters.  The code saves and updates the
+information in variables when they start and stop the kdamond via
+damon_start() and damon_stop().  It assumes kdamond will keep running
+once started, until it is requested to be stopped.
+
+But the kdamond can be stopped before damon_stop() is called.  It could
+stop when regions_score_histogram allocation is failed, or
+damon_commit_ctx() call for the running DAMON context fails due to
+invalid parameters or internal allocation failures.  In the case, the
+parameters are not updated and therefore expose the stale status.  It
+could confuse users.  Worse yet, DAMON_RECLAIM and DAMON_LRU_SORT
+strictly prohibit unnecessary damon_start() and damon_stop() calls,
+based on the status parameters.  Hence, when the kdamond is stopped and
+therefore the status variables be stale, DAMON_RECLAIM and
+DAMON_LRU_SORT cannot start the kdamond again until the system is
+reboot.  This can easily reproduced like below.
+
+    # cd /sys/module/damon_reclaim/parameters
+    # echo Y > enabled
+    # echo 3 > addr_unit
+    # echo Y > commit_inputs
+    # echo 1 > addr_unit
+    # echo Y > enabled
+
+Note that the issue should only rarely happen because the allocation
+failures are unlikely.  The allocations are arguably too small to fail.
+Wrong parameters commit can easily reproduce the issue, but sane users
+wouldn't do that in the real world product systems.
+
+Fix the issues by detecting and using the real status when it is
+necessary, instead of caching those under the wrong assumption.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ hkml_cv_bogus/hkml_cv_bogus_bv3boyc2 | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 hkml_cv_bogus/hkml_cv_bogus_bv3boyc2
+
+diff --git a/hkml_cv_bogus/hkml_cv_bogus_bv3boyc2 b/hkml_cv_bogus/hkml_cv_bogus_bv3boyc2
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+-- 
+2.47.3
+
