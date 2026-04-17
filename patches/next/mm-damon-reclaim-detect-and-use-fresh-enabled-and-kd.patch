@@ -1,6 +1,38 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Wed, 15 Apr 2026 23:29:32 -0700
-Subject: [PATCH] mm/damon/reclaim: keep enabled and kdamond_pid always fresh
+Subject: [PATCH] mm/damon/reclaim: detect and use fresh enabled and
+ kdamond_pid values
+
+The kdamond for DAMON_RECLAIM can be stopped in events other than the
+explicit user request (writing N to 'enabled' parameter) in following
+three events.
+
+1. ctx->regions_score_histogram allocation failure at beginning of the
+   execution,
+2. damon_commit_ctx() failure due to invalid user input, and
+3. damon_commit_ctx() failure due to its internal allocation failures.
+
+Meanwhile, 'enabled' and 'kdamond_pid' parameter values, which
+represents the running status of the kdamond, are updated for only the
+explicit start/stop user requests.  Hence, if the kdamond is stopped by
+the above three events, the parameters can be stale.  Users could show
+the stale values and be confused.  This is already bad, but the real
+consequence is worse.  DAMON_RECLAIM avoids unnecessary damon_start()
+and damon_stop() calls based on the 'enabled' parameter value.  And the
+update of 'enabled' parameter value depends on the damon_start() and
+damon_stop() call results.  Hence, once the kdamond has stopped by the
+unintentional events, the user cannot restart the kdamond before the
+system reboot.
+
+The problem is unlikely to happen in real and common setups for
+following reasons.  The allocation failures are unlikely in common case,
+since those allocations are arguably too small to fail.  Also sane users
+on real production environments may not commit wrong input parameters.
+But once it happens, the consequence is quite bad.  And the bug is a
+bug.
+
+Dynamically detect and use the status for the parameters when those are
+required.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
