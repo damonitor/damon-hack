@@ -1,16 +1,12 @@
 From hackermail Thu Jan  1 00:00:00 1970
 From: SeongJae Park <sj@kernel.org>
-Cc: <stable@vger.kernel.org> # 6.0.x
-Cc: Andrew Morton <akpm@linux-foundation.org>
-Cc: SeongJae Park <sj@kernel.org>
-Cc: damon@lists.linux.dev
-Cc: linux-kernel@vger.kernel.org
-Cc: linux-mm@kvack.org
-Date: Fri, 17 Apr 2026 07:31:19 -0700
-Subject: [RFC PATCH v2.1 2/3] mm/damon/lru_sort: detect and use fresh enabled
-         and kdamond_pid values
+Cc: SeongJae Park <sj@kernel.org>, "# 5 . 19 . x" <stable@vger.kernel.org>, Andrew Morton <akpm@linux-foundation.org>, damon@lists.linux.dev, linux-kernel@vger.kernel.org, linux-mm@kvack.org, Liew Rui Yan <aethernet65535@gmail.com>
+Message-Id: <20260418222758.39795-2-sj@kernel.org>
+In-Reply-To: <20260418222758.39795-1-sj@kernel.org>
+Date: Sat, 18 Apr 2026 15:27:54 -0700
+Subject: [RFC PATCH v2.1 1/3] mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values
 
-DAMON_LRU_SORT updates 'enabled' and 'kdamond_pid' parameter values,
+DAMON_RECLAIM updates 'enabled' and 'kdamond_pid' parameter values,
 which represents the running status of its kdamond, when the user
 explicitly requests start/stop of the kdamond.  The kdamond can,
 however, be stopped in events other than the explicit user request in
@@ -24,7 +20,7 @@ the following three events.
 Hence, if the kdamond is stopped by the above three events, the values
 of the status parameters can be stale.  Users could show the stale
 values and be confused.  This is already bad, but the real consequence
-is worse.  DAMON_LRU_SORT avoids unnecessary damon_start() and
+is worse.  DAMON_RECLAIM avoids unnecessary damon_start() and
 damon_stop() calls based on the 'enabled' parameter value.  And the
 update of 'enabled' parameter value depends on the damon_start() and
 damon_stop() call results.  Hence, once the kdamond has stopped by the
@@ -32,9 +28,9 @@ unintentional events, the user cannot restart the kdamond before the
 system reboot.  For example, the issue can be reproduced via below
 steps.
 
-    # cd /sys/module/damon_lru_sort/parameters
+    # cd /sys/module/damon_reclaim/parameters
     #
-    # # start DAMON_LRU_SORT
+    # # start DAMON_RECLAIM
     # echo Y > enabled
     # ps -ef | grep kdamond
     root         806       2  0 17:53 ?        00:00:00 [kdamond.0]
@@ -74,36 +70,40 @@ change the status, and following all the events is challenging.
 Dynamically detect and use the fresh status for the parameters when
 those are requested.
 
-Fixes: 40e983cca927 ("mm/damon: introduce DAMON-based LRU-lists Sorting")
-Cc: <stable@vger.kernel.org> # 6.0.x
+Link: https://lore.kernel.org/20260418222758.39795-2-sj@kernel.org
+Fixes: e035c280f6df ("mm/damon/reclaim: support online inputs update")
+Cc: <stable@vger.kernel.org> # 5.19.x
 Co-developed-by: Liew Rui Yan <aethernet65535@gmail.com>
 Signed-off-by: Liew Rui Yan <aethernet65535@gmail.com>
 Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: "# 5 . 19 . x" <stable@vger.kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Liew Rui Yan <aethernet65535@gmail.com>
 ---
- mm/damon/lru_sort.c | 85 +++++++++++++++++++++++++++++----------------
+ mm/damon/reclaim.c | 85 ++++++++++++++++++++++++++++++----------------
  1 file changed, 55 insertions(+), 30 deletions(-)
 
-diff --git a/mm/damon/lru_sort.c b/mm/damon/lru_sort.c
-index 554559d729760..8494040b1ee48 100644
---- a/mm/damon/lru_sort.c
-+++ b/mm/damon/lru_sort.c
-@@ -161,15 +161,6 @@ module_param(monitor_region_end, ulong, 0600);
-  */
- static unsigned long addr_unit __read_mostly = 1;
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index 86da147786583..fe7fce26cf6ce 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -144,15 +144,6 @@ static unsigned long addr_unit __read_mostly = 1;
+ static bool skip_anon __read_mostly;
+ module_param(skip_anon, bool, 0600);
  
 -/*
 - * PID of the DAMON thread
 - *
-- * If DAMON_LRU_SORT is enabled, this becomes the PID of the worker thread.
+- * If DAMON_RECLAIM is enabled, this becomes the PID of the worker thread.
 - * Else, -1.
 - */
 -static int kdamond_pid __read_mostly = -1;
 -module_param(kdamond_pid, int, 0400);
 -
- static struct damos_stat damon_lru_sort_hot_stat;
- DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_lru_sort_hot_stat,
- 		lru_sort_tried_hot_regions, lru_sorted_hot_regions,
-@@ -386,12 +377,8 @@ static int damon_lru_sort_turn(bool on)
+ static struct damos_stat damon_reclaim_stat;
+ DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_reclaim_stat,
+ 		reclaim_tried_regions, reclaimed_regions, quota_exceeds);
+@@ -288,12 +279,8 @@ static int damon_reclaim_turn(bool on)
  {
  	int err;
  
@@ -116,9 +116,9 @@ index 554559d729760..8494040b1ee48 100644
 +	if (!on)
 +		return damon_stop(&ctx, 1);
  
- 	err = damon_lru_sort_apply_parameters();
+ 	err = damon_reclaim_apply_parameters();
  	if (err)
-@@ -400,9 +387,6 @@ static int damon_lru_sort_turn(bool on)
+@@ -302,9 +289,6 @@ static int damon_reclaim_turn(bool on)
  	err = damon_start(&ctx, 1, true);
  	if (err)
  		return err;
@@ -128,18 +128,18 @@ index 554559d729760..8494040b1ee48 100644
  	return damon_call(ctx, &call_control);
  }
  
-@@ -430,42 +414,83 @@ module_param_cb(addr_unit, &addr_unit_param_ops, &addr_unit, 0600);
+@@ -332,42 +316,83 @@ module_param_cb(addr_unit, &addr_unit_param_ops, &addr_unit, 0600);
  MODULE_PARM_DESC(addr_unit,
- 	"Scale factor for DAMON_LRU_SORT to ops address conversion (default: 1)");
+ 	"Scale factor for DAMON_RECLAIM to ops address conversion (default: 1)");
  
-+static bool damon_lru_sort_enabled(void)
++static bool damon_reclaim_enabled(void)
 +{
 +	if (!ctx)
 +		return false;
 +	return damon_is_running(ctx);
 +}
 +
- static int damon_lru_sort_enabled_store(const char *val,
+ static int damon_reclaim_enabled_store(const char *val,
  		const struct kernel_param *kp)
  {
 -	bool is_enabled = enabled;
@@ -152,7 +152,7 @@ index 554559d729760..8494040b1ee48 100644
  		return err;
  
 -	if (is_enabled == enable)
-+	if (damon_lru_sort_enabled() == enabled)
++	if (damon_reclaim_enabled() == enabled)
  		return 0;
  
  	/* Called before init function.  The function will handle this. */
@@ -160,32 +160,32 @@ index 554559d729760..8494040b1ee48 100644
 -		goto set_param_out;
 +		return 0;
  
--	err = damon_lru_sort_turn(enable);
+-	err = damon_reclaim_turn(enable);
 -	if (err)
 -		return err;
-+	return damon_lru_sort_turn(enabled);
++	return damon_reclaim_turn(enabled);
 +}
  
 -set_param_out:
 -	enabled = enable;
 -	return err;
-+static int damon_lru_sort_enabled_load(char *buffer,
++static int damon_reclaim_enabled_load(char *buffer,
 +		const struct kernel_param *kp)
 +{
-+	return sprintf(buffer, "%c\n", damon_lru_sort_enabled() ? 'Y' : 'N');
++	return sprintf(buffer, "%c\n", damon_reclaim_enabled() ? 'Y' : 'N');
  }
  
  static const struct kernel_param_ops enabled_param_ops = {
- 	.set = damon_lru_sort_enabled_store,
+ 	.set = damon_reclaim_enabled_store,
 -	.get = param_get_bool,
-+	.get = damon_lru_sort_enabled_load,
++	.get = damon_reclaim_enabled_load,
  };
  
  module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
  MODULE_PARM_DESC(enabled,
- 	"Enable or disable DAMON_LRU_SORT (default: disabled)");
+ 	"Enable or disable DAMON_RECLAIM (default: disabled)");
  
-+static int damon_lru_sort_kdamond_pid_store(const char *val,
++static int damon_reclaim_kdamond_pid_store(const char *val,
 +		const struct kernel_param *kp)
 +{
 +	/*
@@ -195,7 +195,7 @@ index 554559d729760..8494040b1ee48 100644
 +	return 0;
 +}
 +
-+static int damon_lru_sort_kdamond_pid_load(char *buffer,
++static int damon_reclaim_kdamond_pid_load(char *buffer,
 +		const struct kernel_param *kp)
 +{
 +	int kdamond_pid = -1;
@@ -209,19 +209,19 @@ index 554559d729760..8494040b1ee48 100644
 +}
 +
 +static const struct kernel_param_ops kdamond_pid_param_ops = {
-+	.set = damon_lru_sort_kdamond_pid_store,
-+	.get = damon_lru_sort_kdamond_pid_load,
++	.set = damon_reclaim_kdamond_pid_store,
++	.get = damon_reclaim_kdamond_pid_load,
 +};
 +
 +/*
 + * PID of the DAMON thread
 + *
-+ * If DAMON_LRU_SORT is enabled, this becomes the PID of the worker thread.
++ * If DAMON_RECLAIM is enabled, this becomes the PID of the worker thread.
 + * Else, -1.
 + */
 +module_param_cb(kdamond_pid, &kdamond_pid_param_ops, NULL, 0400);
 +
- static int __init damon_lru_sort_init(void)
+ static int __init damon_reclaim_init(void)
  {
  	int err;
 -- 
