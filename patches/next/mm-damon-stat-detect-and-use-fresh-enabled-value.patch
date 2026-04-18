@@ -1,34 +1,26 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Wed, 15 Apr 2026 22:01:20 -0700
-Subject: [PATCH] mm/damon/stat: detect and use fresh enabled status
+Subject: [PATCH] mm/damon/stat: detect and use fresh enabled value
 
-DAMON_STAT assumes the kdamond will keep running once damon_stat_start()
-succeeds, until it calls damon_stop() to stop it.  If the
-regions_score_histogram allocation in kdamond_fn() is tried after
-damon_stat_start() returns, however, and if the allocation fails, the
-kdamond can stop before DAMON_STAT calls damon_stop().  In this case,
-users will show the 'enabled' parameter value as 'true', while it is not
-working.  This could make users confused.
+DAMON_STAT updates 'enabled' parameter value, which represents the
+running status of its kdamond, when the user explicitly requests
+start/stop of the kdamond.  The kdamond can, however, be stopped even if
+the user explicitly requested the stop, if ctx->regions_score_histogram
+allocation failure at beginning of the execution of the kdamond.  Hence,
+if the kdamond is stopped by the allocation failure, the value of the
+parameter can be stale.
 
-The user impact should be mild, though.  First of all, the issue may
-happen only quite rarely.  The allocation failure is arguably too small
-to fail (100 unsigned long objects) in common setups.  The time window
-for the race is also quite small.  Even if the race and the allocation
-failure happen, users could find the fact that the kdamond is stopped
-using 'ps' like commands.  By writing 'N' and 'Y' to the 'enabled'
-parameter sequentially, the user can also easily restart DAMON_STAT.
+Users could show the stale value and be confused.  The problem will only
+rarely happen in real and common setups because the allocation is
+arguably too small to fail.  Also, unlike the similar bugs that are now
+fixed in DAMON_RECLAIM and DAMON_LRU_SORT, kdamond can be restarted in
+this case, because DAMON_STAT force-updates the enabled parameter value
+for user inputs.  The bug is a bug, though.
 
-That said, the bug is a bug that needs to be fixed.  Instead of managing
-the complicated state in the variable, detect and use the real kdamond
-running status when the user reads the parameter, via the parameter read
-callback.  This will allow users to always read the correct 'enabled'
-value.
-
-Note that the 'enabled' variable is no longer the argument for the
-'enabled' parameter.  But it is still used for two use case.  For
-keeping the config/boot time user-set parameter value.  And for keeping
-the user request to compare against the current state, to see if the
-damon_start() or damon_stop() call are really needed.
+The issue stems from the fact that there are multiple events that can
+change the status, and following all the events is challenging.
+Dynamically detect and use the fresh status for the parameters when
+those are requested.
 
 Fixes: 369c415e6073 ("mm/damon: introduce DAMON_STAT module")
 Cc: <stable@vger.kernel.org> # 6.17.x

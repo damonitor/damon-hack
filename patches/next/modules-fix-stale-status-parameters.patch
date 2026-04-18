@@ -2,41 +2,22 @@ From: SeongJae Park <sj@kernel.org>
 Date: Fri, 17 Apr 2026 07:48:34 -0700
 Subject: [PATCH] ==== modules: fix stale status parameters ====
 
-mm/damon/modules: fix stale status parameters
+mm/damon/modules: detect and use fresh status
 
 DAMON modules including DAMON_RECLAIM, DAMON_LRU_SORT and DAMON_STAT
-commonly expose the running status and the pid of their kdamond via
-'enabled' and 'kdamond_pid' parameters.  The code saves and updates the
-information in variables when they start and stop the kdamond via
-damon_start() and damon_stop().  It assumes kdamond will keep running
-once started, until it is requested to be stopped.
+commonly expose the kdamond running status via their parameters.  Under
+certain scenarios including wrong user inputs and memory allocation
+failures, those parameter values can be stale.  It can confuse users.
+For DAMON_RECLAIM and DAMON_LRU_SORT, it even makes the kdamond unable
+to be restarted before the system reboot.
 
-But the kdamond can be stopped before damon_stop() is called.  It could
-stop when regions_score_histogram allocation is failed, or
-damon_commit_ctx() call for the running DAMON context fails due to
-invalid parameters or internal allocation failures.  In the case, the
-parameters are not updated and therefore expose the stale status.  It
-could confuse users.  Worse yet, DAMON_RECLAIM and DAMON_LRU_SORT
-strictly prohibit unnecessary damon_start() and damon_stop() calls,
-based on the status parameters.  Hence, when the kdamond is stopped and
-therefore the status variables be stale, DAMON_RECLAIM and
-DAMON_LRU_SORT cannot start the kdamond again until the system is
-reboot.  This can easily reproduced like below.
+The problem comes from the fact that there are multiple events for the
+status changes and it is difficult to follow up all the scenarios.  Fix
+the issue by detecting and using the status on demand, instead of using
+a cached status that is difficult to be updated.
 
-    # cd /sys/module/damon_reclaim/parameters
-    # echo Y > enabled
-    # echo 3 > addr_unit
-    # echo Y > commit_inputs
-    # echo 1 > addr_unit
-    # echo Y > enabled
-
-Note that the issue should only rarely happen because the allocation
-failures are unlikely.  The allocations are arguably too small to fail.
-Wrong parameters commit can easily reproduce the issue, but sane users
-wouldn't do that in the real world product systems.
-
-Fix the issues by detecting and using the real status when it is
-necessary, instead of caching those under the wrong assumption.
+Patches 1-3 fix the bugs in DAMON_RECLAIM, DAMON_LRU_SORT and DAMON_STAT
+in the order.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---

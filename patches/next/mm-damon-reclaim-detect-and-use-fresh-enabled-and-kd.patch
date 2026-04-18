@@ -3,37 +3,72 @@ Date: Wed, 15 Apr 2026 23:29:32 -0700
 Subject: [PATCH] mm/damon/reclaim: detect and use fresh enabled and
  kdamond_pid values
 
-The kdamond for DAMON_RECLAIM can be stopped in events other than the
-explicit user request (writing N to 'enabled' parameter) in following
-three events.
+DAMON_RECLAIM updates 'enabled' and 'kdamond_pid' parameter values,
+which represents the running status of its kdamond, when the user
+explicitly requests start/stop of the kdamond.  The kdamond can,
+however, be stopped in events other than the explicit user request in
+the following three events.
 
 1. ctx->regions_score_histogram allocation failure at beginning of the
    execution,
 2. damon_commit_ctx() failure due to invalid user input, and
 3. damon_commit_ctx() failure due to its internal allocation failures.
 
-Meanwhile, 'enabled' and 'kdamond_pid' parameter values, which
-represents the running status of the kdamond, are updated for only the
-explicit start/stop user requests.  Hence, if the kdamond is stopped by
-the above three events, the parameters can be stale.  Users could show
-the stale values and be confused.  This is already bad, but the real
-consequence is worse.  DAMON_RECLAIM avoids unnecessary damon_start()
-and damon_stop() calls based on the 'enabled' parameter value.  And the
+Hence, if the kdamond is stopped by the above three events, the values
+of the status parameters can be stale.  Users could show the stale
+values and be confused.  This is already bad, but the real consequence
+is worse.  DAMON_RECLAIM avoids unnecessary damon_start() and
+damon_stop() calls based on the 'enabled' parameter value.  And the
 update of 'enabled' parameter value depends on the damon_start() and
 damon_stop() call results.  Hence, once the kdamond has stopped by the
 unintentional events, the user cannot restart the kdamond before the
-system reboot.
+system reboot.  For example, the issue can be reproduced via below
+steps.
 
-The problem is unlikely to happen in real and common setups for
-following reasons.  The allocation failures are unlikely in common case,
+    # cd /sys/module/damon_reclaim/parameters
+    #
+    # # start DAMON_RECLAIM
+    # echo Y > enabled
+    # ps -ef | grep kdamond
+    root         806       2  0 17:53 ?        00:00:00 [kdamond.0]
+    root         808     803  0 17:53 pts/4    00:00:00 grep kdamond
+    #
+    # # commit wrong input to stop kdamond withou explicit stop request
+    # echo 3 > addr_unit
+    # echo Y > commit_inputs
+    bash: echo: write error: Invalid argument
+    #
+    # # confirm kdamond is stopped
+    # ps -ef | grep kdamond
+    root         811     803  0 17:53 pts/4    00:00:00 grep kdamond
+    #
+    # # users casn now show stable status
+    # cat enabled
+    Y
+    # cat kdamond_pid
+    806
+    #
+    # # even after fixing the wrong parameter,
+    # # kdamond cannot be restarted.
+    # echo 1 > addr_unit
+    # echo Y > enabled
+    # ps -ef | grep kdamond
+    root         815     803  0 17:54 pts/4    00:00:00 grep kdamond
+
+The problem will only rarely happen in real and common setups for the
+following reasons.  The allocation failures are unlikely in such setups
 since those allocations are arguably too small to fail.  Also sane users
 on real production environments may not commit wrong input parameters.
 But once it happens, the consequence is quite bad.  And the bug is a
 bug.
 
-Dynamically detect and use the status for the parameters when those are
-required.
+The issue stems from the fact that there are multiple events that can
+change the status, and following all the events is challenging.
+Dynamically detect and use the fresh status for the parameters when
+those are requested.
 
+Fixes: e035c280f6df ("mm/damon/reclaim: support online inputs update")
+Cc: <stable@vger.kernel.org> # 5.19.x
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  mm/damon/reclaim.c | 63 ++++++++++++++++++++++++++++++----------------
