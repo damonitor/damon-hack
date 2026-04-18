@@ -1,0 +1,150 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 18 Apr 2026 15:01:56 -0700
+Subject: [PATCH] mm/damon/sysfs: implement data attributes directory
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 127 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 127 insertions(+)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index f0772e531b8e6..4ca54f8017146 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1064,6 +1064,133 @@ const struct kobj_type damon_sysfs_data_attr_ktype = {
+ 	.default_groups = damon_sysfs_data_attr_groups,
+ };
+ 
++/*
++ * data attributes directory
++ */
++
++struct damon_sysfs_data_attrs {
++	struct kobject kobj;
++	struct damon_sysfs_data_attr **attrs_arr;
++	int nr;
++};
++
++static struct damon_sysfs_data_attrs *damon_sysfs_data_attrs_alloc(void)
++{
++	return kzalloc_obj(struct damon_sysfs_data_attrs);
++}
++
++static void damon_sysfs_data_attrs_rm_dirs(
++		struct damon_sysfs_data_attrs *attrs)
++{
++	struct damon_sysfs_data_attr **attrs_arr = attrs->attrs_arr;
++	int i;
++
++	for (i = 0; i < attrs->nr; i++) {
++		damon_sysfs_data_attr_rm_dirs(attrs_arr[i]);
++		kobject_put(&attrs_arr[i]->kobj);
++	}
++	attrs->nr = 0;
++	kfree(attrs_arr);
++	attrs->attrs_arr = NULL;
++}
++
++static int damon_sysfs_data_attrs_add_dirs(
++		struct damon_sysfs_data_attrs *attrs, int nr_attrs)
++{
++	struct damon_sysfs_data_attr **attrs_arr, *attr;
++	int err, i;
++
++	damon_sysfs_data_attrs_rm_dirs(attrs);
++	if (!nr_attrs)
++		return 0;
++
++	attrs_arr = kmalloc_objs(*attrs_arr, nr_attrs,
++				   GFP_KERNEL | __GFP_NOWARN);
++	if (!attrs_arr)
++		return -ENOMEM;
++	attrs->attrs_arr = attrs_arr;
++
++	for (i = 0; i < nr_attrs; i++) {
++		attr = damon_sysfs_data_attr_alloc();
++		if (!attr) {
++			damon_sysfs_data_attrs_rm_dirs(attrs);
++			return -ENOMEM;
++		}
++
++		err = kobject_init_and_add(&attr->kobj,
++				&damon_sysfs_data_attr_ktype, &attrs->kobj,
++				"%d", i);
++		if (err) {
++			kobject_put(&attr->kobj);
++			damon_sysfs_data_attrs_rm_dirs(attrs);
++			return err;
++		}
++
++		err = damon_sysfs_data_attr_add_dirs(attr);
++		if (err) {
++			kobject_put(&attr->kobj);
++			damon_sysfs_data_attrs_rm_dirs(attrs);
++			return err;
++		}
++
++		attrs_arr[i] = attr;
++		attrs->nr++;
++	}
++	return 0;
++}
++
++static ssize_t nr_attrs_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_data_attrs *attrs = container_of(kobj,
++			struct damon_sysfs_data_attrs, kobj);
++
++	return sysfs_emit(buf, "%d\n", attrs->nr);
++}
++
++static ssize_t nr_attrs_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_data_attrs *attrs;
++	int nr, err = kstrtoint(buf, 0, &nr);
++
++	if (err)
++		return err;
++	if (nr < 0)
++		return -EINVAL;
++
++	attrs = container_of(kobj, struct damon_sysfs_data_attrs, kobj);
++
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	err = damon_sysfs_data_attrs_add_dirs(attrs, nr);
++	mutex_unlock(&damon_sysfs_lock);
++	if (err)
++		return err;
++
++	return count;
++}
++
++static void damon_sysfs_data_attrs_release(struct kobject *kobj)
++{
++	kfree(container_of(kobj, struct damon_sysfs_data_attrs, kobj));
++}
++
++static struct kobj_attribute damon_sysfs_data_attrs_nr_attr =
++		__ATTR_RW_MODE(nr_attrs, 0600);
++
++static struct attribute *damon_sysfs_data_attrs_attrs[] = {
++	&damon_sysfs_data_attrs_nr_attr.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_data_attrs);
++
++static const struct kobj_type damon_sysfs_data_attrs_ktype = {
++	.release = damon_sysfs_data_attrs_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_data_attrs_groups,
++};
++
+ /*
+  * monitoring_attrs directory
+  */
+-- 
+2.47.3
+
