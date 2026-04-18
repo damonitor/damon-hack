@@ -29,18 +29,18 @@
   - author/reviewer role stat
     - maintainer, nobody: 2 commits
   - full commits list
-    - 98a9fc4387d7 "mm/damon/core: disallow time-quota setting zero esz"
+    - 754e86f8576f "mm/damon/core: disallow time-quota setting zero esz"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260407003153.79589-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org [1]
-    - 25348d337bd8 "mm/damon/core: disallow non-power of two min_region_sz on damon_start()"
+    - 310de339072d "mm/damon/core: disallow non-power of two min_region_sz on damon_start()"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260411213638.77768-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260403155530.64647-1-sj@kernel.org [1]
-- mm-stable: 53 total, 9 (46) series, 7 non-series commits
+- mm-stable: 61 total, 12 (52) series, 9 non-series commits
   - author/reviewer role stat
-    - no role, maintainer: 9 commits
-    - maintainer, nobody: 37 commits
+    - no role, maintainer: 10 commits
+    - maintainer, nobody: 44 commits
     - maintainer, no role : 7 commits
   - full commits list
     - b8a4b0883818 "mm/damon/ops-common: remove redudnant mmu notifier call in pmdp mkold"
@@ -232,47 +232,43 @@
         - Link: https://patch.msgid.link/20260320163559.178101-3-objecting@objecting.org
         - Link: https://lkml.kernel.org/r/20260321175427.86000-4-sj@kernel.org
         - Link: https://github.com/damonitor/damo [1]
-- mm-unstable: 8 total, 3 (6) series, 2 non-series commits
-  - author/reviewer role stat
-    - no role, maintainer: 1 commits
-    - maintainer, nobody: 7 commits
-  - full commits list
     - series "mm/damon/core: fix damon_call()/damos_walk() vs kdmond exit race". (2 commits)
-      - e35c2330b60c "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
+      - 55da81663b96 "mm/damon/core: fix damon_call() vs kdamond_fn() exit race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260327233319.3528-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260327233319.3528-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-      - ba51fb8e7275 "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
+      - 33c3f6c2b48c "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260327233319.3528-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
-    - be916e9a47ef "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
+    - e04ed278d25b "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lore.kernel.org/20260331101553.88422-1-liu.yun@linux.dev
     - series "mm/damon/core: validate damos_quota_goal->nid". (2 commits)
-      - 7c495931c345 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
+      - 40250b2dded0 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260329043902.46163-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260325073034.140353-1-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260327040924.68553-1-sj@kernel.org [2]
-      - 488fe46b4697 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
+      - a34dac6482e5 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260329043902.46163-3-sj@kernel.org
-    - 2a1523e915b6 "mm/damon/core: use time_in_range_open() for damos quota window start"
+    - 049a57421dd6 "mm/damon/core: use time_in_range_open() for damos quota window start"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260329152306.45796-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260324040722.57944-1-sj@kernel.org [1]
     - series "Docs/admin-guide/mm/damon: warn commit_inputs vs other params race". (2 commits)
-      - 0c92f5e5b847 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
+      - 0beba407d458 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260329153052.46657-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-3-objecting@objecting.org [1]
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [3]
-      - 9eebdd67a16d "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
+      - 0c13ed77dd2b "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260329153052.46657-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [1]
+- mm-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

@@ -6,10 +6,10 @@
 - mm-hotfixes-unstable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 2 -> 2 commits (no change)
-- mm-stable: 53 -> 53 commits (no change)
-  - series: 9 (46) -> 9 (46) (no change)
-    - no role, maintainer: 9 -> 9 commits (no change)
-    - maintainer, nobody: 37 -> 37 commits (no change)
+- mm-stable: 53 -> 61 commits
+  - series: 9 (46) -> 12 (52)
+    - no role, maintainer: 9 -> 10 commits
+    - maintainer, nobody: 37 -> 44 commits
     - maintainer, no role : 7 -> 7 commits (no change)
   - changed commits
     - series "mm/damon/sysfs: fix memory leak and NULL dereference issues", v4. (3)
@@ -28,10 +28,54 @@
         - Link: https://patch.msgid.link/20260320163559.178101-3-objecting@objecting.org
         - Link: https://lkml.kernel.org/r/20260321175427.86000-4-sj@kernel.org
         - Link: https://github.com/damonitor/damo [1]
-- mm-unstable: 8 -> 8 commits (no change)
-  - series: 3 (6) -> 3 (6) (no change)
-    - no role, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 7 -> 7 commits (no change)
+    - series "mm/damon/core: fix damon_call()/damos_walk() vs kdmond exit race". (2)
+      - 55da81663b96 "mm/damon/core: fix damon_call() vs kdamond_fn() exit race (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260327233319.3528-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260327233319.3528-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
+      - 33c3f6c2b48c "mm/damon/core: fix damos_walk() vs kdamond_fn() exit race (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260327233319.3528-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260325141956.87144-1-sj@kernel.org [1]
+    - e04ed278d25b "mm/damon/stat: fix memory leak on damon_start() failure in damon_stat_start()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260331101553.88422-1-liu.yun@linux.dev
+    - series "mm/damon/core: validate damos_quota_goal->nid". (2)
+      - 40250b2dded0 "mm/damon/core: validate damos_quota_goal->nid for node_mem_{used,free}_bp (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260329043902.46163-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260325073034.140353-1-objecting@objecting.org [1]
+        - Link: https://lore.kernel.org/20260327040924.68553-1-sj@kernel.org [2]
+      - a34dac6482e5 "mm/damon/core: validate damos_quota_goal->nid for node_memcg_{used,free}_bp (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260329043902.46163-3-sj@kernel.org
+    - 049a57421dd6 "mm/damon/core: use time_in_range_open() for damos quota window start"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260329152306.45796-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260324040722.57944-1-sj@kernel.org [1]
+    - series "Docs/admin-guide/mm/damon: warn commit_inputs vs other params race". (2)
+      - 0beba407d458 "Docs/admin-guide/mm/damon/reclaim: warn commit_inputs vs param updates race (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260329153052.46657-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260319161620.189392-3-objecting@objecting.org [1]
+        - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [3]
+      - 0c13ed77dd2b "Docs/admin-guide/mm/damon/lru_sort: warn commit_inputs vs param updates race (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260329153052.46657-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260319161620.189392-2-objecting@objecting.org [1]
+- mm-unstable: 8 -> 0 commits
+  - series: 3 (6) -> 0 (0)
+    - no role, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 7 -> 0 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
