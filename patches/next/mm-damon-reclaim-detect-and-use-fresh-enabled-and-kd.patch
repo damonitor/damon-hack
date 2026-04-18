@@ -73,11 +73,11 @@ Co-developed-by: Liew Rui Yan <aethernet65535@gmail.com>
 Signed-off-by: Liew Rui Yan <aethernet65535@gmail.com>
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/reclaim.c | 63 ++++++++++++++++++++++++++++++----------------
- 1 file changed, 42 insertions(+), 21 deletions(-)
+ mm/damon/reclaim.c | 85 ++++++++++++++++++++++++++++++----------------
+ 1 file changed, 55 insertions(+), 30 deletions(-)
 
 diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
-index 86da147786583..46660c8d4d422 100644
+index 86da147786583..fe7fce26cf6ce 100644
 --- a/mm/damon/reclaim.c
 +++ b/mm/damon/reclaim.c
 @@ -144,15 +144,6 @@ static unsigned long addr_unit __read_mostly = 1;
@@ -121,7 +121,7 @@ index 86da147786583..46660c8d4d422 100644
  	return damon_call(ctx, &call_control);
  }
  
-@@ -332,10 +316,16 @@ module_param_cb(addr_unit, &addr_unit_param_ops, &addr_unit, 0600);
+@@ -332,42 +316,83 @@ module_param_cb(addr_unit, &addr_unit_param_ops, &addr_unit, 0600);
  MODULE_PARM_DESC(addr_unit,
  	"Scale factor for DAMON_RECLAIM to ops address conversion (default: 1)");
  
@@ -136,28 +136,38 @@ index 86da147786583..46660c8d4d422 100644
  		const struct kernel_param *kp)
  {
 -	bool is_enabled = enabled;
- 	bool enable;
+-	bool enable;
  	int err;
  
-@@ -343,7 +333,7 @@ static int damon_reclaim_enabled_store(const char *val,
+-	err = kstrtobool(val, &enable);
++	err = kstrtobool(val, &enabled);
  	if (err)
  		return err;
  
 -	if (is_enabled == enable)
-+	if (damon_reclaim_enabled() == enable)
++	if (damon_reclaim_enabled() == enabled)
  		return 0;
  
  	/* Called before init function.  The function will handle this. */
-@@ -359,15 +349,46 @@ static int damon_reclaim_enabled_store(const char *val,
- 	return err;
- }
+ 	if (!damon_initialized())
+-		goto set_param_out;
++		return 0;
  
+-	err = damon_reclaim_turn(enable);
+-	if (err)
+-		return err;
++	return damon_reclaim_turn(enabled);
++}
+ 
+-set_param_out:
+-	enabled = enable;
+-	return err;
 +static int damon_reclaim_enabled_load(char *buffer,
 +		const struct kernel_param *kp)
 +{
 +	return sprintf(buffer, "%c\n", damon_reclaim_enabled() ? 'Y' : 'N');
-+}
-+
+ }
+ 
  static const struct kernel_param_ops enabled_param_ops = {
  	.set = damon_reclaim_enabled_store,
 -	.get = param_get_bool,
@@ -168,6 +178,16 @@ index 86da147786583..46660c8d4d422 100644
  MODULE_PARM_DESC(enabled,
  	"Enable or disable DAMON_RECLAIM (default: disabled)");
  
++static int damon_reclaim_kdamond_pid_store(const char *val,
++		const struct kernel_param *kp)
++{
++	/*
++	 * kdamond_pid is read-only, but kernel command line could write it.
++	 * Do nothing here.
++	 */
++	return 0;
++}
++
 +static int damon_reclaim_kdamond_pid_load(char *buffer,
 +		const struct kernel_param *kp)
 +{
@@ -182,6 +202,7 @@ index 86da147786583..46660c8d4d422 100644
 +}
 +
 +static const struct kernel_param_ops kdamond_pid_param_ops = {
++	.set = damon_reclaim_kdamond_pid_store,
 +	.get = damon_reclaim_kdamond_pid_load,
 +};
 +
