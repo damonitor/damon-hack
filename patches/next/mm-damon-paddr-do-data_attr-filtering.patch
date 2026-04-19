@@ -1,0 +1,59 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 19 Apr 2026 13:01:05 -0700
+Subject: [PATCH] mm/damon/paddr: do data_attr filtering
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 28 +++++++++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 45aabd5fc064f..76e946fc6da66 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -184,9 +184,27 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+ 	return max_nr_accesses;
+ }
+ 
+-static bool damon_pa_is_attr(struct damon_region *r, struct damon_data_attr *a)
++static bool damon_pa_is_attr(phys_addr_t pa, struct damon_data_attr *a)
+ {
+-	return false;
++	struct damon_filter *f;
++	bool default_allow = true;
++
++	damon_for_each_filter(f, a) {
++		bool matched;
++
++		if (f->type == DAMON_FILTER_TYPE_ANON) {
++			struct folio *folio = damon_get_folio(PHYS_PFN(pa));
++
++			if (!folio)
++				matched = false;
++			else
++				matched = folio_test_anon(folio);
++		}
++		if (matched)
++			return f->allow;
++		default_allow = !f->allow;
++	}
++	return default_allow;
+ }
+ 
+ static void damon_pa_check_data_attrs(struct damon_ctx *ctx)
+@@ -200,7 +218,11 @@ static void damon_pa_check_data_attrs(struct damon_ctx *ctx)
+ 			int i = 0;
+ 
+ 			damon_for_each_data_attr(a, ctx) {
+-				if (damon_pa_is_attr(r, a))
++				phys_addr_t pa;
++
++				pa = damon_pa_phys_addr(r->sampling_addr,
++						ctx->addr_unit);
++				if (damon_pa_is_attr(pa, a))
+ 					r->attr_counts[i]++;
+ 				i++;
+ 			}
+-- 
+2.47.3
+

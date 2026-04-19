@@ -1,0 +1,80 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 19 Apr 2026 14:39:06 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: implement attr_counts file
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 412afbfebc5d9..9d0e169c33368 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -20,6 +20,7 @@ struct damon_sysfs_scheme_region {
+ 	unsigned int nr_accesses;
+ 	unsigned int age;
+ 	unsigned long sz_filter_passed;
++	unsigned char attr_counts[DAMON_MAX_DATA_ATTRS];
+ 	struct list_head list;
+ };
+ 
+@@ -34,6 +35,9 @@ static struct damon_sysfs_scheme_region *damon_sysfs_scheme_region_alloc(
+ 	sysfs_region->ar = region->ar;
+ 	sysfs_region->nr_accesses = region->nr_accesses_bp / 10000;
+ 	sysfs_region->age = region->age;
++	memcpy(sysfs_region->attr_counts, region->attr_counts,
++			sizeof(*sysfs_region->attr_counts) *
++			ARRAY_SIZE(sysfs_region->attr_counts));
+ 	INIT_LIST_HEAD(&sysfs_region->list);
+ 	return sysfs_region;
+ }
+@@ -83,6 +87,28 @@ static ssize_t sz_filter_passed_show(struct kobject *kobj,
+ 	return sysfs_emit(buf, "%lu\n", region->sz_filter_passed);
+ }
+ 
++static ssize_t attr_counts_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_scheme_region *region = container_of(kobj,
++			struct damon_sysfs_scheme_region, kobj);
++	char *str;
++	int ret, i;
++
++	str = kcalloc(2048, sizeof(*str), GFP_KERNEL);
++	if (!str)
++		return -ENOMEM;
++	for (i = 0; i < DAMON_MAX_DATA_ATTRS; i++) {
++		snprintf(&str[strlen(str)], 2048 - strlen(str), "%hhu",
++				region->attr_counts[i]);
++		if (i < DAMON_MAX_DATA_ATTRS - 1)
++			snprintf(&str[strlen(str)], 2048 - strlen(str), ",");
++	}
++	ret = sysfs_emit(buf, "%s\n", str);
++	kfree(str);
++	return ret;
++}
++
+ static void damon_sysfs_scheme_region_release(struct kobject *kobj)
+ {
+ 	struct damon_sysfs_scheme_region *region = container_of(kobj,
+@@ -107,12 +133,16 @@ static struct kobj_attribute damon_sysfs_scheme_region_age_attr =
+ static struct kobj_attribute damon_sysfs_scheme_region_sz_filter_passed_attr =
+ 		__ATTR_RO_MODE(sz_filter_passed, 0400);
+ 
++static struct kobj_attribute damon_sysfs_scheme_region_attr_counts_attr =
++		__ATTR_RO_MODE(attr_counts, 0400);
++
+ static struct attribute *damon_sysfs_scheme_region_attrs[] = {
+ 	&damon_sysfs_scheme_region_start_attr.attr,
+ 	&damon_sysfs_scheme_region_end_attr.attr,
+ 	&damon_sysfs_scheme_region_nr_accesses_attr.attr,
+ 	&damon_sysfs_scheme_region_age_attr.attr,
+ 	&damon_sysfs_scheme_region_sz_filter_passed_attr.attr,
++	&damon_sysfs_scheme_region_attr_counts_attr.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(damon_sysfs_scheme_region);
+-- 
+2.47.3
+
