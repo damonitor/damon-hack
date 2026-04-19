@@ -1,8 +1,8 @@
 - baseline: v7.0-rc5-46-g24f9515de8778
-- mm-hotfixes-stable: 5 total, 1 (3) series, 2 non-series commits
+- mm-hotfixes-stable: 7 total, 1 (3) series, 4 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 3 commits
-    - maintainer, nobody: 2 commits
+    - maintainer, nobody: 4 commits
   - full commits list
     - series "mm/damon/sysfs: fix memory leak and NULL dereference issues", v4. (3 commits)
       - 7fe000eb3290 "mm/damon/sysfs: fix param_ctx leak on damon_sysfs_new_test_ctx() failure" (0/3)
@@ -25,18 +25,15 @@
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lkml.kernel.org/r/20260402134418.74121-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260401012428.86694-1-sj@kernel.org [1]
-- mm-hotfixes-unstable: 2 total, 0 (0) series, 2 non-series commits
-  - author/reviewer role stat
-    - maintainer, nobody: 2 commits
-  - full commits list
-    - 754e86f8576f "mm/damon/core: disallow time-quota setting zero esz"
+    - 8bbde987c2b8 "mm/damon/core: disallow time-quota setting zero esz"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260407003153.79589-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260405192504.110014-1-sj@kernel.org [1]
-    - 310de339072d "mm/damon/core: disallow non-power of two min_region_sz on damon_start()"
+    - 95093e5cb4c5 "mm/damon/core: disallow non-power of two min_region_sz on damon_start()"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260411213638.77768-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260403155530.64647-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 61 total, 12 (52) series, 9 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 10 commits
