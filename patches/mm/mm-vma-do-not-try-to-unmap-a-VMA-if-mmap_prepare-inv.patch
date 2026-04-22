@@ -1,0 +1,196 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Tue, 21 Apr 2026 11:21:50 +0100
+Subject: [PATCH] mm/vma: do not try to unmap a VMA if mmap_prepare() invoked
+ from mmap()
+
+The mmap_prepare hook functionality includes the ability to invoke
+mmap_prepare() from the mmap() hook of existing 'stacked' drivers, that is
+ones which are capable of calling the mmap hooks of other drivers/file
+systems (e.g.  overlayfs, shm).
+
+As part of the mmap_prepare action functionality, we deal with errors by
+unmapping the VMA should one arise.  This works in the usual mmap_prepare
+case, as we invoke this action at the last moment, when the VMA is
+established in the maple tree.
+
+However, the mmap() hook passes a not-fully-established VMA pointer to the
+caller (which is the motivation behind the mmap_prepare() work), which is
+detached.
+
+So attempting to unmap a VMA in this state will be problematic, with the
+most obvious symptom being a warning in vma_mark_detached(), because the
+VMA is already detached.
+
+It's also unncessary - the mmap() handler will clean up the VMA on error.
+
+So to fix this issue, this patch propagates whether or not an mmap action
+is being completed via the compatibility layer or directly.
+
+If the former, then we do not attempt VMA cleanup, if the latter, then we
+do.
+
+This patch also updates the userland VMA tests to reflect the change.
+
+Link: https://lore.kernel.org/20260421102150.189982-1-ljs@kernel.org
+Fixes: ac0a3fc9c07d ("mm: add ability to take further action in vm_area_desc")
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reported-by: syzbot+db390288d141a1dccf96@syzkaller.appspotmail.com
+Closes: https://lore.kernel.org/all/69e69734.050a0220.24bfd3.0027.GAE@google.com/
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h                |  2 +-
+ mm/util.c                         | 26 +++++++++++++++++---------
+ mm/vma.c                          |  3 ++-
+ tools/testing/vma/include/dup.h   |  2 +-
+ tools/testing/vma/include/stubs.h |  3 ++-
+ 5 files changed, 23 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 0b776907152e8..af23453e9dbd0 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -4391,7 +4391,7 @@ static inline void mmap_action_map_kernel_pages_full(struct vm_area_desc *desc,
+ 
+ int mmap_action_prepare(struct vm_area_desc *desc);
+ int mmap_action_complete(struct vm_area_struct *vma,
+-			 struct mmap_action *action);
++			 struct mmap_action *action, bool is_compat);
+ 
+ /* Look up the first VMA which exactly match the interval vm_start ... vm_end */
+ static inline struct vm_area_struct *find_exact_vma(struct mm_struct *mm,
+diff --git a/mm/util.c b/mm/util.c
+index 232c3930a662c..3cc949a0b7ed4 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -1232,7 +1232,7 @@ int __compat_vma_mmap(struct vm_area_desc *desc,
+ 	/* Update the VMA from the descriptor. */
+ 	compat_set_vma_from_desc(vma, desc);
+ 	/* Complete any specified mmap actions. */
+-	return mmap_action_complete(vma, &desc->action);
++	return mmap_action_complete(vma, &desc->action, /*is_compat=*/true);
+ }
+ EXPORT_SYMBOL(__compat_vma_mmap);
+ 
+@@ -1389,7 +1389,8 @@ static int call_vma_mapped(struct vm_area_struct *vma)
+ }
+ 
+ static int mmap_action_finish(struct vm_area_struct *vma,
+-			      struct mmap_action *action, int err)
++			      struct mmap_action *action, int err,
++			      bool is_compat)
+ {
+ 	size_t len;
+ 
+@@ -1400,8 +1401,12 @@ static int mmap_action_finish(struct vm_area_struct *vma,
+ 
+ 	/* do_munmap() might take rmap lock, so release if held. */
+ 	maybe_rmap_unlock_action(vma, action);
+-	if (!err)
+-		return 0;
++	/*
++	 * If this is invoked from the compatibility layer, post-mmap() hook
++	 * logic will handle cleanup for us.
++	 */
++	if (!err || is_compat)
++		return err;
+ 
+ 	/*
+ 	 * If an error occurs, unmap the VMA altogether and return an error. We
+@@ -1451,13 +1456,15 @@ EXPORT_SYMBOL(mmap_action_prepare);
+  * mmap_action_complete - Execute VMA descriptor action.
+  * @vma: The VMA to perform the action upon.
+  * @action: The action to perform.
++ * @is_compat: Is this being invoked from the compatibility layer?
+  *
+  * Similar to mmap_action_prepare().
+  *
+- * Return: 0 on success, or error, at which point the VMA will be unmapped.
++ * Return: 0 on success, or error, at which point the VMA will be unmapped if
++ * !@is_compat.
+  */
+ int mmap_action_complete(struct vm_area_struct *vma,
+-			 struct mmap_action *action)
++			 struct mmap_action *action, bool is_compat)
+ {
+ 	int err = 0;
+ 
+@@ -1478,7 +1485,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
+ 		break;
+ 	}
+ 
+-	return mmap_action_finish(vma, action, err);
++	return mmap_action_finish(vma, action, err, is_compat);
+ }
+ EXPORT_SYMBOL(mmap_action_complete);
+ #else
+@@ -1500,7 +1507,8 @@ int mmap_action_prepare(struct vm_area_desc *desc)
+ EXPORT_SYMBOL(mmap_action_prepare);
+ 
+ int mmap_action_complete(struct vm_area_struct *vma,
+-			 struct mmap_action *action)
++			 struct mmap_action *action,
++			 bool is_compat)
+ {
+ 	int err = 0;
+ 
+@@ -1517,7 +1525,7 @@ int mmap_action_complete(struct vm_area_struct *vma,
+ 		break;
+ 	}
+ 
+-	return mmap_action_finish(vma, action, err);
++	return mmap_action_finish(vma, action, err, is_compat);
+ }
+ EXPORT_SYMBOL(mmap_action_complete);
+ #endif
+diff --git a/mm/vma.c b/mm/vma.c
+index 377321b487348..d90791b00a7b8 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2780,7 +2780,8 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+ 	__mmap_complete(&map, vma);
+ 
+ 	if (have_mmap_prepare && allocated_new) {
+-		error = mmap_action_complete(vma, &desc.action);
++		error = mmap_action_complete(vma, &desc.action,
++					     /*is_compat=*/false);
+ 		if (error)
+ 			return error;
+ 	}
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index b4864aad2db0f..9e0dfd3a85b0e 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -1330,7 +1330,7 @@ static inline int __compat_vma_mmap(struct vm_area_desc *desc,
+ 	/* Update the VMA from the descriptor. */
+ 	compat_set_vma_from_desc(vma, desc);
+ 	/* Complete any specified mmap actions. */
+-	return mmap_action_complete(vma, &desc->action);
++	return mmap_action_complete(vma, &desc->action, /*is_compat=*/true);
+ }
+ 
+ static inline int compat_vma_mmap(struct file *file, struct vm_area_struct *vma)
+diff --git a/tools/testing/vma/include/stubs.h b/tools/testing/vma/include/stubs.h
+index a30b8bc849557..64164e25658fa 100644
+--- a/tools/testing/vma/include/stubs.h
++++ b/tools/testing/vma/include/stubs.h
+@@ -87,7 +87,8 @@ static inline int mmap_action_prepare(struct vm_area_desc *desc)
+ }
+ 
+ static inline int mmap_action_complete(struct vm_area_struct *vma,
+-				       struct mmap_action *action)
++				       struct mmap_action *action,
++				       bool is_compat)
+ {
+ 	return 0;
+ }
+-- 
+2.47.3
+

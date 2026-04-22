@@ -1,5 +1,5 @@
 From: "David Hildenbrand (Arm)" <david@kernel.org>
-Date: Mon, 20 Apr 2026 23:16:46 +0200
+Date: Tue, 21 Apr 2026 17:39:07 +0200
 Subject: [PATCH] mm/page_alloc: fix initialization of tags of the huge zero
  folio with init_on_free
 
@@ -30,9 +30,8 @@ enabled.
 Fix it by decoupling __GFP_ZEROTAGS from __GFP_ZERO, passing to
 tag_clear_highpages() whether we want to also clear page content.
 
-As we are touching the interface either way, just clean it up by only
-calling it when HW tags are enabled, dropping the return value, and
-dropping the common code stub.
+Invert the meaning of the tag_clear_highpages() return value to have
+clearer semantics.
 
 Reproduced with the huge zero folio by modifying the check_buffer_fill
 arm64/mte selftest to use a 2 MiB area, after making sure that pages have
@@ -46,19 +45,20 @@ initialize tags, but only set KASAN_TAG_KERNEL in the page flags).
 	not ok 18 Check initial tags with private mapping, sync error mode and mmap/mprotect memory
 	...
 
-This code needs more cleanups; we'll tackle that next, like decoupling
-__GFP_ZEROTAGS from __GFP_SKIP_KASAN, moving all the KASAN magic into a
-separate helper, and consolidating HW-tag handling.
+This code needs more cleanups; we'll tackle that next, like
+decoupling __GFP_ZEROTAGS from __GFP_SKIP_KASAN.
 
-Link: https://lore.kernel.org/20260420-zerotags-v1-1-3edc93e95bb4@kernel.org
+Link: https://lore.kernel.org/20260421-zerotags-v2-1-05cb1035482e@kernel.org
 Fixes: adfb6609c680 ("mm/huge_memory: initialise the tags of the huge zero folio")
 Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Lance Yang <lance.yang@linux.dev>
 Cc: Liam Howlett <liam.howlett@oracle.com>
 Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
@@ -68,46 +68,46 @@ Cc: Zi Yan <ziy@nvidia.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- arch/arm64/include/asm/page.h |  3 ---
- arch/arm64/mm/fault.c         | 16 +++++-----------
+ arch/arm64/include/asm/page.h |  2 +-
+ arch/arm64/mm/fault.c         | 11 +++++++----
  include/linux/gfp_types.h     | 10 +++++-----
- include/linux/highmem.h       | 10 +---------
- mm/page_alloc.c               | 12 +++++++-----
- 5 files changed, 18 insertions(+), 33 deletions(-)
+ include/linux/highmem.h       |  7 ++++---
+ mm/page_alloc.c               |  8 ++++----
+ 5 files changed, 21 insertions(+), 17 deletions(-)
 
 diff --git a/arch/arm64/include/asm/page.h b/arch/arm64/include/asm/page.h
-index e25d0d18f6d77..5c6cbfbbd34c3 100644
+index e25d0d18f6d77..58200de8a221a 100644
 --- a/arch/arm64/include/asm/page.h
 +++ b/arch/arm64/include/asm/page.h
-@@ -33,9 +33,6 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
+@@ -33,7 +33,7 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
  						unsigned long vaddr);
  #define vma_alloc_zeroed_movable_folio vma_alloc_zeroed_movable_folio
  
 -bool tag_clear_highpages(struct page *to, int numpages);
--#define __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
--
- #define copy_user_page(to, from, vaddr, pg)	copy_page(to, from)
++bool tag_clear_highpages(struct page *to, int numpages, bool clear_pages);
+ #define __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
  
- typedef struct page *pgtable_t;
+ #define copy_user_page(to, from, vaddr, pg)	copy_page(to, from)
 diff --git a/arch/arm64/mm/fault.c b/arch/arm64/mm/fault.c
-index 0f3c5c7ca0547..32a3723f2d34c 100644
+index 0f3c5c7ca0547..739800835920c 100644
 --- a/arch/arm64/mm/fault.c
 +++ b/arch/arm64/mm/fault.c
-@@ -1018,21 +1018,15 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
+@@ -1018,7 +1018,7 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
  	return vma_alloc_folio(flags, 0, vma, vaddr);
  }
  
 -bool tag_clear_highpages(struct page *page, int numpages)
-+void tag_clear_highpages(struct page *page, int numpages, bool clear_pages)
++bool tag_clear_highpages(struct page *page, int numpages, bool clear_pages)
  {
--	/*
--	 * Check if MTE is supported and fall back to clear_highpage().
--	 * get_huge_zero_folio() unconditionally passes __GFP_ZEROTAGS and
--	 * post_alloc_hook() will invoke tag_clear_highpages().
--	 */
--	if (!system_supports_mte())
+ 	/*
+ 	 * Check if MTE is supported and fall back to clear_highpage().
+@@ -1026,13 +1026,16 @@ bool tag_clear_highpages(struct page *page, int numpages)
+ 	 * post_alloc_hook() will invoke tag_clear_highpages().
+ 	 */
+ 	if (!system_supports_mte())
 -		return false;
--
++		return clear_pages;
+ 
  	/* Newly allocated pages, shouldn't have been tagged yet */
  	for (int i = 0; i < numpages; i++, page++) {
  		WARN_ON_ONCE(!try_page_mte_tagging(page));
@@ -119,9 +119,10 @@ index 0f3c5c7ca0547..32a3723f2d34c 100644
  		set_page_mte_tagged(page);
  	}
 -	return true;
++	return false;
  }
 diff --git a/include/linux/gfp_types.h b/include/linux/gfp_types.h
-index 6c75df30a281d..fd53a6fba33f4 100644
+index 6c75df30a281d..d79049291b1af 100644
 --- a/include/linux/gfp_types.h
 +++ b/include/linux/gfp_types.h
 @@ -273,11 +273,11 @@ enum {
@@ -133,51 +134,49 @@ index 6c75df30a281d..fd53a6fba33f4 100644
 - * __GFP_SKIP_ZERO is not set). This flag is intended for optimization: setting
 - * memory tags at the same time as zeroing memory has minimal additional
 - * performance impact.
-+ * %__GFP_ZEROTAGS zeroes memory tags at allocation time. This flag is intended
-+ * for optimization: setting memory tags at the same time as zeroing memory
-+ * (e.g., with __GPF_ZERO) has minimal additional performance impact. However,
-+ * __GFP_ZEROTAGS also zeroes the tags even if memory is not getting zeroed at
-+ * allocation time (e.g., with init_on_free).
++ * %__GFP_ZEROTAGS zeroes memory tags at allocation time. Setting memory tags at
++ * the same time as zeroing memory (e.g., with __GPF_ZERO) has minimal
++ * additional performance impact. However, __GFP_ZEROTAGS also zeroes the tags
++ * even if memory is not getting zeroed at allocation time (e.g.,
++ * with init_on_free).
   *
   * %__GFP_SKIP_KASAN makes KASAN skip unpoisoning on page allocation.
   * Used for userspace and vmalloc pages; the latter are unpoisoned by
 diff --git a/include/linux/highmem.h b/include/linux/highmem.h
-index af03db851a1d9..62f589baa3433 100644
+index af03db851a1d9..d7aac9de1c8a4 100644
 --- a/include/linux/highmem.h
 +++ b/include/linux/highmem.h
-@@ -345,15 +345,7 @@ static inline void clear_highpage_kasan_tagged(struct page *page)
- 	kunmap_local(kaddr);
- }
+@@ -347,10 +347,11 @@ static inline void clear_highpage_kasan_tagged(struct page *page)
  
--#ifndef __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
--
+ #ifndef __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
+ 
 -/* Return false to let people know we did not initialize the pages */
 -static inline bool tag_clear_highpages(struct page *page, int numpages)
--{
++/* Returns true if the caller has to initialize the pages */
++static inline bool tag_clear_highpages(struct page *page, int numpages,
++		bool clear_pages)
+ {
 -	return false;
--}
--
--#endif
-+void tag_clear_highpages(struct page *to, int numpages, bool clear_pages);
++	return clear_pages;
+ }
  
- /*
-  * If we pass in a base or tail page, we can zero up to PAGE_SIZE.
+ #endif
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index 65e205111553e..8c6821d25a00d 100644
+index 65e205111553e..71859993dd54d 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
 @@ -1808,9 +1808,9 @@ static inline bool should_skip_init(gfp_t flags)
  inline void post_alloc_hook(struct page *page, unsigned int order,
  				gfp_t gfp_flags)
  {
-+	const bool zero_tags = kasan_hw_tags_enabled() && (gfp_flags & __GFP_ZEROTAGS);
++	const bool zero_tags = gfp_flags & __GFP_ZEROTAGS;
  	bool init = !want_init_on_free() && want_init_on_alloc(gfp_flags) &&
  			!should_skip_init(gfp_flags);
 -	bool zero_tags = init && (gfp_flags & __GFP_ZEROTAGS);
  	int i;
  
  	set_page_private(page, 0);
-@@ -1832,11 +1832,13 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
+@@ -1832,11 +1832,11 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
  	 */
  
  	/*
@@ -186,12 +185,9 @@ index 65e205111553e..8c6821d25a00d 100644
 +	 * Clearing tags can efficiently clear the memory for us as well, if
 +	 * required.
  	 */
--	if (zero_tags)
+ 	if (zero_tags)
 -		init = !tag_clear_highpages(page, 1 << order);
-+	if (zero_tags) {
-+		tag_clear_highpages(page, 1 << order, /* clear_pages= */init);
-+		init = false;
-+	}
++		init = tag_clear_highpages(page, 1 << order, /* clear_pages= */init);
  
  	if (!should_skip_kasan_unpoison(gfp_flags) &&
  	    kasan_unpoison_pages(page, order, init)) {
