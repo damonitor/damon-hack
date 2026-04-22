@@ -1,0 +1,47 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 21 Apr 2026 22:34:51 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: fix path use-after-free
+
+Co-developed-by: Junxi Qian <qjx1298677004@gmail.com>
+Signed-off-by: Junxi Qian <qjx1298677004@gmail.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 8d32a20531d49..245d63808411a 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1197,8 +1197,13 @@ static ssize_t path_show(struct kobject *kobj,
+ {
+ 	struct damos_sysfs_quota_goal *goal = container_of(kobj,
+ 			struct damos_sysfs_quota_goal, kobj);
++	int len;
+ 
+-	return sysfs_emit(buf, "%s\n", goal->path ? goal->path : "");
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	len = sysfs_emit(buf, "%s\n", goal->path ? goal->path : "");
++	mutex_unlock(&damon_sysfs_lock);
++	return len;
+ }
+ 
+ static ssize_t path_store(struct kobject *kobj,
+@@ -1213,8 +1218,13 @@ static ssize_t path_store(struct kobject *kobj,
+ 		return -ENOMEM;
+ 
+ 	strscpy(path, buf, count + 1);
++	if (!mutex_trylock(&damon_sysfs_lock)) {
++		kfree(path);
++		return -EBUSY;
++	}
+ 	kfree(goal->path);
+ 	goal->path = path;
++	mutex_unlock(&damon_sysfs_lock);
+ 	return count;
+ }
+ 
+-- 
+2.47.3
+
