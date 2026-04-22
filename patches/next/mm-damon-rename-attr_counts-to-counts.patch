@@ -1,0 +1,156 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 21 Apr 2026 21:10:43 -0700
+Subject: [PATCH] mm/damon: rename attr_counts to counts
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h        |  4 ++--
+ include/trace/events/damon.h |  8 ++++----
+ mm/damon/core.c              |  4 ++--
+ mm/damon/paddr.c             |  2 +-
+ mm/damon/sysfs-schemes.c     | 18 +++++++++---------
+ 5 files changed, 18 insertions(+), 18 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 5217f0a7c376a..51f9781bcb78d 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -54,7 +54,7 @@ struct damon_size_range {
+  * @nr_accesses:	Access frequency of this region.
+  * @nr_accesses_bp:	@nr_accesses in basis point (0.01%) that updated for
+  *			each sampling interval.
+- * @attr_counts:	Number of samples of each monitoring data attribute.
++ * @counts:		Values of each monitoring counter.
+  * @list:		List head for siblings.
+  * @age:		Age of this region.
+  *
+@@ -83,7 +83,7 @@ struct damon_region {
+ 	unsigned long sampling_addr;
+ 	unsigned int nr_accesses;
+ 	unsigned int nr_accesses_bp;
+-	unsigned char attr_counts[DAMON_MAX_COUNTERS];
++	unsigned char counts[DAMON_MAX_COUNTERS];
+ 	struct list_head list;
+ 
+ 	unsigned int age;
+diff --git a/include/trace/events/damon.h b/include/trace/events/damon.h
+index cd2c19fc99d36..b340115c3a5cf 100644
+--- a/include/trace/events/damon.h
++++ b/include/trace/events/damon.h
+@@ -157,10 +157,10 @@ TRACE_EVENT(damon_aggregated_v2,
+ 		__entry->end = r->ar.end;
+ 		__entry->nr_accesses = r->nr_accesses;
+ 		__entry->age = r->age;
+-		__entry->count0 = r->attr_counts[0];
+-		__entry->count1 = r->attr_counts[1];
+-		__entry->count2 = r->attr_counts[2];
+-		__entry->count3 = r->attr_counts[3];
++		__entry->count0 = r->counts[0];
++		__entry->count1 = r->counts[1];
++		__entry->count2 = r->counts[2];
++		__entry->count3 = r->counts[3];
+ 	),
+ 
+ 	TP_printk("target_id=%lu nr_regions=%u %lu-%lu: %u %u %hhu %hhu %hhu %hhu",
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 627c8823f6f24..1d1a1e3fe09b4 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -244,7 +244,7 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+ 	region->nr_accesses = 0;
+ 	region->nr_accesses_bp = 0;
+ 	for (i = 0; i < DAMON_MAX_COUNTERS; i++)
+-		region->attr_counts[i] = 0;
++		region->counts[i] = 0;
+ 	INIT_LIST_HEAD(&region->list);
+ 
+ 	region->age = 0;
+@@ -2156,7 +2156,7 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 			r->last_nr_accesses = r->nr_accesses;
+ 			r->nr_accesses = 0;
+ 			for (i = 0; i < DAMON_MAX_COUNTERS; i++)
+-				r->attr_counts[i] = 0;
++				r->counts[i] = 0;
+ 			damon_verify_reset_aggregated(r, c);
+ 		}
+ 		ti++;
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 8d49c3e944cfe..16f7646920a8a 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -221,7 +221,7 @@ static void damon_pa_test_counters(struct damon_ctx *ctx)
+ 				pa = damon_pa_phys_addr(r->sampling_addr,
+ 						ctx->addr_unit);
+ 				if (damon_pa_tests_pass(pa, c))
+-					r->attr_counts[i]++;
++					r->counts[i]++;
+ 				i++;
+ 			}
+ 		}
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 7a37902cef965..3e4a785e447c2 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -20,7 +20,7 @@ struct damon_sysfs_scheme_region {
+ 	unsigned int nr_accesses;
+ 	unsigned int age;
+ 	unsigned long sz_filter_passed;
+-	unsigned char attr_counts[DAMON_MAX_COUNTERS];
++	unsigned char counts[DAMON_MAX_COUNTERS];
+ 	struct list_head list;
+ };
+ 
+@@ -35,9 +35,9 @@ static struct damon_sysfs_scheme_region *damon_sysfs_scheme_region_alloc(
+ 	sysfs_region->ar = region->ar;
+ 	sysfs_region->nr_accesses = region->nr_accesses_bp / 10000;
+ 	sysfs_region->age = region->age;
+-	memcpy(sysfs_region->attr_counts, region->attr_counts,
+-			sizeof(*sysfs_region->attr_counts) *
+-			ARRAY_SIZE(sysfs_region->attr_counts));
++	memcpy(sysfs_region->counts, region->counts,
++			sizeof(*sysfs_region->counts) *
++			ARRAY_SIZE(sysfs_region->counts));
+ 	INIT_LIST_HEAD(&sysfs_region->list);
+ 	return sysfs_region;
+ }
+@@ -87,7 +87,7 @@ static ssize_t sz_filter_passed_show(struct kobject *kobj,
+ 	return sysfs_emit(buf, "%lu\n", region->sz_filter_passed);
+ }
+ 
+-static ssize_t attr_counts_show(struct kobject *kobj,
++static ssize_t counts_show(struct kobject *kobj,
+ 		struct kobj_attribute *attr, char *buf)
+ {
+ 	struct damon_sysfs_scheme_region *region = container_of(kobj,
+@@ -100,7 +100,7 @@ static ssize_t attr_counts_show(struct kobject *kobj,
+ 		return -ENOMEM;
+ 	for (i = 0; i < DAMON_MAX_COUNTERS; i++) {
+ 		snprintf(&str[strlen(str)], 2048 - strlen(str), "%hhu",
+-				region->attr_counts[i]);
++				region->counts[i]);
+ 		if (i < DAMON_MAX_COUNTERS - 1)
+ 			snprintf(&str[strlen(str)], 2048 - strlen(str), ",");
+ 	}
+@@ -133,8 +133,8 @@ static struct kobj_attribute damon_sysfs_scheme_region_age_attr =
+ static struct kobj_attribute damon_sysfs_scheme_region_sz_filter_passed_attr =
+ 		__ATTR_RO_MODE(sz_filter_passed, 0400);
+ 
+-static struct kobj_attribute damon_sysfs_scheme_region_attr_counts_attr =
+-		__ATTR_RO_MODE(attr_counts, 0400);
++static struct kobj_attribute damon_sysfs_scheme_region_counts_attr =
++		__ATTR_RO_MODE(counts, 0400);
+ 
+ static struct attribute *damon_sysfs_scheme_region_attrs[] = {
+ 	&damon_sysfs_scheme_region_start_attr.attr,
+@@ -142,7 +142,7 @@ static struct attribute *damon_sysfs_scheme_region_attrs[] = {
+ 	&damon_sysfs_scheme_region_nr_accesses_attr.attr,
+ 	&damon_sysfs_scheme_region_age_attr.attr,
+ 	&damon_sysfs_scheme_region_sz_filter_passed_attr.attr,
+-	&damon_sysfs_scheme_region_attr_counts_attr.attr,
++	&damon_sysfs_scheme_region_counts_attr.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(damon_sysfs_scheme_region);
+-- 
+2.47.3
+
