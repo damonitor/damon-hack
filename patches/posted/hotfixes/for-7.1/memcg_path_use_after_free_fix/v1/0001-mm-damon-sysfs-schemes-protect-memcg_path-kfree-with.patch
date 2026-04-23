@@ -1,0 +1,71 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org> # 6.16.x
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 21 Apr 2026 21:46:38 -0700
+Subject: [PATCH 1/2] mm/damon/sysfs-schemes: protect memcg_path kfree() with
+         damon_sysfs_lock
+
+damon_sysfs_scheme_filter->mmecg_path can be read and written by users,
+via DAMON sysfs memcg_path file.  It can also be indirectly read, for
+the parameters {on,off}line committing to DAMON.  The reads for
+parameters committing are protected by damon_sysfs_lock to avoid the
+sysfs files being destroyed while any of the parameters are being read.
+But the user-driven direct reads and writes are not protected by any
+lock, while the write is deallocating the memcg_path-pointing buffer. As
+a result, the readers could read the already freed buffer
+(user-after-free).  Note that the user-reads don't race when the same
+open file is used by the writer, due to kernfs's open file locking.
+Nonetheless, doing the reads and writes with separate open files would
+be common.  Fix it by protecting both the user-direct reads and writes
+with damon_sysfs_lock.
+
+Fixes: 4f489fe6afb3 ("mm/damon/sysfs-schemes: free old damon_sysfs_scheme_filter->memcg_path on write")
+Cc: <stable@vger.kernel.org> # 6.16.x
+Co-developed-by: Junxi Qian <qjx1298677004@gmail.com>
+Signed-off-by: Junxi Qian <qjx1298677004@gmail.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 5186966dafb35..8d32a20531d49 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -533,9 +533,14 @@ static ssize_t memcg_path_show(struct kobject *kobj,
+ {
+ 	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
+ 			struct damon_sysfs_scheme_filter, kobj);
++	int len;
+ 
+-	return sysfs_emit(buf, "%s\n",
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	len = sysfs_emit(buf, "%s\n",
+ 			filter->memcg_path ? filter->memcg_path : "");
++	mutex_unlock(&damon_sysfs_lock);
++	return len;
+ }
+ 
+ static ssize_t memcg_path_store(struct kobject *kobj,
+@@ -550,8 +555,13 @@ static ssize_t memcg_path_store(struct kobject *kobj,
+ 		return -ENOMEM;
+ 
+ 	strscpy(path, buf, count + 1);
++	if (!mutex_trylock(&damon_sysfs_lock)) {
++		kfree(path);
++		return -EBUSY;
++	}
+ 	kfree(filter->memcg_path);
+ 	filter->memcg_path = path;
++	mutex_unlock(&damon_sysfs_lock);
+ 	return count;
+ }
+ 
+-- 
+2.47.3
