@@ -1,0 +1,204 @@
+From: Ankur Arora <ankur.a.arora@oracle.com>
+Date: Wed, 8 Apr 2026 17:55:38 +0530
+Subject: [PATCH] kunit: add tests for smp_cond_load_relaxed_timeout()
+
+Add a success and failure case for smp_cond_load_relaxed_timeout().
+
+Both test cases wait on some state in smp_cond_load_relaxed_timeout().  In
+the success case we spawn a kthread that pokes the bit.
+
+Link: https://lore.kernel.org/20260408122538.3610871-15-ankur.a.arora@oracle.com
+Signed-off-by: Ankur Arora <ankur.a.arora@oracle.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Boqun Feng <boqun@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christoph Lameter <cl@linux.com>
+Cc: Daniel Lezcano <daniel.lezcano@linaro.org>
+Cc: David Gow <davidgow@google.com>
+Cc: Gary Guo <gary@garyguo.net>
+Cc: Haris Okanovic <harisokn@amazon.com>
+Cc: Ingo Molnar <mingo@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Kumar Kartikeya Dwivedi <memxor@gmail.com>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rafael J. Wysocki (Intel) <rafael@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/Kconfig.debug                |  10 +++
+ lib/tests/Makefile               |   1 +
+ lib/tests/barrier-timeout-test.c | 125 +++++++++++++++++++++++++++++++
+ 3 files changed, 136 insertions(+)
+ create mode 100644 lib/tests/barrier-timeout-test.c
+
+diff --git a/lib/Kconfig.debug b/lib/Kconfig.debug
+index 77c3774c1c495..d7d07fb08ce17 100644
+--- a/lib/Kconfig.debug
++++ b/lib/Kconfig.debug
+@@ -2406,6 +2406,16 @@ config FPROBE_SANITY_TEST
+ 
+ 	  Say N if you are unsure.
+ 
++config BARRIER_TIMEOUT_TEST
++	tristate "KUnit tests for smp_cond_load_relaxed_timeout()"
++	depends on KUNIT
++	default KUNIT_ALL_TESTS
++	help
++	  Builds KUnit tests that validate wake-up and timeout handling paths
++	  in smp_cond_load_relaxed_timeout().
++
++	  Say N if you are unsure.
++
+ config BACKTRACE_SELF_TEST
+ 	tristate "Self test for the backtrace code"
+ 	depends on DEBUG_KERNEL
+diff --git a/lib/tests/Makefile b/lib/tests/Makefile
+index 05f74edbc62bf..3504d677b7b88 100644
+--- a/lib/tests/Makefile
++++ b/lib/tests/Makefile
+@@ -20,6 +20,7 @@ CFLAGS_fortify_kunit.o += $(DISABLE_STRUCTLEAK_PLUGIN)
+ obj-$(CONFIG_FORTIFY_KUNIT_TEST) += fortify_kunit.o
+ CFLAGS_test_fprobe.o += $(CC_FLAGS_FTRACE)
+ obj-$(CONFIG_FPROBE_SANITY_TEST) += test_fprobe.o
++obj-$(CONFIG_BARRIER_TIMEOUT_TEST) += barrier-timeout-test.o
+ obj-$(CONFIG_GLOB_KUNIT_TEST) += glob_kunit.o
+ obj-$(CONFIG_HASHTABLE_KUNIT_TEST) += hashtable_test.o
+ obj-$(CONFIG_HASH_KUNIT_TEST) += test_hash.o
+diff --git a/lib/tests/barrier-timeout-test.c b/lib/tests/barrier-timeout-test.c
+new file mode 100644
+index 0000000000000..41a069743834a
+--- /dev/null
++++ b/lib/tests/barrier-timeout-test.c
+@@ -0,0 +1,125 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * KUnit tests exercising smp_cond_load_relaxed_timeout().
++ *
++ * Copyright (c) 2026, Oracle Corp.
++ * Author: Ankur Arora <ankur.a.arora@oracle.com>
++ */
++
++#include <linux/bitops.h>
++#include <linux/types.h>
++#include <linux/sched/clock.h>
++#include <linux/delay.h>
++#include <linux/kthread.h>
++#include <asm/barrier.h>
++#include <kunit/test.h>
++#include <kunit/visibility.h>
++
++MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
++
++struct clock_state {
++	s64 start_time;
++	s64 end_time;
++};
++
++#define TIMEOUT_MSEC	2
++#define TEST_FLAG_VAL	BIT(2)
++static unsigned int flag;
++
++static s64 basic_clock(struct clock_state *clk)
++{
++	clk->end_time = local_clock();
++	return clk->end_time;
++}
++
++static void update_flags(void)
++{
++	WRITE_ONCE(flag, TEST_FLAG_VAL);
++}
++
++static s64 mock_clock(struct clock_state *clk)
++{
++	s64 clk_mid = clk->start_time + (TIMEOUT_MSEC * NSEC_PER_MSEC)/2;
++
++	clk->end_time = local_clock();
++	if (clk->end_time >= clk_mid)
++		update_flags();
++	return clk->end_time;
++}
++
++typedef s64 (*clkfn_t)(struct clock_state *);
++
++static void test_smp_cond_relaxed_timeout(struct kunit *test,
++					  clkfn_t clock, bool succeeds)
++{
++	struct clock_state clk = {
++		.start_time = local_clock(),
++		.end_time = local_clock(),
++	};
++	s64 runtime, timeout_ns = TIMEOUT_MSEC * NSEC_PER_MSEC;
++	unsigned int result;
++
++	result = smp_cond_load_relaxed_timeout(&flag,
++					       (VAL & TEST_FLAG_VAL),
++					       clock(&clk),
++					       timeout_ns);
++
++	runtime = clk.end_time - clk.start_time;
++	KUNIT_EXPECT_EQ(test, (bool)(result & TEST_FLAG_VAL), succeeds);
++	KUNIT_EXPECT_EQ(test, runtime <= timeout_ns, succeeds);
++}
++
++static int smp_cond_threadfn(void *data)
++{
++	udelay(TIMEOUT_MSEC * USEC_PER_MSEC / 4);
++
++	/*
++	 * Update flags after a delay to give smp_cond_relaxed_timeout()
++	 * time to get started.
++	 */
++	update_flags();
++	return 0;
++}
++
++static void smp_cond_relaxed_timeout_succeeds(struct kunit *test)
++{
++	struct task_struct *task;
++
++	flag = 0;
++
++	task = kthread_run(smp_cond_threadfn, &flag, "smp_cond_thread");
++
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, task);
++	test_smp_cond_relaxed_timeout(test, &basic_clock, true);
++
++	kthread_stop(task);
++}
++
++static void smp_cond_relaxed_timeout_mocked(struct kunit *test)
++{
++	flag = 0;
++	test_smp_cond_relaxed_timeout(test, &mock_clock, true);
++}
++
++static void smp_cond_relaxed_timeout_expires(struct kunit *test)
++{
++	flag = 0;
++	test_smp_cond_relaxed_timeout(test, &basic_clock, false);
++}
++
++static struct kunit_case barrier_timeout_test_cases[] = {
++	KUNIT_CASE(smp_cond_relaxed_timeout_mocked),
++	KUNIT_CASE(smp_cond_relaxed_timeout_succeeds),
++	KUNIT_CASE(smp_cond_relaxed_timeout_expires),
++	{}
++};
++
++static struct kunit_suite barrier_timeout_test_suite = {
++	.name = "smp-cond-load-relaxed-timeout",
++	.test_cases = barrier_timeout_test_cases,
++};
++
++kunit_test_suite(barrier_timeout_test_suite);
++
++MODULE_DESCRIPTION("KUnit tests for smp_cond_load_relaxed_timeout()");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

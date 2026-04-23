@@ -1,0 +1,68 @@
+From: Alexander Gordeev <agordeev@linux.ibm.com>
+Date: Tue, 21 Apr 2026 07:17:54 +0200
+Subject: [PATCH] mm/gup: cleanup pgtable entry accessors
+
+PMD and PUD entries revalidation has the same semantics as PTE entry
+revalidation.  Convert the remaining direct entry dereferences to the
+corresponding accessors.
+
+The PTE validation in gup_fast_pte_range() is inconsistent with the prior
+value acquisition in the sense that it drops the lockless access
+semantics.
+
+Use the lockless accessor not only for the PTE, but also for the PMD
+validation, which is likewise inconsistent with the prior value
+acquisition in gup_fast_pmd_range().
+
+Link: https://lore.kernel.org/20260421051754.1691221-1-agordeev@linux.ibm.com
+Signed-off-by: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/gup.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/mm/gup.c b/mm/gup.c
+index ad9ded39609cb..0692119b79043 100644
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -2865,8 +2865,8 @@ static int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
+ 		if (!folio)
+ 			goto pte_unmap;
+ 
+-		if (unlikely(pmd_val(pmd) != pmd_val(*pmdp)) ||
+-		    unlikely(pte_val(pte) != pte_val(ptep_get(ptep)))) {
++		if (unlikely(pmd_val(pmd) != pmd_val(pmdp_get_lockless(pmdp))) ||
++		    unlikely(pte_val(pte) != pte_val(ptep_get_lockless(ptep)))) {
+ 			gup_put_folio(folio, 1, flags);
+ 			goto pte_unmap;
+ 		}
+@@ -2942,7 +2942,7 @@ static int gup_fast_pmd_leaf(pmd_t orig, pmd_t *pmdp, unsigned long addr,
+ 	if (!folio)
+ 		return 0;
+ 
+-	if (unlikely(pmd_val(orig) != pmd_val(*pmdp))) {
++	if (unlikely(pmd_val(orig) != pmd_val(pmdp_get_lockless(pmdp)))) {
+ 		gup_put_folio(folio, refs, flags);
+ 		return 0;
+ 	}
+@@ -2985,7 +2985,7 @@ static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
+ 	if (!folio)
+ 		return 0;
+ 
+-	if (unlikely(pud_val(orig) != pud_val(*pudp))) {
++	if (unlikely(pud_val(orig) != pud_val(pudp_get(pudp)))) {
+ 		gup_put_folio(folio, refs, flags);
+ 		return 0;
+ 	}
+-- 
+2.47.3
+

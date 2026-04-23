@@ -1,0 +1,238 @@
+From: Nico Pache <npache@redhat.com>
+Date: Sun, 19 Apr 2026 12:57:44 -0600
+Subject: [PATCH] mm/khugepaged: add per-order mTHP collapse failure statistics
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add three new mTHP statistics to track collapse failures for different
+orders when encountering swap PTEs, excessive none PTEs, and shared PTEs:
+
+- collapse_exceed_swap_pte: Increment when mTHP collapse fails due to swap
+	PTEs
+
+- collapse_exceed_none_pte: Counts when mTHP collapse fails due to
+  	exceeding the none PTE threshold for the given order
+
+- collapse_exceed_shared_pte: Counts when mTHP collapse fails due to shared
+  	PTEs
+
+These statistics complement the existing THP_SCAN_EXCEED_* events by
+providing per-order granularity for mTHP collapse attempts.  The stats are
+exposed via sysfs under
+`/sys/kernel/mm/transparent_hugepage/hugepages-*/stats/` for each
+supported hugepage size.
+
+As we currently dont support collapsing mTHPs that contain a swap or
+shared entry, those statistics keep track of how often we are encountering
+failed mTHP collapses due to these restrictions.
+
+Now that we plan to support mTHP collapse for anon pages, lets also track
+when this happens at the PMD level within the per-mTHP stats.
+
+Link: https://lore.kernel.org/20260419185750.260784-8-npache@redhat.com
+Signed-off-by: Nico Pache <npache@redhat.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Bagas Sanjaya <bagasdotme@gmail.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rafael Aquini <raquini@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/mm/transhuge.rst | 24 ++++++++++++++++++++++
+ include/linux/huge_mm.h                    |  3 +++
+ mm/huge_memory.c                           |  7 +++++++
+ mm/khugepaged.c                            | 21 +++++++++++++++++--
+ 4 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/admin-guide/mm/transhuge.rst b/Documentation/admin-guide/mm/transhuge.rst
+index c51932e6275d9..eebb1f6bbc6c0 100644
+--- a/Documentation/admin-guide/mm/transhuge.rst
++++ b/Documentation/admin-guide/mm/transhuge.rst
+@@ -714,6 +714,30 @@ nr_anon_partially_mapped
+        an anonymous THP as "partially mapped" and count it here, even though it
+        is not actually partially mapped anymore.
+ 
++collapse_exceed_none_pte
++       The number of collapse attempts that failed due to exceeding the
++       max_ptes_none threshold. For mTHP collapse, Currently only max_ptes_none
++       values of 0 and (HPAGE_PMD_NR - 1) are supported. Any other value will
++       emit a warning and no mTHP collapse will be attempted. khugepaged will
++       try to collapse to the largest enabled (m)THP size; if it fails, it will
++       try the next lower enabled mTHP size. This counter records the number of
++       times a collapse attempt was skipped for exceeding the max_ptes_none
++       threshold, and khugepaged will move on to the next available mTHP size.
++
++collapse_exceed_swap_pte
++       The number of anonymous mTHP PTE ranges which were unable to collapse due
++       to containing at least one swap PTE. Currently khugepaged does not
++       support collapsing mTHP regions that contain a swap PTE. This counter can
++       be used to monitor the number of khugepaged mTHP collapses that failed
++       due to the presence of a swap PTE.
++
++collapse_exceed_shared_pte
++       The number of anonymous mTHP PTE ranges which were unable to collapse due
++       to containing at least one shared PTE. Currently khugepaged does not
++       support collapsing mTHP PTE ranges that contain a shared PTE. This
++       counter can be used to monitor the number of khugepaged mTHP collapses
++       that failed due to the presence of a shared PTE.
++
+ As the system ages, allocating huge pages may be expensive as the
+ system uses memory compaction to copy data around memory to free a
+ huge page for use. There are some counters in ``/proc/vmstat`` to help
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index ba7ae68085447..48496f09909be 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -144,6 +144,9 @@ enum mthp_stat_item {
+ 	MTHP_STAT_SPLIT_DEFERRED,
+ 	MTHP_STAT_NR_ANON,
+ 	MTHP_STAT_NR_ANON_PARTIALLY_MAPPED,
++	MTHP_STAT_COLLAPSE_EXCEED_SWAP,
++	MTHP_STAT_COLLAPSE_EXCEED_NONE,
++	MTHP_STAT_COLLAPSE_EXCEED_SHARED,
+ 	__MTHP_STAT_COUNT
+ };
+ 
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 31e006aa63b0b..ce75573b6cdb0 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -703,6 +703,10 @@ DEFINE_MTHP_STAT_ATTR(split_failed, MTHP_STAT_SPLIT_FAILED);
+ DEFINE_MTHP_STAT_ATTR(split_deferred, MTHP_STAT_SPLIT_DEFERRED);
+ DEFINE_MTHP_STAT_ATTR(nr_anon, MTHP_STAT_NR_ANON);
+ DEFINE_MTHP_STAT_ATTR(nr_anon_partially_mapped, MTHP_STAT_NR_ANON_PARTIALLY_MAPPED);
++DEFINE_MTHP_STAT_ATTR(collapse_exceed_swap_pte, MTHP_STAT_COLLAPSE_EXCEED_SWAP);
++DEFINE_MTHP_STAT_ATTR(collapse_exceed_none_pte, MTHP_STAT_COLLAPSE_EXCEED_NONE);
++DEFINE_MTHP_STAT_ATTR(collapse_exceed_shared_pte, MTHP_STAT_COLLAPSE_EXCEED_SHARED);
++
+ 
+ static struct attribute *anon_stats_attrs[] = {
+ 	&anon_fault_alloc_attr.attr,
+@@ -719,6 +723,9 @@ static struct attribute *anon_stats_attrs[] = {
+ 	&split_deferred_attr.attr,
+ 	&nr_anon_attr.attr,
+ 	&nr_anon_partially_mapped_attr.attr,
++	&collapse_exceed_swap_pte_attr.attr,
++	&collapse_exceed_none_pte_attr.attr,
++	&collapse_exceed_shared_pte_attr.attr,
+ 	NULL,
+ };
+ 
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 8740d379882eb..0a1c7cc20c0e0 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -646,7 +646,9 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 		if (pte_none_or_zero(pteval)) {
+ 			if (++none_or_zero > max_ptes_none) {
+ 				result = SCAN_EXCEED_NONE_PTE;
+-				count_vm_event(THP_SCAN_EXCEED_NONE_PTE);
++				if (is_pmd_order(order))
++					count_vm_event(THP_SCAN_EXCEED_NONE_PTE);
++				count_mthp_stat(order, MTHP_STAT_COLLAPSE_EXCEED_NONE);
+ 				goto out;
+ 			}
+ 			continue;
+@@ -680,9 +682,17 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 
+ 		/* See collapse_scan_pmd(). */
+ 		if (folio_maybe_mapped_shared(folio)) {
++			/*
++			 * TODO: Support shared pages without leading to further
++			 * mTHP collapses. Currently bringing in new pages via
++			 * shared may cause a future higher order collapse on a
++			 * rescan of the same range.
++			 */
+ 			if (++shared > max_ptes_shared) {
+ 				result = SCAN_EXCEED_SHARED_PTE;
+-				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
++				if (is_pmd_order(order))
++					count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
++				count_mthp_stat(order, MTHP_STAT_COLLAPSE_EXCEED_SHARED);
+ 				goto out;
+ 			}
+ 		}
+@@ -1129,6 +1139,7 @@ static enum scan_result __collapse_huge_page_swapin(struct mm_struct *mm,
+ 		 * range.
+ 		 */
+ 		if (!is_pmd_order(order)) {
++			count_mthp_stat(order, MTHP_STAT_COLLAPSE_EXCEED_SWAP);
+ 			pte_unmap(pte);
+ 			mmap_read_unlock(mm);
+ 			result = SCAN_EXCEED_SWAP_PTE;
+@@ -1412,6 +1423,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 			if (++none_or_zero > max_ptes_none) {
+ 				result = SCAN_EXCEED_NONE_PTE;
+ 				count_vm_event(THP_SCAN_EXCEED_NONE_PTE);
++				count_mthp_stat(HPAGE_PMD_ORDER,
++						MTHP_STAT_COLLAPSE_EXCEED_NONE);
+ 				goto out_unmap;
+ 			}
+ 			continue;
+@@ -1420,6 +1433,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 			if (++unmapped > max_ptes_swap) {
+ 				result = SCAN_EXCEED_SWAP_PTE;
+ 				count_vm_event(THP_SCAN_EXCEED_SWAP_PTE);
++				count_mthp_stat(HPAGE_PMD_ORDER,
++						MTHP_STAT_COLLAPSE_EXCEED_SWAP);
+ 				goto out_unmap;
+ 			}
+ 			/*
+@@ -1477,6 +1492,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 			if (++shared > max_ptes_shared) {
+ 				result = SCAN_EXCEED_SHARED_PTE;
+ 				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
++				count_mthp_stat(HPAGE_PMD_ORDER,
++						MTHP_STAT_COLLAPSE_EXCEED_SHARED);
+ 				goto out_unmap;
+ 			}
+ 		}
+-- 
+2.47.3
+

@@ -1,0 +1,136 @@
+From: Bunyod Suvonov <b.suvonov@sjtu.edu.cn>
+Date: Thu, 23 Apr 2026 18:37:53 +0800
+Subject: [PATCH] mm/vmscan: add balance_pgdat begin/end tracepoints
+
+Vmscan has six main reclaim entry points: try_to_free_pages() for direct
+reclaim, try_to_free_mem_cgroup_pages() for memcg reclaim,
+mem_cgroup_shrink_node() for memcg soft limit reclaim, node_reclaim() for
+node reclaim, shrink_all_memory() for hibernation reclaim, and
+balance_pgdat() for kswapd reclaim.
+
+All of them, except for shrink_all_memory() and balance_pgdat(), already
+have begin/end tracepoints.  This makes it harder to trace which reclaim
+path is responsible for memory reclaim activity, because kswapd reclaim
+cannot be identified as cleanly as other reclaim entry points, even though
+it is the main background reclaim path under memory pressure.  There may
+be no need to trace shrink_all_memory() as it is primarily used during
+hibernation.  So this patch adds the missing tracepoint pair for
+balance_pgdat().
+
+The begin tracepoint records the node id, requested reclaim order, and
+highest_zoneidx.  The end tracepoint records the node id, reclaim order
+that balance_pgdat() finished with, highest_zoneidx, and nr_reclaimed.
+Together, they show the requested reclaim order and zone bound, whether
+reclaim fell back to a lower order, and how much reclaim work was done.
+
+Link: https://lore.kernel.org/20260423103753.546582-1-b.suvonov@sjtu.edu.cn
+Signed-off-by: Bunyod Suvonov <b.suvonov@sjtu.edu.cn>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/vmscan.h | 52 +++++++++++++++++++++++++++++++++++
+ mm/vmscan.c                   |  5 ++++
+ 2 files changed, 57 insertions(+)
+
+diff --git a/include/trace/events/vmscan.h b/include/trace/events/vmscan.h
+index 4445a8d9218de..b4bf7b8def1f5 100644
+--- a/include/trace/events/vmscan.h
++++ b/include/trace/events/vmscan.h
+@@ -96,6 +96,58 @@ TRACE_EVENT(mm_vmscan_kswapd_wake,
+ 		__entry->order)
+ );
+ 
++TRACE_EVENT(mm_vmscan_balance_pgdat_begin,
++
++	TP_PROTO(int nid, int order, int highest_zoneidx),
++
++	TP_ARGS(nid, order, highest_zoneidx),
++
++	TP_STRUCT__entry(
++		__field(int, nid)
++		__field(int, order)
++		__field(int, highest_zoneidx)
++	),
++
++	TP_fast_assign(
++		__entry->nid = nid;
++		__entry->order = order;
++		__entry->highest_zoneidx = highest_zoneidx;
++	),
++
++	TP_printk("nid=%d order=%d highest_zoneidx=%-8s",
++		__entry->nid,
++		__entry->order,
++		__print_symbolic(__entry->highest_zoneidx, ZONE_TYPE))
++);
++
++TRACE_EVENT(mm_vmscan_balance_pgdat_end,
++
++	TP_PROTO(int nid, int order, int highest_zoneidx,
++		 unsigned long nr_reclaimed),
++
++	TP_ARGS(nid, order, highest_zoneidx, nr_reclaimed),
++
++	TP_STRUCT__entry(
++		__field(int, nid)
++		__field(int, order)
++		__field(int, highest_zoneidx)
++		__field(unsigned long, nr_reclaimed)
++	),
++
++	TP_fast_assign(
++		__entry->nid = nid;
++		__entry->order = order;
++		__entry->highest_zoneidx = highest_zoneidx;
++		__entry->nr_reclaimed = nr_reclaimed;
++	),
++
++	TP_printk("nid=%d order=%d highest_zoneidx=%-8s nr_reclaimed=%lu",
++		__entry->nid,
++		__entry->order,
++		__print_symbolic(__entry->highest_zoneidx, ZONE_TYPE),
++		__entry->nr_reclaimed)
++);
++
+ TRACE_EVENT(mm_vmscan_wakeup_kswapd,
+ 
+ 	TP_PROTO(int nid, int zid, int order, gfp_t gfp_flags),
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index bd1b1aa125819..b2d89ed69d228 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7121,6 +7121,8 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+ 		.may_unmap = 1,
+ 	};
+ 
++	trace_mm_vmscan_balance_pgdat_begin(pgdat->node_id, order,
++					    highest_zoneidx);
+ 	set_task_reclaim_state(current, &sc.reclaim_state);
+ 	psi_memstall_enter(&pflags);
+ 	__fs_reclaim_acquire(_THIS_IP_);
+@@ -7314,6 +7316,9 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+ 	psi_memstall_leave(&pflags);
+ 	set_task_reclaim_state(current, NULL);
+ 
++	trace_mm_vmscan_balance_pgdat_end(pgdat->node_id, sc.order,
++					  highest_zoneidx, sc.nr_reclaimed);
++
+ 	/*
+ 	 * Return the order kswapd stopped reclaiming at as
+ 	 * prepare_kswapd_sleep() takes it into account. If another caller
+-- 
+2.47.3
+

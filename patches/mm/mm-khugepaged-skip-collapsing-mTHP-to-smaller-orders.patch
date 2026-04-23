@@ -1,0 +1,96 @@
+From: Nico Pache <npache@redhat.com>
+Date: Sun, 19 Apr 2026 12:57:43 -0600
+Subject: [PATCH] mm/khugepaged: skip collapsing mTHP to smaller orders
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+khugepaged may try to collapse a mTHP to a smaller mTHP, resulting in some
+pages being unmapped.  Skip these cases until we have a way to check if
+its ok to collapse to a smaller mTHP size (like in the case of a partially
+mapped folio).  This check is also not done during the scan phase as the
+current collapse order is unknown at that time.
+
+This patch is inspired by Dev Jain's work on khugepaged mTHP support [1].
+
+Link: https://lore.kernel.org/20260419185750.260784-7-npache@redhat.com
+Link: https://lore.kernel.org/lkml/20241216165105.56185-11-dev.jain@arm.com/ [1]
+Co-developed-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Bagas Sanjaya <bagasdotme@gmail.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rafael Aquini <raquini@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index ff6f9f1883ed9..8740d379882eb 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -686,6 +686,14 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 				goto out;
+ 			}
+ 		}
++		/*
++		 * TODO: In some cases of partially-mapped folios, we'd actually
++		 * want to collapse.
++		 */
++		if (!is_pmd_order(order) && folio_order(folio) >= order) {
++			result = SCAN_PTE_MAPPED_HUGEPAGE;
++			goto out;
++		}
+ 
+ 		if (folio_test_large(folio)) {
+ 			struct folio *f;
+-- 
+2.47.3
+

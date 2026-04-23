@@ -1,0 +1,183 @@
+From: Nico Pache <npache@redhat.com>
+Date: Sun, 19 Apr 2026 12:57:38 -0600
+Subject: [PATCH] mm/khugepaged: generalize hugepage_vma_revalidate for mTHP
+ support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "khugepaged: mTHP support", v16.
+
+This series provides khugepaged with the capability to collapse anonymous
+memory regions to mTHPs.
+
+To achieve this we generalize the khugepaged functions to no longer depend
+on PMD_ORDER.  Then during the PMD scan, we use a bitmap to track
+individual pages that are occupied (!none/zero).  After the PMD scan is
+done, we use the bitmap to find the optimal mTHP sizes for the PMD range.
+The restriction on max_ptes_none is removed during the scan, to make sure
+we account for the whole PMD range in the bitmap.  When no mTHP size is
+enabled, the legacy behavior of khugepaged is maintained.
+
+We currently only support max_ptes_none values of 0 or HPAGE_PMD_NR - 1
+(ie 511).  If any other value is specified, the kernel will emit a warning
+and no mTHP collapse will be attempted.  If a mTHP collapse is attempted,
+but contains swapped out, or shared pages, we don't perform the collapse.
+It is now also possible to collapse to mTHPs without requiring the PMD THP
+size to be enabled.  These limitations are to prevent collapse "creep"
+behavior.  This prevents constantly promoting mTHPs to the next available
+size, which would occur because a collapse introduces more non-zero pages
+that would satisfy the promotion condition on subsequent scans.
+
+Patch 1-2:   Generalize hugepage_vma_revalidate and alloc_charge_folio
+	     for arbitrary orders.
+Patch 3:     Rework max_ptes_* handling into helper functions
+Patch 4-5:   Generalize __collapse_huge_page_* and collapse_huge_page
+Patch 6:     Skip collapsing mTHP to smaller orders
+Patch 7-8:   Add per-order mTHP statistics and tracepoints
+Patch 9:     Introduce collapse_allowable_orders helper function
+Patch 10-12: Introduce bitmap and mTHP collapse support, fully enabled
+Patch 13:    Documentation
+
+
+This patch (of 13):
+
+For khugepaged to support different mTHP orders, we must generalize this
+to check if the PMD is not shared by another VMA and that the order is
+enabled.
+
+No functional change in this patch.  Also correct a comment about the
+functionality of the revalidation and fix a double space issues.
+
+Link: https://lore.kernel.org/20260419185750.260784-1-npache@redhat.com
+Link: https://lore.kernel.org/20260419185750.260784-2-npache@redhat.com
+Co-developed-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Wei Yang <richard.weiyang@gmail.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rafael Aquini <raquini@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yang Shi <yang@os.amperecomputing.com>
+Cc: Zach O'Keefe <zokeefe@google.com>
+Cc: Bagas Sanjaya <bagasdotme@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index b8452dbdb043f..53e7e4be172dc 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -902,12 +902,13 @@ static int collapse_find_target_node(struct collapse_control *cc)
+ 
+ /*
+  * If mmap_lock temporarily dropped, revalidate vma
+- * before taking mmap_lock.
++ * after taking the mmap_lock again.
+  * Returns enum scan_result value.
+  */
+ 
+ static enum scan_result hugepage_vma_revalidate(struct mm_struct *mm, unsigned long address,
+-		bool expect_anon, struct vm_area_struct **vmap, struct collapse_control *cc)
++		bool expect_anon, struct vm_area_struct **vmap,
++		struct collapse_control *cc, unsigned int order)
+ {
+ 	struct vm_area_struct *vma;
+ 	enum tva_type type = cc->is_khugepaged ? TVA_KHUGEPAGED :
+@@ -920,15 +921,16 @@ static enum scan_result hugepage_vma_revalidate(struct mm_struct *mm, unsigned l
+ 	if (!vma)
+ 		return SCAN_VMA_NULL;
+ 
++	/* Always check the PMD order to ensure its not shared by another VMA */
+ 	if (!thp_vma_suitable_order(vma, address, PMD_ORDER))
+ 		return SCAN_ADDRESS_RANGE;
+-	if (!thp_vma_allowable_order(vma, vma->vm_flags, type, PMD_ORDER))
++	if (!thp_vma_allowable_orders(vma, vma->vm_flags, type, BIT(order)))
+ 		return SCAN_VMA_CHECK;
+ 	/*
+ 	 * Anon VMA expected, the address may be unmapped then
+ 	 * remapped to file after khugepaged reaquired the mmap_lock.
+ 	 *
+-	 * thp_vma_allowable_order may return true for qualified file
++	 * thp_vma_allowable_orders may return true for qualified file
+ 	 * vmas.
+ 	 */
+ 	if (expect_anon && (!(*vmap)->anon_vma || !vma_is_anonymous(*vmap)))
+@@ -1121,7 +1123,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+ 		goto out_nolock;
+ 
+ 	mmap_read_lock(mm);
+-	result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
++	result = hugepage_vma_revalidate(mm, address, true, &vma, cc,
++					 HPAGE_PMD_ORDER);
+ 	if (result != SCAN_SUCCEED) {
+ 		mmap_read_unlock(mm);
+ 		goto out_nolock;
+@@ -1155,7 +1158,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+ 	 * mmap_lock.
+ 	 */
+ 	mmap_write_lock(mm);
+-	result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
++	result = hugepage_vma_revalidate(mm, address, true, &vma, cc,
++					 HPAGE_PMD_ORDER);
+ 	if (result != SCAN_SUCCEED)
+ 		goto out_up_write;
+ 	/* check if the pmd is still valid */
+@@ -2857,8 +2861,8 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 			mmap_unlocked = false;
+ 			*lock_dropped = true;
+ 			result = hugepage_vma_revalidate(mm, addr, false, &vma,
+-							 cc);
+-			if (result  != SCAN_SUCCEED) {
++							 cc, HPAGE_PMD_ORDER);
++			if (result != SCAN_SUCCEED) {
+ 				last_fail = result;
+ 				goto out_nolock;
+ 			}
+-- 
+2.47.3
+

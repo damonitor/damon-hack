@@ -1,0 +1,124 @@
+From: Hrushikesh Salunke <hsalunke@amd.com>
+Date: Wed, 22 Apr 2026 10:26:58 +0000
+Subject: [PATCH] mm/page_alloc: replace kernel_init_pages() with batch page
+ clearing
+
+When init_on_alloc is enabled, kernel_init_pages() clears every page
+one at a time via clear_highpage_kasan_tagged(), which incurs per-page
+kmap_local_page()/kunmap_local() overhead and prevents the architecture
+clearing primitive from operating on contiguous ranges.
+
+Introduce clear_highpages_kasan_tagged() in highmem.h, a batch
+clearing helper that calls clear_pages() for the full contiguous range
+on !HIGHMEM systems, bypassing the per-page kmap overhead and allowing
+a single invocation of the arch clearing primitive across the entire
+allocation. The HIGHMEM path falls back to per-page clearing since
+those pages require kmap.
+
+Replace kernel_init_pages() with direct calls to the new helper, as it
+becomes a trivial wrapper.
+
+Allocating 8192 x 2MB HugeTLB pages (16GB) with init_on_alloc=1:
+
+  Before: 0.445s
+  After:  0.166s  (-62.7%, 2.68x faster)
+
+Kernel time (sys) reduction per workload with init_on_alloc=1:
+
+  Workload            Before       After       Change
+  Graph500 64C128T    30m 41.8s    15m 14.8s   -50.3%
+  Graph500 16C32T     15m 56.7s     9m 43.7s   -39.0%
+  Pagerank 32T         1m 58.5s     1m 12.8s   -38.5%
+  Pagerank 128T        2m 36.3s     1m 40.4s   -35.7%
+
+Link: https://lore.kernel.org/20260422102729.166599-1-hsalunke@amd.com
+Signed-off-by: Hrushikesh Salunke <hsalunke@amd.com>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Pankaj Gupta <pankaj.gupta@amd.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Ankur Arora <ankur.a.arora@oracle.com>
+Cc: Bharata B Rao <bharata@amd.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/highmem.h | 15 +++++++++++++++
+ mm/page_alloc.c         | 15 ++-------------
+ 2 files changed, 17 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/highmem.h b/include/linux/highmem.h
+index d7aac9de1c8a4..871d817426bc9 100644
+--- a/include/linux/highmem.h
++++ b/include/linux/highmem.h
+@@ -345,6 +345,21 @@ static inline void clear_highpage_kasan_tagged(struct page *page)
+ 	kunmap_local(kaddr);
+ }
+ 
++static inline void clear_highpages_kasan_tagged(struct page *page, int numpages)
++{
++	/* s390's use of memset() could override KASAN redzones. */
++	kasan_disable_current();
++	if (!IS_ENABLED(CONFIG_HIGHMEM)) {
++		clear_pages(kasan_reset_tag(page_address(page)), numpages);
++	} else {
++		int i;
++
++		for (i = 0; i < numpages; i++)
++			clear_highpage_kasan_tagged(page + i);
++	}
++	kasan_enable_current();
++}
++
+ #ifndef __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
+ 
+ /* Returns true if the caller has to initialize the pages */
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 71859993dd54d..eb1d083d83c34 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -1208,17 +1208,6 @@ static inline bool should_skip_kasan_poison(struct page *page)
+ 	return page_kasan_tag(page) == KASAN_TAG_KERNEL;
+ }
+ 
+-static void kernel_init_pages(struct page *page, int numpages)
+-{
+-	int i;
+-
+-	/* s390's use of memset() could override KASAN redzones. */
+-	kasan_disable_current();
+-	for (i = 0; i < numpages; i++)
+-		clear_highpage_kasan_tagged(page + i);
+-	kasan_enable_current();
+-}
+-
+ #ifdef CONFIG_MEM_ALLOC_PROFILING
+ 
+ /* Should be called only if mem_alloc_profiling_enabled() */
+@@ -1428,7 +1417,7 @@ __always_inline bool __free_pages_prepare(struct page *page,
+ 			init = false;
+ 	}
+ 	if (init)
+-		kernel_init_pages(page, 1 << order);
++		clear_highpages_kasan_tagged(page, 1 << order);
+ 
+ 	/*
+ 	 * arch_free_page() can make the page's contents inaccessible.  s390
+@@ -1853,7 +1842,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
+ 	}
+ 	/* If memory is still not initialized, initialize it now. */
+ 	if (init)
+-		kernel_init_pages(page, 1 << order);
++		clear_highpages_kasan_tagged(page, 1 << order);
+ 
+ 	set_page_owner(page, order, gfp_flags);
+ 	page_table_check_alloc(page, order);
+-- 
+2.47.3
+

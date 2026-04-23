@@ -1,0 +1,80 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Thu, 23 Apr 2026 09:41:42 +0800
+Subject: [PATCH] Revert "tmpfs: don't enable large folios if not supported"
+
+This reverts commit 5a90c155defa684f3a21f68c3f8e40c056e6114c.
+
+Currently, when shmem mounts are initialized, they only use 'sbinfo->huge'
+to determine whether the shmem mount supports large folios.  However, for
+anonymous shmem, whether it supports large folios can be dynamically
+configured via sysfs interfaces, so setting or not setting
+mapping_set_large_folios() during initialization cannot accurately reflect
+whether anonymous shmem actually supports large folios, which has already
+caused some confusion[1].
+
+Moreover, for tmpfs mounts, relying on 'sbinfo->huge' cannot keep the
+mapping_set_large_folios() setting consistent across all mappings in the
+entire tmpfs mount.  In other words, under the same tmpfs mount, after
+remount, we might end up with some mappings supporting large folios
+(calling mapping_set_large_folios()) while others don't.
+
+After some investigation, I found that the write performance regression
+addressed by commit 5a90c155defa has already been fixed by the following
+commit 665575cff098b ("filemap: move prefaulting out of hot write path").
+See the following test data:
+
+Base:
+dd if=/dev/zero of=/mnt/tmpfs/test bs=400K count=10485 (3.2 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=800K count=5242 (3.2 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=1600K count=2621 (3.1 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=2200K count=1906 (3.0 GB/s )
+dd if=/dev/zero of=/mnt/tmpfs/test bs=3000K count=1398 (3.0 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=4500K count=932 (3.1 GB/s)
+
+Base + revert 5a90c155defa:
+dd if=/dev/zero of=/mnt/tmpfs/test bs=400K count=10485 (3.3 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=800K count=5242 (3.3 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=1600K count=2621 (3.2 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=2200K count=1906 (3.1 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/testbs=3000K count=1398 (3.0 GB/s)
+dd if=/dev/zero of=/mnt/tmpfs/test bs=4500K count=932 (3.1 GB/s)
+
+The data is basically consistent with minor fluctuation noise. So we can now
+safely revert commit 5a90c155defa to set mapping_set_large_folios() for all
+shmem mounts unconditionally.
+
+Link: https://lore.kernel.org/b2c7deee259a94b0d00a7c320d8d24d2c421f761.1776908112.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/all/ec927492-4577-4192-8fad-85eb1bb43121@linux.alibaba.com/ [1]
+Link: https://lore.kernel.org/all/116df9f9-4db7-40d4-a4a4-30a87c0feffa@linux.alibaba.com/
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 3b5dc21b323c2..bab3529af23c5 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -3101,10 +3101,7 @@ static struct inode *__shmem_get_inode(struct mnt_idmap *idmap,
+ 	cache_no_acl(inode);
+ 	if (sbinfo->noswap)
+ 		mapping_set_unevictable(inode->i_mapping);
+-
+-	/* Don't consider 'deny' for emergencies and 'force' for testing */
+-	if (sbinfo->huge)
+-		mapping_set_large_folios(inode->i_mapping);
++	mapping_set_large_folios(inode->i_mapping);
+ 
+ 	switch (mode & S_IFMT) {
+ 	default:
+-- 
+2.47.3
+

@@ -1,0 +1,104 @@
+From: Petr Vorel <pvorel@suse.cz>
+Date: Tue, 21 Apr 2026 23:14:06 +0200
+Subject: [PATCH] checkpatch: allow passing config directory
+
+checkpatch.pl searches for .checkpatch.conf in $CWD, $HOME and
+$CWD/.scripts.  Allow passing a single directory via CHECKPATCH_CONFIG_DIR
+environment variable (empty value is ignored).  This allows to directly
+use project configuration file for projects which vendored checkpatch.pl
+(e.g.  LTP or u-boot).
+
+Although it'd be more convenient for user to have --conf-dir option
+(instead of using environment variable), code would get ugly because
+options from the configuration file needs to be read before processing
+command line options with Getopt::Long.
+
+While at it, document directories and environment variable in -h help
+and HTML doc.
+
+Link: https://lore.kernel.org/20260421211408.383972-1-pvorel@suse.cz
+Signed-off-by: Petr Vorel <pvorel@suse.cz>
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Acked-by: Joe Perches <joe@perches.com>
+Cc: Dwaipayan Ray <dwaipayanray1@gmail.com>
+Cc: Lukas Bulwahn <lukas.bulwahn@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/dev-tools/checkpatch.rst |  7 +++++++
+ scripts/checkpatch.pl                  | 20 +++++++++++++++++---
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/Documentation/dev-tools/checkpatch.rst b/Documentation/dev-tools/checkpatch.rst
+index dccede68698ca..010dfcd615afc 100644
+--- a/Documentation/dev-tools/checkpatch.rst
++++ b/Documentation/dev-tools/checkpatch.rst
+@@ -210,6 +210,13 @@ Available options:
+ 
+    Display the help text.
+ 
++Configuration file
++==================
++
++Default configuration options can be stored in ``.checkpatch.conf``, search
++path: ``.:$HOME:.scripts`` or in a directory specified by ``$CHECKPATCH_CONFIG_DIR``
++environment variable (falling back to the default search path).
++
+ Message Levels
+ ==============
+ 
+diff --git a/scripts/checkpatch.pl b/scripts/checkpatch.pl
+index 1eff43fd8f95d..d505ca6afae20 100755
+--- a/scripts/checkpatch.pl
++++ b/scripts/checkpatch.pl
+@@ -57,6 +57,9 @@ my %ignore_type = ();
+ my @ignore = ();
+ my $help = 0;
+ my $configuration_file = ".checkpatch.conf";
++my $def_configuration_dirs_help = '.:$HOME:.scripts';
++(my $def_configuration_dirs = $def_configuration_dirs_help) =~ s/\$(\w+)/$ENV{$1}/g;
++my $env_config_dir = 'CHECKPATCH_CONFIG_DIR';
+ my $max_line_length = 100;
+ my $ignore_perl_version = 0;
+ my $minimum_perl_version = 5.10.0;
+@@ -146,6 +149,11 @@ Options:
+   -h, --help, --version      display this help and exit
+ 
+ When FILE is - read standard input.
++
++CONFIGURATION FILE
++Default configuration options can be stored in $configuration_file,
++search path: '$def_configuration_dirs_help' or in a directory specified by
++\$$env_config_dir environment variable (fallback to the default search path).
+ EOM
+ 
+ 	exit($exitcode);
+@@ -237,7 +245,7 @@ sub list_types {
+ 	exit($exitcode);
+ }
+ 
+-my $conf = which_conf($configuration_file);
++my $conf = which_conf($configuration_file, $env_config_dir, $def_configuration_dirs);
+ if (-f $conf) {
+ 	my @conf_args;
+ 	open(my $conffile, '<', "$conf")
+@@ -1531,9 +1539,15 @@ sub which {
+ }
+ 
+ sub which_conf {
+-	my ($conf) = @_;
++	my ($conf, $env_key, $paths) = @_;
++	my $env_dir = $ENV{$env_key};
++
++	if (defined($env_dir) && $env_dir ne "") {
++		return "$env_dir/$conf" if (-e "$env_dir/$conf");
++		warn "$P: Can't find a readable $conf in '$env_dir', falling back to default search paths\n";
++	}
+ 
+-	foreach my $path (split(/:/, ".:$ENV{HOME}:.scripts")) {
++	foreach my $path (split(/:/, $paths)) {
+ 		if (-e "$path/$conf") {
+ 			return "$path/$conf";
+ 		}
+-- 
+2.47.3
+

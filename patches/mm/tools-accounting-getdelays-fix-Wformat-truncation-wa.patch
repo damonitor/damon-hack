@@ -1,0 +1,59 @@
+From: Yiyang Chen <cyyzero16@gmail.com>
+Date: Thu, 23 Apr 2026 23:11:39 +0800
+Subject: [PATCH] tools/accounting/getdelays: fix -Wformat-truncation warning
+ in format_timespec
+
+Reproduce with GCC 13.3.0:
+
+  $ cd tools/accounting
+  $ make
+
+This emits:
+
+getdelays.c: In function `format_timespec':
+getdelays.c:218:67: warning: `:' directive output may be truncated writing 1 byte into a region of size between 0 and 16 [-Wformat-truncation=]
+  218 |         snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d",
+      |
+getdelays.c:218:9: note: `snprintf' output between 20 and 72 bytes into a destination of size 32
+
+The problem is that %04d and %02d specify minimum field widths only. GCC
+cannot prove that formatting tm_year + 1900 and the other struct tm
+fields will always fit in the fixed 32-byte buffer, so it warns about
+possible truncation.
+
+Fix this by replacing the manual snprintf() formatting with
+strftime("%Y-%m-%dT%H:%M:%S", ...). That matches the data we already have
+in struct tm, keeps the intended timestamp format, and avoids the warning
+when building tools/accounting with GCC.
+
+Link: https://lore.kernel.org/87d9723e0b59d816ee2e4bd7cddd58a54c6c9f91.1776956545.git.cyyzero16@gmail.com
+Signed-off-by: Yiyang Chen <cyyzero16@gmail.com>
+Cc: Fan Yu <fan.yu9@zte.com.cn>
+Cc: Wang Yaxin <wang.yaxin@zte.com.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/accounting/getdelays.c | 8 +-------
+ 1 file changed, 1 insertion(+), 7 deletions(-)
+
+diff --git a/tools/accounting/getdelays.c b/tools/accounting/getdelays.c
+index 368a622ca0273..caa5fe9dd5734 100644
+--- a/tools/accounting/getdelays.c
++++ b/tools/accounting/getdelays.c
+@@ -241,13 +241,7 @@ static const char *format_timespec(struct __kernel_timespec *ts)
+ 	if (localtime_r(&time_sec, &tm_info) == NULL)
+ 		return "N/A";
+ 
+-	snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d",
+-		tm_info.tm_year + 1900,
+-		tm_info.tm_mon + 1,
+-		tm_info.tm_mday,
+-		tm_info.tm_hour,
+-		tm_info.tm_min,
+-		tm_info.tm_sec);
++	strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &tm_info);
+ 
+ 	return buffer;
+ }
+-- 
+2.47.3
+

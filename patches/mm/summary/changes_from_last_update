@@ -1,8 +1,18 @@
 - baseline: v7.0-11901-ga5d1079c28a5b -> v7.0-11901-ga5d1079c28a5b (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
+- mm-hotfixes-unstable: 0 -> 2 commits
+  - series: 0 (0) -> 1 (2)
+    - maintainer, nobody: 0 -> 2 commits
+  - new commits
+    - series "mm/damon/sysfs-schemes: fix use-after-free for [memcg_]path". (2)
+      - c31431ac3e07 "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260423150253.111520-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260423150253.111520-2-sj@kernel.org
+      - 3823c1a5f89d "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260423150253.111520-3-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 0 -> 0 commits (no change)

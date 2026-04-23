@@ -1,0 +1,73 @@
+From: Li Wang <wangli.ahau@gmail.com>
+Date: Wed, 22 Apr 2026 16:04:46 +0800
+Subject: [PATCH] selftests/mm: suppress compiler error in liburing check
+
+When building the mm selftests on a system without liburing development
+headers, check_config.sh leaks a raw compiler error:
+
+  /tmp/tmp.kIIOIqwe3n.c:2:10: fatal error: liburing.h: No such file or directory
+      2 | #include <liburing.h>
+        |          ^~~~~~~~~~~~
+
+Since this is an expected failure during the configuration probe,
+redirect the compiler output to /dev/null to hide it.
+
+And the build system prints a clear warning when this occurs:
+
+  Warning: missing liburing support. Some tests will be skipped.
+
+Because the user is properly notified about the missing dependency, the
+raw compiler error is redundant and only confuse users.
+
+Additionally, update the Makefile to use $(Q) and $(call msg,...) for the
+check_config.sh execution.  This aligns the probe with standard kbuild
+output formatting, providing a clean "CHK" message instead of printing the
+raw command during the build.
+
+Link: https://lore.kernel.org/20260422080446.26020-3-wangli.ahau@gmail.com
+Signed-off-by: Li Wang <wangli.ahau@gmail.com>
+Tested-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/Makefile        | 3 ++-
+ tools/testing/selftests/mm/check_config.sh | 2 +-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/Makefile b/tools/testing/selftests/mm/Makefile
+index 6195770eba6e3..18779045b7f69 100644
+--- a/tools/testing/selftests/mm/Makefile
++++ b/tools/testing/selftests/mm/Makefile
+@@ -263,7 +263,8 @@ $(OUTPUT)/migration: LDLIBS += -lnuma
+ $(OUTPUT)/rmap: LDLIBS += -lnuma
+ 
+ local_config.mk local_config.h: check_config.sh
+-	CC="$(CC)" CFLAGS="$(CFLAGS)" ./check_config.sh
++	$(call msg,CHK,config,$@)
++	$(Q)CC="$(CC)" CFLAGS="$(CFLAGS)" ./check_config.sh
+ 
+ EXTRA_CLEAN += local_config.mk local_config.h
+ 
+diff --git a/tools/testing/selftests/mm/check_config.sh b/tools/testing/selftests/mm/check_config.sh
+index b84c82bbf8752..32beaefe279e5 100755
+--- a/tools/testing/selftests/mm/check_config.sh
++++ b/tools/testing/selftests/mm/check_config.sh
+@@ -16,7 +16,7 @@ echo "#include <sys/types.h>"        > $tmpfile_c
+ echo "#include <liburing.h>"        >> $tmpfile_c
+ echo "int func(void) { return 0; }" >> $tmpfile_c
+ 
+-$CC $CFLAGS -c $tmpfile_c -o $tmpfile_o
++$CC $CFLAGS -c $tmpfile_c -o $tmpfile_o >/dev/null 2>&1
+ 
+ if [ -f $tmpfile_o ]; then
+     echo "#define LOCAL_CONFIG_HAVE_LIBURING 1"  > $OUTPUT_H_FILE
+-- 
+2.47.3
+
