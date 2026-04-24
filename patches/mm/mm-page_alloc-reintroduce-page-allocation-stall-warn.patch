@@ -1,0 +1,126 @@
+From: David Rientjes <rientjes@google.com>
+Date: Mon, 30 Mar 2026 18:20:57 -0700
+Subject: [PATCH] mm, page_alloc: reintroduce page allocation stall warning
+
+Previously, we had warnings when a single page allocation took longer than
+reasonably expected.  This was introduced in commit 63f53dea0c98 ("mm:
+warn about allocations which stall for too long").
+
+The warning was subsequently reverted in commit 400e22499dd9 ("mm: don't
+warn about allocations which stall for too long") because it was possible
+to generate memory pressure that would effectively stall further progress
+through printk execution.
+
+Page allocation stalls in excess of 10 seconds are always useful to debug
+because they can result in severe userspace unresponsiveness.  Adding this
+artifact can be used to correlate with userspace going out to lunch and to
+understand the state of memory at the time.
+
+There should be a reasonable expectation that this warning will never
+trigger given it is very passive, it will only be emitted when a page
+allocation takes longer than 10 seconds.  If it does trigger, this reveals
+an issue that should be fixed: a single page allocation should never loop
+for more than 10 seconds without oom killing to make memory available.
+
+Unlike the original implementation, this implementation only reports
+stalls once for the system every 10 seconds.  Otherwise, many concurrent
+reclaimers could spam the kernel log unnecessarily.  Stalls are only
+reported when calling into direct reclaim.
+
+Link: https://lore.kernel.org/371c86c8-1d47-bd70-b74c-769842718b1f@google.com
+Signed-off-by: David Rientjes <rientjes@google.com>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Reviewed-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 848ca9d05fdef..dd0220080e5a9 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -285,6 +285,14 @@ EXPORT_SYMBOL(nr_node_ids);
+ EXPORT_SYMBOL(nr_online_nodes);
+ #endif
+ 
++/*
++ * When page allocations stall for longer than a threshold,
++ * ALLOC_STALL_WARN_MSECS, leave a warning in the kernel log.  Only one warning
++ * will be printed during this duration for the entire system.
++ */
++#define ALLOC_STALL_WARN_MSECS (10 * 1000UL)
++static unsigned long alloc_stall_warn_jiffies = INITIAL_JIFFIES;
++
+ static bool page_contains_unaccepted(struct page *page, unsigned int order);
+ static bool cond_accept_memory(struct zone *zone, unsigned int order,
+ 			       int alloc_flags);
+@@ -4678,6 +4686,40 @@ check_retry_cpuset(int cpuset_mems_cookie, struct alloc_context *ac)
+ 	return false;
+ }
+ 
++static void check_alloc_stall_warn(gfp_t gfp_mask, nodemask_t *nodemask,
++				unsigned int order, unsigned long alloc_start_time)
++{
++	static DEFINE_SPINLOCK(alloc_stall_lock);
++	unsigned long stall_msecs = jiffies_to_msecs(jiffies - alloc_start_time);
++
++	if (likely(stall_msecs < ALLOC_STALL_WARN_MSECS))
++		return;
++	if (time_is_after_jiffies(READ_ONCE(alloc_stall_warn_jiffies)))
++		return;
++	if (gfp_mask & __GFP_NOWARN)
++		return;
++
++	if (!spin_trylock(&alloc_stall_lock))
++		return;
++
++	/* Check again, this time under the lock */
++	if (time_is_after_jiffies(alloc_stall_warn_jiffies)) {
++		spin_unlock(&alloc_stall_lock);
++		return;
++	}
++
++	WRITE_ONCE(alloc_stall_warn_jiffies, jiffies + msecs_to_jiffies(ALLOC_STALL_WARN_MSECS));
++	spin_unlock(&alloc_stall_lock);
++
++	pr_warn("%s: page allocation stall for %lu secs: order:%d, mode:%#x(%pGg) nodemask=%*pbl",
++		current->comm, stall_msecs / MSEC_PER_SEC, order, gfp_mask, &gfp_mask,
++		nodemask_pr_args(nodemask));
++	cpuset_print_current_mems_allowed();
++	pr_cont("\n");
++	dump_stack();
++	warn_alloc_show_mem(gfp_mask, nodemask);
++}
++
+ static inline struct page *
+ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 						struct alloc_context *ac)
+@@ -4698,6 +4740,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	int reserve_flags;
+ 	bool compact_first = false;
+ 	bool can_retry_reserves = true;
++	unsigned long alloc_start_time = jiffies;
+ 
+ 	if (unlikely(nofail)) {
+ 		/*
+@@ -4813,6 +4856,9 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	if (current->flags & PF_MEMALLOC)
+ 		goto nopage;
+ 
++	/* If allocation has taken excessively long, warn about it */
++	check_alloc_stall_warn(gfp_mask, ac->nodemask, order, alloc_start_time);
++
+ 	/* Try direct reclaim and then allocating */
+ 	if (!compact_first) {
+ 		page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags,
+-- 
+2.47.3
+

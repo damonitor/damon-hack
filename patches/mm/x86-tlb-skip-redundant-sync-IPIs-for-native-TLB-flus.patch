@@ -1,5 +1,5 @@
 From: Lance Yang <lance.yang@linux.dev>
-Date: Mon, 20 Apr 2026 11:08:51 +0800
+Date: Fri, 24 Apr 2026 14:25:28 +0800
 Subject: [PATCH] x86/tlb: skip redundant sync IPIs for native TLB flush
 
 Some page table operations need to synchronize with software/lockless
@@ -20,12 +20,15 @@ PV backends (KVM, Xen, Hyper-V) typically have their own implementations
 and don't call native_flush_tlb_multi() directly, so they cannot be
 trusted to provide the IPI guarantees we need.
 
-Also treat unshared_tables like freed_tables when issuing the TLB flush,
-so lazy-TLB CPUs receive IPIs during unsharing of page tables as well.
-This allows us to safely implement
-tlb_table_flush_implies_ipi_broadcast().
+Also rename the x86 flush_tlb_info bit from freed_tables to
+wake_lazy_cpus, as Dave suggested[2], to match the behavior it controls:
+whether the remote flush may skip CPUs in lazy TLB mode.  Both
+freed_tables and unshared_tables set it, because lazy-TLB CPUs must
+receive IPIs before page tables can be freed or reused.  With that
+guarantee in place, tlb_table_flush_implies_ipi_broadcast() can safely
+skip the later sync IPI.
 
-Two-step plan as David suggested[2]:
+Two-step plan as David suggested[3]:
 
 Step 1 (this patch): Skip redundant sync when we're 100% certain the TLB
 flush sent IPIs. INVLPGB is excluded because when supported, we cannot
@@ -37,20 +40,20 @@ software/lockless page table walks, benefiting all architectures.
 Regarding Step 2, it obviously only applies to setups where Step 1 does
 not apply: like x86 with INVLPGB or arm64.
 
-Link: https://lore.kernel.org/20260420030851.6735-3-lance.yang@linux.dev
+Link: https://lore.kernel.org/20260424062528.71951-3-lance.yang@linux.dev
 Link: https://lore.kernel.org/linux-mm/20260302145652.GH1395266@noisy.programming.kicks-ass.net/ [1]
-Link: https://lore.kernel.org/linux-mm/bbfdf226-4660-4949-b17b-0d209ee4ef8c@kernel.org/ [2]
+Link: https://lore.kernel.org/linux-mm/f856051b-10c7-4d65-9dbe-6b1677af74bd@intel.com/ [2]
+Link: https://lore.kernel.org/linux-mm/bbfdf226-4660-4949-b17b-0d209ee4ef8c@kernel.org/ [3]
 Signed-off-by: Lance Yang <lance.yang@linux.dev>
+Suggested-by: Dave Hansen <dave.hansen@intel.com>
 Suggested-by: Peter Zijlstra <peterz@infradead.org>
 Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: "Aneesh Kumar K.V" <aneesh.kumar@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
 Cc: Boris Ostrovsky <boris.ostrovsky@oracle.com>
-Cc: Dave Hansen <dave.hansen@intel.com>
 Cc: Dev Jain <dev.jain@arm.com>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Hugh Dickins <hughd@google.com>
@@ -58,7 +61,7 @@ Cc: Ingo Molnar <mingo@redhat.com>
 Cc: Jann Horn <jannh@google.com>
 Cc: Juegren Gross <jgross@suse.com>
 Cc: Liam Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Nicholas Piggin <npiggin@gmail.com>
 Cc: Nico Pache <npache@redhat.com>
 Cc: Paolo Bonzini <pbonzini@redhat.com>
@@ -72,17 +75,40 @@ Cc: Yang Shi <shy828301@gmail.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- arch/x86/include/asm/tlb.h      | 18 +++++++++++++++++-
- arch/x86/include/asm/tlbflush.h |  2 ++
+ arch/x86/hyperv/mmu.c           |  4 ++--
+ arch/x86/include/asm/tlb.h      | 19 +++++++++++++++-
+ arch/x86/include/asm/tlbflush.h |  6 +++--
  arch/x86/kernel/smpboot.c       |  1 +
- arch/x86/mm/tlb.c               | 15 +++++++++++++++
- 4 files changed, 35 insertions(+), 1 deletion(-)
+ arch/x86/mm/tlb.c               | 39 +++++++++++++++++++++++----------
+ 5 files changed, 52 insertions(+), 17 deletions(-)
 
+diff --git a/arch/x86/hyperv/mmu.c b/arch/x86/hyperv/mmu.c
+index cfcb60468b01c..2cf1eeaffd6fe 100644
+--- a/arch/x86/hyperv/mmu.c
++++ b/arch/x86/hyperv/mmu.c
+@@ -63,7 +63,7 @@ static void hyperv_flush_tlb_multi(const struct cpumask *cpus,
+ 	struct hv_tlb_flush *flush;
+ 	u64 status;
+ 	unsigned long flags;
+-	bool do_lazy = !info->freed_tables;
++	bool do_lazy = !info->wake_lazy_cpus;
+ 
+ 	trace_hyperv_mmu_flush_tlb_multi(cpus, info);
+ 
+@@ -198,7 +198,7 @@ static u64 hyperv_flush_tlb_others_ex(const struct cpumask *cpus,
+ 
+ 	flush->hv_vp_set.format = HV_GENERIC_SET_SPARSE_4K;
+ 	nr_bank = cpumask_to_vpset_skip(&flush->hv_vp_set, cpus,
+-			info->freed_tables ? NULL : cpu_is_lazy);
++			info->wake_lazy_cpus ? NULL : cpu_is_lazy);
+ 	if (nr_bank < 0)
+ 		return HV_STATUS_INVALID_PARAMETER;
+ 
 diff --git a/arch/x86/include/asm/tlb.h b/arch/x86/include/asm/tlb.h
-index 866ea78ba156a..fc586ec8e768e 100644
+index 866ea78ba156a..fb256fd95f951 100644
 --- a/arch/x86/include/asm/tlb.h
 +++ b/arch/x86/include/asm/tlb.h
-@@ -5,11 +5,21 @@
+@@ -5,22 +5,39 @@
  #define tlb_flush tlb_flush
  static inline void tlb_flush(struct mmu_gather *tlb);
  
@@ -104,23 +130,27 @@ index 866ea78ba156a..fc586ec8e768e 100644
  static inline void tlb_flush(struct mmu_gather *tlb)
  {
  	unsigned long start = 0UL, end = TLB_FLUSH_ALL;
-@@ -20,7 +30,13 @@ static inline void tlb_flush(struct mmu_gather *tlb)
+ 	unsigned int stride_shift = tlb_get_unmap_shift(tlb);
+ 
++	/*
++	 * Both freed_tables and unshared_tables must wake lazy-TLB CPUs, so
++	 * they receive IPIs before reusing or freeing page tables, allowing
++	 * us to safely implement tlb_table_flush_implies_ipi_broadcast().
++	 */
++	bool wake_lazy_cpus = tlb->freed_tables || tlb->unshared_tables;
++
+ 	if (!tlb->fullmm && !tlb->need_flush_all) {
+ 		start = tlb->start;
  		end = tlb->end;
  	}
  
 -	flush_tlb_mm_range(tlb->mm, start, end, stride_shift, tlb->freed_tables);
-+	/*
-+	 * Treat unshared_tables just like freed_tables, such that lazy-TLB
-+	 * CPUs also receive IPIs during unsharing of page tables, allowing
-+	 * us to safely implement tlb_table_flush_implies_ipi_broadcast().
-+	 */
-+	flush_tlb_mm_range(tlb->mm, start, end, stride_shift,
-+			   tlb->freed_tables || tlb->unshared_tables);
++	flush_tlb_mm_range(tlb->mm, start, end, stride_shift, wake_lazy_cpus);
  }
  
  static inline void invlpg(unsigned long addr)
 diff --git a/arch/x86/include/asm/tlbflush.h b/arch/x86/include/asm/tlbflush.h
-index 0545fe75c3fa1..fce8dc0dd3129 100644
+index 0545fe75c3fa1..938d2bb995011 100644
 --- a/arch/x86/include/asm/tlbflush.h
 +++ b/arch/x86/include/asm/tlbflush.h
 @@ -18,6 +18,8 @@
@@ -132,6 +162,24 @@ index 0545fe75c3fa1..fce8dc0dd3129 100644
  void __flush_tlb_all(void);
  
  #define TLB_FLUSH_ALL	-1UL
+@@ -247,7 +249,7 @@ struct flush_tlb_info {
+ 	u64			new_tlb_gen;
+ 	unsigned int		initiating_cpu;
+ 	u8			stride_shift;
+-	u8			freed_tables;
++	u8			wake_lazy_cpus;
+ 	u8			trim_cpumask;
+ };
+ 
+@@ -337,7 +339,7 @@ static inline bool mm_in_asid_transition(struct mm_struct *mm) { return false; }
+ extern void flush_tlb_all(void);
+ extern void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+ 				unsigned long end, unsigned int stride_shift,
+-				bool freed_tables);
++				bool wake_lazy_cpus);
+ extern void flush_tlb_kernel_range(unsigned long start, unsigned long end);
+ 
+ static inline void flush_tlb_page(struct vm_area_struct *vma, unsigned long a)
 diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
 index 294a8ea602986..df776b645a9cf 100644
 --- a/arch/x86/kernel/smpboot.c
@@ -145,7 +193,7 @@ index 294a8ea602986..df776b645a9cf 100644
  
  void __init native_smp_cpus_done(unsigned int max_cpus)
 diff --git a/arch/x86/mm/tlb.c b/arch/x86/mm/tlb.c
-index af43d177087e7..222c81f98de09 100644
+index af43d177087e7..bfe286ec3ac83 100644
 --- a/arch/x86/mm/tlb.c
 +++ b/arch/x86/mm/tlb.c
 @@ -26,6 +26,8 @@
@@ -157,6 +205,67 @@ index af43d177087e7..222c81f98de09 100644
  #ifdef CONFIG_PARAVIRT
  # define STATIC_NOPV
  #else
+@@ -1339,16 +1341,16 @@ STATIC_NOPV void native_flush_tlb_multi(const struct cpumask *cpumask,
+ 				(info->end - info->start) >> PAGE_SHIFT);
+ 
+ 	/*
+-	 * If no page tables were freed, we can skip sending IPIs to
+-	 * CPUs in lazy TLB mode. They will flush the CPU themselves
+-	 * at the next context switch.
++	 * If lazy-TLB CPUs do not need to be woken, we can skip sending
++	 * IPIs to them. They will flush themselves at the next context
++	 * switch.
+ 	 *
+-	 * However, if page tables are getting freed, we need to send the
+-	 * IPI everywhere, to prevent CPUs in lazy TLB mode from tripping
+-	 * up on the new contents of what used to be page tables, while
+-	 * doing a speculative memory access.
++	 * However, if page tables are getting freed or unshared, we need
++	 * to send the IPI everywhere, to prevent CPUs in lazy TLB mode
++	 * from tripping up on the new contents of what used to be page
++	 * tables, while doing a speculative memory access.
+ 	 */
+-	if (info->freed_tables || mm_in_asid_transition(info->mm))
++	if (info->wake_lazy_cpus || mm_in_asid_transition(info->mm))
+ 		on_each_cpu_mask(cpumask, flush_tlb_func, (void *)info, true);
+ 	else
+ 		on_each_cpu_cond_mask(should_flush_tlb, flush_tlb_func,
+@@ -1381,7 +1383,7 @@ static DEFINE_PER_CPU(unsigned int, flush_tlb_info_idx);
+ 
+ static struct flush_tlb_info *get_flush_tlb_info(struct mm_struct *mm,
+ 			unsigned long start, unsigned long end,
+-			unsigned int stride_shift, bool freed_tables,
++			unsigned int stride_shift, bool wake_lazy_cpus,
+ 			u64 new_tlb_gen)
+ {
+ 	struct flush_tlb_info *info = this_cpu_ptr(&flush_tlb_info);
+@@ -1408,7 +1410,7 @@ static struct flush_tlb_info *get_flush_tlb_info(struct mm_struct *mm,
+ 	info->end		= end;
+ 	info->mm		= mm;
+ 	info->stride_shift	= stride_shift;
+-	info->freed_tables	= freed_tables;
++	info->wake_lazy_cpus	= wake_lazy_cpus;
+ 	info->new_tlb_gen	= new_tlb_gen;
+ 	info->initiating_cpu	= smp_processor_id();
+ 	info->trim_cpumask	= 0;
+@@ -1427,7 +1429,7 @@ static void put_flush_tlb_info(void)
+ 
+ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+ 				unsigned long end, unsigned int stride_shift,
+-				bool freed_tables)
++				bool wake_lazy_cpus)
+ {
+ 	struct flush_tlb_info *info;
+ 	int cpu = get_cpu();
+@@ -1436,7 +1438,7 @@ void flush_tlb_mm_range(struct mm_struct *mm, unsigned long start,
+ 	/* This is also a barrier that synchronizes with switch_mm(). */
+ 	new_tlb_gen = inc_mm_tlb_gen(mm);
+ 
+-	info = get_flush_tlb_info(mm, start, end, stride_shift, freed_tables,
++	info = get_flush_tlb_info(mm, start, end, stride_shift, wake_lazy_cpus,
+ 				  new_tlb_gen);
+ 
+ 	/*
 @@ -1813,3 +1815,16 @@ static int __init create_tlb_single_page_flush_ceiling(void)
  	return 0;
  }

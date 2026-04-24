@@ -1,0 +1,144 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Wed, 8 Apr 2026 08:47:00 -0700
+Subject: [PATCH] mm: huge_memory: use sysfs_match_string() in defrag_store()
+
+Patch series "mm: huge_memory: clean up defrag sysfs with shared", v2.
+
+Refactor defrag_store() and defrag_show() to use shared data tables
+instead of duplicated if/else chains.
+
+Patch 1 introduces an enum defrag_mode, a defrag_mode_strings[] table, and
+a defrag_flags[] mapping array, then rewrites defrag_store() to use
+sysfs_match_string() with a loop over defrag_flags[].
+
+Patch 2 refactors defrag_show() to use the same arrays, replacing its
+hardcoded if/else chain of test_bit() calls and string literals.
+
+This follows the same pattern applied to anon_enabled_store() in commit
+522dfb4ba71f ("mm: huge_memory: refactor anon_enabled_store() with
+change_anon_orders()").
+
+
+This patch (of 2):
+
+Replace the if/else chain of sysfs_streq() calls in defrag_store() with
+sysfs_match_string() and a defrag_mode_strings[] table.
+
+Introduce enum defrag_mode and defrag_flags[] array mapping each mode to
+its corresponding transparent_hugepage_flag.  The store function now loops
+over defrag_flags[], setting the bit for the selected mode and clearing
+the others.  When mode is DEFRAG_NEVER (index 4), no index in the
+4-element defrag_flags[] matches, so all flags are cleared.
+
+Note that the enum ordering (always, defer, defer+madvise, madvise, never)
+differs from the original if/else chain order in defrag_store() (always,
+defer+madvise, defer, madvise, never).  This is intentional to match the
+display order used by defrag_show().
+
+This is a follow-up cleanup to commit 522dfb4ba71f ("mm: huge_memory:
+refactor anon_enabled_store() with change_anon_orders()") which applied
+the same sysfs_match_string() pattern to anon_enabled_store().
+
+Link: https://lore.kernel.org/20260408-thp_defrag-v2-0-bc544c1bde4e@debian.org
+Link: https://lore.kernel.org/20260408-thp_defrag-v2-1-bc544c1bde4e@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Tested-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Tested-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 60 +++++++++++++++++++++++++++---------------------
+ 1 file changed, 34 insertions(+), 26 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index a76ddc63195a7..7fc3625968eb8 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -429,6 +429,29 @@ ssize_t single_hugepage_flag_store(struct kobject *kobj,
+ 	return count;
+ }
+ 
++enum defrag_mode {
++	DEFRAG_ALWAYS = 0,
++	DEFRAG_DEFER,
++	DEFRAG_DEFER_MADVISE,
++	DEFRAG_MADVISE,
++	DEFRAG_NEVER,
++};
++
++static const char * const defrag_mode_strings[] = {
++	[DEFRAG_ALWAYS]		= "always",
++	[DEFRAG_DEFER]		= "defer",
++	[DEFRAG_DEFER_MADVISE]	= "defer+madvise",
++	[DEFRAG_MADVISE]	= "madvise",
++	[DEFRAG_NEVER]		= "never",
++};
++
++static const enum transparent_hugepage_flag defrag_flags[] = {
++	[DEFRAG_ALWAYS]		= TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG,
++	[DEFRAG_DEFER]		= TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG,
++	[DEFRAG_DEFER_MADVISE]	= TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG,
++	[DEFRAG_MADVISE]	= TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG,
++};
++
+ static ssize_t defrag_show(struct kobject *kobj,
+ 			   struct kobj_attribute *attr, char *buf)
+ {
+@@ -456,34 +479,19 @@ static ssize_t defrag_store(struct kobject *kobj,
+ 			    struct kobj_attribute *attr,
+ 			    const char *buf, size_t count)
+ {
+-	if (sysfs_streq(buf, "always")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "defer+madvise")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "defer")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "madvise")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags);
+-		set_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-	} else if (sysfs_streq(buf, "never")) {
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_KSWAPD_OR_MADV_FLAG, &transparent_hugepage_flags);
+-		clear_bit(TRANSPARENT_HUGEPAGE_DEFRAG_REQ_MADV_FLAG, &transparent_hugepage_flags);
+-	} else
++	int mode, m;
++
++	mode = sysfs_match_string(defrag_mode_strings, buf);
++	if (mode < 0)
+ 		return -EINVAL;
+ 
++	for (m = 0; m < ARRAY_SIZE(defrag_flags); m++) {
++		if (m == mode)
++			set_bit(defrag_flags[m], &transparent_hugepage_flags);
++		else
++			clear_bit(defrag_flags[m], &transparent_hugepage_flags);
++	}
++
+ 	return count;
+ }
+ static struct kobj_attribute defrag_attr = __ATTR_RW(defrag);
+-- 
+2.47.3
+

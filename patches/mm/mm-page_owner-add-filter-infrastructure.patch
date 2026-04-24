@@ -1,0 +1,209 @@
+From: Zhen Ni <zhen.ni@easystack.cn>
+Date: Sun, 19 Apr 2026 23:55:38 +0800
+Subject: [PATCH] mm/page_owner: add filter infrastructure
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm/page_owner: add filter infrastructure for print_mode and
+NUMA filtering", v2.
+
+This patch series introduces filtering capabilities to the page_owner
+feature to address storage and performance challenges in production
+environments.
+
+Changes from v1:
+- Renamed 'compact' to 'print_mode' with enum type for better clarity
+  * PAGE_OWNER_PRINT_FULL_STACK (0): print full stack traces
+  * PAGE_OWNER_PRINT_STACK_HANDLE (1): print only stack handles
+- Changed NUMA filter from single node to nodelist with bitmask support
+  * Uses nodelist_parse() to support "0", "0,2", "0-3", "0,2-4,7" formats
+  * Uses nodemask_t internally for efficient multi-node filtering
+  * Output uses %*pbl format (e.g., "0-2", "0,2-4,7")
+- Improved memory handling in nid_filter_write using dynamic allocation
+  * Limit: (100 + 6 * MAX_NUMNODES) to handle worst-case input
+
+These changes address feedback from v1 review:
+- "compact" was too vague → use descriptive enum (PAGE_OWNER_PRINT_*)
+- Single node filter was limiting → use nodelist_parse() for multi-node support
+
+Problem Statement
+=================
+
+In production environments with large memory configurations (e.g.,
+250GB+), collecting page_owner information often results in files ranging
+from several gigabytes to over 10GB.  This creates significant challenges:
+
+1. Storage pressure on production systems
+2. Difficulty transferring large files from production environments
+3. Post-processing overhead with tools/mm/page_owner_sort.c
+
+The primary contributor to file size is redundant stack trace information.
+While the kernel already deduplicates stacks via stackdepot, page_owner
+retrieves and stores full stack traces for each page, only to deduplicate
+them again during post-processing.
+
+Additionally, in NUMA-aware environments (e.g., DPDK-based cloud
+deployments where QEMU processes are bound to specific NUMA nodes), OOM
+events are often node-specific rather than system-wide.  Currently,
+page_owner cannot filter by NUMA node, forcing users to collect and
+analyze data for all nodes.
+
+Solution
+========
+
+This patch series introduces a flexible filter infrastructure with
+two initial filters:
+
+1. **Print Mode Filter**: Outputs only stack handles instead of
+   full stack traces. The handle-to-stack mapping can be retrieved
+   from the existing show_stacks_handles interface. This dramatically
+   reduces output size while preserving all allocation metadata.
+
+2. **NUMA Node Filter**: Allows filtering pages by specific NUMA node(s)
+   using flexible nodelist format, enabling targeted analysis of memory
+   issues in NUMA-aware deployments.
+
+Implementation
+==============
+
+The series is structured as follows:
+
+- Patch 1: Add filter infrastructure (data structures and
+  debugfs directory)
+- Patch 2: Implement print_mode filter
+- Patch 3: Implement NUMA node filter with nodelist support
+
+Usage Example
+=============
+
+Enable print_mode and filter for NUMA nodes 0,2-3:
+
+    # cd /sys/kernel/debug/page_owner_filter/
+    # echo 1 > print_mode
+    # echo "0,2-3" > nid
+    # cat /sys/kernel/debug/page_owner > page_owner.txt
+
+Sample print_mode output (showing handles only):
+
+    Page allocated via order 0, mask 0x0(), pid 0, tgid 0 (swapper),
+    ts 0 ns PFN 0x40000 type Unmovable Block 512 type Unmovable
+    Flags 0x3fffe0000000000(node=0|zone=0|lastcpupid=0x1ffff)
+    handle: 1048577
+
+    Page allocated via order 0, mask 0x252000(__GFP_NOWARN|
+    __GFP_NORETRY|__GFP_COMP|__GFP_THISNODE), pid 0, tgid 0 (swapper),
+    ts 0 ns PFN 0x40002 type Unmovable Block 512 type Unmovable
+    Flags 0x23fffe0000000200(workingset|node=0|zone=0|lastcpupid=0x1ffff)
+    handle: 1048577
+
+Testing
+=======
+
+Tested on a system with multiple NUMA nodes. Verified that:
+- Filters work independently and in combination
+- Print_mode output correlates correctly with show_stacks_handles
+- Default behavior (filters disabled) remains unchanged
+- NUMA filter works with single node, multiple nodes, and ranges
+
+Example test session:
+    # cat print_mode
+    0
+    # echo "0,1-2" > nid
+    # cat nid
+    0-2
+    # echo "0,2-3" > nid
+    # cat nid
+    0,2-3
+    # echo 1 > print_mode
+    # head -n 100 /sys/kernel/debug/page_owner
+    [Shows compact mode output with handles only]
+
+Future Enhancements
+==================
+
+The filter infrastructure is designed to be extensible. Potential
+future filters could include:
+- PID/TGID filtering
+- Time range filtering (allocation timestamp windows)
+- GFP flag filtering
+- Migration type filtering
+
+
+This patch (of 3):
+
+Add data structure for page_owner filtering functionality and create
+debugfs directory for filter controls.
+
+This adds:
+- enum page_owner_print_mode with values for full_stack and stack_handle
+- struct page_owner_filter with print_mode and nid_mask fields
+- Static owner_filter instance initialized with default values
+- page_owner_filter debugfs directory
+
+The filter infrastructure will be used to add print_mode and NUMA node
+filtering capabilities in subsequent commits.
+
+Link: https://lore.kernel.org/20260419155540.376847-1-zhen.ni@easystack.cn
+Link: https://lore.kernel.org/linux-mm/20260417154638.22370-2-zhen.ni@easystack.cn/
+Link: https://lore.kernel.org/20260419155540.376847-2-zhen.ni@easystack.cn
+Signed-off-by: Zhen Ni <zhen.ni@easystack.cn>
+Suggested-by: Zi Yan <ziy@nvidia.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_owner.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page_owner.c b/mm/page_owner.c
+index 8178e0be557f8..5884d883837e8 100644
+--- a/mm/page_owner.c
++++ b/mm/page_owner.c
+@@ -54,6 +54,21 @@ struct stack_print_ctx {
+ 	u8 flags;
+ };
+ 
++enum page_owner_print_mode {
++	PAGE_OWNER_PRINT_FULL_STACK,
++	PAGE_OWNER_PRINT_STACK_HANDLE,
++};
++
++struct page_owner_filter {
++	enum page_owner_print_mode print_mode;
++	nodemask_t nid_mask;
++};
++
++static struct page_owner_filter owner_filter = {
++	.print_mode = PAGE_OWNER_PRINT_FULL_STACK,
++	.nid_mask = NODE_MASK_NONE,
++};
++
+ static bool page_owner_enabled __initdata;
+ DEFINE_STATIC_KEY_FALSE(page_owner_inited);
+ 
+@@ -973,7 +988,7 @@ DEFINE_SIMPLE_ATTRIBUTE(page_owner_threshold_fops, &page_owner_threshold_get,
+ 
+ static int __init pageowner_init(void)
+ {
+-	struct dentry *dir;
++	struct dentry *dir, *filter_dir;
+ 
+ 	if (!static_branch_unlikely(&page_owner_inited)) {
+ 		pr_info("page_owner is disabled\n");
+@@ -981,6 +996,9 @@ static int __init pageowner_init(void)
+ 	}
+ 
+ 	debugfs_create_file("page_owner", 0400, NULL, NULL, &page_owner_fops);
++
++	filter_dir = debugfs_create_dir("page_owner_filter", NULL);
++
+ 	dir = debugfs_create_dir("page_owner_stacks", NULL);
+ 	debugfs_create_file("show_stacks", 0400, dir,
+ 			    (void *)(STACK_PRINT_FLAG_STACK |
+-- 
+2.47.3
+

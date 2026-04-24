@@ -1,0 +1,65 @@
+From: Anthony Yznaga <anthony.yznaga@oracle.com>
+Date: Wed, 15 Apr 2026 20:39:39 -0700
+Subject: [PATCH] selftests/mm: run the MAP_DROPPABLE selftest
+
+The test was not being run by the selftest framework so it was never
+noticed that it would fail with an assertion failure on configs without
+support for MAP_DROPPABLE.  Update the test so that it is skipped instead
+when MAP_DROPPABLE is not supported, and add it to the mmap category so
+that the test is run by the framework.
+
+Link: https://lore.kernel.org/20260416033939.49981-4-anthony.yznaga@oracle.com
+Signed-off-by: Anthony Yznaga <anthony.yznaga@oracle.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Jason A. Donenfeld <jason@zx2c4.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/droppable.c    | 9 ++++++++-
+ tools/testing/selftests/mm/run_vmtests.sh | 1 +
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/droppable.c b/tools/testing/selftests/mm/droppable.c
+index 44940f75c461d..30c8be37fcb9d 100644
+--- a/tools/testing/selftests/mm/droppable.c
++++ b/tools/testing/selftests/mm/droppable.c
+@@ -26,7 +26,14 @@ int main(int argc, char *argv[])
+ 	ksft_set_plan(1);
+ 
+ 	alloc = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
+-	assert(alloc != MAP_FAILED);
++	if (alloc == MAP_FAILED) {
++		if ((errno == EOPNOTSUPP) || (errno == EINVAL)) {
++			ksft_test_result_skip("MAP_DROPPABLE not supported\n");
++			exit(KSFT_SKIP);
++		}
++		ksft_test_result_fail("mmap error: %s\n", strerror(errno));
++		exit(KSFT_FAIL);
++	}
+ 	memset(alloc, 'A', alloc_size);
+ 	for (size_t i = 0; i < alloc_size; i += page_size)
+ 		assert(*(uint8_t *)(alloc + i));
+diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
+index 50dd6b6d0225c..028bd7d95703a 100755
+--- a/tools/testing/selftests/mm/run_vmtests.sh
++++ b/tools/testing/selftests/mm/run_vmtests.sh
+@@ -382,6 +382,7 @@ else
+ fi
+ 
+ CATEGORY="mmap" run_test ./map_populate
++CATEGORY="mmap" run_test ./droppable
+ 
+ CATEGORY="mlock" run_test ./mlock-random-test
+ 
+-- 
+2.47.3
+

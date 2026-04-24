@@ -1,0 +1,66 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Thu, 23 Apr 2026 22:49:06 -0400
+Subject: [PATCH] mm/huge_memory: remove READ_ONLY_THP_FOR_FS from
+ file_thp_enabled()
+
+Replace it with a check on the max folio order of the file's address space
+mapping, making sure PMD THP is supported.  Also remove the read-only fd
+check, since collapse_file() now makes sure all to-be-collapsed folios are
+clean and the created PMD file THP can be handled by FSes properly.
+
+Link: https://lore.kernel.org/20260424024915.28758-4-ziy@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Song Liu <songliubraving@fb.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 1f0d0b7809432..f0db1390a18f1 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -86,9 +86,6 @@ static inline bool file_thp_enabled(struct vm_area_struct *vma)
+ {
+ 	struct inode *inode;
+ 
+-	if (!IS_ENABLED(CONFIG_READ_ONLY_THP_FOR_FS))
+-		return false;
+-
+ 	if (!vma->vm_file)
+ 		return false;
+ 
+@@ -97,7 +94,10 @@ static inline bool file_thp_enabled(struct vm_area_struct *vma)
+ 	if (IS_ANON_FILE(inode))
+ 		return false;
+ 
+-	return !inode_is_open_for_write(inode) && S_ISREG(inode->i_mode);
++	if (!mapping_pmd_thp_support(inode->i_mapping))
++		return false;
++
++	return S_ISREG(inode->i_mode);
+ }
+ 
+ /* If returns true, we are unable to access the VMA's folios. */
+-- 
+2.47.3
+

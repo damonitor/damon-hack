@@ -2,29 +2,40 @@ From: Bunyod Suvonov <b.suvonov@sjtu.edu.cn>
 Date: Thu, 23 Apr 2026 18:37:53 +0800
 Subject: [PATCH] mm/vmscan: add balance_pgdat begin/end tracepoints
 
-Vmscan has six main reclaim entry points: try_to_free_pages() for direct
-reclaim, try_to_free_mem_cgroup_pages() for memcg reclaim,
-mem_cgroup_shrink_node() for memcg soft limit reclaim, node_reclaim() for
-node reclaim, shrink_all_memory() for hibernation reclaim, and
+Vmscan has six main reclaim entry points: try_to_free_pages() for
+direct reclaim, try_to_free_mem_cgroup_pages() for memcg reclaim,
+mem_cgroup_shrink_node() for memcg soft limit reclaim, node_reclaim()
+for node reclaim, shrink_all_memory() for hibernation reclaim, and
 balance_pgdat() for kswapd reclaim.
 
-All of them, except for shrink_all_memory() and balance_pgdat(), already
-have begin/end tracepoints.  This makes it harder to trace which reclaim
-path is responsible for memory reclaim activity, because kswapd reclaim
-cannot be identified as cleanly as other reclaim entry points, even though
-it is the main background reclaim path under memory pressure.  There may
-be no need to trace shrink_all_memory() as it is primarily used during
-hibernation.  So this patch adds the missing tracepoint pair for
-balance_pgdat().
+All of them, except for shrink_all_memory() and balance_pgdat(),
+already have begin/end tracepoints.  This makes it harder to trace
+which reclaim path is responsible for memory reclaim activity, because
+kswapd reclaim cannot be identified as cleanly as other reclaim entry
+points, even though it is the main background reclaim path under memory
+pressure.  There may be no need to trace shrink_all_memory() as it is
+primarily used during hibernation.  So this patch adds the missing
+tracepoint pair for balance_pgdat().
 
 The begin tracepoint records the node id, requested reclaim order, and
-highest_zoneidx.  The end tracepoint records the node id, reclaim order
-that balance_pgdat() finished with, highest_zoneidx, and nr_reclaimed.
-Together, they show the requested reclaim order and zone bound, whether
-reclaim fell back to a lower order, and how much reclaim work was done.
+the requested classzone bound (highest_zoneidx).  The end tracepoint
+records the node id, the reclaim order that balance_pgdat() finished
+with, the requested classzone bound, and nr_reclaimed.  Together, they
+show the requested reclaim order and classzone bound, whether reclaim
+fell back to a lower order, and how much reclaim work was done.
 
+The end tracepoint also records highest_zoneidx even though it does not
+change within a balance_pgdat() invocation.  This keeps the end event
+self-contained, so users can analyze reclaim results directly from end
+events without depending on begin/end correlation, which is less
+convenient when tracing is filtered or records are dropped.  It also
+makes it straightforward to relate nr_reclaimed and the final reclaim
+order to the requested classzone bound.
+
+Link: https://lore.kernel.org/20260424031418.174597-1-b.suvonov@sjtu.edu.cn
 Link: https://lore.kernel.org/20260423103753.546582-1-b.suvonov@sjtu.edu.cn
 Signed-off-by: Bunyod Suvonov <b.suvonov@sjtu.edu.cn>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
@@ -35,7 +46,6 @@ Cc: Masami Hiramatsu <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <zhengqi.arch@bytedance.com>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Steven Rostedt <rostedt@goodmis.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>

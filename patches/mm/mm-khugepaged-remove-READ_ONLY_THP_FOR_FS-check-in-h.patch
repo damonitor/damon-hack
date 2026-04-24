@@ -1,0 +1,106 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Thu, 23 Apr 2026 22:49:07 -0400
+Subject: [PATCH] mm/khugepaged: remove READ_ONLY_THP_FOR_FS check in
+ hugepage_enabled()
+
+Remove READ_ONLY_THP_FOR_FS and khugepaged for file-backed pmd-sized
+hugepages are enabled by the global transparent hugepage control.
+khugepaged can still be enabled by per-size control for anon and shmem
+when the global control is off.
+
+Add shmem_hpage_pmd_enabled() stub for !CONFIG_SHMEM to remove
+IS_ENABLED(SHMEM) in hugepage_enabled().
+
+Clean up hugepage_enabled() by moving anon code to anon_hpage_enabled().
+
+Link: https://lore.kernel.org/20260424024915.28758-5-ziy@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Song Liu <songliubraving@fb.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/shmem_fs.h |  2 +-
+ mm/khugepaged.c          | 26 ++++++++++++++++----------
+ 2 files changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/include/linux/shmem_fs.h b/include/linux/shmem_fs.h
+index 93a0ba872ebe0..acb8dd961b45c 100644
+--- a/include/linux/shmem_fs.h
++++ b/include/linux/shmem_fs.h
+@@ -127,7 +127,7 @@ int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
+ void shmem_truncate_range(struct inode *inode, loff_t start, uoff_t end);
+ int shmem_unuse(unsigned int type);
+ 
+-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
++#if defined(CONFIG_TRANSPARENT_HUGEPAGE) && defined(CONFIG_SHMEM)
+ unsigned long shmem_allowable_huge_orders(struct inode *inode,
+ 				struct vm_area_struct *vma, pgoff_t index,
+ 				loff_t write_end, bool shmem_huge_force);
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 726f8ace01af7..cdd4b37e4a68a 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -524,26 +524,32 @@ static inline int collapse_test_exit_or_disable(struct mm_struct *mm)
+ 		mm_flags_test(MMF_DISABLE_THP_COMPLETELY, mm);
+ }
+ 
++static inline bool anon_hpage_enabled(void)
++{
++	if (READ_ONCE(huge_anon_orders_always))
++		return true;
++	if (READ_ONCE(huge_anon_orders_madvise))
++		return true;
++	if (READ_ONCE(huge_anon_orders_inherit) &&
++	    hugepage_global_enabled())
++		return true;
++	return false;
++}
++
+ static bool hugepage_enabled(void)
+ {
+ 	/*
+ 	 * We cover the anon, shmem and the file-backed case here; file-backed
+-	 * hugepages, when configured in, are determined by the global control.
++	 * hugepages are determined by the global control.
+ 	 * Anon hugepages are determined by its per-size mTHP control.
+ 	 * Shmem pmd-sized hugepages are also determined by its pmd-size control,
+ 	 * except when the global shmem_huge is set to SHMEM_HUGE_DENY.
+ 	 */
+-	if (IS_ENABLED(CONFIG_READ_ONLY_THP_FOR_FS) &&
+-	    hugepage_global_enabled())
+-		return true;
+-	if (READ_ONCE(huge_anon_orders_always))
++	if (hugepage_global_enabled())
+ 		return true;
+-	if (READ_ONCE(huge_anon_orders_madvise))
+-		return true;
+-	if (READ_ONCE(huge_anon_orders_inherit) &&
+-	    hugepage_global_enabled())
++	if (anon_hpage_enabled())
+ 		return true;
+-	if (IS_ENABLED(CONFIG_SHMEM) && shmem_hpage_pmd_enabled())
++	if (shmem_hpage_pmd_enabled())
+ 		return true;
+ 	return false;
+ }
+-- 
+2.47.3
+

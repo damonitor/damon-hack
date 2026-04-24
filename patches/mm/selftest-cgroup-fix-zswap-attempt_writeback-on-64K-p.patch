@@ -1,0 +1,105 @@
+From: Li Wang <li.wang@linux.dev>
+Date: Fri, 24 Apr 2026 12:00:58 +0800
+Subject: [PATCH] selftest/cgroup: fix zswap attempt_writeback() on 64K
+ pagesize system
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In attempt_writeback(), a memsize of 4M only covers 64 pages on 64K page
+size systems.  When memory.reclaim is called, the kernel prefers
+reclaiming clean file pages (binary, libc, linker, etc.) over swapping
+anonymous pages.  With only 64 pages of anonymous memory, the reclaim
+target can be largely or entirely satisfied by dropping file pages,
+resulting in very few or zero anonymous pages being pushed into zswap.
+
+This causes zswap_usage to be extremely small or zero, making
+zswap_usage/4 insufficient to create meaningful writeback pressure.  The
+test then fails because no writeback is triggered.
+
+On 4K page size systems this is not an issue because 4M covers 1024
+pages, and file pages are a small fraction of the reclaim target.
+
+Fix this by:
+- Always allocating 1024 pages regardless of page size. This ensures
+  enough anonymous pages to reliably populate zswap and trigger
+  writeback, while keeping the original 4M allocation on 4K systems.
+- Setting zswap.max to zswap_usage/4 instead of zswap_usage/2 to
+  create stronger writeback pressure, ensuring reclaim reliably
+  triggers writeback even on large page size systems.
+
+=== Error Log ===
+  # uname -rm
+  6.12.0-211.el10.ppc64le ppc64le
+
+  # getconf PAGESIZE
+  65536
+
+  # ./test_zswap
+  TAP version 13
+  1..7
+  ok 1 test_zswap_usage
+  ok 2 test_swapin_nozswap
+  ok 3 test_zswapin
+  not ok 4 test_zswap_writeback_enabled
+  ...
+
+Link: https://lore.kernel.org/20260424040059.12940-8-li.wang@linux.dev
+Signed-off-by: Li Wang <li.wang@linux.dev>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Jiayuan Chen <jiayuan.chen@linux.dev>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/cgroup/test_zswap.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/tools/testing/selftests/cgroup/test_zswap.c b/tools/testing/selftests/cgroup/test_zswap.c
+index 8f0478923bd02..5fe0cffb5575d 100644
+--- a/tools/testing/selftests/cgroup/test_zswap.c
++++ b/tools/testing/selftests/cgroup/test_zswap.c
+@@ -268,14 +268,14 @@ static int test_zswapin(const char *root)
+       This will move it into zswap.
+  * 3. Save current zswap usage.
+  * 4. Move the memory allocated in step 1 back in from zswap.
+- * 5. Set zswap.max to half the amount that was recorded in step 3.
++ * 5. Set zswap.max to 1/4 of the amount that was recorded in step 3.
+  * 6. Attempt to reclaim memory equal to the amount that was allocated,
+       this will either trigger writeback if it's enabled, or reclamation
+       will fail if writeback is disabled as there isn't enough zswap space.
+  */
+ static int attempt_writeback(const char *cgroup, void *arg)
+ {
+-	size_t memsize = MB(4);
++	size_t memsize = page_size * 1024;
+ 	char buf[page_size];
+ 	long zswap_usage;
+ 	bool wb_enabled = *(bool *) arg;
+@@ -313,12 +313,12 @@ static int attempt_writeback(const char *cgroup, void *arg)
+ 		}
+ 	}
+ 
+-	if (cg_write_numeric(cgroup, "memory.zswap.max", zswap_usage/2))
++	if (cg_write_numeric(cgroup, "memory.zswap.max", zswap_usage/4))
+ 		goto out;
+ 
+ 	/*
+ 	 * If writeback is enabled, trying to reclaim memory now will trigger a
+-	 * writeback as zswap.max is half of what was needed when reclaim ran the first time.
++	 * writeback as zswap.max is 1/4 of what was needed when reclaim ran the first time.
+ 	 * If writeback is disabled, memory reclaim will fail as zswap is limited and
+ 	 * it can't writeback to swap.
+ 	 */
+-- 
+2.47.3
+

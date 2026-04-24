@@ -1,0 +1,65 @@
+From: David Carlier <devnexen@gmail.com>
+Date: Fri, 24 Apr 2026 19:36:38 +0100
+Subject: [PATCH] mm/userfaultfd: detect VMA type change after copy retry in
+ mfill_copy_folio_retry()
+
+mfill_copy_folio_retry() drops mmap_lock for the copy_from_user() call.
+During this window, the VMA can be replaced with a different type (e.g.
+hugetlb), making the caller's ops pointer stale.  Subsequent use of the
+stale ops would dispatch into the wrong per-vma handlers.
+
+Capture the VMA's ops via vma_uffd_ops() before dropping the lock and
+compare against the current vma_uffd_ops() after re-acquiring it.
+Return -EAGAIN if they differ so the operation can be retried.  This
+avoids comparing against the caller's ops which may have been
+overridden to anon_uffd_ops for MAP_PRIVATE file-backed mappings.
+
+Link: https://lore.kernel.org/20260424183638.196227-1-devnexen@gmail.com
+Fixes: 6ab703034f14 ("userfaultfd: mfill_atomic(): remove retry logic")
+Reported-by: Usama Arif <usama.arif@linux.dev>
+Closes: https://lore.kernel.org/all/20260410114809.3592720-1-usama.arif@linux.dev/
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/userfaultfd.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 885da1e564665..180bad42fc79d 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -443,8 +443,10 @@ static int mfill_copy_folio_locked(struct folio *folio, unsigned long src_addr)
+ 	return ret;
+ }
+ 
+-static int mfill_copy_folio_retry(struct mfill_state *state, struct folio *folio)
++static int mfill_copy_folio_retry(struct mfill_state *state,
++				  struct folio *folio)
+ {
++	const struct vm_uffd_ops *orig_ops = vma_uffd_ops(state->vma);
+ 	unsigned long src_addr = state->src_addr;
+ 	void *kaddr;
+ 	int err;
+@@ -465,6 +467,14 @@ static int mfill_copy_folio_retry(struct mfill_state *state, struct folio *folio
+ 	if (err)
+ 		return err;
+ 
++	/*
++	 * The VMA type may have changed while the lock was dropped
++	 * (e.g. replaced with a hugetlb mapping), making the caller's
++	 * ops pointer stale.
++	 */
++	if (vma_uffd_ops(state->vma) != orig_ops)
++		return -EAGAIN;
++
+ 	err = mfill_establish_pmd(state);
+ 	if (err)
+ 		return err;
+-- 
+2.47.3
+

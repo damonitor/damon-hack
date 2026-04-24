@@ -1,32 +1,32 @@
 From: Anthony Yznaga <anthony.yznaga@oracle.com>
-Date: Thu, 2 Apr 2026 16:59:33 -0700
+Date: Wed, 15 Apr 2026 20:39:38 -0700
 Subject: [PATCH] selftests/mm: verify droppable mappings cannot be locked
 
-For configs that support MAP_DROPPABLE verify that a mapping created
-with MAP_DROPPABLE cannot be locked via mlock(), and that it will not
-be locked if it's created after mlockall(MCL_FUTURE).
+For configs that support MAP_DROPPABLE verify that a mapping created with
+MAP_DROPPABLE cannot be locked via mlock(), and that it will not be locked
+if it's created after mlockall(MCL_FUTURE).
 
-Link: https://lore.kernel.org/20260402235933.10588-3-anthony.yznaga@oracle.com
+Link: https://lore.kernel.org/20260416033939.49981-3-anthony.yznaga@oracle.com
 Signed-off-by: Anthony Yznaga <anthony.yznaga@oracle.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Jason A. Donenfeld <jason@zx2c4.com>
-Cc: Liam Howlett <liam.howlett@oracle.com>
-Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Mark Brown <broonie@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/mlock2-tests.c | 87 ++++++++++++++++++++---
- 1 file changed, 78 insertions(+), 9 deletions(-)
+ tools/testing/selftests/mm/mlock2-tests.c | 84 ++++++++++++++++++++---
+ 1 file changed, 75 insertions(+), 9 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/mlock2-tests.c b/tools/testing/selftests/mm/mlock2-tests.c
-index b474f2b20def2..353d0e5daa44e 100644
+index b474f2b20def2..e16e288cc7c1f 100644
 --- a/tools/testing/selftests/mm/mlock2-tests.c
 +++ b/tools/testing/selftests/mm/mlock2-tests.c
 @@ -1,6 +1,7 @@
@@ -78,7 +78,7 @@ index b474f2b20def2..353d0e5daa44e 100644
  	munmap(map, 2 * page_size);
  }
  
-@@ -336,7 +340,70 @@ static void test_munlockall1(void)
+@@ -336,7 +340,67 @@ static void test_munlockall1(void)
  		ksft_exit_fail_msg("munlockall() %s\n", strerror(errno));
  	}
  
@@ -87,17 +87,13 @@ index b474f2b20def2..353d0e5daa44e 100644
 +	munmap(map, 2 * page_size);
 +}
 +
-+/*
-+ * Droppable memory should not be lockable.
-+ */
++/* Droppable memory should not be lockable.  */
 +static void test_mlock_droppable(void)
 +{
 +	char *map;
 +	unsigned long page_size = getpagesize();
 +
-+	/*
-+	 * Ensure MCL_FUTURE is not set.
-+	 */
++	/* Ensure MCL_FUTURE is not set. */
 +	if (munlockall()) {
 +		ksft_test_result_fail("munlockall() %s\n", strerror(errno));
 +		return;
@@ -106,7 +102,7 @@ index b474f2b20def2..353d0e5daa44e 100644
 +	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
 +		   MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
 +	if (map == MAP_FAILED) {
-+		if (errno == EOPNOTSUPP)
++		if ((errno == EOPNOTSUPP) || (errno == EINVAL))
 +			ksft_test_result_skip("%s: MAP_DROPPABLE not supported\n", __func__);
 +		else
 +			ksft_test_result_fail("mmap error: %s\n", strerror(errno));
@@ -136,10 +132,11 @@ index b474f2b20def2..353d0e5daa44e 100644
 +		   MAP_ANONYMOUS | MAP_DROPPABLE, -1, 0);
 +
 +	if (map == MAP_FAILED) {
-+		if (errno == EOPNOTSUPP)
++		if ((errno == EOPNOTSUPP) || (errno == EINVAL))
 +			ksft_test_result_skip("%s: MAP_DROPPABLE not supported\n", __func__);
 +		else
 +			ksft_test_result_fail("mmap error: %s\n", strerror(errno));
++		munlockall();
 +		return;
 +	}
 +
@@ -150,7 +147,7 @@ index b474f2b20def2..353d0e5daa44e 100644
  	munmap(map, 2 * page_size);
  }
  
-@@ -442,7 +509,7 @@ int main(int argc, char **argv)
+@@ -442,7 +506,7 @@ int main(int argc, char **argv)
  
  	munmap(map, size);
  
@@ -159,7 +156,7 @@ index b474f2b20def2..353d0e5daa44e 100644
  
  	test_mlock_lock();
  	test_mlock_onfault();
-@@ -451,6 +518,8 @@ int main(int argc, char **argv)
+@@ -451,6 +515,8 @@ int main(int argc, char **argv)
  	test_lock_onfault_of_present();
  	test_vma_management(true);
  	test_mlockall();
