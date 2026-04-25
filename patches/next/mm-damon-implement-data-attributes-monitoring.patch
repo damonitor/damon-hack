@@ -1,0 +1,1289 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 9 Apr 2026 07:53:24 -0700
+Subject: [PATCH] mm/damon: implement data attributes monitoring
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ Documentation/admin-guide/mm/damon/usage.rst |   8 +-
+ Documentation/mm/damon/design.rst            |  35 ++
+ include/linux/damon.h                        |  62 +++
+ include/trace/events/damon.h                 |  41 ++
+ mm/damon/core.c                              | 182 +++++++
+ mm/damon/paddr.c                             |  45 ++
+ mm/damon/sysfs-schemes.c                     |  30 ++
+ mm/damon/sysfs.c                             | 502 +++++++++++++++++++
+ tools/testing/selftests/damon/sysfs.sh       |  48 ++
+ 9 files changed, 952 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/admin-guide/mm/damon/usage.rst b/Documentation/admin-guide/mm/damon/usage.rst
+index 54c4dcade9f12..cfd7738e40234 100644
+--- a/Documentation/admin-guide/mm/damon/usage.rst
++++ b/Documentation/admin-guide/mm/damon/usage.rst
+@@ -75,6 +75,11 @@ comma (",").
+     │ │ │ │ │ │ sample/filters/nr_filters
+     │ │ │ │ │ │ │ 0/type,matching,allow,cpumask,tid_arr
+     │ │ │ │ │ │ nr_regions/min,max
++    │ │ │ │ │ probes/nr_probes
++    │ │ │ │ │ │ 0/filters/nr_filters
++    │ │ │ │ │ │ │ │ 0/type,matching,allow
++    │ │ │ │ │ │ │ │ ...
++    │ │ │ │ │ │ │ ...
+     │ │ │ │ │ :ref:`targets <sysfs_targets>`/nr_targets
+     │ │ │ │ │ │ :ref:`0 <sysfs_target>`/pid_target,obsolete_target
+     │ │ │ │ │ │ │ :ref:`regions <sysfs_regions>`/nr_regions
+@@ -100,7 +105,8 @@ comma (",").
+     │ │ │ │ │ │ │ │ 0/id,weight
+     │ │ │ │ │ │ │ :ref:`stats <sysfs_schemes_stats>`/nr_tried,sz_tried,nr_applied,sz_applied,sz_ops_filter_passed,qt_exceeds,nr_snapshots,max_nr_snapshots
+     │ │ │ │ │ │ │ :ref:`tried_regions <sysfs_schemes_tried_regions>`/total_bytes
+-    │ │ │ │ │ │ │ │ 0/start,end,nr_accesses,age,sz_filter_passed
++    │ │ │ │ │ │ │ │ 0/start,end,nr_accesses,age,sz_filter_passed,
++    │ │ │ │ │ │ │ │     probe_hits
+     │ │ │ │ │ │ │ │ ...
+     │ │ │ │ │ │ ...
+     │ │ │ │ ...
+diff --git a/Documentation/mm/damon/design.rst b/Documentation/mm/damon/design.rst
+index 7e9673e6f7e58..083d1fb9a7f02 100644
+--- a/Documentation/mm/damon/design.rst
++++ b/Documentation/mm/damon/design.rst
+@@ -354,6 +354,41 @@ interval``, DAMON checks if the region's size and access frequency
+ (``nr_accesses``) has significantly changed.  If so, the counter is reset to
+ zero.  Otherwise, the counter is increased.
+ 
++Data Attributes Monitoring
++~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++Data access pattern is only one type of data attributes.  In some use cases,
++users need to know more data attributes information.  For example, users may
++need to know how much of a given hot or cold memory region is backed by
++anonymous pages, or belong to a specific cgroup.  For such use case, data
++attributes monitoring feature is provided.
++
++Using the feature, users can register data attributes of their interest to the
++DAMON :ref:`context <damon_design_execution_model_and_data_structures>`.  The
++registration is made by specifying a probe per attribute.  Each of the probe
++specifies a rule to determine if a given memory region has the related
++attribute.  The rule is constructed with multiple filters that similar to
++:ref:`DAMOS filter <damon_design_damos_filters>`.
++
++If such probes are registered, DAMON executes the probes for each region's
++sampling memory when it does the access :ref:`sampling
++<damon_design_region_based_sampling>`.  The number of samples that identified
++as having the data attribute (hitting the probe) per :ref:`aggregation interval
++<damon_design_monitoring>` is accounted in a per-region per-probe counter.
++Users can therefore know how much of a given DAMON region has a specific data
++attribute by reading the per-region per-probe probe hits counter after each
++aggregation interval.
++
++This is a sampling based mechanism.  Hence, it is lightweight but the output
++may include some measurement errors.  The output should be used with good
++understanding of statistics.
++
++Another way to do this for higher accuracy is using :ref:`DAMOS filter
++<damon_design_damos_filters>` with ``stat`` :ref:`action
++<damon_design_damos_action>` and ``sz_ops_filter_passed`` :ref:`stat
++<damon_design_damos_stat>`.  This approach provides the data attributes
++information in page level.  But, because it is operated in page level, the
++overhead is proportional to the size of the memory.
+ 
+ Dynamic Target Space Updates Handling
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index e9a5a40401bcb..866deac10361f 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -16,6 +16,8 @@
+ 
+ /* Minimal region size.  Every damon_region is aligned by this. */
+ #define DAMON_MIN_REGION_SZ	PAGE_SIZE
++/* Maximum number of monitoring probes. */
++#define DAMON_MAX_PROBES	(4)
+ /* Max priority score for DAMON-based operation schemes */
+ #define DAMOS_MAX_SCORE		(99)
+ 
+@@ -52,6 +54,7 @@ struct damon_size_range {
+  * @nr_accesses:	Access frequency of this region.
+  * @nr_accesses_bp:	@nr_accesses in basis point (0.01%) that updated for
+  *			each sampling interval.
++ * @probe_hits:		Number of probe-positive region samples.
+  * @list:		List head for siblings.
+  * @age:		Age of this region.
+  *
+@@ -80,6 +83,7 @@ struct damon_region {
+ 	unsigned long sampling_addr;
+ 	unsigned int nr_accesses;
+ 	unsigned int nr_accesses_bp;
++	unsigned char probe_hits[DAMON_MAX_PROBES];
+ 	struct list_head list;
+ 
+ 	unsigned int age;
+@@ -684,6 +688,7 @@ enum damon_ops_id {
+  * @update:			Update operations-related data structures.
+  * @prepare_access_checks:	Prepare next access check of target regions.
+  * @check_accesses:		Check the accesses to target regions.
++ * @apply_probes:		Apply probes for each region.
+  * @get_scheme_score:		Get the score of a region for a scheme.
+  * @apply_scheme:		Apply a DAMON-based operation scheme.
+  * @target_valid:		Determine if the target is valid.
+@@ -727,6 +732,7 @@ struct damon_operations {
+ 	void (*update)(struct damon_ctx *context);
+ 	void (*prepare_access_checks)(struct damon_ctx *context);
+ 	unsigned int (*check_accesses)(struct damon_ctx *context);
++	void (*apply_probes)(struct damon_ctx *context);
+ 	int (*get_scheme_score)(struct damon_ctx *context,
+ 			struct damon_region *r, struct damos *scheme);
+ 	unsigned long (*apply_scheme)(struct damon_ctx *context,
+@@ -788,6 +794,41 @@ struct damon_intervals_goal {
+ 	unsigned long max_sample_us;
+ };
+ 
++/**
++ * enum damon_filter_type - Type of &struct damon_filter
++ *
++ * @DAMON_TEST_TYPE_ANON:	Anonymous pages.
++ */
++enum damon_filter_type {
++	DAMON_TEST_TYPE_ANON,
++};
++
++/**
++ * struct damon_filter - DAMON region filter for &struct damon_probe.
++ *
++ * @type:	Type of the region.
++ * @matcing:	Whether this filter is for the type-matching ones.
++ * @allow:	Whether the @type-@matching ones should pass this filter.
++ * @list:	Siblings list.
++ */
++struct damon_filter {
++	enum damon_filter_type type;
++	bool matching;
++	bool allow;
++	struct list_head list;
++};
++
++/**
++ * struct damon_probe - Data region attribute probe.
++ *
++ * @filters:	Filters for assessing if a given region is for this probe.
++ * @list:	Siblings list.
++ */
++struct damon_probe {
++	struct list_head filters;
++	struct list_head list;
++};
++
+ /**
+  * struct damon_attrs - Monitoring attributes for accuracy/overhead control.
+  *
+@@ -982,6 +1023,7 @@ struct damon_ctx {
+ 
+ /* public: */
+ 	struct damon_operations ops;
++	struct list_head probes;
+ 	struct damon_sample_control sample_control;
+ 	unsigned long addr_unit;
+ 	unsigned long min_region_sz;
+@@ -1016,6 +1058,17 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 	return r->ar.end - r->ar.start;
+ }
+ 
++#define damon_for_each_filter(f, p) \
++	list_for_each_entry(f, &p->filters, list)
++
++#define damon_for_each_filter_safe(f, next, p) \
++	list_for_each_entry_safe(f, next, &p->filters, list)
++
++#define damon_for_each_probe(p, ctx) \
++	list_for_each_entry(p, &ctx->probes, list)
++
++#define damon_for_each_probe_safe(p, next, ctx) \
++	list_for_each_entry_safe(p, next, &ctx->probes, list)
+ 
+ #define damon_for_each_region(r, t) \
+ 	list_for_each_entry(r, &t->regions_list, list)
+@@ -1064,6 +1117,15 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 
+ #ifdef CONFIG_DAMON
+ 
++struct damon_filter *damon_new_filter(enum damon_filter_type type,
++		bool matching, bool allow);
++void damon_add_filter(struct damon_probe *probe, struct damon_filter *f);
++void damon_destroy_filter(struct damon_filter *filter);
++
++struct damon_probe *damon_new_probe(void);
++void damon_add_probe(struct damon_ctx *ctx, struct damon_probe *probe);
++void damon_destroy_probe(struct damon_probe *probe);
++
+ struct damon_region *damon_new_region(unsigned long start, unsigned long end);
+ 
+ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+diff --git a/include/trace/events/damon.h b/include/trace/events/damon.h
+index 7e25f4469b81b..121d7bc3a2c27 100644
+--- a/include/trace/events/damon.h
++++ b/include/trace/events/damon.h
+@@ -130,6 +130,47 @@ TRACE_EVENT(damon_monitor_intervals_tune,
+ 	TP_printk("sample_us=%lu", __entry->sample_us)
+ );
+ 
++TRACE_EVENT(damon_aggregated_v2,
++
++	TP_PROTO(unsigned int target_id, struct damon_region *r,
++		unsigned int nr_regions),
++
++	TP_ARGS(target_id, r, nr_regions),
++
++	TP_STRUCT__entry(
++		__field(unsigned long, target_id)
++		__field(unsigned int, nr_regions)
++		__field(unsigned long, start)
++		__field(unsigned long, end)
++		__field(unsigned int, nr_accesses)
++		__field(unsigned int, age)
++		__field(unsigned char, probe_hit0)
++		__field(unsigned char, probe_hit1)
++		__field(unsigned char, probe_hit2)
++		__field(unsigned char, probe_hit3)
++	),
++
++	TP_fast_assign(
++		__entry->target_id = target_id;
++		__entry->nr_regions = nr_regions;
++		__entry->start = r->ar.start;
++		__entry->end = r->ar.end;
++		__entry->nr_accesses = r->nr_accesses;
++		__entry->age = r->age;
++		__entry->probe_hit0 = r->probe_hits[0];
++		__entry->probe_hit1 = r->probe_hits[1];
++		__entry->probe_hit2 = r->probe_hits[2];
++		__entry->probe_hit3 = r->probe_hits[3];
++	),
++
++	TP_printk("target_id=%lu nr_regions=%u %lu-%lu: %u %u %hhu %hhu %hhu %hhu",
++			__entry->target_id, __entry->nr_regions,
++			__entry->start, __entry->end,
++			__entry->nr_accesses, __entry->age,
++			__entry->probe_hit0, __entry->probe_hit1,
++			__entry->probe_hit2, __entry->probe_hit3)
++);
++
+ TRACE_EVENT(damon_aggregated,
+ 
+ 	TP_PROTO(unsigned int target_id, struct damon_region *r,
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index eb6ec8f612e61..0de28a1325286 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -116,6 +116,103 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
+ 	return err;
+ }
+ 
++struct damon_filter *damon_new_filter(enum damon_filter_type type,
++		bool matching, bool allow)
++{
++	struct damon_filter *filter;
++
++	filter = kmalloc_obj(*filter);
++	if (!filter)
++		return NULL;
++	filter->type = type;
++	filter->matching = matching;
++	filter->allow = allow;
++	INIT_LIST_HEAD(&filter->list);
++	return filter;
++}
++
++void damon_add_filter(struct damon_probe *p, struct damon_filter *f)
++{
++	list_add_tail(&f->list, &p->filters);
++}
++
++static void damon_del_filter(struct damon_filter *f)
++{
++	list_del(&f->list);
++}
++
++static void damon_free_filter(struct damon_filter *f)
++{
++	kfree(f);
++}
++
++void damon_destroy_filter(struct damon_filter *f)
++{
++	damon_del_filter(f);
++	damon_free_filter(f);
++}
++
++static struct damon_filter *damon_nth_filter(int n, struct damon_probe *p)
++{
++	struct damon_filter *f;
++	int i = 0;
++
++	damon_for_each_filter(f, p) {
++		if (i++ == n)
++			return f;
++	}
++	return NULL;
++}
++
++struct damon_probe *damon_new_probe(void)
++{
++	struct damon_probe *p;
++
++	p = kmalloc_obj(*p);
++	if (!p)
++		return NULL;
++	INIT_LIST_HEAD(&p->filters);
++	INIT_LIST_HEAD(&p->list);
++	return p;
++}
++
++void damon_add_probe(struct damon_ctx *ctx, struct damon_probe *probe)
++{
++	list_add_tail(&probe->list, &ctx->probes);
++}
++
++static void damon_del_probe(struct damon_probe *p)
++{
++	list_del(&p->list);
++}
++
++static void damon_free_probe(struct damon_probe *p)
++{
++	struct damon_filter *f, *next;
++
++	damon_for_each_filter_safe(f, next, p)
++		damon_free_filter(f);
++	kfree(p);
++}
++
++void damon_destroy_probe(struct damon_probe *p)
++{
++	damon_del_probe(p);
++	damon_free_probe(p);
++}
++
++static struct damon_probe *damon_nth_probe(int n, struct damon_ctx *ctx)
++{
++	struct damon_probe *p;
++	int i = 0;
++
++	damon_for_each_probe(p, ctx) {
++		if (i++ == n)
++			return p;
++	}
++	return NULL;
++}
++
+ #ifdef CONFIG_DAMON_DEBUG_SANITY
+ static void damon_verify_new_region(unsigned long start, unsigned long end)
+ {
+@@ -135,6 +232,7 @@ static void damon_verify_new_region(unsigned long start, unsigned long end)
+ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+ {
+ 	struct damon_region *region;
++	int i;
+ 
+ 	damon_verify_new_region(start, end);
+ 	region = kmem_cache_alloc(damon_region_cache, GFP_KERNEL);
+@@ -145,6 +243,8 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+ 	region->ar.end = end;
+ 	region->nr_accesses = 0;
+ 	region->nr_accesses_bp = 0;
++	for (i = 0; i < DAMON_MAX_PROBES; i++)
++		region->probe_hits[i] = 0;
+ 	INIT_LIST_HEAD(&region->list);
+ 
+ 	region->age = 0;
+@@ -709,6 +809,8 @@ struct damon_ctx *damon_new_ctx(void)
+ 	ctx->attrs.min_nr_regions = 10;
+ 	ctx->attrs.max_nr_regions = 1000;
+ 
++	INIT_LIST_HEAD(&ctx->probes);
++
+ 	ctx->sample_control.primitives_enabled.page_table = true;
+ 	INIT_LIST_HEAD(&ctx->sample_control.sample_filters);
+ 
+@@ -733,12 +835,16 @@ void damon_destroy_ctx(struct damon_ctx *ctx)
+ {
+ 	struct damos *s, *next_s;
+ 	struct damon_sample_filter *f, *next_f;
++	struct damon_probe *p, *next_p;
+ 
+ 	damon_destroy_targets(ctx);
+ 
+ 	damon_for_each_scheme_safe(s, next_s, ctx)
+ 		damon_destroy_scheme(s);
+ 
++	damon_for_each_probe_safe(p, next_p, ctx)
++		damon_destroy_probe(p);
++
+ 	damon_for_each_sample_filter_safe(f, next_f, &ctx->sample_control)
+ 		damon_destroy_sample_filter(f, &ctx->sample_control);
+ 
+@@ -1427,6 +1533,72 @@ static int damon_commit_targets(
+ 	return 0;
+ }
+ 
++static void damon_commit_filter(struct damon_filter *dst,
++		struct damon_filter *src)
++{
++	dst->type = src->type;
++	dst->matching = src->matching;
++	dst->allow = src->allow;
++}
++
++static int damon_commit_filters(struct damon_probe *dst,
++		struct damon_probe *src)
++{
++	struct damon_filter *dst_filter, *next, *src_filter, *new_filter;
++	int i = 0, j = 0;
++
++	damon_for_each_filter_safe(dst_filter, next, dst) {
++		src_filter = damon_nth_filter(i++, src);
++		if (src_filter)
++			damon_commit_filter(dst_filter, src_filter);
++		else
++			damon_destroy_filter(dst_filter);
++	}
++
++	damon_for_each_filter_safe(src_filter, next, src) {
++		if (j++ < i)
++			continue;
++
++		new_filter = damon_new_filter(src_filter->type,
++				src_filter->matching, src_filter->allow);
++		if (!new_filter)
++			return -ENOMEM;
++		damon_add_filter(dst, new_filter);
++	}
++	return 0;
++}
++
++static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
++{
++	struct damon_probe *dst_probe, *next, *src_probe, *new_probe;
++	int i = 0, j = 0, err;
++
++	damon_for_each_probe_safe(dst_probe, next, dst) {
++		src_probe = damon_nth_probe(i++, src);
++		if (src_probe) {
++			err = damon_commit_filters(dst_probe, src_probe);
++			if (err)
++				return err;
++		} else {
++			damon_destroy_probe(dst_probe);
++		}
++	}
++
++	damon_for_each_probe_safe(src_probe, next, src) {
++		if (j++ < i)
++			continue;
++
++		new_probe = damon_new_probe();
++		if (!new_probe)
++			return -ENOMEM;
++		damon_add_probe(dst, new_probe);
++		err = damon_commit_filters(new_probe, src_probe);
++		if (err)
++			return err;
++	}
++	return 0;
++}
++
+ static int damon_commit_sample_filter_arg(struct damon_sample_filter *dst,
+ 		struct damon_sample_filter *src)
+ {
+@@ -1559,6 +1731,9 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 	}
+ 	dst->pause = src->pause;
+ 	dst->ops = src->ops;
++	err = damon_commit_probes(dst, src);
++	if (err)
++		return err;
+ 	err = damon_commit_sample_control(&dst->sample_control,
+ 			&src->sample_control);
+ 	if (err)
+@@ -1973,10 +2148,15 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 		struct damon_region *r;
+ 
+ 		damon_for_each_region(r, t) {
++			int i;
++
+ 			trace_damon_aggregated(ti, r, damon_nr_regions(t));
++			trace_damon_aggregated_v2(ti, r, damon_nr_regions(t));
+ 			damon_warn_fix_nr_accesses_corruption(r);
+ 			r->last_nr_accesses = r->nr_accesses;
+ 			r->nr_accesses = 0;
++			for (i = 0; i < DAMON_MAX_PROBES; i++)
++				r->probe_hits[i] = 0;
+ 			damon_verify_reset_aggregated(r, c);
+ 		}
+ 		ti++;
+@@ -3469,6 +3649,8 @@ static int kdamond_fn(void *data)
+ 			max_nr_accesses = kdamond_check_reported_accesses(ctx);
+ 		else if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
++		if (ctx->ops.apply_probes)
++			ctx->ops.apply_probes(ctx);
+ 
+ 		if (time_after_eq(ctx->passed_sample_intervals,
+ 					next_aggregation_sis)) {
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index ddef9caa852b9..aa3af7479c066 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -184,6 +184,50 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+ 	return max_nr_accesses;
+ }
+ 
++static bool damon_pa_filter_pass(phys_addr_t pa, struct damon_probe *p)
++{
++	struct damon_filter *f;
++	bool default_pass = true;
++
++	damon_for_each_filter(f, p) {
++		bool matched = false;
++
++		if (f->type == DAMON_TEST_TYPE_ANON) {
++			struct folio *folio = damon_get_folio(PHYS_PFN(pa));
++
++			if (folio)
++				matched = folio_test_anon(folio);
++		}
++		if (matched)
++			return f->allow;
++		default_pass = !f->allow;
++	}
++	return default_pass;
++}
++
++static void damon_pa_apply_probes(struct damon_ctx *ctx)
++{
++	struct damon_target *t;
++	struct damon_region *r;
++	struct damon_probe *p;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region(r, t) {
++			int i = 0;
++
++			damon_for_each_probe(p, ctx) {
++				phys_addr_t pa;
++
++				pa = damon_pa_phys_addr(r->sampling_addr,
++						ctx->addr_unit);
++				if (damon_pa_filter_pass(pa, p))
++					r->probe_hits[i]++;
++				i++;
++			}
++		}
++	}
++}
++
+ /*
+  * damos_pa_filter_out - Return true if the page should be filtered out.
+  */
+@@ -528,6 +572,7 @@ static int __init damon_pa_initcall(void)
+ 		.update = NULL,
+ 		.prepare_access_checks = damon_pa_prepare_access_checks,
+ 		.check_accesses = damon_pa_check_accesses,
++		.apply_probes = damon_pa_apply_probes,
+ 		.target_valid = NULL,
+ 		.apply_scheme = damon_pa_apply_scheme,
+ 		.get_scheme_score = damon_pa_scheme_score,
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 23fdb427c766c..081e20b3ad2fa 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -20,6 +20,7 @@ struct damon_sysfs_scheme_region {
+ 	unsigned int nr_accesses;
+ 	unsigned int age;
+ 	unsigned long sz_filter_passed;
++	unsigned char probe_hits[DAMON_MAX_PROBES];
+ 	struct list_head list;
+ };
+ 
+@@ -34,6 +35,9 @@ static struct damon_sysfs_scheme_region *damon_sysfs_scheme_region_alloc(
+ 	sysfs_region->ar = region->ar;
+ 	sysfs_region->nr_accesses = region->nr_accesses_bp / 10000;
+ 	sysfs_region->age = region->age;
++	memcpy(sysfs_region->probe_hits, region->probe_hits,
++			sizeof(*sysfs_region->probe_hits) *
++			ARRAY_SIZE(sysfs_region->probe_hits));
+ 	INIT_LIST_HEAD(&sysfs_region->list);
+ 	return sysfs_region;
+ }
+@@ -83,6 +87,28 @@ static ssize_t sz_filter_passed_show(struct kobject *kobj,
+ 	return sysfs_emit(buf, "%lu\n", region->sz_filter_passed);
+ }
+ 
++static ssize_t probe_hits_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_scheme_region *region = container_of(kobj,
++			struct damon_sysfs_scheme_region, kobj);
++	char *str;
++	int ret, i;
++
++	str = kcalloc(2048, sizeof(*str), GFP_KERNEL);
++	if (!str)
++		return -ENOMEM;
++	for (i = 0; i < DAMON_MAX_PROBES; i++) {
++		snprintf(&str[strlen(str)], 2048 - strlen(str), "%hhu",
++				region->probe_hits[i]);
++		if (i < DAMON_MAX_PROBES - 1)
++			snprintf(&str[strlen(str)], 2048 - strlen(str), ",");
++	}
++	ret = sysfs_emit(buf, "%s\n", str);
++	kfree(str);
++	return ret;
++}
++
+ static void damon_sysfs_scheme_region_release(struct kobject *kobj)
+ {
+ 	struct damon_sysfs_scheme_region *region = container_of(kobj,
+@@ -107,12 +133,16 @@ static struct kobj_attribute damon_sysfs_scheme_region_age_attr =
+ static struct kobj_attribute damon_sysfs_scheme_region_sz_filter_passed_attr =
+ 		__ATTR_RO_MODE(sz_filter_passed, 0400);
+ 
++static struct kobj_attribute damon_sysfs_scheme_region_probe_hits_attr =
++		__ATTR_RO_MODE(probe_hits, 0400);
++
+ static struct attribute *damon_sysfs_scheme_region_attrs[] = {
+ 	&damon_sysfs_scheme_region_start_attr.attr,
+ 	&damon_sysfs_scheme_region_end_attr.attr,
+ 	&damon_sysfs_scheme_region_nr_accesses_attr.attr,
+ 	&damon_sysfs_scheme_region_age_attr.attr,
+ 	&damon_sysfs_scheme_region_sz_filter_passed_attr.attr,
++	&damon_sysfs_scheme_region_probe_hits_attr.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(damon_sysfs_scheme_region);
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index aa7a5075cebeb..809c6095bbe6a 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -747,6 +747,453 @@ static const struct kobj_type damon_sysfs_intervals_ktype = {
+ 	.default_groups = damon_sysfs_intervals_groups,
+ };
+ 
++/*
++ * filter directory
++ */
++
++struct damon_sysfs_filter {
++	struct kobject kobj;
++	enum damon_filter_type type;
++	bool matching;
++	bool allow;
++};
++
++static struct damon_sysfs_filter *damon_sysfs_filter_alloc(void)
++{
++	return kzalloc_obj(struct damon_sysfs_filter);
++}
++
++struct damon_sysfs_filter_type_name {
++	enum damon_filter_type type;
++	char *name;
++};
++
++static const struct damon_sysfs_filter_type_name
++damon_sysfs_filter_type_names[] = {
++	{
++		.type = DAMON_TEST_TYPE_ANON,
++		.name = "anon",
++	},
++};
++
++static ssize_t type_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(damon_sysfs_filter_type_names); i++) {
++		const struct damon_sysfs_filter_type_name *type_name;
++
++		type_name = &damon_sysfs_filter_type_names[i];
++		if (type_name->type == filter->type)
++			return sysfs_emit(buf, "%s\n", type_name->name);
++	}
++	return -EINVAL;
++}
++
++static ssize_t type_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++	ssize_t ret = -EINVAL;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(damon_sysfs_filter_type_names); i++) {
++		const struct damon_sysfs_filter_type_name *type_name;
++
++		type_name = &damon_sysfs_filter_type_names[i];
++		if (sysfs_streq(buf, type_name->name)) {
++			filter->type = type_name->type;
++			ret = count;
++			break;
++		}
++	}
++	return ret;
++}
++
++static ssize_t matching_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++
++	return sysfs_emit(buf, "%c\n", filter->matching ? 'Y' : 'N');
++}
++
++static ssize_t matching_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++	bool matching;
++	int err = kstrtobool(buf, &matching);
++
++	if (err)
++		return err;
++
++	filter->matching = matching;
++	return count;
++}
++
++static ssize_t allow_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++
++	return sysfs_emit(buf, "%c\n", filter->allow ? 'Y' : 'N');
++}
++
++static ssize_t allow_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++	bool allow;
++	int err = kstrtobool(buf, &allow);
++
++	if (err)
++		return err;
++
++	filter->allow = allow;
++	return count;
++}
++
++static void damon_sysfs_filter_release(struct kobject *kobj)
++{
++	struct damon_sysfs_filter *filter = container_of(kobj,
++			struct damon_sysfs_filter, kobj);
++
++	kfree(filter);
++}
++
++static struct kobj_attribute damon_sysfs_filter_type_attr =
++		__ATTR_RW_MODE(type, 0600);
++
++static struct kobj_attribute damon_sysfs_filter_matching_attr =
++		__ATTR_RW_MODE(matching, 0600);
++
++static struct kobj_attribute damon_sysfs_filter_allow_attr =
++		__ATTR_RW_MODE(allow, 0600);
++
++static struct attribute *damon_sysfs_filter_attrs[] = {
++	&damon_sysfs_filter_type_attr.attr,
++	&damon_sysfs_filter_matching_attr.attr,
++	&damon_sysfs_filter_allow_attr.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_filter);
++
++static const struct kobj_type damon_sysfs_filter_ktype = {
++	.release = damon_sysfs_filter_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_filter_groups,
++};
++
++/*
++ * filters directory
++ */
++
++struct damon_sysfs_filters {
++	struct kobject kobj;
++	struct damon_sysfs_filter **filters_arr;
++	int nr;
++};
++
++static struct damon_sysfs_filters *damon_sysfs_filters_alloc(void)
++{
++	return kzalloc_obj(struct damon_sysfs_filters);
++}
++
++static void damon_sysfs_filters_rm_dirs(struct damon_sysfs_filters *filters)
++{
++	struct damon_sysfs_filter **filters_arr = filters->filters_arr;
++	int i;
++
++	for (i = 0; i < filters->nr; i++)
++		kobject_put(&filters_arr[i]->kobj);
++	filters->nr = 0;
++	kfree(filters_arr);
++	filters->filters_arr = NULL;
++}
++
++static int damon_sysfs_filters_add_dirs(
++		struct damon_sysfs_filters *filters, int nr_filters)
++{
++	struct damon_sysfs_filter **filters_arr, *filter;
++	int err, i;
++
++	damon_sysfs_filters_rm_dirs(filters);
++	if (!nr_filters)
++		return 0;
++
++	filters_arr = kmalloc_objs(*filters_arr, nr_filters,
++				   GFP_KERNEL | __GFP_NOWARN);
++	if (!filters_arr)
++		return -ENOMEM;
++	filters->filters_arr = filters_arr;
++
++	for (i = 0; i < nr_filters; i++) {
++		filter = damon_sysfs_filter_alloc();
++		if (!filter) {
++			damon_sysfs_filters_rm_dirs(filters);
++			return -ENOMEM;
++		}
++
++		err = kobject_init_and_add(&filter->kobj,
++				&damon_sysfs_filter_ktype, &filters->kobj,
++				"%d", i);
++		if (err) {
++			kobject_put(&filter->kobj);
++			damon_sysfs_filters_rm_dirs(filters);
++			return err;
++		}
++
++		filters_arr[i] = filter;
++		filters->nr++;
++	}
++	return 0;
++}
++
++static ssize_t nr_filters_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_filters *filters = container_of(kobj,
++			struct damon_sysfs_filters, kobj);
++
++	return sysfs_emit(buf, "%d\n", filters->nr);
++}
++
++static ssize_t nr_filters_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_filters *filters;
++	int nr, err = kstrtoint(buf, 0, &nr);
++
++	if (err)
++		return err;
++	if (nr < 0)
++		return -EINVAL;
++
++	filters = container_of(kobj, struct damon_sysfs_filters, kobj);
++
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	err = damon_sysfs_filters_add_dirs(filters, nr);
++	mutex_unlock(&damon_sysfs_lock);
++	if (err)
++		return err;
++
++	return count;
++}
++
++static void damon_sysfs_filters_release(struct kobject *kobj)
++{
++	kfree(container_of(kobj, struct damon_sysfs_filters, kobj));
++}
++
++static struct kobj_attribute damon_sysfs_filters_nr_attr =
++		__ATTR_RW_MODE(nr_filters, 0600);
++
++static struct attribute *damon_sysfs_filters_attrs[] = {
++	&damon_sysfs_filters_nr_attr.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_filters);
++
++static const struct kobj_type damon_sysfs_filters_ktype = {
++	.release = damon_sysfs_filters_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_filters_groups,
++};
++
++/*
++ * probe directory
++ */
++
++struct damon_sysfs_probe {
++	struct kobject kobj;
++	struct damon_sysfs_filters *filters;
++};
++
++static struct damon_sysfs_probe *damon_sysfs_probe_alloc(void)
++{
++	return kzalloc_obj(struct damon_sysfs_probe);
++}
++
++static int damon_sysfs_probe_add_dirs(struct damon_sysfs_probe *attr)
++{
++	struct damon_sysfs_filters *filters;
++	int err;
++
++	filters = damon_sysfs_filters_alloc();
++	if (!filters)
++		return -ENOMEM;
++	attr->filters = filters;
++
++	err = kobject_init_and_add(&filters->kobj, &damon_sysfs_filters_ktype,
++			&attr->kobj, "filters");
++	if (err) {
++		kobject_put(&filters->kobj);
++		attr->filters = NULL;
++	}
++	return err;
++}
++
++static void damon_sysfs_probe_rm_dirs(struct damon_sysfs_probe *attr)
++{
++	if (attr->filters) {
++		damon_sysfs_filters_rm_dirs(attr->filters);
++		kobject_put(&attr->filters->kobj);
++	}
++}
++
++static void damon_sysfs_probe_release(struct kobject *kobj)
++{
++	kfree(container_of(kobj, struct damon_sysfs_probe, kobj));
++}
++
++static struct attribute *damon_sysfs_probe_attrs[] = {
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_probe);
++
++const struct kobj_type damon_sysfs_probe_ktype = {
++	.release = damon_sysfs_probe_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_probe_groups,
++};
++
++/*
++ * probes directory
++ */
++
++struct damon_sysfs_probes {
++	struct kobject kobj;
++	struct damon_sysfs_probe **probes_arr;
++	int nr;
++};
++
++static struct damon_sysfs_probes *damon_sysfs_probes_alloc(void)
++{
++	return kzalloc_obj(struct damon_sysfs_probes);
++}
++
++static void damon_sysfs_probes_rm_dirs(
++		struct damon_sysfs_probes *probes)
++{
++	struct damon_sysfs_probe **probes_arr = probes->probes_arr;
++	int i;
++
++	for (i = 0; i < probes->nr; i++) {
++		damon_sysfs_probe_rm_dirs(probes_arr[i]);
++		kobject_put(&probes_arr[i]->kobj);
++	}
++	probes->nr = 0;
++	kfree(probes_arr);
++	probes->probes_arr = NULL;
++}
++
++static int damon_sysfs_probes_add_dirs(
++		struct damon_sysfs_probes *probes, int nr_probes)
++{
++	struct damon_sysfs_probe **probes_arr, *probe;
++	int err, i;
++
++	damon_sysfs_probes_rm_dirs(probes);
++	if (!nr_probes)
++		return 0;
++
++	probes_arr = kmalloc_objs(*probes_arr, nr_probes,
++				   GFP_KERNEL | __GFP_NOWARN);
++	if (!probes_arr)
++		return -ENOMEM;
++	probes->probes_arr = probes_arr;
++
++	for (i = 0; i < nr_probes; i++) {
++		probe = damon_sysfs_probe_alloc();
++		if (!probe) {
++			damon_sysfs_probes_rm_dirs(probes);
++			return -ENOMEM;
++		}
++
++		err = kobject_init_and_add(&probe->kobj,
++				&damon_sysfs_probe_ktype, &probes->kobj,
++				"%d", i);
++		if (err) {
++			kobject_put(&probe->kobj);
++			damon_sysfs_probes_rm_dirs(probes);
++			return err;
++		}
++
++		err = damon_sysfs_probe_add_dirs(probe);
++		if (err) {
++			kobject_put(&probe->kobj);
++			damon_sysfs_probes_rm_dirs(probes);
++			return err;
++		}
++
++		probes_arr[i] = probe;
++		probes->nr++;
++	}
++	return 0;
++}
++
++static ssize_t nr_probes_show(struct kobject *kobj,
++		struct kobj_attribute *attr, char *buf)
++{
++	struct damon_sysfs_probes *probes = container_of(kobj,
++			struct damon_sysfs_probes, kobj);
++
++	return sysfs_emit(buf, "%d\n", probes->nr);
++}
++
++static ssize_t nr_probes_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_probes *probes;
++	int nr, err = kstrtoint(buf, 0, &nr);
++
++	if (err)
++		return err;
++	if (nr < 0)
++		return -EINVAL;
++
++	probes = container_of(kobj, struct damon_sysfs_probes, kobj);
++
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	err = damon_sysfs_probes_add_dirs(probes, nr);
++	mutex_unlock(&damon_sysfs_lock);
++	if (err)
++		return err;
++
++	return count;
++}
++
++static void damon_sysfs_probes_release(struct kobject *kobj)
++{
++	kfree(container_of(kobj, struct damon_sysfs_probes, kobj));
++}
++
++static struct kobj_attribute damon_sysfs_probes_nr_probes =
++		__ATTR_RW_MODE(nr_probes, 0600);
++
++static struct attribute *damon_sysfs_probes_attrs[] = {
++	&damon_sysfs_probes_nr_probes.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_probes);
++
++static const struct kobj_type damon_sysfs_probes_ktype = {
++	.release = damon_sysfs_probes_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_probes_groups,
++};
++
+ /*
+  * monitoring_attrs directory
+  */
+@@ -755,6 +1202,7 @@ struct damon_sysfs_attrs {
+ 	struct kobject kobj;
+ 	struct damon_sysfs_intervals *intervals;
+ 	struct damon_sysfs_ul_range *nr_regions_range;
++	struct damon_sysfs_probes *probes;
+ 	struct damon_sysfs_sample *sample;
+ };
+ 
+@@ -772,6 +1220,7 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ {
+ 	struct damon_sysfs_intervals *intervals;
+ 	struct damon_sysfs_ul_range *nr_regions_range;
++	struct damon_sysfs_probes *probes;
+ 	struct damon_sysfs_sample *sample;
+ 	int err;
+ 
+@@ -802,6 +1251,17 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ 		goto put_nr_regions_intervals_out;
+ 	attrs->nr_regions_range = nr_regions_range;
+ 
++	probes = damon_sysfs_probes_alloc();
++	if (!probes) {
++		err = -ENOMEM;
++		goto put_nr_regions_intervals_out;
++	}
++	err = kobject_init_and_add(&probes->kobj,
++			&damon_sysfs_probes_ktype, &attrs->kobj, "probes");
++	if (err)
++		goto put_probes_out;
++	attrs->probes = probes;
++
+ 	sample = damon_sysfs_sample_alloc();
+ 	if (!sample) {
+ 		err = -ENOMEM;
+@@ -821,6 +1281,9 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ put_sample_out:
+ 	kobject_put(&sample->kobj);
+ 	attrs->sample = NULL;
++put_probes_out:
++	kobject_put(&probes->kobj);
++	attrs->probes = NULL;
+ put_nr_regions_intervals_out:
+ 	kobject_put(&nr_regions_range->kobj);
+ 	attrs->nr_regions_range = NULL;
+@@ -837,6 +1300,8 @@ static void damon_sysfs_attrs_rm_dirs(struct damon_sysfs_attrs *attrs)
+ 	kobject_put(&attrs->nr_regions_range->kobj);
+ 	damon_sysfs_intervals_rm_dirs(attrs->intervals);
+ 	kobject_put(&attrs->intervals->kobj);
++	damon_sysfs_probes_rm_dirs(attrs->probes);
++	kobject_put(&attrs->probes->kobj);
+ 	damon_sysfs_sample_rm_dirs(attrs->sample);
+ 	kobject_put(&attrs->sample->kobj);
+ }
+@@ -1412,6 +1877,40 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+ 	return damon_set_attrs(ctx, &attrs);
+ }
+ 
++static int damon_sysfs_set_probes(struct damon_ctx *ctx,
++		struct damon_sysfs_probes *sys_probes)
++{
++	int i;
++
++	for (i = 0; i < sys_probes->nr; i++) {
++		struct damon_sysfs_filters *sys_filters =
++			sys_probes->probes_arr[i]->filters;
++		struct damon_probe *c;
++		int j;
++
++		if (!sys_filters)
++			continue;
++		c = damon_new_probe();
++		if (!c)
++			return -ENOMEM;
++		damon_add_probe(ctx, c);
++
++		for (j = 0; j < sys_filters->nr; j++) {
++			struct damon_sysfs_filter *sys_filter =
++				sys_filters->filters_arr[j];
++			struct damon_filter *t;
++
++			t = damon_new_filter(sys_filter->type,
++					sys_filter->matching,
++					sys_filter->allow);
++			if (!t)
++				return -ENOMEM;
++			damon_add_filter(c, t);
++		}
++	}
++	return 0;
++}
++
+ static int damon_sysfs_set_regions(struct damon_target *t,
+ 		struct damon_sysfs_regions *sysfs_regions,
+ 		unsigned long min_region_sz)
+@@ -1524,6 +2023,9 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+ 				DAMON_MIN_REGION_SZ / sys_ctx->addr_unit, 1);
+ 	ctx->pause = sys_ctx->pause;
+ 	err = damon_sysfs_set_attrs(ctx, sys_ctx->attrs);
++	if (err)
++		return err;
++	err = damon_sysfs_set_probes(ctx, sys_ctx->attrs->probes);
+ 	if (err)
+ 		return err;
+ 	err = damon_sysfs_set_sample_control(&ctx->sample_control,
+diff --git a/tools/testing/selftests/damon/sysfs.sh b/tools/testing/selftests/damon/sysfs.sh
+index 83e3b7f63d81c..1ac3e2ce8e448 100755
+--- a/tools/testing/selftests/damon/sysfs.sh
++++ b/tools/testing/selftests/damon/sysfs.sh
+@@ -291,11 +291,59 @@ test_intervals()
+ 	ensure_file "$intervals_dir/update_us" "exist" "600"
+ }
+ 
++test_damon_filter()
++{
++	damon_filter_dir=$1
++	ensure_file "$damon_filter_dir/type" "exist" "600"
++	ensure_write_succ "$damon_filter_dir/type" "anon" "valid input"
++	ensure_write_fail "$damon_filter_dir/type" "foo" "invalid input"
++	ensure_file "$damon_filter_dir/matching" "exist" "600"
++	ensure_file "$damon_filter_dir/allow" "exist" "600"
++}
++
++test_damon_filters()
++{
++	filters_dir=$1
++	ensure_dir "$filters_dir" "exist"
++	ensure_file "$filters_dir/nr_filters" "exist" "600"
++	ensure_write_succ  "$filters_dir/nr_filters" "1" "valid input"
++	test_damon_filter "$filters_dir/0"
++
++	ensure_write_succ  "$filters_dir/nr_filters" "2" "valid input"
++	test_damon_filter "$filters_dir/0"
++	test_damon_filter "$filters_dir/1"
++
++	ensure_write_succ "$filters_dir/nr_filters" "0" "valid input"
++	ensure_dir "$filters_dir/0" "not_exist"
++	ensure_dir "$filters_dir/1" "not_exist"
++}
++
++test_probe()
++{
++	probe_dir=$1
++	ensure_dir "$probe_dir" "exist"
++	test_damon_filters "$probe_dir/filters"
++}
++
++test_probes()
++{
++	probes_dir=$1
++	ensure_dir "$probes_dir" "exist"
++	ensure_file "$probes_dir/nr_probes" "exist" "600"
++
++	ensure_write_succ "$probes_dir/nr_probes" "1" "valid input"
++	test_probe "$probes_dir/0"
++
++	ensure_write_succ "$probes_dir/nr_probes" "0" "valid input"
++	ensure_dir "$probes_dir/0" "not_exist"
++}
++
+ test_monitoring_attrs()
+ {
+ 	monitoring_attrs_dir=$1
+ 	ensure_dir "$monitoring_attrs_dir" "exist"
+ 	test_intervals "$monitoring_attrs_dir/intervals"
++	test_probes "$monitoring_attrs_dir/probes"
+ 	test_range "$monitoring_attrs_dir/nr_regions"
+ }
+ 
+-- 
+2.47.3
+
