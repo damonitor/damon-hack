@@ -16,12 +16,12 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  9 files changed, 952 insertions(+), 1 deletion(-)
 
 diff --git a/Documentation/admin-guide/mm/damon/usage.rst b/Documentation/admin-guide/mm/damon/usage.rst
-index 54c4dcade9f12..cfd7738e40234 100644
+index 11c75a598393c..66d07699103b4 100644
 --- a/Documentation/admin-guide/mm/damon/usage.rst
 +++ b/Documentation/admin-guide/mm/damon/usage.rst
-@@ -75,6 +75,11 @@ comma (",").
-     │ │ │ │ │ │ sample/filters/nr_filters
-     │ │ │ │ │ │ │ 0/type,matching,allow,cpumask,tid_arr
+@@ -72,6 +72,11 @@ comma (",").
+     │ │ │ │ │ │ intervals/sample_us,aggr_us,update_us
+     │ │ │ │ │ │ │ intervals_goal/access_bp,aggrs,min_sample_us,max_sample_us
      │ │ │ │ │ │ nr_regions/min,max
 +    │ │ │ │ │ probes/nr_probes
 +    │ │ │ │ │ │ 0/filters/nr_filters
@@ -31,7 +31,7 @@ index 54c4dcade9f12..cfd7738e40234 100644
      │ │ │ │ │ :ref:`targets <sysfs_targets>`/nr_targets
      │ │ │ │ │ │ :ref:`0 <sysfs_target>`/pid_target,obsolete_target
      │ │ │ │ │ │ │ :ref:`regions <sysfs_regions>`/nr_regions
-@@ -100,7 +105,8 @@ comma (",").
+@@ -97,7 +102,8 @@ comma (",").
      │ │ │ │ │ │ │ │ 0/id,weight
      │ │ │ │ │ │ │ :ref:`stats <sysfs_schemes_stats>`/nr_tried,sz_tried,nr_applied,sz_applied,sz_ops_filter_passed,qt_exceeds,nr_snapshots,max_nr_snapshots
      │ │ │ │ │ │ │ :ref:`tried_regions <sysfs_schemes_tried_regions>`/total_bytes
@@ -42,10 +42,10 @@ index 54c4dcade9f12..cfd7738e40234 100644
      │ │ │ │ │ │ ...
      │ │ │ │ ...
 diff --git a/Documentation/mm/damon/design.rst b/Documentation/mm/damon/design.rst
-index 7e9673e6f7e58..083d1fb9a7f02 100644
+index fa7392b5a331d..bada2010ad1ca 100644
 --- a/Documentation/mm/damon/design.rst
 +++ b/Documentation/mm/damon/design.rst
-@@ -354,6 +354,41 @@ interval``, DAMON checks if the region's size and access frequency
+@@ -276,6 +276,41 @@ interval``, DAMON checks if the region's size and access frequency
  (``nr_accesses``) has significantly changed.  If so, the counter is reset to
  zero.  Otherwise, the counter is increased.
  
@@ -88,7 +88,7 @@ index 7e9673e6f7e58..083d1fb9a7f02 100644
  Dynamic Target Space Updates Handling
  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index e9a5a40401bcb..866deac10361f 100644
+index 7314fd9ff0d9b..57984c4f4693c 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -16,6 +16,8 @@
@@ -116,7 +116,7 @@ index e9a5a40401bcb..866deac10361f 100644
  	struct list_head list;
  
  	unsigned int age;
-@@ -684,6 +688,7 @@ enum damon_ops_id {
+@@ -628,6 +632,7 @@ enum damon_ops_id {
   * @update:			Update operations-related data structures.
   * @prepare_access_checks:	Prepare next access check of target regions.
   * @check_accesses:		Check the accesses to target regions.
@@ -124,7 +124,7 @@ index e9a5a40401bcb..866deac10361f 100644
   * @get_scheme_score:		Get the score of a region for a scheme.
   * @apply_scheme:		Apply a DAMON-based operation scheme.
   * @target_valid:		Determine if the target is valid.
-@@ -727,6 +732,7 @@ struct damon_operations {
+@@ -671,6 +676,7 @@ struct damon_operations {
  	void (*update)(struct damon_ctx *context);
  	void (*prepare_access_checks)(struct damon_ctx *context);
  	unsigned int (*check_accesses)(struct damon_ctx *context);
@@ -132,7 +132,7 @@ index e9a5a40401bcb..866deac10361f 100644
  	int (*get_scheme_score)(struct damon_ctx *context,
  			struct damon_region *r, struct damos *scheme);
  	unsigned long (*apply_scheme)(struct damon_ctx *context,
-@@ -788,6 +794,41 @@ struct damon_intervals_goal {
+@@ -732,6 +738,41 @@ struct damon_intervals_goal {
  	unsigned long max_sample_us;
  };
  
@@ -174,15 +174,15 @@ index e9a5a40401bcb..866deac10361f 100644
  /**
   * struct damon_attrs - Monitoring attributes for accuracy/overhead control.
   *
-@@ -982,6 +1023,7 @@ struct damon_ctx {
+@@ -850,6 +891,7 @@ struct damon_ctx {
  
  /* public: */
  	struct damon_operations ops;
 +	struct list_head probes;
- 	struct damon_sample_control sample_control;
  	unsigned long addr_unit;
  	unsigned long min_region_sz;
-@@ -1016,6 +1058,17 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 	bool pause;
+@@ -883,6 +925,17 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
  	return r->ar.end - r->ar.start;
  }
  
@@ -200,7 +200,7 @@ index e9a5a40401bcb..866deac10361f 100644
  
  #define damon_for_each_region(r, t) \
  	list_for_each_entry(r, &t->regions_list, list)
-@@ -1064,6 +1117,15 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+@@ -925,6 +978,15 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
  
  #ifdef CONFIG_DAMON
  
@@ -269,10 +269,10 @@ index 7e25f4469b81b..121d7bc3a2c27 100644
  
  	TP_PROTO(unsigned int target_id, struct damon_region *r,
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index eb6ec8f612e61..0de28a1325286 100644
+index f556786597c83..d2604f5c68ec3 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -116,6 +116,103 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
+@@ -109,6 +109,103 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
  	return err;
  }
  
@@ -376,7 +376,7 @@ index eb6ec8f612e61..0de28a1325286 100644
  #ifdef CONFIG_DAMON_DEBUG_SANITY
  static void damon_verify_new_region(unsigned long start, unsigned long end)
  {
-@@ -135,6 +232,7 @@ static void damon_verify_new_region(unsigned long start, unsigned long end)
+@@ -128,6 +225,7 @@ static void damon_verify_new_region(unsigned long start, unsigned long end)
  struct damon_region *damon_new_region(unsigned long start, unsigned long end)
  {
  	struct damon_region *region;
@@ -384,7 +384,7 @@ index eb6ec8f612e61..0de28a1325286 100644
  
  	damon_verify_new_region(start, end);
  	region = kmem_cache_alloc(damon_region_cache, GFP_KERNEL);
-@@ -145,6 +243,8 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
+@@ -138,6 +236,8 @@ struct damon_region *damon_new_region(unsigned long start, unsigned long end)
  	region->ar.end = end;
  	region->nr_accesses = 0;
  	region->nr_accesses_bp = 0;
@@ -393,19 +393,19 @@ index eb6ec8f612e61..0de28a1325286 100644
  	INIT_LIST_HEAD(&region->list);
  
  	region->age = 0;
-@@ -709,6 +809,8 @@ struct damon_ctx *damon_new_ctx(void)
+@@ -633,6 +733,8 @@ struct damon_ctx *damon_new_ctx(void)
  	ctx->attrs.min_nr_regions = 10;
  	ctx->attrs.max_nr_regions = 1000;
  
 +	INIT_LIST_HEAD(&ctx->probes);
 +
- 	ctx->sample_control.primitives_enabled.page_table = true;
- 	INIT_LIST_HEAD(&ctx->sample_control.sample_filters);
+ 	ctx->addr_unit = 1;
+ 	ctx->min_region_sz = DAMON_MIN_REGION_SZ;
  
-@@ -733,12 +835,16 @@ void damon_destroy_ctx(struct damon_ctx *ctx)
+@@ -653,12 +755,16 @@ static void damon_destroy_targets(struct damon_ctx *ctx)
+ void damon_destroy_ctx(struct damon_ctx *ctx)
  {
  	struct damos *s, *next_s;
- 	struct damon_sample_filter *f, *next_f;
 +	struct damon_probe *p, *next_p;
  
  	damon_destroy_targets(ctx);
@@ -416,10 +416,10 @@ index eb6ec8f612e61..0de28a1325286 100644
 +	damon_for_each_probe_safe(p, next_p, ctx)
 +		damon_destroy_probe(p);
 +
- 	damon_for_each_sample_filter_safe(f, next_f, &ctx->sample_control)
- 		damon_destroy_sample_filter(f, &ctx->sample_control);
+ 	kfree(ctx);
+ }
  
-@@ -1427,6 +1533,72 @@ static int damon_commit_targets(
+@@ -1344,6 +1450,72 @@ static int damon_commit_targets(
  	return 0;
  }
  
@@ -489,20 +489,20 @@ index eb6ec8f612e61..0de28a1325286 100644
 +	return 0;
 +}
 +
- static int damon_commit_sample_filter_arg(struct damon_sample_filter *dst,
- 		struct damon_sample_filter *src)
- {
-@@ -1559,6 +1731,9 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ /**
+  * damon_commit_ctx() - Commit parameters of a DAMON context to another.
+  * @dst:	The commit destination DAMON context.
+@@ -1385,6 +1557,9 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
  	}
  	dst->pause = src->pause;
  	dst->ops = src->ops;
 +	err = damon_commit_probes(dst, src);
 +	if (err)
 +		return err;
- 	err = damon_commit_sample_control(&dst->sample_control,
- 			&src->sample_control);
- 	if (err)
-@@ -1973,10 +2148,15 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
+ 	dst->addr_unit = src->addr_unit;
+ 	dst->min_region_sz = src->min_region_sz;
+ 
+@@ -1746,10 +1921,15 @@ static void kdamond_reset_aggregated(struct damon_ctx *c)
  		struct damon_region *r;
  
  		damon_for_each_region(r, t) {
@@ -518,9 +518,9 @@ index eb6ec8f612e61..0de28a1325286 100644
  			damon_verify_reset_aggregated(r, c);
  		}
  		ti++;
-@@ -3469,6 +3649,8 @@ static int kdamond_fn(void *data)
- 			max_nr_accesses = kdamond_check_reported_accesses(ctx);
- 		else if (ctx->ops.check_accesses)
+@@ -3113,6 +3293,8 @@ static int kdamond_fn(void *data)
+ 
+ 		if (ctx->ops.check_accesses)
  			max_nr_accesses = ctx->ops.check_accesses(ctx);
 +		if (ctx->ops.apply_probes)
 +			ctx->ops.apply_probes(ctx);
@@ -528,10 +528,10 @@ index eb6ec8f612e61..0de28a1325286 100644
  		if (time_after_eq(ctx->passed_sample_intervals,
  					next_aggregation_sis)) {
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index ddef9caa852b9..aa3af7479c066 100644
+index 5cdcc5037cbc1..cacfbf774ca4f 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -184,6 +184,50 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+@@ -120,6 +120,50 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
  	return max_nr_accesses;
  }
  
@@ -582,7 +582,7 @@ index ddef9caa852b9..aa3af7479c066 100644
  /*
   * damos_pa_filter_out - Return true if the page should be filtered out.
   */
-@@ -528,6 +572,7 @@ static int __init damon_pa_initcall(void)
+@@ -371,6 +415,7 @@ static int __init damon_pa_initcall(void)
  		.update = NULL,
  		.prepare_access_checks = damon_pa_prepare_access_checks,
  		.check_accesses = damon_pa_check_accesses,
@@ -591,7 +591,7 @@ index ddef9caa852b9..aa3af7479c066 100644
  		.apply_scheme = damon_pa_apply_scheme,
  		.get_scheme_score = damon_pa_scheme_score,
 diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
-index 23fdb427c766c..081e20b3ad2fa 100644
+index c3c1ff6108863..48a949484a052 100644
 --- a/mm/damon/sysfs-schemes.c
 +++ b/mm/damon/sysfs-schemes.c
 @@ -20,6 +20,7 @@ struct damon_sysfs_scheme_region {
@@ -659,7 +659,7 @@ index 23fdb427c766c..081e20b3ad2fa 100644
  };
  ATTRIBUTE_GROUPS(damon_sysfs_scheme_region);
 diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
-index aa7a5075cebeb..809c6095bbe6a 100644
+index d5863cc33d230..6914396173160 100644
 --- a/mm/damon/sysfs.c
 +++ b/mm/damon/sysfs.c
 @@ -747,6 +747,453 @@ static const struct kobj_type damon_sysfs_intervals_ktype = {
@@ -1121,21 +1121,22 @@ index aa7a5075cebeb..809c6095bbe6a 100644
  	struct damon_sysfs_intervals *intervals;
  	struct damon_sysfs_ul_range *nr_regions_range;
 +	struct damon_sysfs_probes *probes;
- 	struct damon_sysfs_sample *sample;
  };
  
-@@ -772,6 +1220,7 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ static struct damon_sysfs_attrs *damon_sysfs_attrs_alloc(void)
+@@ -771,6 +1219,7 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
  {
  	struct damon_sysfs_intervals *intervals;
  	struct damon_sysfs_ul_range *nr_regions_range;
 +	struct damon_sysfs_probes *probes;
- 	struct damon_sysfs_sample *sample;
  	int err;
  
-@@ -802,6 +1251,17 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ 	intervals = damon_sysfs_intervals_alloc(5000, 100000, 60000000);
+@@ -799,8 +1248,22 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
+ 	if (err)
  		goto put_nr_regions_intervals_out;
  	attrs->nr_regions_range = nr_regions_range;
- 
++
 +	probes = damon_sysfs_probes_alloc();
 +	if (!probes) {
 +		err = -ENOMEM;
@@ -1146,30 +1147,24 @@ index aa7a5075cebeb..809c6095bbe6a 100644
 +	if (err)
 +		goto put_probes_out;
 +	attrs->probes = probes;
-+
- 	sample = damon_sysfs_sample_alloc();
- 	if (!sample) {
- 		err = -ENOMEM;
-@@ -821,6 +1281,9 @@ static int damon_sysfs_attrs_add_dirs(struct damon_sysfs_attrs *attrs)
- put_sample_out:
- 	kobject_put(&sample->kobj);
- 	attrs->sample = NULL;
+ 	return 0;
+ 
 +put_probes_out:
 +	kobject_put(&probes->kobj);
 +	attrs->probes = NULL;
  put_nr_regions_intervals_out:
  	kobject_put(&nr_regions_range->kobj);
  	attrs->nr_regions_range = NULL;
-@@ -837,6 +1300,8 @@ static void damon_sysfs_attrs_rm_dirs(struct damon_sysfs_attrs *attrs)
+@@ -817,6 +1280,8 @@ static void damon_sysfs_attrs_rm_dirs(struct damon_sysfs_attrs *attrs)
  	kobject_put(&attrs->nr_regions_range->kobj);
  	damon_sysfs_intervals_rm_dirs(attrs->intervals);
  	kobject_put(&attrs->intervals->kobj);
 +	damon_sysfs_probes_rm_dirs(attrs->probes);
 +	kobject_put(&attrs->probes->kobj);
- 	damon_sysfs_sample_rm_dirs(attrs->sample);
- 	kobject_put(&attrs->sample->kobj);
  }
-@@ -1412,6 +1877,40 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+ 
+ static void damon_sysfs_attrs_release(struct kobject *kobj)
+@@ -1390,6 +1855,40 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
  	return damon_set_attrs(ctx, &attrs);
  }
  
@@ -1210,7 +1205,7 @@ index aa7a5075cebeb..809c6095bbe6a 100644
  static int damon_sysfs_set_regions(struct damon_target *t,
  		struct damon_sysfs_regions *sysfs_regions,
  		unsigned long min_region_sz)
-@@ -1524,6 +2023,9 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+@@ -1502,6 +2001,9 @@ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
  				DAMON_MIN_REGION_SZ / sys_ctx->addr_unit, 1);
  	ctx->pause = sys_ctx->pause;
  	err = damon_sysfs_set_attrs(ctx, sys_ctx->attrs);
@@ -1219,7 +1214,7 @@ index aa7a5075cebeb..809c6095bbe6a 100644
 +	err = damon_sysfs_set_probes(ctx, sys_ctx->attrs->probes);
  	if (err)
  		return err;
- 	err = damon_sysfs_set_sample_control(&ctx->sample_control,
+ 	err = damon_sysfs_add_targets(ctx, sys_ctx->targets);
 diff --git a/tools/testing/selftests/damon/sysfs.sh b/tools/testing/selftests/damon/sysfs.sh
 index 83e3b7f63d81c..1ac3e2ce8e448 100755
 --- a/tools/testing/selftests/damon/sysfs.sh
