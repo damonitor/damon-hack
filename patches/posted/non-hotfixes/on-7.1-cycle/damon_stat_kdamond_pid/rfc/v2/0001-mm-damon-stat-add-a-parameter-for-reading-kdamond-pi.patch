@@ -1,0 +1,76 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 8 Feb 2026 12:22:20 -0800
+Subject: [RFC PATCH v2 1/2] mm/damon/stat: add a parameter for reading kdamond
+         pid
+
+Knowing the pid of the kdamonds can help user-space management including
+monitoring of DAMON's system resource consumption.  To make it easier,
+DAMON_SYSFS, DAMON_RECLAIM and DAMON_LRU_SORT provide the pid
+information.  DAMON_STAT is not providing it, though.  Expose the pid of
+DAMON_STAT kdamond via a new read-only module parameter, namely
+kdamond_pid.  This also makes DAMON modules usage more standardized,
+because DAMON_RECLAIM and DAMON_LRU_SORT also provide the information
+via their read-only parameters of the same name.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/stat.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index f4d3203e92639..37964683839d0 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -266,6 +266,44 @@ static int damon_stat_enabled_load(char *buffer, const struct kernel_param *kp)
+ 	return sprintf(buffer, "%c\n", damon_stat_enabled() ? 'Y' : 'N');
+ }
+ 
++static int damon_stat_kdamond_pid_store(
++		const char *val, const struct kernel_param *kp)
++{
++	/*
++	 * kdamond_pid is read-only, but kernel command line could write it.
++	 * Do nothing here.
++	 */
++	return 0;
++}
++
++static int damon_stat_kdamond_pid_load(
++		char *buffer, const struct kernel_param *kp)
++{
++	int pid;
++
++	if (!damon_stat_context) {
++		pid = -1;
++	} else {
++		pid = damon_kdamond_pid(damon_stat_context);
++		if (pid < 1)
++			pid = -1;
++	}
++	return sprintf(buffer, "%d\n", pid);
++}
++
++static const struct kernel_param_ops kdamond_pid_param_ops = {
++	.set = damon_stat_kdamond_pid_store,
++	.get = damon_stat_kdamond_pid_load,
++};
++
++/*
++ * PID of the DAMON thread
++ *
++ * If DAMON_STAT is enabled, this becomes the PID of the worker thread.
++ * Else, -1.
++ */
++module_param_cb(kdamond_pid, &kdamond_pid_param_ops, NULL, 0400);
++
+ static int __init damon_stat_init(void)
+ {
+ 	int err = 0;
+-- 
+2.47.3
