@@ -1,0 +1,112 @@
+From: Bart Van Assche <bvanassche@acm.org>
+Date: Tue, 24 Mar 2026 14:42:25 -0700
+Subject: [PATCH] lib: split codetag_lock_module_list()
+
+Letting a function argument indicate whether a lock or unlock operation
+should be performed is incompatible with compile-time analysis of locking
+operations by sparse and Clang.  Hence, split codetag_lock_module_list()
+into two functions: a function that locks cttype->mod_lock and another
+function that unlocks cttype->mod_lock.  No functionality has been
+changed.  See also commit 916cc5167cc6 ("lib: code tagging framework").
+
+Link: https://lore.kernel.org/20260324214226.3684605-1-bvanassche@acm.org
+Signed-off-by: Bart Van Assche <bvanassche@acm.org>
+Acked-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Nathan Chancellor <nathan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/codetag.h |  3 ++-
+ lib/alloc_tag.c         |  8 ++++----
+ lib/codetag.c           | 12 +++++++-----
+ 3 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/include/linux/codetag.h b/include/linux/codetag.h
+index 8ea2a5f7c98a5..ddae7484ca456 100644
+--- a/include/linux/codetag.h
++++ b/include/linux/codetag.h
+@@ -74,8 +74,9 @@ struct codetag_iterator {
+ 	.flags		= 0,				\
+ }
+ 
+-void codetag_lock_module_list(struct codetag_type *cttype, bool lock);
++void codetag_lock_module_list(struct codetag_type *cttype);
+ bool codetag_trylock_module_list(struct codetag_type *cttype);
++void codetag_unlock_module_list(struct codetag_type *cttype);
+ struct codetag_iterator codetag_get_ct_iter(struct codetag_type *cttype);
+ struct codetag *codetag_next_ct(struct codetag_iterator *iter);
+ 
+diff --git a/lib/alloc_tag.c b/lib/alloc_tag.c
+index ed1bdcf1f8abf..a6c58e07bb71b 100644
+--- a/lib/alloc_tag.c
++++ b/lib/alloc_tag.c
+@@ -54,7 +54,7 @@ static void *allocinfo_start(struct seq_file *m, loff_t *pos)
+ 	loff_t node = *pos;
+ 
+ 	priv = (struct allocinfo_private *)m->private;
+-	codetag_lock_module_list(alloc_tag_cttype, true);
++	codetag_lock_module_list(alloc_tag_cttype);
+ 	if (node == 0) {
+ 		priv->print_header = true;
+ 		priv->iter = codetag_get_ct_iter(alloc_tag_cttype);
+@@ -77,7 +77,7 @@ static void *allocinfo_next(struct seq_file *m, void *arg, loff_t *pos)
+ 
+ static void allocinfo_stop(struct seq_file *m, void *arg)
+ {
+-	codetag_lock_module_list(alloc_tag_cttype, false);
++	codetag_unlock_module_list(alloc_tag_cttype);
+ }
+ 
+ static void print_allocinfo_header(struct seq_buf *buf)
+@@ -136,7 +136,7 @@ size_t alloc_tag_top_users(struct codetag_bytes *tags, size_t count, bool can_sl
+ 		return 0;
+ 
+ 	if (can_sleep)
+-		codetag_lock_module_list(alloc_tag_cttype, true);
++		codetag_lock_module_list(alloc_tag_cttype);
+ 	else if (!codetag_trylock_module_list(alloc_tag_cttype))
+ 		return 0;
+ 
+@@ -161,7 +161,7 @@ size_t alloc_tag_top_users(struct codetag_bytes *tags, size_t count, bool can_sl
+ 		}
+ 	}
+ 
+-	codetag_lock_module_list(alloc_tag_cttype, false);
++	codetag_unlock_module_list(alloc_tag_cttype);
+ 
+ 	return nr;
+ }
+diff --git a/lib/codetag.c b/lib/codetag.c
+index 304667897ad4a..4001a7ea66754 100644
+--- a/lib/codetag.c
++++ b/lib/codetag.c
+@@ -35,12 +35,9 @@ struct codetag_module {
+ static DEFINE_MUTEX(codetag_lock);
+ static LIST_HEAD(codetag_types);
+ 
+-void codetag_lock_module_list(struct codetag_type *cttype, bool lock)
++void codetag_lock_module_list(struct codetag_type *cttype)
+ {
+-	if (lock)
+-		down_read(&cttype->mod_lock);
+-	else
+-		up_read(&cttype->mod_lock);
++	down_read(&cttype->mod_lock);
+ }
+ 
+ bool codetag_trylock_module_list(struct codetag_type *cttype)
+@@ -48,6 +45,11 @@ bool codetag_trylock_module_list(struct codetag_type *cttype)
+ 	return down_read_trylock(&cttype->mod_lock) != 0;
+ }
+ 
++void codetag_unlock_module_list(struct codetag_type *cttype)
++{
++	up_read(&cttype->mod_lock);
++}
++
+ struct codetag_iterator codetag_get_ct_iter(struct codetag_type *cttype)
+ {
+ 	struct codetag_iterator iter = {
+-- 
+2.47.3
+

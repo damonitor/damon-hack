@@ -1,35 +1,16 @@
 - baseline: v7.0-11901-ga5d1079c28a5b -> v7.0-11901-ga5d1079c28a5b (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 2 -> 5 commits
-  - series: 1 (2) -> 2 (5)
-    - maintainer, nobody: 2 -> 5 commits
-  - new commits
-    - series "mm/damon/modules: detect and use fresh status", v3. (3)
-      - cbb72b7ec9cb "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260419161003.79176-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260419161003.79176-2-sj@kernel.org
-      - eef4eec41aaa "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260419161003.79176-3-sj@kernel.org
-      - f233a3f916fc "mm/damon/stat: detect and use fresh enabled value (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260419161003.79176-4-sj@kernel.org
-        - Link: https://lore.kernel.org/20260416040602.88665-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 5 -> 5 commits (no change)
+  - series: 2 (5) -> 2 (5) (no change)
+    - maintainer, nobody: 5 -> 5 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-new: 0 -> 1 commits
+- mm-new: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - 806029fe3981 "Docs/mm/damon/maintainer-profile: add AI review usage guideline"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260412211932.89038-1-sj@kernel.org
-      - Link: https://github.com/sashiko-dev/sashiko/commit/ad9f4a98f958 [1]
-      - Link: https://github.com/sashiko-dev/sashiko/commit/b554c7b6e733 [2]
+    - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

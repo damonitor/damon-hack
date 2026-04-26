@@ -5,22 +5,22 @@
     - maintainer, nobody: 5 commits
   - full commits list
     - series "mm/damon/sysfs-schemes: fix use-after-free for [memcg_]path". (2 commits)
-      - 1c6973116bc8 "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock" (0/2)
+      - 20ad49994aef "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260423150253.111520-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260423150253.111520-2-sj@kernel.org
-      - 24a2ead2f8b3 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock" (1/2)
+      - aa64839e85c7 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260423150253.111520-3-sj@kernel.org
     - series "mm/damon/modules: detect and use fresh status", v3. (3 commits)
-      - cbb72b7ec9cb "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values" (0/3)
+      - 7d54f2ab48c0 "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260419161003.79176-2-sj@kernel.org
-      - eef4eec41aaa "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values" (1/3)
+      - 3f7fa176f496 "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-3-sj@kernel.org
-      - f233a3f916fc "mm/damon/stat: detect and use fresh enabled value" (2/3)
+      - e9a92e19a1f5 "mm/damon/stat: detect and use fresh enabled value" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-4-sj@kernel.org
         - Link: https://lore.kernel.org/20260416040602.88665-1-sj@kernel.org [1]
@@ -30,7 +30,7 @@
   - author/reviewer role stat
     - maintainer, nobody: 1 commits
   - full commits list
-    - 806029fe3981 "Docs/mm/damon/maintainer-profile: add AI review usage guideline"
+    - 336b92749f59 "Docs/mm/damon/maintainer-profile: add AI review usage guideline"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260412211932.89038-1-sj@kernel.org
       - Link: https://github.com/sashiko-dev/sashiko/commit/ad9f4a98f958 [1]
