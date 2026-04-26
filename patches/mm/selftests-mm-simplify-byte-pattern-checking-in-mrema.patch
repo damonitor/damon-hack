@@ -1,0 +1,186 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Wed, 15 Apr 2026 10:15:09 +0530
+Subject: [PATCH] selftests/mm: simplify byte pattern checking in mremap_test
+
+The original version of mremap_test (7df666253f26: "kselftests: vm: add
+mremap tests") validated remapped contents byte-by-byte and printed a
+mismatch index in case the bytes streams didn't match.  That was rather
+inefficient, especially also if the test passed.
+
+Later, commit 7033c6cc9620 ("selftests/mm: mremap_test: optimize execution
+time from minutes to seconds using chunkwise memcmp") used memcmp() on
+bigger chunks, to fallback to byte-wise scanning to detect the problematic
+index only if it discovered a problem.
+
+However, the implementation is overly complicated (e.g., get_sqrt() is
+currently not optimal) and we don't really have to report the exact index:
+whoever debugs the failing test can figure that out.
+
+Let's simplify by just comparing both byte streams with memcmp() and not
+detecting the exact failed index.
+
+Link: https://lore.kernel.org/20260415044509.579428-1-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Reported-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Tested-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/mremap_test.c | 109 +++--------------------
+ 1 file changed, 10 insertions(+), 99 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/mremap_test.c b/tools/testing/selftests/mm/mremap_test.c
+index 308576437228c..131d9d6db8679 100644
+--- a/tools/testing/selftests/mm/mremap_test.c
++++ b/tools/testing/selftests/mm/mremap_test.c
+@@ -76,27 +76,6 @@ enum {
+ 	.expect_failure = should_fail				\
+ }
+ 
+-/* compute square root using binary search */
+-static unsigned long get_sqrt(unsigned long val)
+-{
+-	unsigned long low = 1;
+-
+-	/* assuming rand_size is less than 1TB */
+-	unsigned long high = (1UL << 20);
+-
+-	while (low <= high) {
+-		unsigned long mid = low + (high - low) / 2;
+-		unsigned long temp = mid * mid;
+-
+-		if (temp == val)
+-			return mid;
+-		if (temp < val)
+-			low = mid + 1;
+-		high = mid - 1;
+-	}
+-	return low;
+-}
+-
+ /*
+  * Returns false if the requested remap region overlaps with an
+  * existing mapping (e.g text, stack) else returns true.
+@@ -995,11 +974,9 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
+ 			      char *rand_addr)
+ {
+ 	void *addr, *tmp_addr, *src_addr, *dest_addr, *dest_preamble_addr = NULL;
+-	unsigned long long t, d;
+ 	struct timespec t_start = {0, 0}, t_end = {0, 0};
+ 	long long  start_ns, end_ns, align_mask, ret, offset;
+ 	unsigned long long threshold;
+-	unsigned long num_chunks;
+ 
+ 	if (threshold_mb == VALIDATION_NO_THRESHOLD)
+ 		threshold = c.region_size;
+@@ -1068,87 +1045,21 @@ static long long remap_region(struct config c, unsigned int threshold_mb,
+ 		goto clean_up_dest_preamble;
+ 	}
+ 
+-	/*
+-	 * Verify byte pattern after remapping. Employ an algorithm with a
+-	 * square root time complexity in threshold: divide the range into
+-	 * chunks, if memcmp() returns non-zero, only then perform an
+-	 * iteration in that chunk to find the mismatch index.
+-	 */
+-	num_chunks = get_sqrt(threshold);
+-	for (unsigned long i = 0; i < num_chunks; ++i) {
+-		size_t chunk_size = threshold / num_chunks;
+-		unsigned long shift = i * chunk_size;
+-
+-		if (!memcmp(dest_addr + shift, rand_addr + shift, chunk_size))
+-			continue;
+-
+-		/* brute force iteration only over mismatch segment */
+-		for (t = shift; t < shift + chunk_size; ++t) {
+-			if (((char *) dest_addr)[t] != rand_addr[t]) {
+-				ksft_print_msg("Data after remap doesn't match at offset %llu\n",
+-						t);
+-				ksft_print_msg("Expected: %#x\t Got: %#x\n", rand_addr[t] & 0xff,
+-						((char *) dest_addr)[t] & 0xff);
+-				ret = -1;
+-				goto clean_up_dest;
+-			}
+-		}
+-	}
+-
+-	/*
+-	 * if threshold is not divisible by num_chunks, then check the
+-	 * last chunk
+-	 */
+-	for (t = num_chunks * (threshold / num_chunks); t < threshold; ++t) {
+-		if (((char *) dest_addr)[t] != rand_addr[t]) {
+-			ksft_print_msg("Data after remap doesn't match at offset %llu\n",
+-					t);
+-			ksft_print_msg("Expected: %#x\t Got: %#x\n", rand_addr[t] & 0xff,
+-					((char *) dest_addr)[t] & 0xff);
+-			ret = -1;
+-			goto clean_up_dest;
+-		}
++	/* Verify byte pattern after remapping */
++	if (memcmp(dest_addr, rand_addr, threshold)) {
++		ksft_print_msg("Data after remap doesn't match\n");
++		ret = -1;
++		goto clean_up_dest;
+ 	}
+ 
+ 	/* Verify the dest preamble byte pattern after remapping */
+-	if (!c.dest_preamble_size)
+-		goto no_preamble;
+-
+-	num_chunks = get_sqrt(c.dest_preamble_size);
+-
+-	for (unsigned long i = 0; i < num_chunks; ++i) {
+-		size_t chunk_size = c.dest_preamble_size / num_chunks;
+-		unsigned long shift = i * chunk_size;
+-
+-		if (!memcmp(dest_preamble_addr + shift, rand_addr + shift,
+-			    chunk_size))
+-			continue;
+-
+-		/* brute force iteration only over mismatched segment */
+-		for (d = shift; d < shift + chunk_size; ++d) {
+-			if (((char *) dest_preamble_addr)[d] != rand_addr[d]) {
+-				ksft_print_msg("Preamble data after remap doesn't match at offset %llu\n",
+-						d);
+-				ksft_print_msg("Expected: %#x\t Got: %#x\n", rand_addr[d] & 0xff,
+-						((char *) dest_preamble_addr)[d] & 0xff);
+-				ret = -1;
+-				goto clean_up_dest;
+-			}
+-		}
+-	}
+-
+-	for (d = num_chunks * (c.dest_preamble_size / num_chunks); d < c.dest_preamble_size; ++d) {
+-		if (((char *) dest_preamble_addr)[d] != rand_addr[d]) {
+-			ksft_print_msg("Preamble data after remap doesn't match at offset %llu\n",
+-					d);
+-			ksft_print_msg("Expected: %#x\t Got: %#x\n", rand_addr[d] & 0xff,
+-					((char *) dest_preamble_addr)[d] & 0xff);
+-			ret = -1;
+-			goto clean_up_dest;
+-		}
++	if (c.dest_preamble_size &&
++	    memcmp(dest_preamble_addr, rand_addr, c.dest_preamble_size)) {
++		ksft_print_msg("Preamble data after remap doesn't match\n");
++		ret = -1;
++		goto clean_up_dest;
+ 	}
+ 
+-no_preamble:
+ 	start_ns = t_start.tv_sec * NS_PER_SEC + t_start.tv_nsec;
+ 	end_ns = t_end.tv_sec * NS_PER_SEC + t_end.tv_nsec;
+ 	ret = end_ns - start_ns;
+-- 
+2.47.3
+

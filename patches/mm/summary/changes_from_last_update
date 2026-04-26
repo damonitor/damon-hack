@@ -1,9 +1,17 @@
 - baseline: v7.0-11901-ga5d1079c28a5b -> v7.0-11901-ga5d1079c28a5b (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 5 -> 5 commits (no change)
+- mm-hotfixes-unstable: 5 -> 7 commits
   - series: 2 (5) -> 2 (5) (no change)
-    - maintainer, nobody: 5 -> 5 commits (no change)
+    - maintainer, nobody: 5 -> 7 commits
+  - new commits
+    - 4f2248750f35 "mm/damon/sysfs-schemes: call missing mem_cgroup_iter_break()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260426173625.86521-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260423004148.74722-1-sj@kernel.org [1]
+    - efd9943b4773 "mm/damon: fix damos_stat tracepoint format for sz_applied"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260426193119.88095-1-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 0 -> 0 commits (no change)

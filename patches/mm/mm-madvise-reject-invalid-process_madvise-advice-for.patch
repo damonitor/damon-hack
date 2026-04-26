@@ -1,0 +1,99 @@
+From: fujunjie <fujunjie1@qq.com>
+Date: Sun, 26 Apr 2026 11:08:22 +0000
+Subject: [PATCH] mm/madvise: reject invalid process_madvise() advice for
+ zero-length vectors
+
+process_madvise() validates the advice while walking the imported iovec.
+If the iovec has zero total length, vector_madvise() never enters the loop
+and returns 0 without checking whether the advice value is valid.
+
+For a local mm, such as process_madvise(PIDFD_SELF, ...), the remote-only
+process_madvise_remote_valid() check is skipped.  As a result, an invalid
+advice can be reported as success when the vector has zero total length.
+This differs from madvise(), which rejects an invalid advice before
+returning success for a zero-length range.
+
+Reject invalid advice before walking the vector.  Valid zero-length
+requests remain no-ops and continue to return 0.
+
+Add a selftest that covers invalid advice with a zero-length iovec and an
+empty vector, while also checking that a valid zero-length request still
+succeeds.
+
+Link: https://lore.kernel.org/tencent_98F3571EF9236437E5165F5C08CF258A9E08@qq.com
+Fixes: 021781b01275 ("mm/madvise: unrestrict process_madvise() for current process")
+Signed-off-by: fujunjie <fujunjie1@qq.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/madvise.c                              |  3 +++
+ tools/testing/selftests/mm/process_madv.c | 29 +++++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 69708e953cf56..83fe9e651a907 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -2046,6 +2046,9 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
+ 
+ 	total_len = iov_iter_count(iter);
+ 
++	if (!madvise_behavior_valid(behavior))
++		return -EINVAL;
++
+ 	ret = madvise_lock(&madv_behavior);
+ 	if (ret)
+ 		return ret;
+diff --git a/tools/testing/selftests/mm/process_madv.c b/tools/testing/selftests/mm/process_madv.c
+index cd4610baf5d7d..9a7e2788fcc50 100644
+--- a/tools/testing/selftests/mm/process_madv.c
++++ b/tools/testing/selftests/mm/process_madv.c
+@@ -309,6 +309,35 @@ TEST_F(process_madvise, invalid_vlen)
+ 	ASSERT_EQ(munmap(map, pagesize), 0);
+ }
+ 
++/*
++ * Test that invalid advice is rejected even when the iovec has zero total
++ * length. A zero-length advice is a no-op for valid advice, but invalid
++ * advice should still fail with EINVAL.
++ */
++TEST_F(process_madvise, invalid_advice_zero_length)
++{
++	struct iovec vec = {
++		.iov_base = NULL,
++		.iov_len = 0,
++	};
++	int pidfd = self->pidfd;
++	ssize_t ret;
++
++	errno = 0;
++	ret = sys_process_madvise(pidfd, &vec, 1, -1, 0);
++	ASSERT_EQ(ret, -1);
++	ASSERT_EQ(errno, EINVAL);
++
++	errno = 0;
++	ret = sys_process_madvise(pidfd, &vec, 1, MADV_DONTNEED, 0);
++	ASSERT_EQ(ret, 0);
++
++	errno = 0;
++	ret = sys_process_madvise(pidfd, NULL, 0, -1, 0);
++	ASSERT_EQ(ret, -1);
++	ASSERT_EQ(errno, EINVAL);
++}
++
+ /*
+  * Test process_madvise() with an invalid flag value. Currently, only a flag
+  * value of 0 is supported. This test is reserved for the future, e.g., if
+-- 
+2.47.3
+

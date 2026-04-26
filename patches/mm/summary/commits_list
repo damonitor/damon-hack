@@ -1,36 +1,43 @@
 - baseline: v7.0-11901-ga5d1079c28a5b
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-hotfixes-unstable: 5 total, 2 (5) series, 0 non-series commits
+- mm-hotfixes-unstable: 7 total, 2 (5) series, 2 non-series commits
   - author/reviewer role stat
-    - maintainer, nobody: 5 commits
+    - maintainer, nobody: 7 commits
   - full commits list
     - series "mm/damon/sysfs-schemes: fix use-after-free for [memcg_]path". (2 commits)
-      - 20ad49994aef "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock" (0/2)
+      - d44d75e47c04 "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260423150253.111520-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260423150253.111520-2-sj@kernel.org
-      - aa64839e85c7 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock" (1/2)
+      - 148ebcf8a2b5 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260423150253.111520-3-sj@kernel.org
     - series "mm/damon/modules: detect and use fresh status", v3. (3 commits)
-      - 7d54f2ab48c0 "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values" (0/3)
+      - cb453aef4f0f "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260419161003.79176-2-sj@kernel.org
-      - 3f7fa176f496 "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values" (1/3)
+      - 76804890792a "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-3-sj@kernel.org
-      - e9a92e19a1f5 "mm/damon/stat: detect and use fresh enabled value" (2/3)
+      - 99c2a705e5f3 "mm/damon/stat: detect and use fresh enabled value" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260419161003.79176-4-sj@kernel.org
         - Link: https://lore.kernel.org/20260416040602.88665-1-sj@kernel.org [1]
+    - 4f2248750f35 "mm/damon/sysfs-schemes: call missing mem_cgroup_iter_break()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260426173625.86521-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260423004148.74722-1-sj@kernel.org [1]
+    - efd9943b4773 "mm/damon: fix damos_stat tracepoint format for sz_applied"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260426193119.88095-1-sj@kernel.org
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-new: 1 total, 0 (0) series, 1 non-series commits
   - author/reviewer role stat
     - maintainer, nobody: 1 commits
   - full commits list
-    - 336b92749f59 "Docs/mm/damon/maintainer-profile: add AI review usage guideline"
+    - fe682959764a "Docs/mm/damon/maintainer-profile: add AI review usage guideline"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260412211932.89038-1-sj@kernel.org
       - Link: https://github.com/sashiko-dev/sashiko/commit/ad9f4a98f958 [1]
