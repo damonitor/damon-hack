@@ -1,0 +1,117 @@
+From: Liew Rui Yan <aethernet65535@gmail.com>
+Date: Sun, 26 Apr 2026 16:16:14 -0700
+Subject: [PATCH] mm/damon/ops-common: optimize damon_hot_score() using ilog2()
+
+Patch series "mm/damon: repost non-hotfix reviewed patches in damon/next
+tree", v2.
+
+The first patch from Liew Rui Yan add a minor performance optimization
+using ilog2() instead of inefficient manual implementation of the
+functionality.
+
+The second patch from Cheng-Han Wu fixes a minor typo:
+s/parametrs/parameters/.
+
+The third patch from Liew Rui Yan make commit_inputs operation of
+DAMON_RECLAIM and DAMON_LRU_SORT synchronous to improve the user
+experience.
+
+The fourth patch from Asier Gutierrez adds a new DAMOS action,
+DAMOS_COLLAPSE for deterministic DAMOS-based access-aware THP system.
+
+
+This patch (of 4):
+
+The current implementation of damon_hot_score() uses a manual for-loop to
+calculate the value of 'age_in_log'.  This can be efficiently replaced by
+ilog2(), which is semantically more appropriate for calculating the
+logarithmic value of age.
+
+In a simulated-kernel-module performance test with 10,000,000 iterations,
+this optimization showed a significant reduction in latency (average
+latency reduced from ~12ns to ~1ns).
+
+Test results from the simulated-kernel-module:
+- ilog2:
+    DAMON Perf Test: Starting 10000000 iterations
+    =============================================
+     Total Iterations : 10000000
+     Average Latency  : 1 ns
+     P95 Latency      : 41 ns
+     P99 Latency      : 41 ns
+    ---------------------------------------------
+     Range (ns)      | Count        | Percent
+    ---------------------------------------------
+     0-19            | 0            |      0%
+     20-39           | 2625000      |     26%
+     40-59           | 7374000      |     73%
+     60-79           | 0            |      0%
+     80-99           | 0            |      0%
+     100+            | 1000         |      0%
+    =============================================
+
+- for-loop:
+    DAMON Perf Test: Starting 10000000 iterations
+    =============================================
+     Total Iterations : 10000000
+     Average Latency  : 12 ns
+     P95 Latency      : 51 ns
+     P99 Latency      : 60 ns
+    ---------------------------------------------
+     Range (ns)      | Count        | Percent
+    ---------------------------------------------
+     0-19            | 0            |      0%
+     20-39           | 0            |      0%
+     40-59           | 9862000      |     98%
+     60-79           | 135000       |      1%
+     80-99           | 1000         |      0%
+     100+            | 2000         |      0%
+    =============================================
+
+Full raw benchmark results can be found at [1].
+
+Link: https://lore.kernel.org/20260426231619.107231-1-sj@kernel.org
+Link: https://lore.kernel.org/20260426231619.107231-2-sj@kernel.org
+Link: https://github.com/aethernet65535/damon-hot-score-fls-optimize/tree/master/result-raw [1]
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: Liew Rui Yan <aethernet65535@gmail.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Asier Gutierrez <gutierrez.asier@huawei-partners.com>
+Cc: Cheng-Han Wu <hank20010209@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/ops-common.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index 8c6d613425c13..3a0ddc3ac7196 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -117,9 +117,12 @@ int damon_hot_score(struct damon_ctx *c, struct damon_region *r,
+ 		damon_max_nr_accesses(&c->attrs);
+ 
+ 	age_in_sec = (unsigned long)r->age * c->attrs.aggr_interval / 1000000;
+-	for (age_in_log = 0; age_in_log < DAMON_MAX_AGE_IN_LOG && age_in_sec;
+-			age_in_log++, age_in_sec >>= 1)
+-		;
++	if (age_in_sec)
++		age_in_log = min_t(int, ilog2(age_in_sec) + 1,
++				DAMON_MAX_AGE_IN_LOG);
++	else
++		age_in_log = 0;
++
+ 
+ 	/* If frequency is 0, higher age means it's colder */
+ 	if (freq_subscore == 0)
+-- 
+2.47.3
+

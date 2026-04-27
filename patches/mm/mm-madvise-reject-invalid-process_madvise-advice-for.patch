@@ -1,11 +1,12 @@
 From: fujunjie <fujunjie1@qq.com>
-Date: Sun, 26 Apr 2026 11:08:22 +0000
+Date: Mon, 27 Apr 2026 09:43:30 +0000
 Subject: [PATCH] mm/madvise: reject invalid process_madvise() advice for
  zero-length vectors
 
-process_madvise() validates the advice while walking the imported iovec.
-If the iovec has zero total length, vector_madvise() never enters the loop
-and returns 0 without checking whether the advice value is valid.
+process_madvise() used to validate the advice while walking each imported
+iovec.  If the vector has zero total length, vector_madvise() does not
+enter the loop and can return success without checking whether the advice
+value is valid.
 
 For a local mm, such as process_madvise(PIDFD_SELF, ...), the remote-only
 process_madvise_remote_valid() check is skipped.  As a result, an invalid
@@ -13,18 +14,23 @@ advice can be reported as success when the vector has zero total length.
 This differs from madvise(), which rejects an invalid advice before
 returning success for a zero-length range.
 
-Reject invalid advice before walking the vector.  Valid zero-length
-requests remain no-ops and continue to return 0.
+Validate the generic madvise behavior at the syscall-facing entry points
+before any vector walk.  In process_madvise(), do this before the
+remote-only advice restriction so unsupported advice is rejected with the
+same priority for local and remote mm.  Then keep the per-range helper
+focused on address/length validation, avoiding repeated behavior checks
+for every iovec.
 
-Add a selftest that covers invalid advice with a zero-length iovec and an
-empty vector, while also checking that a valid zero-length request still
+Valid zero-length requests remain no-ops and continue to return 0.  Add a
+selftest that covers invalid advice with a zero-length iovec and an empty
+vector, while also checking that a valid zero-length request still
 succeeds.
 
-Link: https://lore.kernel.org/tencent_98F3571EF9236437E5165F5C08CF258A9E08@qq.com
+Link: https://lore.kernel.org/tencent_BB588C2CDED859A873093DAF28B2CC1F7B0A@qq.com
 Fixes: 021781b01275 ("mm/madvise: unrestrict process_madvise() for current process")
 Signed-off-by: fujunjie <fujunjie1@qq.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Christian Brauner <brauner@kernel.org>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Liam Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
@@ -36,24 +42,85 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/madvise.c                              |  3 +++
+ mm/madvise.c                              | 29 +++++++++++++----------
  tools/testing/selftests/mm/process_madv.c | 29 +++++++++++++++++++++++
- 2 files changed, 32 insertions(+)
+ 2 files changed, 45 insertions(+), 13 deletions(-)
 
 diff --git a/mm/madvise.c b/mm/madvise.c
-index 69708e953cf56..83fe9e651a907 100644
+index 69708e953cf56..ce238dd96f158 100644
 --- a/mm/madvise.c
 +++ b/mm/madvise.c
-@@ -2046,6 +2046,9 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
+@@ -1834,13 +1834,10 @@ static void madvise_finish_tlb(struct madvise_behavior *madv_behavior)
+ 		tlb_finish_mmu(madv_behavior->tlb);
+ }
  
- 	total_len = iov_iter_count(iter);
+-static bool is_valid_madvise(unsigned long start, size_t len_in, int behavior)
++static bool is_valid_madvise_range(unsigned long start, size_t len_in)
+ {
+ 	size_t len;
  
+-	if (!madvise_behavior_valid(behavior))
+-		return false;
+-
+ 	if (!PAGE_ALIGNED(start))
+ 		return false;
+ 	len = PAGE_ALIGN(len_in);
+@@ -1859,17 +1856,15 @@ static bool is_valid_madvise(unsigned long start, size_t len_in, int behavior)
+  * madvise_should_skip() - Return if the request is invalid or nothing.
+  * @start:	Start address of madvise-requested address range.
+  * @len_in:	Length of madvise-requested address range.
+- * @behavior:	Requested madvise behavior.
+  * @err:	Pointer to store an error code from the check.
+  *
+- * If the specified behaviour is invalid or nothing would occur, we skip the
+- * operation.  This function returns true in the cases, otherwise false.  In
+- * the former case we store an error on @err.
++ * If the specified range is invalid or nothing would occur, we skip the
++ * operation.  This function returns true in these cases, otherwise false.  In
++ * the former case we store an error in @err.
+  */
+-static bool madvise_should_skip(unsigned long start, size_t len_in,
+-		int behavior, int *err)
++static bool madvise_should_skip(unsigned long start, size_t len_in, int *err)
+ {
+-	if (!is_valid_madvise(start, len_in, behavior)) {
++	if (!is_valid_madvise_range(start, len_in)) {
+ 		*err = -EINVAL;
+ 		return true;
+ 	}
+@@ -2013,7 +2008,10 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
+ 		.tlb = &tlb,
+ 	};
+ 
+-	if (madvise_should_skip(start, len_in, behavior, &error))
 +	if (!madvise_behavior_valid(behavior))
 +		return -EINVAL;
 +
- 	ret = madvise_lock(&madv_behavior);
- 	if (ret)
- 		return ret;
++	if (madvise_should_skip(start, len_in, &error))
+ 		return error;
+ 	error = madvise_lock(&madv_behavior);
+ 	if (error)
+@@ -2056,7 +2054,7 @@ static ssize_t vector_madvise(struct mm_struct *mm, struct iov_iter *iter,
+ 		size_t len_in = iter_iov_len(iter);
+ 		int error;
+ 
+-		if (madvise_should_skip(start, len_in, behavior, &error))
++		if (madvise_should_skip(start, len_in, &error))
+ 			ret = error;
+ 		else
+ 			ret = madvise_do_behavior(start, len_in, &madv_behavior);
+@@ -2131,6 +2129,11 @@ SYSCALL_DEFINE5(process_madvise, int, pidfd, const struct iovec __user *, vec,
+ 		goto release_task;
+ 	}
+ 
++	if (!madvise_behavior_valid(behavior)) {
++		ret = -EINVAL;
++		goto release_mm;
++	}
++
+ 	/*
+ 	 * We need only perform this check if we are attempting to manipulate a
+ 	 * remote process's address space.
 diff --git a/tools/testing/selftests/mm/process_madv.c b/tools/testing/selftests/mm/process_madv.c
 index cd4610baf5d7d..9a7e2788fcc50 100644
 --- a/tools/testing/selftests/mm/process_madv.c

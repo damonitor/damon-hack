@@ -1,24 +1,95 @@
-- baseline: v7.0-11901-ga5d1079c28a5b -> v7.0-11901-ga5d1079c28a5b (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 5 -> 7 commits
-  - series: 2 (5) -> 2 (5) (no change)
-    - maintainer, nobody: 5 -> 7 commits
-  - new commits
-    - 4f2248750f35 "mm/damon/sysfs-schemes: call missing mem_cgroup_iter_break()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260426173625.86521-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260423004148.74722-1-sj@kernel.org [1]
-    - efd9943b4773 "mm/damon: fix damos_stat tracepoint format for sz_applied"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260426193119.88095-1-sj@kernel.org
+- baseline: v7.0-11901-ga5d1079c28a5b -> v7.1-rc1
+- mm-hotfixes-stable: 0 -> 5 commits
+  - series: 0 (0) -> 2 (5)
+    - maintainer, nobody: 0 -> 5 commits
+  - changed commits
+    - series "mm/damon/sysfs-schemes: fix use-after-free for [memcg_]path". (2)
+      - 1e68eb96e8be "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20260423150253.111520-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260423150253.111520-2-sj@kernel.org
+      - cf3b71421ca0 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20260423150253.111520-3-sj@kernel.org
+    - series "mm/damon/modules: detect and use fresh status", v3. (3)
+      - 64a140afa5ed "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20260419161003.79176-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260419161003.79176-2-sj@kernel.org
+      - b98b7ff6025a "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20260419161003.79176-3-sj@kernel.org
+      - f98590bc08d4 "mm/damon/stat: detect and use fresh enabled value (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20260419161003.79176-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260416040602.88665-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 7 -> 2 commits
+  - series: 2 (5) -> 0 (0)
+    - maintainer, nobody: 7 -> 2 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-new: 1 -> 1 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 1 commits (no change)
+- mm-new: 1 -> 15 commits
+  - series: 0 (0) -> 2 (14)
+    - no role, nobody: 0 -> 2 commits
+    - no role, maintainer: 0 -> 2 commits
+    - maintainer, nobody: 1 -> 11 commits
+  - new commits
+    - series "mm/damon: repost non-hotfix reviewed patches in damon/next tree", v2. (4)
+      - 14ed2586aeae "mm/damon/ops-common: optimize damon_hot_score() using ilog2() (0/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260426231619.107231-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260426231619.107231-2-sj@kernel.org
+        - Link: https://github.com/aethernet65535/damon-hot-score-fls-optimize/tree/master/result-raw [1]
+      - 870b1d1c11a4 "Docs/admin-guide/mm/damon: fix 'parametrs' typo (1/4)"
+        - Authored by no role player, reviewed by nobody
+        - Link: https://lore.kernel.org/20260426231619.107231-3-sj@kernel.org
+      - 327effe2533a "mm/damon: add synchronous commit for commit_inputs (2/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260426231619.107231-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260318153731.97470-1-aethernet65535@gmail.com [1]
+      - ce4a082b04d2 "mm/damon: support MADV_COLLAPSE via DAMOS_COLLAPSE scheme action (3/4)"
+        - Authored by no role player, reviewed by nobody
+        - Link: https://lore.kernel.org/20260426231619.107231-5-sj@kernel.org
+        - Link: https://lore.kernel.org/damon/20260313000816.79933-1-sj@kernel.org/ [1]
+    - series "mm/damon: let DAMON be paused and resumed", v2. (10)
+      - e9676b67ed05 "mm/damon/core: introduce damon_ctx->paused (0/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260427151231.113429-2-sj@kernel.org
+      - cebcf17a2ee5 "mm/damon/sysfs: add pause file under context dir (1/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-3-sj@kernel.org
+      - 9af957983ab2 "Docs/mm/damon/design: update for context pause/resume feature (2/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-4-sj@kernel.org
+      - 0f7a2d48ca8e "Docs/admin-guide/mm/damon/usage: update for pause file (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-5-sj@kernel.org
+      - cc0077b63756 "Docs/ABI/damon: update for pause sysfs file (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-6-sj@kernel.org
+      - b3d126b59073 "mm/damon/tests/core-kunit: test pause commitment (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-7-sj@kernel.org
+      - f69df000c7b3 "selftests/damon/_damon_sysfs: support pause file staging (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-8-sj@kernel.org
+      - ab76f8b85559 "selftests/damon/drgn_dump_damon_status: dump pause (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-9-sj@kernel.org
+      - 7d61e66bb114 "selftests/damon/sysfs.py: check pause on assert_ctx_committed() (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-10-sj@kernel.org
+      - a1316f194169 "selftests/damon/sysfs.py: pause DAMON before dumping status (9/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260427151231.113429-11-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
