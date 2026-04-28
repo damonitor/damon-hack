@@ -1,5 +1,5 @@
 From: Zhen Ni <zhen.ni@easystack.cn>
-Date: Sun, 19 Apr 2026 23:55:40 +0800
+Date: Tue, 28 Apr 2026 15:11:11 +0800
 Subject: [PATCH] mm/page_owner: add NUMA node filter with nodelist support
 
 Add NUMA node filtering functionality to page_owner to allow filtering
@@ -16,7 +16,8 @@ Supported input formats:
 - Disable filter: echo "-1" > nid
 
 Link: https://lore.kernel.org/linux-mm/20260417154638.22370-4-zhen.ni@easystack.cn/
-Link: https://lore.kernel.org/20260419155540.376847-4-zhen.ni@easystack.cn
+Link: https://lore.kernel.org/linux-mm/20260419155540.376847-4-zhen.ni@easystack.cn/
+Link: https://lore.kernel.org/20260428071112.1420380-4-zhen.ni@easystack.cn
 Signed-off-by: Zhen Ni <zhen.ni@easystack.cn>
 Suggested-by: Zi Yan <ziy@nvidia.com>
 Cc: Brendan Jackman <jackmanb@google.com>
@@ -26,27 +27,35 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/page_owner.c | 76 +++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 76 insertions(+)
+ mm/page_owner.c | 82 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 82 insertions(+)
 
 diff --git a/mm/page_owner.c b/mm/page_owner.c
-index 6d87b6948cfad..8c13bb3798d80 100644
+index 6d87b6948cfad..e674a374669af 100644
 --- a/mm/page_owner.c
 +++ b/mm/page_owner.c
-@@ -707,6 +707,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
- 		 * user through copy_to_user() or GFP_KERNEL allocations.
- 		 */
- 		struct page_owner page_owner_tmp;
-+		nodemask_t mask;
+@@ -685,6 +685,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 	struct page_ext *page_ext;
+ 	struct page_owner *page_owner;
+ 	depot_stack_handle_t handle;
++	nodemask_t mask;
  
+ 	if (!static_branch_unlikely(&page_owner_inited))
+ 		return -EINVAL;
+@@ -698,6 +699,8 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 	while (!pfn_valid(pfn) && (pfn & (MAX_ORDER_NR_PAGES - 1)) != 0)
+ 		pfn++;
+ 
++	mask = owner_filter.nid_mask;
++
+ 	/* Find an allocated page */
+ 	for (; pfn < max_pfn; pfn++) {
  		/*
- 		 * If the new page is in a new MAX_ORDER_NR_PAGES area,
-@@ -730,6 +731,15 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+@@ -730,6 +733,14 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
  		if (unlikely(!page_ext))
  			continue;
  
 +		/* NUMA node filter using bitmask */
-+		mask = READ_ONCE(owner_filter.nid_mask);
 +		if (!nodes_empty(mask)) {
 +			int nid = page_to_nid(page);
 +
@@ -57,7 +66,7 @@ index 6d87b6948cfad..8c13bb3798d80 100644
  		/*
  		 * Some pages could be missed by concurrent allocation or free,
  		 * because we don't hold the zone lock.
-@@ -1009,6 +1019,70 @@ DEFINE_SIMPLE_ATTRIBUTE(page_owner_print_mode_fops,
+@@ -1009,6 +1020,75 @@ DEFINE_SIMPLE_ATTRIBUTE(page_owner_print_mode_fops,
  			&page_owner_print_mode_get,
  			&page_owner_print_mode_set, "%lld");
  
@@ -68,8 +77,13 @@ index 6d87b6948cfad..8c13bb3798d80 100644
 +	char *kbuf;
 +	nodemask_t mask;
 +	int ret;
++	int val;
 +
-+	/* Limit input size to handle worst-case nodelist (all nodes) */
++	/*
++	 * Limit input size to handle worst-case nodelist (all nodes).
++	 * Worst case per node: ",NNNNN" (comma + 5-digit node number) = 6 bytes.
++	 * Formula: 100 bytes overhead + 6 * MAX_NUMNODES
++	 */
 +	if (count > (100 + 6 * MAX_NUMNODES))
 +		return -EINVAL;
 +
@@ -84,14 +98,14 @@ index 6d87b6948cfad..8c13bb3798d80 100644
 +	kbuf[count] = '\0';
 +
 +	/* Support: "-1" to clear, or nodelist format like "0", "0,2", "0-3" */
-+	if (strcmp(kbuf, "-1\n") == 0 || strcmp(kbuf, "-1") == 0)
++	if (kstrtoint(kbuf, 10, &val) == 0 && val == -1)
 +		nodes_clear(mask);
 +	else if (nodelist_parse(kbuf, mask)) {
 +		ret = -EINVAL;
 +		goto out_free;
 +	}
 +
-+	WRITE_ONCE(owner_filter.nid_mask, mask);
++	owner_filter.nid_mask = mask;
 +	ret = count;
 +
 +out_free:
@@ -101,7 +115,7 @@ index 6d87b6948cfad..8c13bb3798d80 100644
 +
 +static int nid_filter_show(struct seq_file *m, void *v)
 +{
-+	nodemask_t mask = READ_ONCE(owner_filter.nid_mask);
++	nodemask_t mask = owner_filter.nid_mask;
 +
 +	if (nodes_empty(mask))
 +		seq_puts(m, "-1\n");
@@ -128,7 +142,7 @@ index 6d87b6948cfad..8c13bb3798d80 100644
  
  static int __init pageowner_init(void)
  {
-@@ -1024,6 +1098,8 @@ static int __init pageowner_init(void)
+@@ -1024,6 +1104,8 @@ static int __init pageowner_init(void)
  	filter_dir = debugfs_create_dir("page_owner_filter", NULL);
  	debugfs_create_file("print_mode", 0600, filter_dir, NULL,
  			    &page_owner_print_mode_fops);

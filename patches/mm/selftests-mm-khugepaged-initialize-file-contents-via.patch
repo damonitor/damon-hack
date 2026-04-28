@@ -1,0 +1,64 @@
+From: Vineet Agarwal <agarwal.vineet2006@gmail.com>
+Date: Tue, 28 Apr 2026 19:01:38 +0530
+Subject: [PATCH] selftests/mm: khugepaged: initialize file contents via mmap
+
+file_setup_area() currently allocates anonymous memory, fills it, and
+writes it into the backing file used for collapse testing.
+
+Instead of copying data through write(), resize the file with ftruncate(),
+map it directly with MAP_SHARED, and initialize the mapped area in place.
+
+This simplifies the setup path and avoids the need for explicit partial
+write handling.
+
+Link: https://lore.kernel.org/20260428133138.88802-1-agarwal.vineet2006@gmail.com
+Signed-off-by: Vineet Agarwal <agarwal.vineet2006@gmail.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index 3fe7ef04ac62e..6e929a484a1bc 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -381,9 +381,19 @@ static void *file_setup_area(int nr_hpages)
+ 	}
+ 
+ 	size = nr_hpages * hpage_pmd_size;
+-	p = alloc_mapping(nr_hpages);
++	if (ftruncate(fd, size)) {
++		perror("ftruncate()");
++		close(fd);
++		exit(EXIT_FAILURE);
++	}
++	p = mmap(BASE_ADDR, size, PROT_READ | PROT_WRITE,
++		MAP_SHARED, fd, 0);
++	if (p == MAP_FAILED || p != BASE_ADDR) {
++		perror("mmap()");
++		close(fd);
++		exit(EXIT_FAILURE);
++	}
+ 	fill_memory(p, 0, size);
+-	write(fd, p, size);
+ 	close(fd);
+ 	munmap(p, size);
+ 	success("OK");
+-- 
+2.47.3
+
