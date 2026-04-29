@@ -1,0 +1,103 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Sat, 25 Apr 2026 13:42:28 -0700
+Subject: [PATCH] include/asm-generic/fixmap.h: reimplement nasty macros in C
+
+Min-Hsun Chang reports[1] "the macro __set_fixmap_offset() uses a
+hardcoded identifier ________addr, which can lead to variable name
+shadowing if a caller happens to use the same name in its scope."
+
+As is usual with macro messes, the answer is to reimplement everything in
+C.
+
+[akpm@linux-foundation.org: convert set_fixmap_io() also]
+[akpm@linux-foundation.org: fix powerpc]
+Link: https://lore.kernel.org/ae92kz3LeyaFBvKw@rli9-mobl
+Reported-by: Min-Hsun Chang <chmh0624@gmail.com>
+Closes: https://lore.kernel.org/20260307092119.20733-1-chmh0624@gmail.com [1]
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Mark Salter <msalter@redhat.com>
+Cc: David Laight <david.laight.linux@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/include/asm/fixmap.h |  3 +++
+ include/asm-generic/fixmap.h      | 40 +++++++++++++++++++------------
+ 2 files changed, 28 insertions(+), 15 deletions(-)
+
+diff --git a/arch/powerpc/include/asm/fixmap.h b/arch/powerpc/include/asm/fixmap.h
+index bc5109eab5b74..feff3a6bfdeda 100644
+--- a/arch/powerpc/include/asm/fixmap.h
++++ b/arch/powerpc/include/asm/fixmap.h
+@@ -88,6 +88,9 @@ enum fixed_addresses {
+ #define FIXMAP_PAGE_NOCACHE PAGE_KERNEL_NCG
+ #define FIXMAP_PAGE_IO	PAGE_KERNEL_NCG
+ 
++static inline void __set_fixmap(enum fixed_addresses idx,
++				phys_addr_t phys, pgprot_t flags);
++
+ #include <asm-generic/fixmap.h>
+ 
+ static inline void __set_fixmap(enum fixed_addresses idx,
+diff --git a/include/asm-generic/fixmap.h b/include/asm-generic/fixmap.h
+index 29cab7947980a..1f792f18ad09c 100644
+--- a/include/asm-generic/fixmap.h
++++ b/include/asm-generic/fixmap.h
+@@ -71,31 +71,41 @@ static inline unsigned long virt_to_fix(const unsigned long vaddr)
+ #endif
+ 
+ /* Return a pointer with offset calculated */
+-#define __set_fixmap_offset(idx, phys, flags)				\
+-({									\
+-	unsigned long ________addr;					\
+-	__set_fixmap(idx, phys, flags);					\
+-	________addr = fix_to_virt(idx) + ((phys) & (PAGE_SIZE - 1));	\
+-	________addr;							\
+-})
++static inline unsigned long
++__set_fixmap_offset(enum fixed_addresses idx, phys_addr_t phys, pgprot_t flags)
++{
++	__set_fixmap(idx, phys, flags);
++	return fix_to_virt(idx) + (phys & (PAGE_SIZE - 1));
++}
+ 
+-#define set_fixmap_offset(idx, phys) \
+-	__set_fixmap_offset(idx, phys, FIXMAP_PAGE_NORMAL)
++static inline unsigned long
++set_fixmap_offset(enum fixed_addresses idx, phys_addr_t phys)
++{
++	return __set_fixmap_offset(idx, phys, FIXMAP_PAGE_NORMAL);
++}
+ 
+ /*
+  * Some hardware wants to get fixmapped without caching.
+  */
+-#define set_fixmap_nocache(idx, phys) \
+-	__set_fixmap(idx, phys, FIXMAP_PAGE_NOCACHE)
++static inline void
++set_fixmap_nocache(enum fixed_addresses idx, phys_addr_t phys)
++{
++	__set_fixmap(idx, phys, FIXMAP_PAGE_NOCACHE);
++}
+ 
+-#define set_fixmap_offset_nocache(idx, phys) \
+-	__set_fixmap_offset(idx, phys, FIXMAP_PAGE_NOCACHE)
++static inline void
++set_fixmap_offset_nocache(enum fixed_addresses idx, phys_addr_t phys)
++{
++	__set_fixmap_offset(idx, phys, FIXMAP_PAGE_NOCACHE);
++}
+ 
+ /*
+  * Some fixmaps are for IO
+  */
+-#define set_fixmap_io(idx, phys) \
+-	__set_fixmap(idx, phys, FIXMAP_PAGE_IO)
++static inline void set_fixmap_io(enum fixed_addresses idx, phys_addr_t phys)
++{
++	__set_fixmap(idx, phys, FIXMAP_PAGE_IO);
++}
+ 
+ #endif /* __ASSEMBLY__ */
+ #endif /* __ASM_GENERIC_FIXMAP_H */
+-- 
+2.47.3
+

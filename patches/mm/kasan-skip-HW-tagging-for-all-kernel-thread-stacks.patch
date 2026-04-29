@@ -1,0 +1,87 @@
+From: Muhammad Usama Anjum <usama.anjum@arm.com>
+Date: Wed, 29 Apr 2026 15:57:03 +0530
+Subject: [PATCH] kasan: skip HW tagging for all kernel thread stacks
+
+HW-tag KASAN never checks kernel stacks because stack pointers carry the
+match-all tag, so setting/poisoning tags is pure overhead.
+
+- Add __GFP_SKIP_KASAN to THREADINFO_GFP so every stack allocator that
+  uses it skips tagging (fork path plus arch users)
+- Add __GFP_SKIP_KASAN to GFP_VMAP_STACK for the fork-specific vmap
+  stacks.
+- When reusing cached vmap stacks, skip kasan_unpoison_range() if HW tags
+  are enabled.
+
+Software KASAN is unchanged; this only affects tag-based KASAN.
+
+Link: https://lore.kernel.org/20260429102704.680174-3-dev.jain@arm.com
+Signed-off-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Ben Segall <bsegall@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dietmar Eggemann <dietmar.eggemann@arm.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Juri Lelli <juri.lelli@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: K Prateek Nayak <kprateek.nayak@amd.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Valentin Schneider <vschneid@redhat.com>
+Cc: Vincent Guittot <vincent.guittot@linaro.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/thread_info.h | 2 +-
+ kernel/fork.c               | 5 +++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/thread_info.h b/include/linux/thread_info.h
+index 051e429026904..307b8390fc670 100644
+--- a/include/linux/thread_info.h
++++ b/include/linux/thread_info.h
+@@ -92,7 +92,7 @@ static inline long set_restart_fn(struct restart_block *restart,
+ #define THREAD_ALIGN	THREAD_SIZE
+ #endif
+ 
+-#define THREADINFO_GFP		(GFP_KERNEL_ACCOUNT | __GFP_ZERO)
++#define THREADINFO_GFP		(GFP_KERNEL_ACCOUNT | __GFP_ZERO | __GFP_SKIP_KASAN)
+ 
+ /*
+  * flag set/clear/test wrappers
+diff --git a/kernel/fork.c b/kernel/fork.c
+index f1ad69c6dc2d4..0d97fd71d7f60 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -204,7 +204,7 @@ static DEFINE_PER_CPU(struct vm_struct *, cached_stacks[NR_CACHED_STACKS]);
+  * accounting is performed by the code assigning/releasing stacks to tasks.
+  * We need a zeroed memory without __GFP_ACCOUNT.
+  */
+-#define GFP_VMAP_STACK (GFP_KERNEL | __GFP_ZERO)
++#define GFP_VMAP_STACK (GFP_KERNEL | __GFP_ZERO | __GFP_SKIP_KASAN)
+ 
+ struct vm_stack {
+ 	struct rcu_head rcu;
+@@ -342,7 +342,8 @@ static int alloc_thread_stack_node(struct task_struct *tsk, int node)
+ 		}
+ 
+ 		/* Reset stack metadata. */
+-		kasan_unpoison_range(vm_area->addr, THREAD_SIZE);
++		if (!kasan_hw_tags_enabled())
++			kasan_unpoison_range(vm_area->addr, THREAD_SIZE);
+ 
+ 		stack = kasan_reset_tag(vm_area->addr);
+ 
+-- 
+2.47.3
+

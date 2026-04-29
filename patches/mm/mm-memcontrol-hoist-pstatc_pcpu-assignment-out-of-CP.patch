@@ -1,0 +1,53 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Wed, 29 Apr 2026 16:42:16 +0800
+Subject: [PATCH] mm/memcontrol: hoist pstatc_pcpu assignment out of CPU loop
+
+In mem_cgroup_alloc(), the assignment of pstatc_pcpu is invariant with
+respect to the for_each_possible_cpu() loop: both the 'parent' pointer and
+'parent->vmstats_percpu' remain constant throughout all iterations.
+
+The original code redundantly re-evaluated the 'if (parent)' condition and
+reassigned pstatc_pcpu on every CPU iteration, then repeated the same
+ternary check 'parent ?  pstatc_pcpu : NULL' when storing into
+statc->parent_pcpu.
+
+Move the single conditional assignment of pstatc_pcpu to before the loop,
+resolving both the loop-invariant placement issue and the duplicated null
+check.  On systems with a large number of possible CPUs, this eliminates
+repeated branch evaluation with no functional change.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260429084216.186238-1-hui.zhu@linux.dev
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index c03d4787d4668..d978e18b9b2d0 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4002,11 +4002,10 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
+ 	if (!memcg1_alloc_events(memcg))
+ 		goto fail;
+ 
++	pstatc_pcpu = parent ? parent->vmstats_percpu : NULL;
+ 	for_each_possible_cpu(cpu) {
+-		if (parent)
+-			pstatc_pcpu = parent->vmstats_percpu;
+ 		statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
+-		statc->parent_pcpu = parent ? pstatc_pcpu : NULL;
++		statc->parent_pcpu = pstatc_pcpu;
+ 		statc->vmstats = memcg->vmstats;
+ 	}
+ 
+-- 
+2.47.3
+

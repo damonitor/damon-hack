@@ -1,0 +1,63 @@
+From: Vineet Agarwal <agarwal.vineet2006@gmail.com>
+Date: Wed, 29 Apr 2026 19:34:34 +0530
+Subject: [PATCH] mm/khugepaged: return -EAGAIN for SCAN_PAGE_HAS_PRIVATE in
+ MADV_COLLAPSE
+
+MADV_COLLAPSE uses errno values to provide actionable feedback to
+userspace.  Temporary resource constraints are mapped to -EAGAIN so the
+caller may retry, while intrinsic failures of the specified range are
+mapped to -EINVAL.
+
+collapse_file() returns SCAN_PAGE_HAS_PRIVATE when filemap_release_folio()
+fails while isolating file-backed folios for collapse.  This currently
+falls through the default case in madvise_collapse_errno() and is reported
+to userspace as -EINVAL.
+
+However, filemap_release_folio() failure commonly reflects temporary folio
+state rather than a permanently uncollapsible range.
+
+For example, ext4 returns false when a folio still has dirty journalled
+data, btrfs returns false for dirty or writeback folios before extent
+state release, and NFS may return false while reclaiming
+filesystem-private folio state.
+
+In such cases, retrying MADV_COLLAPSE after writeback, reclaim or journal
+progress may succeed.  This matches the existing -EAGAIN handling for
+SCAN_PAGE_DIRTY_OR_WRITEBACK and other transient collapse failures more
+closely than -EINVAL.
+
+Therefore, map SCAN_PAGE_HAS_PRIVATE to -EAGAIN so userspace receives
+retryable feedback for this temporary failure path.
+
+Link: https://lore.kernel.org/20260429140434.439456-1-agarwal.vineet2006@gmail.com
+Signed-off-by: Vineet Agarwal <agarwal.vineet2006@gmail.com>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index e112525c4aa9c..9551527957165 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -3151,6 +3151,7 @@ static int madvise_collapse_errno(enum scan_result r)
+ 	case SCAN_PAGE_LRU:
+ 	case SCAN_DEL_PAGE_LRU:
+ 	case SCAN_PAGE_FILLED:
++	case SCAN_PAGE_HAS_PRIVATE:
+ 	case SCAN_PAGE_DIRTY_OR_WRITEBACK:
+ 		return -EAGAIN;
+ 	/*
+-- 
+2.47.3
+

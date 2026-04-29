@@ -1,0 +1,103 @@
+From: Dmitry Ilvokhin <d@ilvokhin.com>
+Date: Wed, 29 Apr 2026 12:02:06 +0000
+Subject: [PATCH] mm: use zone lock guard in reserve_highatomic_pageblock()
+
+Patch series "mm: use spinlock guards for zone lock", v3.
+
+This series uses spinlock guard for zone lock across several mm functions
+to replace explicit lock/unlock patterns with automatic scope-based
+cleanup.
+
+This simplifies the control flow by removing 'flags' variables, goto
+labels, and redundant unlock calls.
+
+Patches are ordered by decreasing value.  The first six patches simplify
+the control flow by removing gotos, multiple unlock paths, or 'ret'
+variables.  The last two are simpler lock/unlock pair conversions that
+only remove 'flags' and can be dropped if considered unnecessary churn.
+
+Binary size increase is +39 bytes, with Peter Zijlstra's fix for guards
+[1] applied.  This is due to the compiler not being able to deduplicate
+epilogue and eliminate redundant NULL check.  See discussion [2] for more
+details.  I proposed a patch [3] that fixes this, but until it is merged
+we need to assume +39 bytes will stay (though it is compiler dependent).
+
+
+This patch (of 8):
+
+Use the spinlock_irqsave zone lock guard in reserve_highatomic_pageblock()
+to replace the explicit lock/unlock and goto out_unlock pattern with
+automatic scope-based cleanup.
+
+Link: https://lore.kernel.org/cover.1777462630.git.d@ilvokhin.com
+Link: https://lore.kernel.org/3657e1144e2ffc1ca0eb57d57d89bfec4073d8c6.1777462630.git.d@ilvokhin.com
+Link: https://lore.kernel.org/all/20260309164516.GE606826@noisy.programming.kicks-ass.net/ [1]
+Link: https://lore.kernel.org/all/afC5C6fylF4AsITV@shell.ilvokhin.com/ [2]
+Link: https://lore.kernel.org/all/20260427165037.205337-1-d@ilvokhin.com/ [3]
+Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
+Suggested-by: Steven Rostedt <rostedt@goodmis.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 13 +++++--------
+ 1 file changed, 5 insertions(+), 8 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index dd0220080e5a9..e88aa067f9429 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -3432,7 +3432,7 @@ static void reserve_highatomic_pageblock(struct page *page, int order,
+ 					 struct zone *zone)
+ {
+ 	int mt;
+-	unsigned long max_managed, flags;
++	unsigned long max_managed;
+ 
+ 	/*
+ 	 * The number reserved as: minimum is 1 pageblock, maximum is
+@@ -3446,29 +3446,26 @@ static void reserve_highatomic_pageblock(struct page *page, int order,
+ 	if (zone->nr_reserved_highatomic >= max_managed)
+ 		return;
+ 
+-	spin_lock_irqsave(&zone->lock, flags);
++	guard(spinlock_irqsave)(&zone->lock);
+ 
+ 	/* Recheck the nr_reserved_highatomic limit under the lock */
+ 	if (zone->nr_reserved_highatomic >= max_managed)
+-		goto out_unlock;
++		return;
+ 
+ 	/* Yoink! */
+ 	mt = get_pageblock_migratetype(page);
+ 	/* Only reserve normal pageblocks (i.e., they can merge with others) */
+ 	if (!migratetype_is_mergeable(mt))
+-		goto out_unlock;
++		return;
+ 
+ 	if (order < pageblock_order) {
+ 		if (move_freepages_block(zone, page, mt, MIGRATE_HIGHATOMIC) == -1)
+-			goto out_unlock;
++			return;
+ 		zone->nr_reserved_highatomic += pageblock_nr_pages;
+ 	} else {
+ 		change_pageblock_range(page, order, MIGRATE_HIGHATOMIC);
+ 		zone->nr_reserved_highatomic += 1 << order;
+ 	}
+-
+-out_unlock:
+-	spin_unlock_irqrestore(&zone->lock, flags);
+ }
+ 
+ /*
+-- 
+2.47.3
+

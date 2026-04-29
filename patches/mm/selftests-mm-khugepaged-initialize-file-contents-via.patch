@@ -1,5 +1,5 @@
 From: Vineet Agarwal <agarwal.vineet2006@gmail.com>
-Date: Tue, 28 Apr 2026 19:01:38 +0530
+Date: Wed, 29 Apr 2026 17:28:16 +0530
 Subject: [PATCH] selftests/mm: khugepaged: initialize file contents via mmap
 
 file_setup_area() currently allocates anonymous memory, fills it, and
@@ -11,8 +11,10 @@ map it directly with MAP_SHARED, and initialize the mapped area in place.
 This simplifies the setup path and avoids the need for explicit partial
 write handling.
 
-Link: https://lore.kernel.org/20260428133138.88802-1-agarwal.vineet2006@gmail.com
+Link: https://lore.kernel.org/20260429115816.98824-1-agarwal.vineet2006@gmail.com
 Signed-off-by: Vineet Agarwal <agarwal.vineet2006@gmail.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Tested-by: Zi Yan <ziy@nvidia.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
@@ -27,35 +29,45 @@ Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
-Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/khugepaged.c | 14 ++++++++++++--
- 1 file changed, 12 insertions(+), 2 deletions(-)
+ tools/testing/selftests/mm/khugepaged.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
-index 3fe7ef04ac62e..6e929a484a1bc 100644
+index 3fe7ef04ac62e..c8393ca52cab7 100644
 --- a/tools/testing/selftests/mm/khugepaged.c
 +++ b/tools/testing/selftests/mm/khugepaged.c
-@@ -381,9 +381,19 @@ static void *file_setup_area(int nr_hpages)
+@@ -373,7 +373,7 @@ static void *file_setup_area(int nr_hpages)
+ 	unlink(finfo.path);  /* Cleanup from previous failed tests */
+ 	printf("Creating %s for collapse%s...", finfo.path,
+ 	       finfo.type == VMA_SHMEM ? " (tmpfs)" : "");
+-	fd = open(finfo.path, O_DSYNC | O_CREAT | O_RDWR | O_TRUNC | O_EXCL,
++	fd = open(finfo.path, O_CREAT | O_RDWR | O_TRUNC | O_EXCL,
+ 		  777);
+ 	if (fd < 0) {
+ 		perror("open()");
+@@ -381,9 +381,21 @@ static void *file_setup_area(int nr_hpages)
  	}
  
  	size = nr_hpages * hpage_pmd_size;
 -	p = alloc_mapping(nr_hpages);
 +	if (ftruncate(fd, size)) {
 +		perror("ftruncate()");
-+		close(fd);
 +		exit(EXIT_FAILURE);
 +	}
 +	p = mmap(BASE_ADDR, size, PROT_READ | PROT_WRITE,
 +		MAP_SHARED, fd, 0);
-+	if (p == MAP_FAILED || p != BASE_ADDR) {
++	if (p != BASE_ADDR) {
 +		perror("mmap()");
-+		close(fd);
 +		exit(EXIT_FAILURE);
 +	}
  	fill_memory(p, 0, size);
 -	write(fd, p, size);
++	if (msync(p, size, MS_SYNC)) {
++		perror("msync()");
++		exit(EXIT_FAILURE);
++	}
  	close(fd);
  	munmap(p, size);
  	success("OK");

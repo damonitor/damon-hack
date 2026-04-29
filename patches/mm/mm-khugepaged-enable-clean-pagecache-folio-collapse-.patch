@@ -1,0 +1,90 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Wed, 29 Apr 2026 11:35:36 -0400
+Subject: [PATCH] mm/khugepaged: enable clean pagecache folio collapse for
+ writable files
+
+collapse_file() is capable of collapsing pagecache folios from writable
+files to PMD folios.  Now enable clean pagecache folio collapse in
+addition to read-only pagecache folio collapse by removing the
+inode_is_open_for_write() from file_thp_enabled() and only performing
+filemap_flush() if the file is read-only.
+
+This means userspace needs to explicitly flush the content of pagecache
+folios before khugepaged can collapse the folios, or use
+madvise(MADV_COLLAPSE), which does the flush in the retry.  The reason is
+that blindly enabling dirty pagecache folio from writable files collapse
+makes khugepaged flush these folios all the time.  It is undesirable to
+cause system level pagecache flushes.
+
+To properly support dirty pagecache folio collapse, filemap_flush() needs
+to be avoided.  Potentially, merging associated buffer instead of dropping
+it with filemap_release_folio() might be needed.
+
+NOTE: this breaks khugepaged selftests for writable file pagecache
+collapse, which is set to fail all the time.  The next commit fixes it.
+
+Link: https://lore.kernel.org/20260429153538.727855-9-ziy@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Song Liu <songliubraving@fb.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 2 +-
+ mm/khugepaged.c  | 9 ++++++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 9b3abb98a7e51..e1e9d59db6e70 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -97,7 +97,7 @@ static inline bool file_thp_enabled(struct vm_area_struct *vma)
+ 	if (!mapping_pmd_folio_support(vma->vm_file->f_mapping))
+ 		return false;
+ 
+-	return !inode_is_open_for_write(inode) && S_ISREG(inode->i_mode);
++	return S_ISREG(inode->i_mode);
+ }
+ 
+ /* If returns true, we are unable to access the VMA's folios. */
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 9db8b8e7ab27b..2b7a27cc5adaf 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -2345,7 +2345,14 @@ static enum scan_result collapse_file(struct mm_struct *mm, unsigned long addr,
+ 				 * forcing writeback in loop.
+ 				 */
+ 				xas_unlock_irq(&xas);
+-				filemap_flush(mapping);
++				/*
++				 * Only flush for read-only files. Writable
++				 * files can have their folios dirty at any
++				 * time; blindly flushing them would cause
++				 * undesirable system-wide writeback.
++				 */
++				if (!inode_is_open_for_write(mapping->host))
++					filemap_flush(mapping);
+ 				result = SCAN_PAGE_DIRTY_OR_WRITEBACK;
+ 				goto xa_unlocked;
+ 			} else if (folio_test_writeback(folio)) {
+-- 
+2.47.3
+

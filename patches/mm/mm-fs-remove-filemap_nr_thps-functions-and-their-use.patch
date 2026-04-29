@@ -1,0 +1,204 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Wed, 29 Apr 2026 11:35:29 -0400
+Subject: [PATCH] mm: fs: remove filemap_nr_thps*() functions and their users
+
+They are used by READ_ONLY_THP_FOR_FS to handle writes to FSes without
+large folio support, so that read-only THPs created in these FSes are not
+seen by the FSes when the underlying fd becomes writable.  Now read-only
+PMD THPs only appear in a FS with large folio support and the supported
+orders include PMD_ORDER.
+
+READ_ONLY_THP_FOR_FS was using mapping->nr_thps, inode->i_writecount, and
+smp_mb() to prevent writes to a read-only THP and collapsing writable
+folios into a THP.  In collapse_file(), mapping->nr_thps is increased,
+then smp_mb(), and if inode->i_writecount > 0, collapse is stopped, while
+do_dentry_open() first increases inode->i_writecount, then a full memory
+fence, and if mapping->nr_thps > 0, all read-only THPs are truncated.
+
+Now this mechanism can be removed along with READ_ONLY_THP_FOR_FS code,
+since a dirty folio check has been added after try_to_unmap() in
+collapse_file() to prevent dirty folios from being collapsed as clean.
+
+Link: https://lore.kernel.org/20260429153538.727855-2-ziy@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Mason <clm@fb.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Sterba <dsterba@suse.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Song Liu <songliubraving@fb.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/open.c               | 27 ---------------------------
+ include/linux/pagemap.h | 29 -----------------------------
+ mm/filemap.c            |  1 -
+ mm/huge_memory.c        |  1 -
+ mm/khugepaged.c         | 28 ----------------------------
+ 5 files changed, 86 deletions(-)
+
+diff --git a/fs/open.c b/fs/open.c
+index 681d405bc61eb..c321b80027f13 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -968,33 +968,6 @@ static int do_dentry_open(struct file *f,
+ 	if ((f->f_flags & O_DIRECT) && !(f->f_mode & FMODE_CAN_ODIRECT))
+ 		return -EINVAL;
+ 
+-	/*
+-	 * XXX: Huge page cache doesn't support writing yet. Drop all page
+-	 * cache for this file before processing writes.
+-	 */
+-	if (f->f_mode & FMODE_WRITE) {
+-		/*
+-		 * Depends on full fence from get_write_access() to synchronize
+-		 * against collapse_file() regarding i_writecount and nr_thps
+-		 * updates. Ensures subsequent insertion of THPs into the page
+-		 * cache will fail.
+-		 */
+-		if (filemap_nr_thps(inode->i_mapping)) {
+-			struct address_space *mapping = inode->i_mapping;
+-
+-			filemap_invalidate_lock(inode->i_mapping);
+-			/*
+-			 * unmap_mapping_range just need to be called once
+-			 * here, because the private pages is not need to be
+-			 * unmapped mapping (e.g. data segment of dynamic
+-			 * shared libraries here).
+-			 */
+-			unmap_mapping_range(mapping, 0, 0, 0);
+-			truncate_inode_pages(mapping, 0);
+-			filemap_invalidate_unlock(inode->i_mapping);
+-		}
+-	}
+-
+ 	return 0;
+ 
+ cleanup_all:
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 1fed3414fe9b8..c6a4ecd3d6ed1 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -545,35 +545,6 @@ static inline size_t mapping_max_folio_size(const struct address_space *mapping)
+ 	return PAGE_SIZE << mapping_max_folio_order(mapping);
+ }
+ 
+-static inline int filemap_nr_thps(const struct address_space *mapping)
+-{
+-#ifdef CONFIG_READ_ONLY_THP_FOR_FS
+-	return atomic_read(&mapping->nr_thps);
+-#else
+-	return 0;
+-#endif
+-}
+-
+-static inline void filemap_nr_thps_inc(struct address_space *mapping)
+-{
+-#ifdef CONFIG_READ_ONLY_THP_FOR_FS
+-	if (!mapping_large_folio_support(mapping))
+-		atomic_inc(&mapping->nr_thps);
+-#else
+-	WARN_ON_ONCE(mapping_large_folio_support(mapping) == 0);
+-#endif
+-}
+-
+-static inline void filemap_nr_thps_dec(struct address_space *mapping)
+-{
+-#ifdef CONFIG_READ_ONLY_THP_FOR_FS
+-	if (!mapping_large_folio_support(mapping))
+-		atomic_dec(&mapping->nr_thps);
+-#else
+-	WARN_ON_ONCE(mapping_large_folio_support(mapping) == 0);
+-#endif
+-}
+-
+ struct address_space *folio_mapping(const struct folio *folio);
+ 
+ /**
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 97772a05a18e2..ad2dd1e5242c1 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -189,7 +189,6 @@ static void filemap_unaccount_folio(struct address_space *mapping,
+ 			lruvec_stat_mod_folio(folio, NR_SHMEM_THPS, -nr);
+ 	} else if (folio_test_pmd_mappable(folio)) {
+ 		lruvec_stat_mod_folio(folio, NR_FILE_THPS, -nr);
+-		filemap_nr_thps_dec(mapping);
+ 	}
+ 	if (test_bit(AS_KERNEL_FILE, &folio->mapping->flags))
+ 		mod_node_page_state(folio_pgdat(folio),
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 3b324f03e9283..884e8b5811569 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3951,7 +3951,6 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+ 				} else {
+ 					lruvec_stat_mod_folio(folio,
+ 							NR_FILE_THPS, -nr);
+-					filemap_nr_thps_dec(mapping);
+ 				}
+ 			}
+ 		}
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 4ea7bf7c889f2..9db8b8e7ab27b 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -2469,21 +2469,6 @@ static enum scan_result collapse_file(struct mm_struct *mm, unsigned long addr,
+ 		goto xa_unlocked;
+ 	}
+ 
+-	if (!is_shmem) {
+-		filemap_nr_thps_inc(mapping);
+-		/*
+-		 * Paired with the fence in do_dentry_open() -> get_write_access()
+-		 * to ensure i_writecount is up to date and the update to nr_thps
+-		 * is visible. Ensures the page cache will be truncated if the
+-		 * file is opened writable.
+-		 */
+-		smp_mb();
+-		if (inode_is_open_for_write(mapping->host)) {
+-			result = SCAN_FAIL;
+-			filemap_nr_thps_dec(mapping);
+-		}
+-	}
+-
+ xa_locked:
+ 	xas_unlock_irq(&xas);
+ xa_unlocked:
+@@ -2661,19 +2646,6 @@ static enum scan_result collapse_file(struct mm_struct *mm, unsigned long addr,
+ 		folio_putback_lru(folio);
+ 		folio_put(folio);
+ 	}
+-	/*
+-	 * Undo the updates of filemap_nr_thps_inc for non-SHMEM
+-	 * file only. This undo is not needed unless failure is
+-	 * due to SCAN_COPY_MC.
+-	 */
+-	if (!is_shmem && result == SCAN_COPY_MC) {
+-		filemap_nr_thps_dec(mapping);
+-		/*
+-		 * Paired with the fence in do_dentry_open() -> get_write_access()
+-		 * to ensure the update to nr_thps is visible.
+-		 */
+-		smp_mb();
+-	}
+ 
+ 	new_folio->mapping = NULL;
+ 
+-- 
+2.47.3
+

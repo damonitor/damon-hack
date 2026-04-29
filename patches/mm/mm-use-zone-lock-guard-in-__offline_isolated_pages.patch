@@ -1,0 +1,58 @@
+From: Dmitry Ilvokhin <d@ilvokhin.com>
+Date: Wed, 29 Apr 2026 12:02:13 +0000
+Subject: [PATCH] mm: use zone lock guard in __offline_isolated_pages()
+
+Use spinlock_irqsave zone lock guard in __offline_isolated_pages() to
+replace the explicit lock/unlock pattern with automatic scope-based
+cleanup.
+
+Link: https://lore.kernel.org/13149be4f8151e18eb5f1eb4f3241ab3cffb373e.1777462630.git.d@ilvokhin.com
+Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
+Suggested-by: Steven Rostedt <rostedt@goodmis.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 8ace00f682f46..90e404573c99c 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -7521,7 +7521,7 @@ void zone_pcp_reset(struct zone *zone)
+ unsigned long __offline_isolated_pages(unsigned long start_pfn,
+ 		unsigned long end_pfn)
+ {
+-	unsigned long already_offline = 0, flags;
++	unsigned long already_offline = 0;
+ 	unsigned long pfn = start_pfn;
+ 	struct page *page;
+ 	struct zone *zone;
+@@ -7529,7 +7529,7 @@ unsigned long __offline_isolated_pages(unsigned long start_pfn,
+ 
+ 	offline_mem_sections(pfn, end_pfn);
+ 	zone = page_zone(pfn_to_page(pfn));
+-	spin_lock_irqsave(&zone->lock, flags);
++	guard(spinlock_irqsave)(&zone->lock);
+ 	while (pfn < end_pfn) {
+ 		page = pfn_to_page(pfn);
+ 		/*
+@@ -7559,7 +7559,6 @@ unsigned long __offline_isolated_pages(unsigned long start_pfn,
+ 		del_page_from_free_list(page, zone, order, MIGRATE_ISOLATE);
+ 		pfn += (1 << order);
+ 	}
+-	spin_unlock_irqrestore(&zone->lock, flags);
+ 
+ 	return end_pfn - start_pfn - already_offline;
+ }
+-- 
+2.47.3
+

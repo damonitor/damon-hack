@@ -2,17 +2,93 @@
 - mm-hotfixes-stable: 5 -> 5 commits (no change)
   - series: 2 (5) -> 2 (5) (no change)
     - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-hotfixes-unstable: 3 -> 3 commits (no change)
+- mm-hotfixes-unstable: 3 -> 2 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 3 -> 3 commits (no change)
+    - maintainer, nobody: 3 -> 2 commits
+  - dropped commits
+    - 6319dbc17e9f "mm/damon/core: make charge_addr_from aware of end-address exclusivity"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260428042942.118230-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260428032324.115663-1-sj@kernel.org [1]
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-new: 27 -> 27 commits (no change)
-  - series: 3 (25) -> 3 (25) (no change)
-    - no role, maintainer: 5 -> 5 commits (no change)
-    - maintainer, nobody: 22 -> 22 commits (no change)
+- mm-new: 27 -> 24 commits
+  - series: 3 (25) -> 4 (23)
+    - no role, maintainer: 5 -> 4 commits
+    - maintainer, nobody: 22 -> 20 commits
+  - new commits
+    - series "mm/damon/reclaim,lru_sort: monitor all system rams by default". (7)
+      - db2c40f79bba "mm/damon: introduce damon_set_region_system_rams_default() (0/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260429041232.90257-2-sj@kernel.org
+      - 4abb30686ee6 "mm/damon/reclaim: cover all system rams (1/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-3-sj@kernel.org
+      - 5b464842d727 "mm/damon/lru_sort: cover all system rams (2/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-4-sj@kernel.org
+      - 33ae878da352 "mm/damon/core: remove damon_set_region_biggest_system_ram_default() (3/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-5-sj@kernel.org
+      - 21836a00d92c "mm/damon/stat: use damon_set_region_system_rams_default() (4/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-6-sj@kernel.org
+      - f4f158895640 "Docs/admin-guide/mm/damon/reclaim: update for entire memory monitoring (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-7-sj@kernel.org
+      - ec0ce0721ba2 "Docs/admin-guide/mm/damon/lru_sort: update for entire memory monitoring (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429041232.90257-8-sj@kernel.org
+    - series "mm/damon/sysfs: document filters/ directory as deprecated". (2)
+      - 165fbdf8bf46 "Docs/admin-guide/mm/damon/usage: mark scheme filters sysfs dir as deprecated (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429150309.82282-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260429150309.82282-2-sj@kernel.org
+      - 699ff470d10d "Docs/ABI/damon: mark schemes/<S>/filters/ deprecated (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260429150309.82282-3-sj@kernel.org
+  - dropped commits
+    - 0937263c7a11 "mm/damon: add node_eligible_mem_bp goal metric"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260428030520.701-1-ravis.opensrc@gmail.com
+    - series "mm/damon: introduce DAMOS failed region quota charge ratio". (11)
+      - 4308acc0421f "mm/damon/core: handle <min_region_sz remaining quota as empty (0/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260428013402.115171-2-sj@kernel.org
+      - 40245c9db920 "mm/damon/core: merge regions after applying DAMOS schemes (1/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-3-sj@kernel.org
+      - b90c7a4a597f "mm/damon/core: introduce failed region quota charge ratio (2/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-4-sj@kernel.org
+      - c38820f12b31 "mm/damon/sysfs-schemes: implement fail_charge_{num,denom} files (3/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-5-sj@kernel.org
+      - 0e49f8a81075 "Docs/mm/damon/design: document fail_charge_{num,denom} (4/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-6-sj@kernel.org
+      - 3f9f7c69b369 "Docs/admin-guide/mm/damon/usage: document fail_charge_{num,denom} files (5/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-7-sj@kernel.org
+      - c35731a7d167 "Docs/ABI/damon: document fail_charge_{num,denom} (6/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-8-sj@kernel.org
+      - c702a963b897 "mm/damon/tests/core-kunit: test fail_charge_{num,denom} committing (7/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-9-sj@kernel.org
+      - ede1e25fa4dc "selftests/damon/_damon_sysfs: support failed region quota charge ratio (8/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-10-sj@kernel.org
+      - 2574290bbfc0 "selftests/damon/drgn_dump_damon_status: support failed region quota charge ratio (9/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-11-sj@kernel.org
+      - f17ca5bf2878 "selftests/damon/sysfs.py: test failed region quota charge ratio (10/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260428013402.115171-12-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
