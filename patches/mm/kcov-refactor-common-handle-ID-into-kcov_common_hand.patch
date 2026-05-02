@@ -1,0 +1,241 @@
+From: Jann Horn <jannh@google.com>
+Date: Thu, 30 Apr 2026 16:15:33 +0200
+Subject: [PATCH] kcov: refactor common handle ID into kcov_common_handle_id
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Store common handle IDs in "struct kcov_common_handle_id", which consumes
+no space in non-KCOV builds.
+
+This cleanup removes #ifdef boilerplate code from subsystems that
+integrate with KCOV (in particular in usbip_common.h and skbuff.h, see the
+diffstat).
+
+This should also make it easier to add KCOV remote coverage to more
+subsystems in the future.
+
+Link: https://lore.kernel.org/20260430-kcov-refactor-common-handle-v1-1-23a0c7a0ba38@google.com
+Signed-off-by: Jann Horn <jannh@google.com>
+Acked-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Reviewed-by: Dmitry Vyukov <dvyukov@google.com>
+Acked-by: Jakub Kicinski <kuba@kernel.org>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Hongren (Zenithal) Zheng <i@zenithal.me>
+Cc: Jann Horn <jannh@google.com>
+Cc: Jason Wang <jasowang@redhat.com>
+Cc: "Michael S. Tsirkin" <mst@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Valentina Manea <valentina.manea.m@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/usb/usbip/usbip_common.h | 29 +----------------------------
+ drivers/usb/usbip/vhci_rx.c      |  4 ++--
+ drivers/usb/usbip/vhci_sysfs.c   |  2 +-
+ drivers/vhost/vhost.h            |  2 +-
+ include/linux/kcov.h             | 12 ++++++------
+ include/linux/skbuff.h           | 14 +++-----------
+ include/linux/types.h            |  6 ++++++
+ kernel/kcov.c                    |  6 +++---
+ 8 files changed, 23 insertions(+), 52 deletions(-)
+
+diff --git a/drivers/usb/usbip/usbip_common.h b/drivers/usb/usbip/usbip_common.h
+index 282efca64a012..be4c5e65a7f8c 100644
+--- a/drivers/usb/usbip/usbip_common.h
++++ b/drivers/usb/usbip/usbip_common.h
+@@ -282,9 +282,7 @@ struct usbip_device {
+ 		void (*unusable)(struct usbip_device *);
+ 	} eh_ops;
+ 
+-#ifdef CONFIG_KCOV
+-	u64 kcov_handle;
+-#endif
++	struct kcov_common_handle_id kcov_handle;
+ };
+ 
+ #define kthread_get_run(threadfn, data, namefmt, ...)			   \
+@@ -339,29 +337,4 @@ static inline int interface_to_devnum(struct usb_interface *interface)
+ 	return udev->devnum;
+ }
+ 
+-#ifdef CONFIG_KCOV
+-
+-static inline void usbip_kcov_handle_init(struct usbip_device *ud)
+-{
+-	ud->kcov_handle = kcov_common_handle();
+-}
+-
+-static inline void usbip_kcov_remote_start(struct usbip_device *ud)
+-{
+-	kcov_remote_start_common(ud->kcov_handle);
+-}
+-
+-static inline void usbip_kcov_remote_stop(void)
+-{
+-	kcov_remote_stop();
+-}
+-
+-#else /* CONFIG_KCOV */
+-
+-static inline void usbip_kcov_handle_init(struct usbip_device *ud) { }
+-static inline void usbip_kcov_remote_start(struct usbip_device *ud) { }
+-static inline void usbip_kcov_remote_stop(void) { }
+-
+-#endif /* CONFIG_KCOV */
+-
+ #endif /* __USBIP_COMMON_H */
+diff --git a/drivers/usb/usbip/vhci_rx.c b/drivers/usb/usbip/vhci_rx.c
+index a75f4a898a412..a678e7c898375 100644
+--- a/drivers/usb/usbip/vhci_rx.c
++++ b/drivers/usb/usbip/vhci_rx.c
+@@ -261,9 +261,9 @@ int vhci_rx_loop(void *data)
+ 		if (usbip_event_happened(ud))
+ 			break;
+ 
+-		usbip_kcov_remote_start(ud);
++		kcov_remote_start_common(ud->kcov_handle);
+ 		vhci_rx_pdu(ud);
+-		usbip_kcov_remote_stop();
++		kcov_remote_stop();
+ 	}
+ 
+ 	return 0;
+diff --git a/drivers/usb/usbip/vhci_sysfs.c b/drivers/usb/usbip/vhci_sysfs.c
+index 5bc8c47788d45..b98d14c43d13d 100644
+--- a/drivers/usb/usbip/vhci_sysfs.c
++++ b/drivers/usb/usbip/vhci_sysfs.c
+@@ -425,7 +425,7 @@ static ssize_t attach_store(struct device *dev, struct device_attribute *attr,
+ 	vdev->ud.tcp_rx     = tcp_rx;
+ 	vdev->ud.tcp_tx     = tcp_tx;
+ 	vdev->ud.status     = VDEV_ST_NOTASSIGNED;
+-	usbip_kcov_handle_init(&vdev->ud);
++	vdev->ud.kcov_handle = kcov_common_handle();
+ 
+ 	spin_unlock(&vdev->ud.lock);
+ 	spin_unlock_irqrestore(&vhci->lock, flags);
+diff --git a/drivers/vhost/vhost.h b/drivers/vhost/vhost.h
+index 4fe99765c5c73..0192ade6e7491 100644
+--- a/drivers/vhost/vhost.h
++++ b/drivers/vhost/vhost.h
+@@ -44,7 +44,7 @@ struct vhost_worker {
+ 	/* Used to serialize device wide flushing with worker swapping. */
+ 	struct mutex		mutex;
+ 	struct llist_head	work_list;
+-	u64			kcov_handle;
++	struct kcov_common_handle_id kcov_handle;
+ 	u32			id;
+ 	int			attachment_cnt;
+ 	bool			killed;
+diff --git a/include/linux/kcov.h b/include/linux/kcov.h
+index 0143358874b07..cdb72b3859d87 100644
+--- a/include/linux/kcov.h
++++ b/include/linux/kcov.h
+@@ -43,11 +43,11 @@ do {						\
+ /* See Documentation/dev-tools/kcov.rst for usage details. */
+ void kcov_remote_start(u64 handle);
+ void kcov_remote_stop(void);
+-u64 kcov_common_handle(void);
++struct kcov_common_handle_id kcov_common_handle(void);
+ 
+-static inline void kcov_remote_start_common(u64 id)
++static inline void kcov_remote_start_common(struct kcov_common_handle_id id)
+ {
+-	kcov_remote_start(kcov_remote_handle(KCOV_SUBSYSTEM_COMMON, id));
++	kcov_remote_start(kcov_remote_handle(KCOV_SUBSYSTEM_COMMON, id.val));
+ }
+ 
+ static inline void kcov_remote_start_usb(u64 id)
+@@ -99,11 +99,11 @@ static inline void kcov_prepare_switch(struct task_struct *t) {}
+ static inline void kcov_finish_switch(struct task_struct *t) {}
+ static inline void kcov_remote_start(u64 handle) {}
+ static inline void kcov_remote_stop(void) {}
+-static inline u64 kcov_common_handle(void)
++static inline struct kcov_common_handle_id kcov_common_handle(void)
+ {
+-	return 0;
++	return (struct kcov_common_handle_id){};
+ }
+-static inline void kcov_remote_start_common(u64 id) {}
++static inline void kcov_remote_start_common(struct kcov_common_handle_id id) {}
+ static inline void kcov_remote_start_usb(u64 id) {}
+ static inline void kcov_remote_start_usb_softirq(u64 id) {}
+ static inline void kcov_remote_stop_softirq(void) {}
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 2bcf78a4de7b9..a3fe418f7ced8 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -1082,9 +1082,7 @@ struct sk_buff {
+ 	__u16			network_header;
+ 	__u16			mac_header;
+ 
+-#ifdef CONFIG_KCOV
+-	u64			kcov_handle;
+-#endif
++	struct kcov_common_handle_id kcov_handle;
+ 
+ 	); /* end headers group */
+ 
+@@ -5437,20 +5435,14 @@ static inline void skb_reset_csum_not_inet(struct sk_buff *skb)
+ }
+ 
+ static inline void skb_set_kcov_handle(struct sk_buff *skb,
+-				       const u64 kcov_handle)
++				       struct kcov_common_handle_id kcov_handle)
+ {
+-#ifdef CONFIG_KCOV
+ 	skb->kcov_handle = kcov_handle;
+-#endif
+ }
+ 
+-static inline u64 skb_get_kcov_handle(struct sk_buff *skb)
++static inline struct kcov_common_handle_id skb_get_kcov_handle(struct sk_buff *skb)
+ {
+-#ifdef CONFIG_KCOV
+ 	return skb->kcov_handle;
+-#else
+-	return 0;
+-#endif
+ }
+ 
+ static inline void skb_mark_for_recycle(struct sk_buff *skb)
+diff --git a/include/linux/types.h b/include/linux/types.h
+index 608050dbca6a7..93166b0b0617a 100644
+--- a/include/linux/types.h
++++ b/include/linux/types.h
+@@ -224,6 +224,12 @@ struct ustat {
+ 	char			f_fpack[6];
+ };
+ 
++struct kcov_common_handle_id {
++#ifdef CONFIG_KCOV
++	u64 val;
++#endif
++};
++
+ /**
+  * struct callback_head - callback structure for use with RCU and task_work
+  * @next: next update requests in a list
+diff --git a/kernel/kcov.c b/kernel/kcov.c
+index 0b369e88c7c9b..a43e33a28adb9 100644
+--- a/kernel/kcov.c
++++ b/kernel/kcov.c
+@@ -1083,11 +1083,11 @@ void kcov_remote_stop(void)
+ EXPORT_SYMBOL(kcov_remote_stop);
+ 
+ /* See the comment before kcov_remote_start() for usage details. */
+-u64 kcov_common_handle(void)
++struct kcov_common_handle_id kcov_common_handle(void)
+ {
+ 	if (!in_task())
+-		return 0;
+-	return current->kcov_handle;
++		return (struct kcov_common_handle_id){ .val = 0 };
++	return (struct kcov_common_handle_id){ .val = current->kcov_handle };
+ }
+ EXPORT_SYMBOL(kcov_common_handle);
+ 
+-- 
+2.47.3
+

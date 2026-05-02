@@ -11,19 +11,10 @@
   - series: 1 (11) -> 1 (11) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
     - maintainer, nobody: 12 -> 12 commits (no change)
-- mm-new: 24 -> 26 commits
-  - series: 4 (23) -> 5 (26)
+- mm-new: 26 -> 26 commits (no change)
+  - series: 5 (26) -> 5 (26) (no change)
     - no role, maintainer: 4 -> 4 commits (no change)
-    - maintainer, nobody: 20 -> 22 commits
-  - new commits
-    - series "mm/damon/reclaim: support monitoring intervals auto-tuning". (2)
-      - 07889a6e327b "mm/damon/reclaim: add autotune_monitoring_intervals parameter (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260501011740.81988-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260501011740.81988-2-sj@kernel.org
-      - 5a5630c6cad8 "Docs/admin-guide/mm/damon/reclaim: update for autotune_monitoring_intervals (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260501011740.81988-3-sj@kernel.org
+    - maintainer, nobody: 22 -> 22 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
