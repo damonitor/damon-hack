@@ -1,0 +1,119 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 30 Apr 2026 18:17:38 -0700
+Subject: [PATCH] mm/damon/reclaim: add autotune_monitoring_intervals parameter
+
+Patch series "mm/damon/reclaim: support monitoring intervals auto-tuning".
+
+The monitoring intervals auto-tuning feature of DAMON has proven to be
+useful in multiple environments.  Add a new DAMON_RECLAIM parameter for
+supporting the feature, and update the document for the new parameter.
+
+
+This patch (of 2):
+
+DAMON's monitoring intervals auto-tuning feature has proven to be useful
+in multiple environments.  DAMON_RECLAIM is still asking users to do the
+manual tuning of the intervals.  Add a module parameter for utilizing the
+auto-tuning feature with the suggested default setup.
+
+Note that use of the auto-tuning overrides the manually entered monitoring
+intervals.  Also, note that the 'min_age' will dynamically changed
+proportional to auto-tuned intervals.  It is recommended to use 'min_age'
+short enough and use 'quota_mem_pressure_us' like coldness threshold
+auto-tuning features together.
+
+Link: https://lore.kernel.org/20260501011740.81988-1-sj@kernel.org
+Link: https://lore.kernel.org/20260501011740.81988-2-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/reclaim.c | 33 ++++++++++++++++++++++++++++-----
+ 1 file changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index a60ee800d63e9..7126d47fb8b2f 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -91,6 +91,20 @@ module_param(quota_mem_pressure_us, ulong, 0600);
+ static unsigned long quota_autotune_feedback __read_mostly;
+ module_param(quota_autotune_feedback, ulong, 0600);
+ 
++/*
++ * Auto-tune monitoring intervals.
++ *
++ * If this parameter is set as ``Y``, DAMON_RECLAIM automatically tunes DAMON's
++ * sampling and aggregation intervals.  The auto-tuning aims to capture
++ * meaningful amount of access events in each DAMON-snapshot, while keeping the
++ * sampling intervals 5 milliseconds in minimum, and 10 seconds in maximum.
++ * Setting this as ``N`` disables the auto-tuning.
++ *
++ * Disabled by default.
++ */
++static bool autotune_monitoring_intervals __read_mostly;
++module_param(autotune_monitoring_intervals, bool, 0600);
++
+ static struct damos_watermarks damon_reclaim_wmarks = {
+ 	.metric = DAMOS_WMARK_FREE_MEM_RATE,
+ 	.interval = 5000000,	/* 5 seconds */
+@@ -152,7 +166,7 @@ DEFINE_DAMON_MODULES_DAMOS_STATS_PARAMS(damon_reclaim_stat,
+ static struct damon_ctx *ctx;
+ static struct damon_target *target;
+ 
+-static struct damos *damon_reclaim_new_scheme(void)
++static struct damos *damon_reclaim_new_scheme(unsigned long aggr_interval)
+ {
+ 	struct damos_access_pattern pattern = {
+ 		/* Find regions having PAGE_SIZE or larger size */
+@@ -162,8 +176,7 @@ static struct damos *damon_reclaim_new_scheme(void)
+ 		.min_nr_accesses = 0,
+ 		.max_nr_accesses = 0,
+ 		/* for min_age or more micro-seconds */
+-		.min_age_region = min_age /
+-			damon_reclaim_mon_attrs.aggr_interval,
++		.min_age_region = min_age / aggr_interval,
+ 		.max_age_region = UINT_MAX,
+ 	};
+ 
+@@ -184,6 +197,7 @@ static int damon_reclaim_apply_parameters(void)
+ {
+ 	struct damon_ctx *param_ctx;
+ 	struct damon_target *param_target;
++	struct damon_attrs attrs;
+ 	struct damos *scheme;
+ 	struct damos_quota_goal *goal;
+ 	struct damos_filter *filter;
+@@ -201,12 +215,21 @@ static int damon_reclaim_apply_parameters(void)
+ 		goto out;
+ 	}
+ 
+-	err = damon_set_attrs(param_ctx, &damon_reclaim_mon_attrs);
++	attrs = damon_reclaim_mon_attrs;
++	if (autotune_monitoring_intervals) {
++		attrs.sample_interval = 5000;
++		attrs.aggr_interval = 100000;
++		attrs.intervals_goal.access_bp = 40;
++		attrs.intervals_goal.aggrs = 3;
++		attrs.intervals_goal.min_sample_us = 5000;
++		attrs.intervals_goal.max_sample_us = 10 * 1000 * 1000;
++	}
++	err = damon_set_attrs(param_ctx, &attrs);
+ 	if (err)
+ 		goto out;
+ 
+ 	err = -ENOMEM;
+-	scheme = damon_reclaim_new_scheme();
++	scheme = damon_reclaim_new_scheme(attrs.aggr_interval);
+ 	if (!scheme)
+ 		goto out;
+ 	damon_set_schemes(param_ctx, &scheme, 1);
+-- 
+2.47.3
+

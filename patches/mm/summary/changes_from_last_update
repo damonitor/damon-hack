@@ -7,57 +7,23 @@
     - maintainer, nobody: 2 -> 2 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 0 -> 13 commits
-  - series: 0 (0) -> 1 (11)
-    - no role, maintainer: 0 -> 1 commits
-    - maintainer, nobody: 0 -> 12 commits
-  - new commits
-    - 09d764c10b07 "mm/damon/core: make charge_addr_from aware of end-address exclusivity"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260428042942.118230-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260428032324.115663-1-sj@kernel.org [1]
-    - 8698b493cc53 "mm/damon: add node_eligible_mem_bp goal metric"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260428030520.701-1-ravis.opensrc@gmail.com
-    - series "mm/damon: introduce DAMOS failed region quota charge ratio". (11)
-      - 0aec6a60d545 "mm/damon/core: handle <min_region_sz remaining quota as empty (0/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260428013402.115171-2-sj@kernel.org
-      - 6d8c29eb87ed "mm/damon/core: merge regions after applying DAMOS schemes (1/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-3-sj@kernel.org
-      - 8140a8ab1f17 "mm/damon/core: introduce failed region quota charge ratio (2/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-4-sj@kernel.org
-      - 76d4cdddb681 "mm/damon/sysfs-schemes: implement fail_charge_{num,denom} files (3/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-5-sj@kernel.org
-      - 20f69ed3eba2 "Docs/mm/damon/design: document fail_charge_{num,denom} (4/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-6-sj@kernel.org
-      - 83f6350f2884 "Docs/admin-guide/mm/damon/usage: document fail_charge_{num,denom} files (5/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-7-sj@kernel.org
-      - 86ee9b6e1d90 "Docs/ABI/damon: document fail_charge_{num,denom} (6/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-8-sj@kernel.org
-      - 30e1d289c869 "mm/damon/tests/core-kunit: test fail_charge_{num,denom} committing (7/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-9-sj@kernel.org
-      - 2f5a5a25dad3 "selftests/damon/_damon_sysfs: support failed region quota charge ratio (8/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-10-sj@kernel.org
-      - ac3b272aa53b "selftests/damon/drgn_dump_damon_status: support failed region quota charge ratio (9/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-11-sj@kernel.org
-      - 4912a87d487b "selftests/damon/sysfs.py: test failed region quota charge ratio (10/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260428013402.115171-12-sj@kernel.org
-- mm-new: 24 -> 24 commits (no change)
-  - series: 4 (23) -> 4 (23) (no change)
+- mm-unstable: 13 -> 13 commits (no change)
+  - series: 1 (11) -> 1 (11) (no change)
+    - no role, maintainer: 1 -> 1 commits (no change)
+    - maintainer, nobody: 12 -> 12 commits (no change)
+- mm-new: 24 -> 26 commits
+  - series: 4 (23) -> 5 (26)
     - no role, maintainer: 4 -> 4 commits (no change)
-    - maintainer, nobody: 20 -> 20 commits (no change)
+    - maintainer, nobody: 20 -> 22 commits
+  - new commits
+    - series "mm/damon/reclaim: support monitoring intervals auto-tuning". (2)
+      - 07889a6e327b "mm/damon/reclaim: add autotune_monitoring_intervals parameter (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260501011740.81988-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260501011740.81988-2-sj@kernel.org
+      - 5a5630c6cad8 "Docs/admin-guide/mm/damon/reclaim: update for autotune_monitoring_intervals (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260501011740.81988-3-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
