@@ -1,0 +1,104 @@
+From: Liew Rui Yan <aethernet65535@gmail.com>
+Date: Fri, 1 May 2026 09:37:49 +0800
+Subject: [PATCH] mm/damon/lru_sort: validate min_region_size to be power of 2
+
+Patch series '[PATCH v5 0/2] mm/damon: validate min_region_size to be
+             power of 2'
+
+Problem
+=======
+When a user sets an invalid 'addr_unit' (e.g., 3) via DAMON_LRU_SORT or
+DAMON_RECLAIM, 'min_region_sz' becomes a non-power-of-2 value. While
+damon_commit_ctx() correctly detects this and returns -EINVAL, it sets
+the 'maybe_corrupted' flag during this process.
+
+This flag causes the running kdamond to terminate. While the termination
+is a safety measure, it is suboptimal in this case because the error is
+just a simple invalid input from the user, which shouldn't neccessitate
+stopping the kdamond.
+
+Solution
+========
+Add an early validation in damon_lru_sort_apply_parameters() and
+damon_reclaim_apply_parameters() to check 'min_region_sz' before any
+state change occurs. If it is non-power-of-2, return -EINVAL immediately,
+preventing 'maybe_corrupted' from being set.
+
+Patch 1 fixes the issue for DAMON_LRU_SORT.
+Patch 2 fixes the issue for DAMON_RECLAIM.
+
+Changes from v4
+(https://lore.kernel.org/20260410044259.95877-1-aethernet65535@gmail.com)
+- Clarify this is only a minor user experience improvement.
+- Remove Fixes: and Cc: stable tags.
+Changes from v3
+(https://lore.kernel.org/20260403052837.58063-1-aethernet65535@gmail.com)
+- Improve commit message: clarify "unexpected termination".
+- Add detailed User Impact with reason why kdamond cannot be restarted.
+Changes from v2
+(https://lore.kernel.org/20260402053756.26606-1-aethernet65535@gmail.com)
+- Split the patch into two per-module patches.
+- Add Fixes: and Cc: stable tags.
+- Elaborate user impact and reproduction steps.
+Changes from v1
+(https://lore.kernel.org/20260331073231.30060-1-aethernet65535@gmail.com)
+- Fix memory leak issue.
+Changes from first attempt
+(https://lore.kernel.org/20260327062627.66426-1-aethernet65535@gmail.com)
+- Renamed the subject.
+- Validate min_region_sz rather than addr_unit.
+
+This patch (of 2):
+
+Problem
+=======
+When a user sets an invalid 'addr_unit' (e.g., 3) via DAMON_LRU_SORT,
+'min_region_sz' becomes a non-power-of-2 value. While damon_commit_ctx()
+correctly detects this and returns -EINVAL, it sets the
+'maybe_corrupted' flag during this process.
+
+This flag causes the running kdamond to terminate. While the termination
+is a safety measure, it is suboptimal in this case because the error is
+just a simple invalid input from the user, which shouldn't neccessitate
+stopping the kdamond.
+
+Reproduction
+============
+1. Enable DAMON_LRU_SORT
+2. Set addr_unit=3
+3. Commit inputs via 'commit_inputs'
+4. Observe kdamond termination
+
+Solution
+========
+Add an early validation in damon_lru_sort_apply_parameters() to check
+'min_region_sz' before any state change occurs. If it is non-power-of-2,
+return -EINVAL immediately, preventing 'maybe_corrupted' from being set.
+
+Link: https://lore.kernel.org/20260501013750.71704-2-aethernet65535@gmail.com
+Signed-off-by: Liew Rui Yan <aethernet65535@gmail.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/lru_sort.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/damon/lru_sort.c b/mm/damon/lru_sort.c
+index 2eb559d913b62..eca88ed941b32 100644
+--- a/mm/damon/lru_sort.c
++++ b/mm/damon/lru_sort.c
+@@ -286,6 +286,11 @@ static int damon_lru_sort_apply_parameters(void)
+ 	param_ctx->addr_unit = addr_unit;
+ 	param_ctx->min_region_sz = max(DAMON_MIN_REGION_SZ / addr_unit, 1);
+ 
++	if (!is_power_of_2(param_ctx->min_region_sz)) {
++		err = -EINVAL;
++		goto out;
++	}
++
+ 	if (!damon_lru_sort_mon_attrs.sample_interval) {
+ 		err = -EINVAL;
+ 		goto out;
+-- 
+2.47.3
+

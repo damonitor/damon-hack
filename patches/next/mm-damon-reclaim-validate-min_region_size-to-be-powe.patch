@@ -1,0 +1,56 @@
+From: Liew Rui Yan <aethernet65535@gmail.com>
+Date: Fri, 1 May 2026 09:37:50 +0800
+Subject: [PATCH] mm/damon/reclaim: validate min_region_size to be power of 2
+
+Problem
+=======
+When a user sets an invalid 'addr_unit' (e.g., 3) via DAMON_RECLAIM,
+'min_region_sz' becomes a non-power-of-2 value. While damon_commit_ctx()
+correctly detects this and returns -EINVAL, it sets the
+'maybe_corrupted' flag during this process.
+
+This flag causes the running kdamond to terminate. While the termination
+is a safety measure, it is suboptimal in this case because the error is
+just a simple invalid input from the user, which shouldn't neccessitate
+stopping the kdamond.
+
+Reproduction
+============
+1. Enable DAMON_RECLAIM
+2. Set addr_unit=3
+3. Commit inputs via 'commit_inputs'
+4. Observe kdamond termination
+
+Solution
+========
+Add an early validation in damon_reclaim_apply_parameters() to check
+'min_region_sz' before any state change occurs. If it is non-power-of-2,
+return -EINVAL immediately, preventing 'maybe_corrupted' from being set.
+
+Link: https://lore.kernel.org/20260501013750.71704-3-aethernet65535@gmail.com
+Signed-off-by: Liew Rui Yan <aethernet65535@gmail.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/reclaim.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index 7126d47fb8b2f..ed446d00ef1cf 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -210,6 +210,11 @@ static int damon_reclaim_apply_parameters(void)
+ 	param_ctx->addr_unit = addr_unit;
+ 	param_ctx->min_region_sz = max(DAMON_MIN_REGION_SZ / addr_unit, 1);
+ 
++	if (!is_power_of_2(param_ctx->min_region_sz)) {
++		err = -EINVAL;
++		goto out;
++	}
++
+ 	if (!damon_reclaim_mon_attrs.aggr_interval) {
+ 		err = -EINVAL;
+ 		goto out;
+-- 
+2.47.3
+
