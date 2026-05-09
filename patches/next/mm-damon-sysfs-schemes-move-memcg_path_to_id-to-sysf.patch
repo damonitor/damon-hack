@@ -1,0 +1,128 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sat, 9 May 2026 10:13:47 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: move memcg_path_to_id() to
+ sysfs-common
+
+It will be used for DAMON filter.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-common.c  | 41 ++++++++++++++++++++++++++++++++++++++++
+ mm/damon/sysfs-common.h  |  2 ++
+ mm/damon/sysfs-schemes.c | 41 ----------------------------------------
+ 3 files changed, 43 insertions(+), 41 deletions(-)
+
+diff --git a/mm/damon/sysfs-common.c b/mm/damon/sysfs-common.c
+index 83e24a9b5a0db..bdc6ae2639e4f 100644
+--- a/mm/damon/sysfs-common.c
++++ b/mm/damon/sysfs-common.c
+@@ -104,3 +104,44 @@ const struct kobj_type damon_sysfs_ul_range_ktype = {
+ 	.default_groups = damon_sysfs_ul_range_groups,
+ };
+ 
++
++static bool damon_sysfs_memcg_path_eq(struct mem_cgroup *memcg,
++		char *memcg_path_buf, char *path)
++{
++#ifdef CONFIG_MEMCG
++	cgroup_path(memcg->css.cgroup, memcg_path_buf, PATH_MAX);
++	if (sysfs_streq(memcg_path_buf, path))
++		return true;
++#endif /* CONFIG_MEMCG */
++	return false;
++}
++
++int damon_sysfs_memcg_path_to_id(char *memcg_path, u64 *id)
++{
++	struct mem_cgroup *memcg;
++	char *path;
++	bool found = false;
++
++	if (!memcg_path)
++		return -EINVAL;
++
++	path = kmalloc_array(PATH_MAX, sizeof(*path), GFP_KERNEL);
++	if (!path)
++		return -ENOMEM;
++
++	for (memcg = mem_cgroup_iter(NULL, NULL, NULL); memcg;
++			memcg = mem_cgroup_iter(NULL, memcg, NULL)) {
++		/* skip offlined memcg */
++		if (!mem_cgroup_online(memcg))
++			continue;
++		if (damon_sysfs_memcg_path_eq(memcg, path, memcg_path)) {
++			*id = mem_cgroup_id(memcg);
++			found = true;
++			mem_cgroup_iter_break(NULL, memcg);
++			break;
++		}
++	}
++
++	kfree(path);
++	return found ? 0 : -EINVAL;
++}
+diff --git a/mm/damon/sysfs-common.h b/mm/damon/sysfs-common.h
+index 3d5a990538b0d..61779061dcd60 100644
+--- a/mm/damon/sysfs-common.h
++++ b/mm/damon/sysfs-common.h
+@@ -80,3 +80,5 @@ extern const struct kobj_type damon_sysfs_sample_ktype;
+ int damon_sysfs_set_sample_control(
+ 		struct damon_sample_control *control,
+ 		struct damon_sysfs_sample *sysfs_sample);
++
++int damon_sysfs_memcg_path_to_id(char *memcg_path, u64 *id);
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index f2f4373981285..dbad65e3e0268 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2662,47 +2662,6 @@ const struct kobj_type damon_sysfs_schemes_ktype = {
+ 	.default_groups = damon_sysfs_schemes_groups,
+ };
+ 
+-static bool damon_sysfs_memcg_path_eq(struct mem_cgroup *memcg,
+-		char *memcg_path_buf, char *path)
+-{
+-#ifdef CONFIG_MEMCG
+-	cgroup_path(memcg->css.cgroup, memcg_path_buf, PATH_MAX);
+-	if (sysfs_streq(memcg_path_buf, path))
+-		return true;
+-#endif /* CONFIG_MEMCG */
+-	return false;
+-}
+-
+-static int damon_sysfs_memcg_path_to_id(char *memcg_path, u64 *id)
+-{
+-	struct mem_cgroup *memcg;
+-	char *path;
+-	bool found = false;
+-
+-	if (!memcg_path)
+-		return -EINVAL;
+-
+-	path = kmalloc_array(PATH_MAX, sizeof(*path), GFP_KERNEL);
+-	if (!path)
+-		return -ENOMEM;
+-
+-	for (memcg = mem_cgroup_iter(NULL, NULL, NULL); memcg;
+-			memcg = mem_cgroup_iter(NULL, memcg, NULL)) {
+-		/* skip offlined memcg */
+-		if (!mem_cgroup_online(memcg))
+-			continue;
+-		if (damon_sysfs_memcg_path_eq(memcg, path, memcg_path)) {
+-			*id = mem_cgroup_id(memcg);
+-			found = true;
+-			mem_cgroup_iter_break(NULL, memcg);
+-			break;
+-		}
+-	}
+-
+-	kfree(path);
+-	return found ? 0 : -EINVAL;
+-}
+-
+ static int damon_sysfs_add_scheme_filters(struct damos *scheme,
+ 		struct damon_sysfs_scheme_filters *sysfs_filters)
+ {
+-- 
+2.47.3
+
