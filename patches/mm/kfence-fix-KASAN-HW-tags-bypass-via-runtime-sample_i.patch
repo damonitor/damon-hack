@@ -1,0 +1,44 @@
+From: Alexander Potapenko <glider@google.com>
+Date: Thu, 7 May 2026 11:52:37 +0200
+Subject: [PATCH] kfence: fix KASAN HW tags bypass via runtime sample_interval
+ change
+
+If a user writes a non-zero value to the sample_interval module parameter
+at runtime, the missing KASAN HW tags check in the late init path allows
+KFENCE to be enabled alongside KASAN HW tags, bypassing the boot
+restriction.
+
+This patch adds the missing check to param_set_sample_interval() to reject
+the parameter change if KASAN HW tags are enabled.
+
+Link: https://lore.kernel.org/20260507095237.741017-1-glider@google.com
+Fixes: 09833d99db36 ("mm/kfence: disable KFENCE upon KASAN HW tags enablement")
+Signed-off-by: Alexander Potapenko <glider@google.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Greg Thelen <gthelen@google.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Pimyn Girgis <pimyn@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kfence/core.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/kfence/core.c b/mm/kfence/core.c
+index 655dc5ce32409..ee6ae01de5aef 100644
+--- a/mm/kfence/core.c
++++ b/mm/kfence/core.c
+@@ -77,6 +77,11 @@ static int param_set_sample_interval(const char *val, const struct kernel_param
+ 		WRITE_ONCE(kfence_enabled, false);
+ 	}
+ 
++	if (num && kasan_hw_tags_enabled()) {
++		pr_info("disabled as KASAN HW tags are enabled\n");
++		return -EINVAL;
++	}
++
+ 	*((unsigned long *)kp->arg) = num;
+ 
+ 	if (num && !READ_ONCE(kfence_enabled) && system_state != SYSTEM_BOOTING)
+-- 
+2.47.3
+

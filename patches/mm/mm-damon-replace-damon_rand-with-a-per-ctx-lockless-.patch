@@ -1,0 +1,287 @@
+From: Jiayuan Chen <jiayuan.chen@shopee.com>
+Date: Fri, 8 May 2026 18:18:15 -0700
+Subject: [PATCH] mm/damon: replace damon_rand() with a per-ctx lockless PRNG
+
+damon_rand() on the sampling_addr hot path called get_random_u32_below(),
+which takes a local_lock_irqsave() around a per-CPU batched entropy pool
+and periodically refills it with ChaCha20.  At elevated nr_regions counts
+(20k+), the lock_acquire / local_lock pair plus __get_random_u32_below()
+dominate kdamond perf profiles.
+
+Replace the helper with a lockless lfsr113 generator (struct rnd_state)
+held per damon_ctx and seeded from get_random_u64() in damon_new_ctx().
+kdamond is the single consumer of a given ctx, so no synchronization is
+required.  Range mapping uses traditional reciprocal multiplication,
+similar as get_random_u32_below(); for spans larger than U32_MAX (only
+reachable on 64-bit) the slow path combines two u32 outputs and uses
+mul_u64_u64_shr() at 64-bit width.  On 32-bit the slow path is dead code
+and gets eliminated by the compiler.
+
+The new helper takes a ctx parameter; damon_split_regions_of() and the
+kunit tests that call it directly are updated accordingly.
+
+lfsr113 is a linear PRNG and MUST NOT be used for anything
+security-sensitive.  DAMON's sampling_addr is not exposed to userspace and
+is only consumed as a probe point for PTE accessed-bit sampling, so a
+non-cryptographic PRNG is appropriate here.
+
+Tested with paddr monitoring and max_nr_regions=20000: kdamond CPU usage
+reduced from ~72% to ~50% of one core.
+
+Link: https://lore.kernel.org/20260505145212.108644-1-jiayuan.chen@linux.dev
+Link: https://lore.kernel.org/damon/20260426173346.86238-1-sj@kernel.org/T/#m4f1fd74112728f83a41511e394e8c3fef703039c
+Link: https://lore.kernel.org/20260509011816.85145-1-sj@kernel.org
+Signed-off-by: Jiayuan Chen <jiayuan.chen@shopee.com>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Cc: Shu Anzai <shu17az@gmail.com>
+Cc: Quanmin Yan <yanquanmin1@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h       | 28 +++++++++++++++++++++-------
+ mm/damon/core.c             | 12 ++++++++----
+ mm/damon/paddr.c            |  8 ++++----
+ mm/damon/tests/core-kunit.h | 28 ++++++++++++++++++++++------
+ mm/damon/vaddr.c            |  7 ++++---
+ 5 files changed, 59 insertions(+), 24 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index c7a31572689be..4d4f031bcb453 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -8,23 +8,18 @@
+ #ifndef _DAMON_H_
+ #define _DAMON_H_
+ 
++#include <linux/math64.h>
+ #include <linux/memcontrol.h>
+ #include <linux/mutex.h>
++#include <linux/prandom.h>
+ #include <linux/time64.h>
+ #include <linux/types.h>
+-#include <linux/random.h>
+ 
+ /* Minimal region size.  Every damon_region is aligned by this. */
+ #define DAMON_MIN_REGION_SZ	PAGE_SIZE
+ /* Max priority score for DAMON-based operation schemes */
+ #define DAMOS_MAX_SCORE		(99)
+ 
+-/* Get a random number in [l, r) */
+-static inline unsigned long damon_rand(unsigned long l, unsigned long r)
+-{
+-	return l + get_random_u32_below(r - l);
+-}
+-
+ /**
+  * struct damon_addr_range - Represents an address region of [@start, @end).
+  * @start:	Start address of the region (inclusive).
+@@ -859,8 +854,27 @@ struct damon_ctx {
+ 
+ 	struct list_head adaptive_targets;
+ 	struct list_head schemes;
++
++	/* Per-ctx PRNG state for damon_rand(); kdamond is the sole consumer. */
++	struct rnd_state rnd_state;
+ };
+ 
++/* Get a random number in [@l, @r) using @ctx's lockless PRNG. */
++static inline unsigned long damon_rand(struct damon_ctx *ctx,
++				       unsigned long l, unsigned long r)
++{
++	unsigned long span = r - l;
++	u64 rnd;
++
++	if (span <= U32_MAX) {
++		rnd = prandom_u32_state(&ctx->rnd_state);
++		return l + (unsigned long)((rnd * span) >> 32);
++	}
++	rnd = ((u64)prandom_u32_state(&ctx->rnd_state) << 32) |
++	      prandom_u32_state(&ctx->rnd_state);
++	return l + mul_u64_u64_shr(rnd, span, 64);
++}
++
+ static inline struct damon_region *damon_next_region(struct damon_region *r)
+ {
+ 	return container_of(r->list.next, struct damon_region, list);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9f38deddcb30e..3a8725e400c6b 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -611,6 +611,8 @@ struct damon_ctx *damon_new_ctx(void)
+ 	INIT_LIST_HEAD(&ctx->adaptive_targets);
+ 	INIT_LIST_HEAD(&ctx->schemes);
+ 
++	prandom_seed_state(&ctx->rnd_state, get_random_u64());
++
+ 	return ctx;
+ }
+ 
+@@ -2939,8 +2941,9 @@ static void damon_split_region_at(struct damon_target *t,
+ }
+ 
+ /* Split every region in the given target into 'nr_subs' regions */
+-static void damon_split_regions_of(struct damon_target *t, int nr_subs,
+-				  unsigned long min_region_sz)
++static void damon_split_regions_of(struct damon_ctx *ctx,
++				   struct damon_target *t, int nr_subs,
++				   unsigned long min_region_sz)
+ {
+ 	struct damon_region *r, *next;
+ 	unsigned long sz_region, sz_sub = 0;
+@@ -2955,7 +2958,7 @@ static void damon_split_regions_of(struct damon_target *t, int nr_subs,
+ 			 * Randomly select size of left sub-region to be at
+ 			 * least 10 percent and at most 90% of original region
+ 			 */
+-			sz_sub = ALIGN_DOWN(damon_rand(1, 10) *
++			sz_sub = ALIGN_DOWN(damon_rand(ctx, 1, 10) *
+ 					sz_region / 10, min_region_sz);
+ 			/* Do not allow blank region */
+ 			if (sz_sub == 0 || sz_sub >= sz_region)
+@@ -2996,7 +2999,8 @@ static void kdamond_split_regions(struct damon_ctx *ctx)
+ 		nr_subregions = 3;
+ 
+ 	damon_for_each_target(t, ctx)
+-		damon_split_regions_of(t, nr_subregions, ctx->min_region_sz);
++		damon_split_regions_of(ctx, t, nr_subregions,
++				       ctx->min_region_sz);
+ 
+ 	last_nr_regions = nr_regions;
+ }
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 5cdcc5037cbc1..c4738cd5e221e 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -49,11 +49,11 @@ static void damon_pa_mkold(phys_addr_t paddr)
+ }
+ 
+ static void __damon_pa_prepare_access_check(struct damon_region *r,
+-		unsigned long addr_unit)
++		struct damon_ctx *ctx)
+ {
+-	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
++	r->sampling_addr = damon_rand(ctx, r->ar.start, r->ar.end);
+ 
+-	damon_pa_mkold(damon_pa_phys_addr(r->sampling_addr, addr_unit));
++	damon_pa_mkold(damon_pa_phys_addr(r->sampling_addr, ctx->addr_unit));
+ }
+ 
+ static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
+@@ -63,7 +63,7 @@ static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
+ 
+ 	damon_for_each_target(t, ctx) {
+ 		damon_for_each_region(r, t)
+-			__damon_pa_prepare_access_check(r, ctx->addr_unit);
++			__damon_pa_prepare_access_check(r, ctx);
+ 	}
+ }
+ 
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 1b23a22ac04c4..866f716e5760d 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -273,54 +273,70 @@ static void damon_test_merge_regions_of(struct kunit *test)
+ 
+ static void damon_test_split_regions_of(struct kunit *test)
+ {
++	struct damon_ctx *c;
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+ 	unsigned long sa[] = {0, 300, 500};
+ 	unsigned long ea[] = {220, 400, 700};
+ 	int i;
+ 
++	c = damon_new_ctx();
++	if (!c)
++		kunit_skip(test, "ctx alloc fail");
++
+ 	t = damon_new_target();
+-	if (!t)
++	if (!t) {
++		damon_destroy_ctx(c);
+ 		kunit_skip(test, "target alloc fail");
++	}
+ 	r = damon_new_region(0, 22);
+ 	if (!r) {
+ 		damon_free_target(t);
++		damon_destroy_ctx(c);
+ 		kunit_skip(test, "region alloc fail");
+ 	}
+ 	damon_add_region(r, t);
+-	damon_split_regions_of(t, 2, 1);
++	damon_split_regions_of(c, t, 2, 1);
+ 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 2u);
+ 	damon_free_target(t);
+ 
+ 	t = damon_new_target();
+-	if (!t)
++	if (!t) {
++		damon_destroy_ctx(c);
+ 		kunit_skip(test, "second target alloc fail");
++	}
+ 	r = damon_new_region(0, 220);
+ 	if (!r) {
+ 		damon_free_target(t);
++		damon_destroy_ctx(c);
+ 		kunit_skip(test, "second region alloc fail");
+ 	}
+ 	damon_add_region(r, t);
+-	damon_split_regions_of(t, 4, 1);
++	damon_split_regions_of(c, t, 4, 1);
+ 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 4u);
+ 	damon_free_target(t);
+ 
+ 	t = damon_new_target();
+-	if (!t)
++	if (!t) {
++		damon_destroy_ctx(c);
+ 		kunit_skip(test, "third target alloc fail");
++	}
+ 	for (i = 0; i < ARRAY_SIZE(sa); i++) {
+ 		r = damon_new_region(sa[i], ea[i]);
+ 		if (!r) {
+ 			damon_free_target(t);
++			damon_destroy_ctx(c);
+ 			kunit_skip(test, "region alloc fail");
+ 		}
+ 		damon_add_region(r, t);
+ 	}
+-	damon_split_regions_of(t, 4, 5);
++	damon_split_regions_of(c, t, 4, 5);
+ 	KUNIT_EXPECT_LE(test, damon_nr_regions(t), 12u);
+ 	damon_for_each_region(r, t)
+ 		KUNIT_EXPECT_GE(test, damon_sz_region(r) % 5ul, 0ul);
+ 	damon_free_target(t);
++
++	damon_destroy_ctx(c);
+ }
+ 
+ static void damon_test_ops_registration(struct kunit *test)
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index dd5f2d7027ac4..1b0ebe3b6951e 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -333,9 +333,10 @@ static void damon_va_mkold(struct mm_struct *mm, unsigned long addr)
+  */
+ 
+ static void __damon_va_prepare_access_check(struct mm_struct *mm,
+-					struct damon_region *r)
++					struct damon_region *r,
++					struct damon_ctx *ctx)
+ {
+-	r->sampling_addr = damon_rand(r->ar.start, r->ar.end);
++	r->sampling_addr = damon_rand(ctx, r->ar.start, r->ar.end);
+ 
+ 	damon_va_mkold(mm, r->sampling_addr);
+ }
+@@ -351,7 +352,7 @@ static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
+ 		if (!mm)
+ 			continue;
+ 		damon_for_each_region(r, t)
+-			__damon_va_prepare_access_check(mm, r);
++			__damon_va_prepare_access_check(mm, r, ctx);
+ 		mmput(mm);
+ 	}
+ }
+-- 
+2.47.3
+
