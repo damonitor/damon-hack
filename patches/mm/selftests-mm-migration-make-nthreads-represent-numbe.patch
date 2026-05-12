@@ -1,0 +1,227 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Mon, 11 May 2026 19:27:47 +0300
+Subject: [PATCH] selftests/mm: migration: make nthreads represent number of
+ working threads
+
+Fixture setup sets self->nthreads to number of available CPUs minus 1 and
+then each test creates 'self->nthreads - 1' threads or processes, so
+essentially nthreads counts the worker tasks and the main task.
+
+Make nthreads represent the number of spawned tasks to simplify
+thread/process creation and teardown.
+
+While on it, make the fixture setup skip the tests if there are not enough
+CPUs or NUMA nodes instead of checking this in each test.
+
+Link: https://lore.kernel.org/20260511162840.375890-4-rppt@kernel.org
+Reviewed-by: Luiz Capitulino <luizcap@redhat.com>
+Tested-by: Luiz Capitulino <luizcap@redhat.com>
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Li Wang <li.wang@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Sarthak Sharma <sarthak.sharma@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/migration.c | 47 +++++++++-----------------
+ 1 file changed, 16 insertions(+), 31 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/migration.c b/tools/testing/selftests/mm/migration.c
+index 0f5a4ddac529a..16ffd3c55ee09 100644
+--- a/tools/testing/selftests/mm/migration.c
++++ b/tools/testing/selftests/mm/migration.c
+@@ -38,7 +38,7 @@ FIXTURE_SETUP(migration)
+ 
+ 	if (numa_available() < 0)
+ 		SKIP(return, "NUMA not available");
+-	self->nthreads = numa_num_task_cpus() - 1;
++	self->nthreads = numa_num_task_cpus() - 2;
+ 	self->n1 = -1;
+ 	self->n2 = -1;
+ 
+@@ -52,6 +52,9 @@ FIXTURE_SETUP(migration)
+ 			}
+ 		}
+ 
++	if (self->nthreads < 1 || self->n1 < 0 || self->n2 < 0)
++		SKIP(return, "Not enough threads or NUMA nodes available");
++
+ 	self->threads = malloc(self->nthreads * sizeof(*self->threads));
+ 	ASSERT_NE(self->threads, NULL);
+ 	self->pids = malloc(self->nthreads * sizeof(*self->pids));
+@@ -127,20 +130,17 @@ TEST_F_TIMEOUT(migration, private_anon, 2*RUNTIME)
+ 	uint64_t *ptr;
+ 	int i;
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	ptr = mmap(NULL, TWOMEG, PROT_READ | PROT_WRITE,
+ 		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+ 	ASSERT_NE(ptr, MAP_FAILED);
+ 
+ 	memset(ptr, 0xde, TWOMEG);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		if (pthread_create(&self->threads[i], NULL, access_mem, ptr))
+ 			perror("Couldn't create thread");
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(pthread_cancel(self->threads[i]), 0);
+ }
+ 
+@@ -153,15 +153,12 @@ TEST_F_TIMEOUT(migration, shared_anon, 2*RUNTIME)
+ 	uint64_t *ptr;
+ 	int i;
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	ptr = mmap(NULL, TWOMEG, PROT_READ | PROT_WRITE,
+ 		MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+ 	ASSERT_NE(ptr, MAP_FAILED);
+ 
+ 	memset(ptr, 0xde, TWOMEG);
+-	for (i = 0; i < self->nthreads - 1; i++) {
++	for (i = 0; i < self->nthreads; i++) {
+ 		pid = fork();
+ 		if (!pid) {
+ 			prctl(PR_SET_PDEATHSIG, SIGHUP);
+@@ -175,7 +172,7 @@ TEST_F_TIMEOUT(migration, shared_anon, 2*RUNTIME)
+ 	}
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(kill(self->pids[i], SIGTERM), 0);
+ }
+ 
+@@ -195,9 +192,6 @@ TEST_F_TIMEOUT(migration, private_anon_thp, 2*RUNTIME)
+ 	if (!pmdsize)
+ 		SKIP(return, "Reading PMD pagesize failed");
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	ptr = mmap(NULL, 2 * pmdsize, PROT_READ | PROT_WRITE,
+ 		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+ 	ASSERT_NE(ptr, MAP_FAILED);
+@@ -205,12 +199,12 @@ TEST_F_TIMEOUT(migration, private_anon_thp, 2*RUNTIME)
+ 	ptr = (uint64_t *) ALIGN((uintptr_t) ptr, pmdsize);
+ 	ASSERT_EQ(madvise(ptr, pmdsize, MADV_HUGEPAGE), 0);
+ 	memset(ptr, 0xde, pmdsize);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		if (pthread_create(&self->threads[i], NULL, access_mem, ptr))
+ 			perror("Couldn't create thread");
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(pthread_cancel(self->threads[i]), 0);
+ }
+ 
+@@ -232,9 +226,6 @@ TEST_F_TIMEOUT(migration, shared_anon_thp, 2*RUNTIME)
+ 	if (!pmdsize)
+ 		SKIP(return, "Reading PMD pagesize failed");
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	ptr = mmap(NULL, 2 * pmdsize, PROT_READ | PROT_WRITE,
+ 		MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+ 	ASSERT_NE(ptr, MAP_FAILED);
+@@ -243,7 +234,7 @@ TEST_F_TIMEOUT(migration, shared_anon_thp, 2*RUNTIME)
+ 	ASSERT_EQ(madvise(ptr, pmdsize, MADV_HUGEPAGE), 0);
+ 
+ 	memset(ptr, 0xde, pmdsize);
+-	for (i = 0; i < self->nthreads - 1; i++) {
++	for (i = 0; i < self->nthreads; i++) {
+ 		pid = fork();
+ 		if (!pid) {
+ 			prctl(PR_SET_PDEATHSIG, SIGHUP);
+@@ -257,7 +248,7 @@ TEST_F_TIMEOUT(migration, shared_anon_thp, 2*RUNTIME)
+ 	}
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(kill(self->pids[i], SIGTERM), 0);
+ }
+ 
+@@ -270,9 +261,6 @@ TEST_F_TIMEOUT(migration, private_anon_htlb, 2*RUNTIME)
+ 	uint64_t *ptr;
+ 	int i;
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	hugepage_size = default_huge_page_size();
+ 	if (!hugepage_size)
+ 		SKIP(return, "Reading HugeTLB pagesize failed");
+@@ -282,12 +270,12 @@ TEST_F_TIMEOUT(migration, private_anon_htlb, 2*RUNTIME)
+ 	ASSERT_NE(ptr, MAP_FAILED);
+ 
+ 	memset(ptr, 0xde, hugepage_size);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		if (pthread_create(&self->threads[i], NULL, access_mem, ptr))
+ 			perror("Couldn't create thread");
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(pthread_cancel(self->threads[i]), 0);
+ }
+ 
+@@ -301,9 +289,6 @@ TEST_F_TIMEOUT(migration, shared_anon_htlb, 2*RUNTIME)
+ 	uint64_t *ptr;
+ 	int i;
+ 
+-	if (self->nthreads < 2 || self->n1 < 0 || self->n2 < 0)
+-		SKIP(return, "Not enough threads or NUMA nodes available");
+-
+ 	hugepage_size = default_huge_page_size();
+ 	if (!hugepage_size)
+ 		SKIP(return, "Reading HugeTLB pagesize failed");
+@@ -313,7 +298,7 @@ TEST_F_TIMEOUT(migration, shared_anon_htlb, 2*RUNTIME)
+ 	ASSERT_NE(ptr, MAP_FAILED);
+ 
+ 	memset(ptr, 0xde, hugepage_size);
+-	for (i = 0; i < self->nthreads - 1; i++) {
++	for (i = 0; i < self->nthreads; i++) {
+ 		pid = fork();
+ 		if (!pid) {
+ 			prctl(PR_SET_PDEATHSIG, SIGHUP);
+@@ -327,7 +312,7 @@ TEST_F_TIMEOUT(migration, shared_anon_htlb, 2*RUNTIME)
+ 	}
+ 
+ 	ASSERT_EQ(migrate(ptr, self->n1, self->n2), 0);
+-	for (i = 0; i < self->nthreads - 1; i++)
++	for (i = 0; i < self->nthreads; i++)
+ 		ASSERT_EQ(kill(self->pids[i], SIGTERM), 0);
+ }
+ 
+-- 
+2.47.3
+

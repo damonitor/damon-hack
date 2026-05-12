@@ -1,5 +1,5 @@
 From: Nico Pache <npache@redhat.com>
-Date: Sun, 19 Apr 2026 12:57:42 -0600
+Date: Mon, 11 May 2026 12:58:06 -0600
 Subject: [PATCH] mm/khugepaged: generalize collapse_huge_page for mTHP
  collapse
 MIME-Version: 1.0
@@ -18,7 +18,7 @@ access/changes to the page tables.  This can happen if the rmap walkers
 hit a pmd_none while the PMD entry is currently unavailable due to being
 temporarily removed during the collapse phase.
 
-Link: https://lore.kernel.org/20260419185750.260784-6-npache@redhat.com
+Link: https://lore.kernel.org/20260511185817.686831-7-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
@@ -42,7 +42,7 @@ Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
 Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
 Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam Howlett <liam@infradead.org>
+Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
@@ -62,6 +62,7 @@ Cc: Steven Rostedt <rostedt@goodmis.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
 Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
@@ -72,23 +73,25 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 103 +++++++++++++++++++++++++++---------------------
- 1 file changed, 57 insertions(+), 46 deletions(-)
+ mm/khugepaged.c | 93 +++++++++++++++++++++++++++++--------------------
+ 1 file changed, 55 insertions(+), 38 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 219b5da1f819d..db28a5153391d 100644
+index 37a5f67918164..f49bef78cf51d 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -1198,42 +1198,36 @@ static enum scan_result alloc_charge_folio(struct folio **foliop, struct mm_stru
- 	return SCAN_SUCCEED;
- }
- 
+@@ -1207,34 +1207,36 @@ static enum scan_result alloc_charge_folio(struct folio **foliop, struct mm_stru
+  * the mmap_lock during that. We must recheck the vma after taking it again in
+  * write mode.
+  */
 -static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long address,
 -		int referenced, int unmapped, struct collapse_control *cc)
 +static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long start_addr,
 +		int referenced, int unmapped, struct collapse_control *cc,
 +		unsigned int order)
  {
++	const unsigned long pmd_addr = start_addr & HPAGE_PMD_MASK;
++	const unsigned long end_addr = start_addr + (PAGE_SIZE << order);
  	LIST_HEAD(compound_pagelist);
  	pmd_t *pmd, _pmd;
 -	pte_t *pte;
@@ -100,18 +103,8 @@ index 219b5da1f819d..db28a5153391d 100644
  	struct vm_area_struct *vma;
  	struct mmu_notifier_range range;
 +	bool anon_vma_locked = false;
-+	const unsigned long pmd_addr = start_addr & HPAGE_PMD_MASK;
-+	const unsigned long end_addr = start_addr + (PAGE_SIZE << order);
  
 -	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
--
--	/*
--	 * Before allocating the hugepage, release the mmap_lock read lock.
--	 * The allocation can take potentially a long time if it involves
--	 * sync compaction, and we do not need to hold the mmap_lock during
--	 * that. We will recheck the vma after taking it again in write mode.
--	 */
--	mmap_read_unlock(mm);
 -
 -	result = alloc_charge_folio(&folio, mm, cc, HPAGE_PMD_ORDER);
 +	result = alloc_charge_folio(&folio, mm, cc, order);
@@ -133,7 +126,7 @@ index 219b5da1f819d..db28a5153391d 100644
  	if (result != SCAN_SUCCEED) {
  		mmap_read_unlock(mm);
  		goto out_nolock;
-@@ -1245,8 +1239,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1246,8 +1248,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  		 * released when it fails. So we jump out_nolock directly in
  		 * that case.  Continuing to collapse causes inconsistency.
  		 */
@@ -144,7 +137,7 @@ index 219b5da1f819d..db28a5153391d 100644
  		if (result != SCAN_SUCCEED)
  			goto out_nolock;
  	}
-@@ -1261,20 +1255,21 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1262,20 +1264,21 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * mmap_lock.
  	 */
  	mmap_write_lock(mm);
@@ -171,7 +164,7 @@ index 219b5da1f819d..db28a5153391d 100644
  	mmu_notifier_invalidate_range_start(&range);
  
  	pmd_ptl = pmd_lock(mm, pmd); /* probably unnecessary */
-@@ -1286,26 +1281,23 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1287,26 +1290,23 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * Parallel GUP-fast is fine since GUP-fast will back off when
  	 * it detects PMD is changed.
  	 */
@@ -203,7 +196,7 @@ index 219b5da1f819d..db28a5153391d 100644
  		/*
  		 * We can only use set_pmd_at when establishing
  		 * hugepmds and never for establishing regular pmds that
-@@ -1313,21 +1305,24 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1314,21 +1314,24 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  		 */
  		pmd_populate(mm, pmd, pmd_pgtable(_pmd));
  		spin_unlock(pmd_ptl);
@@ -236,7 +229,7 @@ index 219b5da1f819d..db28a5153391d 100644
  	if (unlikely(result != SCAN_SUCCEED))
  		goto out_up_write;
  
-@@ -1337,18 +1332,27 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1338,18 +1341,32 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * write.
  	 */
  	__folio_mark_uptodate(folio);
@@ -247,11 +240,16 @@ index 219b5da1f819d..db28a5153391d 100644
 -	pgtable_trans_huge_deposit(mm, pmd, pgtable);
 -	map_anon_folio_pmd_nopf(folio, pmd, vma, address);
 +	WARN_ON_ONCE(!pmd_none(*pmd));
-+	if (is_pmd_order(order)) { /* PMD collapse */
++	if (is_pmd_order(order)) {
 +		pgtable = pmd_pgtable(_pmd);
 +		pgtable_trans_huge_deposit(mm, pmd, pgtable);
 +		map_anon_folio_pmd_nopf(folio, pmd, vma, pmd_addr);
-+	} else { /* mTHP collapse */
++	} else {
++		/*
++		 * set_ptes is called in map_anon_folio_pte_nopf with the
++		 * pmd_ptl lock still held; this is safe as the PMD is expected
++		 * to be none. The pmd entry is then repopulated below.
++		 */
 +		map_anon_folio_pte_nopf(folio, pte, vma, start_addr, /*uffd_wp=*/ false);
 +		smp_wmb(); /* make PTEs visible before PMD. See pmd_install() */
 +		pmd_populate(mm, pmd, pmd_pgtable(_pmd));
@@ -269,17 +267,9 @@ index 219b5da1f819d..db28a5153391d 100644
  	mmap_write_unlock(mm);
  out_nolock:
  	if (folio)
-@@ -1525,8 +1529,15 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
- out_unmap:
- 	pte_unmap_unlock(pte, ptl);
- 	if (result == SCAN_SUCCEED) {
-+		/*
-+		 * Before allocating the hugepage, release the mmap_lock read lock.
-+		 * The allocation can take potentially a long time if it involves
-+		 * sync compaction, and we do not need to hold the mmap_lock during
-+		 * that. We will recheck the vma after taking it again in write mode.
-+		 */
-+		mmap_read_unlock(mm);
+@@ -1529,7 +1546,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 		/* collapse_huge_page expects the lock to be dropped before calling */
+ 		mmap_read_unlock(mm);
  		result = collapse_huge_page(mm, start_addr, referenced,
 -					    unmapped, cc);
 +					    unmapped, cc, HPAGE_PMD_ORDER);

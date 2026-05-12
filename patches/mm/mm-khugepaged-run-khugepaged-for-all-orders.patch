@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Sun, 19 Apr 2026 12:57:49 -0600
+Date: Mon, 11 May 2026 12:58:13 -0600
 Subject: [PATCH] mm/khugepaged: run khugepaged for all orders
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -20,7 +20,7 @@ vma is anonymous and the collapse is khugepaged.
 
 After this patch khugepaged mTHP collapse is fully enabled.
 
-Link: https://lore.kernel.org/20260419185750.260784-13-npache@redhat.com
+Link: https://lore.kernel.org/20260511185817.686831-14-npache@redhat.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Signed-off-by: Nico Pache <npache@redhat.com>
 Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
@@ -46,7 +46,7 @@ Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
 Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
-Cc: Liam Howlett <liam@infradead.org>
+Cc: Liam R. Howlett <liam@infradead.org>
 Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: Matthew Brost <matthew.brost@intel.com>
@@ -65,6 +65,7 @@ Cc: Steven Rostedt <rostedt@goodmis.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
 Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Wei Yang <richard.weiyang@gmail.com>
@@ -74,14 +75,14 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 30 ++++++++++++++++++------------
- 1 file changed, 18 insertions(+), 12 deletions(-)
+ mm/khugepaged.c | 35 ++++++++++++++++++++---------------
+ 1 file changed, 20 insertions(+), 15 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 04f8d0f7397ed..9551527957165 100644
+index f0ae029366384..5ba298d420b74 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -524,23 +524,23 @@ static inline int collapse_test_exit_or_disable(struct mm_struct *mm)
+@@ -522,23 +522,23 @@ static inline int collapse_test_exit_or_disable(struct mm_struct *mm)
  		mm_flags_test(MMF_DISABLE_THP_COMPLETELY, mm);
  }
  
@@ -110,31 +111,36 @@ index 04f8d0f7397ed..9551527957165 100644
  	    hugepage_global_enabled())
  		return true;
  	if (IS_ENABLED(CONFIG_SHMEM) && shmem_hpage_pmd_enabled())
-@@ -581,7 +581,13 @@ void __khugepaged_enter(struct mm_struct *mm)
+@@ -579,7 +579,13 @@ void __khugepaged_enter(struct mm_struct *mm)
  static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
- 		enum tva_type tva_flags)
+ 		vm_flags_t vm_flags, enum tva_type tva_flags)
  {
 -	unsigned long orders = BIT(HPAGE_PMD_ORDER);
 +	unsigned long orders;
 +
 +	/* If khugepaged is scanning an anonymous vma, allow mTHP collapse */
-+	if ((tva_flags & TVA_KHUGEPAGED) && vma_is_anonymous(vma))
++	if ((tva_flags == TVA_KHUGEPAGED) && vma_is_anonymous(vma))
 +		orders = THP_ORDERS_ALL_ANON;
 +	else
 +		orders = BIT(HPAGE_PMD_ORDER);
  
- 	return thp_vma_allowable_orders(vma, vma->vm_flags, tva_flags, orders);
+ 	return thp_vma_allowable_orders(vma, vm_flags, tva_flags, orders);
  }
-@@ -589,7 +595,7 @@ static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
- void khugepaged_enter_vma(struct vm_area_struct *vma)
+@@ -588,10 +594,9 @@ void khugepaged_enter_vma(struct vm_area_struct *vma,
+ 			  vm_flags_t vm_flags)
  {
  	if (!mm_flags_test(MMF_VM_HUGEPAGE, vma->vm_mm) &&
 -	    hugepage_pmd_enabled()) {
-+	    hugepage_enabled()) {
- 		if (collapse_allowable_orders(vma, TVA_KHUGEPAGED))
- 			__khugepaged_enter(vma->vm_mm);
- 	}
-@@ -2936,7 +2942,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+-		if (collapse_allowable_orders(vma, vm_flags, TVA_KHUGEPAGED))
+-			__khugepaged_enter(vma->vm_mm);
+-	}
++	    collapse_allowable_orders(vma, vm_flags, TVA_KHUGEPAGED) &&
++	    hugepage_enabled())
++		__khugepaged_enter(vma->vm_mm);
+ }
+ 
+ void __khugepaged_exit(struct mm_struct *mm)
+@@ -2945,7 +2950,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  
  static int khugepaged_has_work(void)
  {
@@ -143,7 +149,7 @@ index 04f8d0f7397ed..9551527957165 100644
  }
  
  static int khugepaged_wait_event(void)
-@@ -3009,7 +3015,7 @@ static void khugepaged_wait_work(void)
+@@ -3018,7 +3023,7 @@ static void khugepaged_wait_work(void)
  		return;
  	}
  
@@ -152,7 +158,7 @@ index 04f8d0f7397ed..9551527957165 100644
  		wait_event_freezable(khugepaged_wait, khugepaged_wait_event());
  }
  
-@@ -3040,7 +3046,7 @@ void set_recommended_min_free_kbytes(void)
+@@ -3049,7 +3054,7 @@ void set_recommended_min_free_kbytes(void)
  	int nr_zones = 0;
  	unsigned long recommended_min;
  
@@ -161,7 +167,7 @@ index 04f8d0f7397ed..9551527957165 100644
  		calculate_min_free_kbytes();
  		goto update_wmarks;
  	}
-@@ -3090,7 +3096,7 @@ int start_stop_khugepaged(void)
+@@ -3099,7 +3104,7 @@ int start_stop_khugepaged(void)
  	int err = 0;
  
  	mutex_lock(&khugepaged_mutex);
@@ -170,7 +176,7 @@ index 04f8d0f7397ed..9551527957165 100644
  		if (!khugepaged_thread)
  			khugepaged_thread = kthread_run(khugepaged, NULL,
  							"khugepaged");
-@@ -3116,7 +3122,7 @@ int start_stop_khugepaged(void)
+@@ -3125,7 +3130,7 @@ int start_stop_khugepaged(void)
  void khugepaged_min_free_kbytes_update(void)
  {
  	mutex_lock(&khugepaged_mutex);

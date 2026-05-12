@@ -1,6 +1,6 @@
 From: Nico Pache <npache@redhat.com>
-Date: Sun, 19 Apr 2026 12:57:47 -0600
-Subject: [PATCH] mm/khugepaged: introduce mTHP collapse support
+Date: Mon, 11 May 2026 12:58:11 -0600
+Subject: [PATCH] mm/khugepaged: Introduce mTHP collapse support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -85,7 +85,7 @@ collapse.
 We can also remove the check for is_khugepaged inside the PMD scan as the
 collapse_max_ptes_none() function handles this logic now.
 
-Link: https://lore.kernel.org/20260419185750.260784-11-npache@redhat.com
+Link: https://lore.kernel.org/20260511185817.686831-12-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
@@ -109,7 +109,7 @@ Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
 Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
 Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam Howlett <liam@infradead.org>
+Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
@@ -129,6 +129,7 @@ Cc: Steven Rostedt <rostedt@goodmis.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
 Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
@@ -139,29 +140,28 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 181 ++++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 174 insertions(+), 7 deletions(-)
+ mm/khugepaged.c | 182 +++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 174 insertions(+), 8 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index fc898af1214da..e7350b657b10c 100644
+index 3492b135d667d..39bf7ea8a6e82 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -99,6 +99,31 @@ static DEFINE_READ_MOSTLY_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
+@@ -100,6 +100,30 @@ static DEFINE_READ_MOSTLY_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
  
  static struct kmem_cache *mm_slot_cache __ro_after_init;
  
 +#define KHUGEPAGED_MIN_MTHP_ORDER	2
 +/*
-+ * The maximum number of mTHP ranges that can be stored on the stack.
-+ * This is calculated based on the number of PTE entries in a PTE page table
-+ * and the minimum mTHP order.
++ * mthp_collapse() does an iterative DFS over a binary tree, from
++ * HPAGE_PMD_ORDER down to KHUGEPAGED_MIN_MTHP_ORDER. The max stack
++ * size needed for a DFS on a binary tree is height + 1, where
++ * height = HPAGE_PMD_ORDER - KHUGEPAGED_MIN_MTHP_ORDER.
 + *
-+ * ilog2 is needed in place of HPAGE_PMD_ORDER due to some architectures
-+ * (ie ppc64le) not defining HPAGE_PMD_ORDER until after build time.
-+ *
-+ * At most there will be 1 << (PMD_ORDER - KHUGEPAGED_MIN_MTHP_ORDER) mTHP ranges
++ * ilog2 is used in place of HPAGE_PMD_ORDER because some architectures
++ * (e.g. ppc64le) do not define HPAGE_PMD_ORDER until after build time.
 + */
-+#define MTHP_STACK_SIZE	(1UL << (ilog2(MAX_PTRS_PER_PTE) - KHUGEPAGED_MIN_MTHP_ORDER))
++#define MTHP_STACK_SIZE	(ilog2(MAX_PTRS_PER_PTE) - KHUGEPAGED_MIN_MTHP_ORDER + 1)
 +
 +/*
 + * Defines a range of PTE entries in a PTE page table which are being
@@ -178,7 +178,7 @@ index fc898af1214da..e7350b657b10c 100644
  struct collapse_control {
  	bool is_khugepaged;
  
-@@ -110,6 +135,12 @@ struct collapse_control {
+@@ -111,6 +135,12 @@ struct collapse_control {
  
  	/* nodemask for allocation fallback */
  	nodemask_t alloc_nmask;
@@ -191,7 +191,7 @@ index fc898af1214da..e7350b657b10c 100644
  };
  
  /**
-@@ -1389,22 +1420,142 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1404,20 +1434,140 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  	return result;
  }
  
@@ -316,6 +316,11 @@ index fc898af1214da..e7350b657b10c 100644
  		struct vm_area_struct *vma, unsigned long start_addr,
  		bool *lock_dropped, struct collapse_control *cc)
  {
+-	const int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
++	int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
+ 	const unsigned int max_ptes_shared = collapse_max_ptes_shared(cc, HPAGE_PMD_ORDER);
+ 	const unsigned int max_ptes_swap = collapse_max_ptes_swap(cc, HPAGE_PMD_ORDER);
++	enum tva_type tva_flags = cc->is_khugepaged ? TVA_KHUGEPAGED : TVA_FORCED_COLLAPSE;
  	pmd_t *pmd;
 -	pte_t *pte, *_pte;
 -	int none_or_zero = 0, shared = 0, referenced = 0;
@@ -329,14 +334,8 @@ index fc898af1214da..e7350b657b10c 100644
 +	unsigned long enabled_orders;
  	spinlock_t *ptl;
  	int node = NUMA_NO_NODE, unmapped = 0;
- 	int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
- 	unsigned int max_ptes_shared = collapse_max_ptes_shared(cc, HPAGE_PMD_ORDER);
- 	unsigned int max_ptes_swap = collapse_max_ptes_swap(cc, HPAGE_PMD_ORDER);
-+	enum tva_type tva_flags = cc->is_khugepaged ? TVA_KHUGEPAGED : TVA_FORCED_COLLAPSE;
  
- 	VM_BUG_ON(start_addr & ~HPAGE_PMD_MASK);
- 
-@@ -1414,8 +1565,19 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1429,8 +1579,19 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		goto out;
  	}
  
@@ -344,7 +343,7 @@ index fc898af1214da..e7350b657b10c 100644
  	memset(cc->node_load, 0, sizeof(cc->node_load));
  	nodes_clear(cc->alloc_nmask);
 +
-+	enabled_orders = collapse_allowable_orders(vma, tva_flags);
++	enabled_orders = collapse_allowable_orders(vma, vma->vm_flags, tva_flags);
 +
 +	/*
 +	 * If PMD is the only enabled order, enforce max_ptes_none, otherwise
@@ -356,7 +355,7 @@ index fc898af1214da..e7350b657b10c 100644
  	pte = pte_offset_map_lock(mm, pmd, start_addr, &ptl);
  	if (!pte) {
  		cc->progress++;
-@@ -1423,11 +1585,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1438,11 +1599,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		goto out;
  	}
  
@@ -373,7 +372,7 @@ index fc898af1214da..e7350b657b10c 100644
  		if (pte_none_or_zero(pteval)) {
  			if (++none_or_zero > max_ptes_none) {
  				result = SCAN_EXCEED_NONE_PTE;
-@@ -1507,6 +1671,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1522,6 +1685,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  			}
  		}
  
@@ -382,9 +381,9 @@ index fc898af1214da..e7350b657b10c 100644
  		/*
  		 * Record which node the original page is from and save this
  		 * information to cc->node_load[].
-@@ -1570,10 +1736,11 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
- 		 * that. We will recheck the vma after taking it again in write mode.
- 		 */
+@@ -1580,10 +1745,11 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+ 	if (result == SCAN_SUCCEED) {
+ 		/* collapse_huge_page expects the lock to be dropped before calling */
  		mmap_read_unlock(mm);
 -		result = collapse_huge_page(mm, start_addr, referenced,
 -					    unmapped, cc, HPAGE_PMD_ORDER);

@@ -1,5 +1,5 @@
 From: Konstantin Khorenko <khorenko@virtuozzo.com>
-Date: Wed, 22 Apr 2026 15:51:12 +0300
+Date: Mon, 11 May 2026 12:50:52 +0200
 Subject: [PATCH] gcov: use atomic counter updates to fix concurrent access
  crashes
 MIME-Version: 1.0
@@ -34,51 +34,90 @@ making the values inconsistent - the write went 3.4 MB past a 65 KB
 buffer.
 
 Add -fprofile-update=prefer-atomic to CFLAGS_GCOV at the global level in
-the top-level Makefile.  On architectures where the target supports atomic
-profile updates (x86_64, arm64, ...) GCC emits atomic instructions (e.g.
-lock addq) for GCOV counter updates instead of plain load/store, which
-prevents the compiler from merging counters with loop induction variables
-and fixes the observed concurrent-access crash.
+the top-level Makefile, guarded by a try-run compile test.  The test
+compiles a minimal program with and without -fprofile-update=prefer-atomic
+using the full KBUILD_CFLAGS, then compares undefined symbols in the
+resulting object files.  If prefer-atomic introduces new undefined
+references (such as __atomic_fetch_add_8 on i386 or __aarch64_ldadd8_relax
+on arm64 with outline-atomics), the flag is not added -- the kernel does
+not link against libatomic.
 
-On architectures that do not support atomic profile updates (m68k and
-other small/UP targets) GCC silently falls back to the non-atomic 'single'
-mode, so behaviour there is no worse than before this patch.
+On architectures where GCC inlines 64-bit atomic counter updates (x86_64,
+s390, ...) the test passes and the flag is enabled, preventing the
+compiler from merging counters with loop induction variables and fixing
+the observed concurrent-access crash.
 
-Applying this globally rather than per-subsystem not only addresses the
-observed crash in zlib but makes GCOV coverage data more consistent
-overall, preventing similar issues in any kernel code path that may
-execute concurrently.
+On architectures where the flag would introduce libatomic dependencies, it
+is silently omitted and behaviour is no worse than before this patch.
 
-Link: https://lore.kernel.org/20260422125112.3583649-2-khorenko@virtuozzo.com
+Move the CFLAGS_GCOV block from its original position (before the arch
+Makefile include) to after the core KBUILD_CFLAGS assignments but before
+the scripts/Makefile.gcc-plugins include.  This placement ensures the
+try-run test sees arch-specific flags (-m32, -march=,
+-mno-outline-atomics) while avoiding GCC plugin flags (-fplugin=) that
+would break the test on clean builds when plugin shared objects do not yet
+exist.
+
+Link: https://lore.kernel.org/20260511105052.417187-2-khorenko@virtuozzo.com
 Signed-off-by: Konstantin Khorenko <khorenko@virtuozzo.com>
-Tested-by: Peter Oberparleiter <oberpar@linux.ibm.com>
-Reviewed-by: Peter Oberparleiter <oberpar@linux.ibm.com>
-Cc: Arnd Bergmann <arnd@arndb.de>
+Tested-by: Arnd Bergmann <arnd@arndb.de>
 Cc: Masahiro Yamada <masahiroy@kernel.org>
 Cc: Miguel Ojeda <ojeda@kernel.org>
 Cc: Mikhail Zaslonko <zaslonko@linux.ibm.com>
 Cc: Nathan Chancellor <nathan@kernel.org>
 Cc: Pavel Tikhomirov <ptikhomirov@virtuozzo.com>
+Cc: Peter Oberparleiter <oberpar@linux.ibm.com>
 Cc: Thomas Weißschuh <linux@weissschuh.net>
-Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- Makefile | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ Makefile | 27 +++++++++++++++++++++------
+ 1 file changed, 21 insertions(+), 6 deletions(-)
 
 diff --git a/Makefile b/Makefile
-index e27c91ea56fcf..9028e4e60b24e 100644
+index e27c91ea56fcf..cad7a8d38c527 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -826,7 +826,7 @@ all: vmlinux
+@@ -824,12 +824,6 @@ endif # KBUILD_EXTMOD
+ # Defaults to vmlinux, but the arch makefile usually adds further targets
+ all: vmlinux
  
- CFLAGS_GCOV	:= -fprofile-arcs -ftest-coverage
- ifdef CONFIG_CC_IS_GCC
+-CFLAGS_GCOV	:= -fprofile-arcs -ftest-coverage
+-ifdef CONFIG_CC_IS_GCC
 -CFLAGS_GCOV	+= -fno-tree-loop-im
-+CFLAGS_GCOV	+= -fno-tree-loop-im -fprofile-update=prefer-atomic
- endif
- export CFLAGS_GCOV
+-endif
+-export CFLAGS_GCOV
+-
+ # The arch Makefiles can override CC_FLAGS_FTRACE. We may also append it later.
+ ifdef CONFIG_FUNCTION_TRACER
+   CC_FLAGS_FTRACE := -pg
+@@ -1147,6 +1141,27 @@ endif
+ # Ensure compilers do not transform certain loops into calls to wcslen()
+ KBUILD_CFLAGS += -fno-builtin-wcslen
  
++CFLAGS_GCOV	:= -fprofile-arcs -ftest-coverage
++ifdef CONFIG_CC_IS_GCC
++CFLAGS_GCOV	+= -fno-tree-loop-im
++# Use atomic counter updates to avoid concurrent-access crashes in GCOV.
++# Only enable if -fprofile-update=prefer-atomic does not introduce new
++# undefined symbols (e.g. libatomic calls that the kernel cannot link).
++CFLAGS_GCOV	+= $(call try-run,\
++	echo 'long long x; void f(void){x++;}' | \
++	$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) -w -fprofile-arcs \
++	-ftest-coverage -x c - -c -o "$$TMP.base" && \
++	echo 'long long x; void f(void){x++;}' | \
++	$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) -w -fprofile-arcs \
++	-ftest-coverage -fprofile-update=prefer-atomic \
++	-x c - -c -o "$$TMP" && \
++	$(NM) "$$TMP.base" | grep ' U ' > "$$TMP.ubase" || true ; \
++	$(NM) "$$TMP" | grep ' U ' > "$$TMP.utest" || true ; \
++	cmp -s "$$TMP.ubase" "$$TMP.utest",\
++	-fprofile-update=prefer-atomic)
++endif
++export CFLAGS_GCOV
++
+ # change __FILE__ to the relative path to the source directory
+ ifdef building_out_of_srctree
+ KBUILD_CPPFLAGS += -fmacro-prefix-map=$(srcroot)/=
 -- 
 2.47.3
 

@@ -1,0 +1,100 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Mon, 11 May 2026 19:28:14 +0300
+Subject: [PATCH] selftests/mm: vm_util: add helpers to set and restore shm
+ limits
+
+hugetlb-shm and thuge-gen tests require that limits defined by
+/proc/sys/kernel/{shmmax,shmall} should be higher than certain values.
+
+Add helpers that allow setting these limits and restoring their settings
+on a test exit.
+
+They will be used later in hugetlb-shm and thuge-gen.
+
+Link: https://lore.kernel.org/20260511162840.375890-31-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Luiz Capitulino <luizcap@redhat.com>
+Tested-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Li Wang <li.wang@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/vm_util.c | 28 ++++++++++++++++++++++++++++
+ tools/testing/selftests/mm/vm_util.h |  9 +++++++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index 9256bbbe38ead..336a26751d3fa 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -760,3 +760,31 @@ void write_num(const char *path, unsigned long num)
+ 	sprintf(buf, "%lu", num);
+ 	write_file(path, buf, strlen(buf) + 1);
+ }
++
++static unsigned long shmall, shmmax;
++
++void __shm_limits_restore(void)
++{
++	if (shmmax)
++		write_num("/proc/sys/kernel/shmmax", shmmax);
++	if (shmall)
++		write_num("/proc/sys/kernel/shmall", shmall);
++}
++
++void shm_limits_prepare(unsigned long length)
++{
++	unsigned long nr = length / psize();
++	unsigned long val;
++
++	val = read_num("/proc/sys/kernel/shmmax");
++	if (val < length) {
++		write_num("/proc/sys/kernel/shmmax", length);
++		shmmax = val;
++	}
++
++	val = read_num("/proc/sys/kernel/shmall");
++	if (val < nr) {
++		write_num("/proc/sys/kernel/shmall", nr);
++		shmall = val;
++	}
++}
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index 5fc9707f6b9a1..ea8fc8fdf0eb0 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -168,3 +168,12 @@ void write_file(const char *path, const char *buf, size_t buflen);
+ int read_file(const char *path, char *buf, size_t buflen);
+ unsigned long read_num(const char *path);
+ void write_num(const char *path, unsigned long num);
++
++void shm_limits_prepare(unsigned long length);
++void __shm_limits_restore(void);
++
++#define SHM_LIMITS_RESTORE()						\
++static void __attribute__((destructor)) shm_limits_restore(void)	\
++{									\
++	__shm_limits_restore();						\
++}
+-- 
+2.47.3
+

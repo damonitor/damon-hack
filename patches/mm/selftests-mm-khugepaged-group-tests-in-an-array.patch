@@ -1,0 +1,114 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Mon, 11 May 2026 19:27:57 +0300
+Subject: [PATCH] selftests/mm: khugepaged: group tests in an array
+
+Currently khugepaged decides if a test can run using TEST() macro that
+checks what mem_ops and collapse_context are set by the command line
+arguments.
+
+For better compatibility with ksefltest framework, add an array of 'struct
+test_case's and redefine TEST() macro to conditionally add enabled tests
+to that array.
+
+Then execute the enabled test by looping the test_case's array.
+
+Link: https://lore.kernel.org/20260511162840.375890-14-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Luiz Capitulino <luizcap@redhat.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Donet Tom <donettom@linux.ibm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Li Wang <li.wang@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Sarthak Sharma <sarthak.sharma@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged.c | 43 +++++++++++++++++++++----
+ 1 file changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index df6ce6719e6b6..9c9c8b23fa10c 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -1274,6 +1274,34 @@ static void parse_test_type(int argc, char **argv)
+ 	get_finfo(argv[1]);
+ }
+ 
++typedef void (*test_fn)(struct collapse_context *c, struct mem_ops *ops);
++
++struct test_case {
++	struct collapse_context *ctx;
++	struct mem_ops *ops;
++	const char *desc;
++	test_fn fn;
++};
++
++#define MAX_TEST_CASES 64
++static struct test_case test_cases[MAX_TEST_CASES];
++static int nr_test_cases;
++
++#define TEST(t, c, o) do {						\
++	if (c && o) {							\
++		if (nr_test_cases >= MAX_TEST_CASES) {			\
++			printf("MAX_TEST_CASES is too small\n");	\
++			exit(EXIT_FAILURE);				\
++		}							\
++		test_cases[nr_test_cases++] = (struct test_case){	\
++			.ctx	= c,					\
++			.ops	= o,					\
++			.desc	= #t,					\
++			.fn	= t,					\
++		};							\
++	}								\
++	} while (0)
++
+ int main(int argc, char **argv)
+ {
+ 	int hpage_pmd_order;
+@@ -1329,13 +1357,6 @@ int main(int argc, char **argv)
+ 
+ 	alloc_at_fault();
+ 
+-#define TEST(t, c, o) do { \
+-	if (c && o) { \
+-		printf("\nRun test: " #t " (%s:%s)\n", c->name, o->name); \
+-		t(c, o); \
+-	} \
+-	} while (0)
+-
+ 	TEST(collapse_full, khugepaged_context, anon_ops);
+ 	TEST(collapse_full, khugepaged_context, read_only_file_ops);
+ 	TEST(collapse_full, khugepaged_context, read_write_file_read_ops);
+@@ -1413,5 +1434,13 @@ int main(int argc, char **argv)
+ 	TEST(madvise_retracted_page_tables, madvise_context, read_write_file_read_ops);
+ 	TEST(madvise_retracted_page_tables, madvise_context, shmem_ops);
+ 
++	exit_status = KSFT_PASS;
++	for (int i = 0; i < nr_test_cases; i++) {
++		struct test_case *t = &test_cases[i];
++
++		printf("\nRun test: %s (%s:%s)\n", t->desc, t->ctx->name, t->ops->name);
++		t->fn(t->ctx, t->ops);
++	}
++
+ 	restore_settings(0);
+ }
+-- 
+2.47.3
+
