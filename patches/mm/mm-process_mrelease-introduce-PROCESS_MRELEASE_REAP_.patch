@@ -1,5 +1,5 @@
 From: Minchan Kim <minchan@kernel.org>
-Date: Wed, 29 Apr 2026 14:13:59 -0700
+Date: Mon, 11 May 2026 14:42:26 -0700
 Subject: [PATCH] mm: process_mrelease: introduce PROCESS_MRELEASE_REAP_KILL
  flag
 
@@ -16,54 +16,66 @@ arbitrary reference counts (reading /proc/<pid>/cmdline, or various other
 remote VM accesses) frequently delay this teardown indefinitely, defeating
 the purpose of expedited reclamation.
 
-In Android's LMKD scenarios, this delay keeps memory pressure high, forcing
-the system to unnecessarily kill additional innocent background apps before
-the memory from the first victim is recovered.
+In Android's LMKD scenarios, this delay keeps memory pressure high,
+forcing the system to unnecessarily kill additional innocent background
+apps before the memory from the first victim is recovered.
 
 This patch introduces the PROCESS_MRELEASE_REAP_KILL UAPI flag to support
-an integrated auto-kill mode. When specified, process_mrelease() directly
+an integrated auto-kill mode.  When specified, process_mrelease() directly
 injects a SIGKILL into the target task after finding its mm.
 
 To solve the race condition, we grab the mm reference via mmgrab() before
-sending the SIGKILL. If the user passed PROCESS_MRELEASE_REAP_KILL, we assume
-it will free its memory and proceed with reaping, making the logic as simple
-as reap = reap_kill || task_will_free_mem(p).
+sending the SIGKILL.  If the user passed PROCESS_MRELEASE_REAP_KILL, we
+assume it will free its memory and proceed with reaping, making the logic
+as simple as reap = reap_kill || task_will_free_mem(p).
 
-To handle shared address spaces safely in the auto-kill mode, we bail out
-immediately if the mm is marked with MMF_MULTIPROCESS when
-PROCESS_MRELEASE_REAP_KILL is specified. This protects existing users of
-process_mrelease() from behavior changes while preventing unsafe reaping of
-shared memory.
+To handle shared address spaces, we deliver SIGKILL to all processes
+sharing the same address space using do_pidfd_send_signal_pidns().  This
+ensures the target pid resides inside the caller's PID namespace hierarchy
+prior to signal delivery.  We iterate over all processes sharing the mm
+and deliver SIGKILL to each.  If delivering the signal to any of the
+sharing processes fails, we return an error.  Note that this approach may
+leave partial side-effects if some processes are killed successfully
+before a failure occurs.
 
-This policy differs from the global OOM killer, which kills all processes
-sharing the same mm to guarantee memory reclamation at all costs (preventing
-system hangs). However, process_mrelease() is invoked by userspace policy.
-If it fails due to sharing, userspace can simply adapt and select another
-victim process (such as another background app in Android case) to release
-memory. We do not need to force success or affect processes that were not
-targeted.
-
-Fundamentally, this allows process_mrelease() to trigger targeted memory
-reclaim (via oom_reaper infrastructure) quickly, even if the victim is
-not yet in the exit path, while reusing existing race handling between
-reaper and exit_mmap.
-
-Link: https://lore.kernel.org/20260429211359.3829683-1-minchan@kernel.org
+Link: https://lore.kernel.org/20260511214226.937793-1-minchan@kernel.org
 Signed-off-by: Minchan Kim <minchan@kernel.org>
 Suggested-by: Michal Hocko <mhocko@suse.com>
 Reviewed-by: Suren Baghdasaryan <surenb@google.com>
 Cc: Christian Brauner <brauner@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
-Cc: David Rientjes <rientjes@google.com>
 Cc: Heiko Carstens <hca@linux.ibm.com>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Tim Murray <timmurray@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/uapi/linux/mman.h |  4 ++++
- mm/oom_kill.c             | 27 ++++++++++++++++++++-------
- 2 files changed, 24 insertions(+), 7 deletions(-)
+ include/linux/signal.h    |  4 +++
+ include/uapi/linux/mman.h |  4 +++
+ kernel/signal.c           | 29 ++++++++++++++++++---
+ mm/oom_kill.c             | 55 ++++++++++++++++++++++++++++++++++-----
+ 4 files changed, 81 insertions(+), 11 deletions(-)
 
+diff --git a/include/linux/signal.h b/include/linux/signal.h
+index f19816832f055..bdbe6b3addec9 100644
+--- a/include/linux/signal.h
++++ b/include/linux/signal.h
+@@ -276,6 +276,8 @@ static inline int valid_signal(unsigned long sig)
+ 
+ struct timespec;
+ struct pt_regs;
++struct mm_struct;
++struct pid;
+ enum pid_type;
+ 
+ extern int next_signal(struct sigpending *pending, sigset_t *mask);
+@@ -283,6 +285,8 @@ extern int do_send_sig_info(int sig, struct kernel_siginfo *info,
+ 				struct task_struct *p, enum pid_type type);
+ extern int group_send_sig_info(int sig, struct kernel_siginfo *info,
+ 			       struct task_struct *p, enum pid_type type);
++extern int do_pidfd_send_signal_pidns(struct pid *pid, int sig, enum pid_type type,
++				      siginfo_t __user *info, unsigned int flags);
+ extern int send_signal_locked(int sig, struct kernel_siginfo *info,
+ 			      struct task_struct *p, enum pid_type type);
+ extern int sigprocmask(int, sigset_t *, sigset_t *);
 diff --git a/include/uapi/linux/mman.h b/include/uapi/linux/mman.h
 index e89d00528f2fb..4266976b45ada 100644
 --- a/include/uapi/linux/mman.h
@@ -77,8 +89,61 @@ index e89d00528f2fb..4266976b45ada 100644
 +#define PROCESS_MRELEASE_VALID_FLAGS	(PROCESS_MRELEASE_REAP_KILL)
 +
  #endif /* _UAPI_LINUX_MMAN_H */
+diff --git a/kernel/signal.c b/kernel/signal.c
+index 2d102e0258839..2e867052907c6 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -4049,6 +4049,30 @@ static int do_pidfd_send_signal(struct pid *pid, int sig, enum pid_type type,
+ 	return kill_pid_info_type(sig, &kinfo, pid, type);
+ }
+ 
++/**
++ * do_pidfd_send_signal_pidns - Send a signal to a process via its struct pid
++ *                              while validating PID namespace hierarchy.
++ * @pid:   the struct pid of the target process
++ * @sig:   signal to send
++ * @type:  scope of the signal (e.g. PIDTYPE_TGID)
++ * @info:  signal info payload
++ * @flags: signaling flags
++ *
++ * Verify that the target pid resides inside the caller's PID namespace
++ * hierarchy prior to signal delivery.
++ *
++ * Return: 0 on success, negative errno on failure.
++ */
++int do_pidfd_send_signal_pidns(struct pid *pid, int sig, enum pid_type type,
++			       siginfo_t __user *info, unsigned int flags)
++{
++	/* Enforce PID namespace hierarchy boundary */
++	if (!access_pidfd_pidns(pid))
++		return -EINVAL;
++
++	return do_pidfd_send_signal(pid, sig, type, info, flags);
++}
++
+ /**
+  * sys_pidfd_send_signal - Signal a process through a pidfd
+  * @pidfd:  file descriptor of the process
+@@ -4097,16 +4121,13 @@ SYSCALL_DEFINE4(pidfd_send_signal, int, pidfd, int, sig,
+ 		if (IS_ERR(pid))
+ 			return PTR_ERR(pid);
+ 
+-		if (!access_pidfd_pidns(pid))
+-			return -EINVAL;
+-
+ 		/* Infer scope from the type of pidfd. */
+ 		if (fd_file(f)->f_flags & PIDFD_THREAD)
+ 			type = PIDTYPE_PID;
+ 		else
+ 			type = PIDTYPE_TGID;
+ 
+-		return do_pidfd_send_signal(pid, sig, type, info, flags);
++		return do_pidfd_send_signal_pidns(pid, sig, type, info, flags);
+ 	}
+ 	}
+ 
 diff --git a/mm/oom_kill.c b/mm/oom_kill.c
-index 5f372f6e26fa3..2ae8775ac3f85 100644
+index 5f372f6e26fa3..1984d3ef18e14 100644
 --- a/mm/oom_kill.c
 +++ b/mm/oom_kill.c
 @@ -20,6 +20,7 @@
@@ -89,7 +154,47 @@ index 5f372f6e26fa3..2ae8775ac3f85 100644
  #include <linux/err.h>
  #include <linux/gfp.h>
  #include <linux/sched.h>
-@@ -1201,9 +1202,11 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+@@ -909,6 +910,39 @@ static bool task_will_free_mem(struct task_struct *task)
+ 	return ret;
+ }
+ 
++/*
++ * kill_all_shared_mm - Deliver SIGKILL to all processes sharing the given address space.
++ * @victim: the targeted OOM process group leader
++ * @mm:     the virtual memory space being reaped
++ *
++ * Traverse all threads globally and signal any user processes sharing the identical
++ * mm footprints, ensuring no concurrent users pin the memory. Skips the system
++ * global init and kernel worker threads.
++ */
++static int kill_all_shared_mm(struct task_struct *victim, struct mm_struct *mm)
++{
++	struct task_struct *p;
++	bool failed = false;
++
++	rcu_read_lock();
++	for_each_process(p) {
++		if (!process_shares_mm(p, mm))
++			continue;
++		if (is_global_init(p)) {
++			failed = true;
++			continue;
++		}
++		if (unlikely(p->flags & PF_KTHREAD))
++			continue;
++
++		if (do_pidfd_send_signal_pidns(task_pid(p), SIGKILL, PIDTYPE_TGID, NULL, 0))
++			failed = true;
++	}
++	rcu_read_unlock();
++
++	return failed ? -EBUSY : 0;
++}
++
+ static void __oom_kill_process(struct task_struct *victim, const char *message)
+ {
+ 	struct task_struct *p;
+@@ -1201,9 +1235,11 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
  	unsigned int f_flags;
  	bool reap = false;
  	long ret = 0;
@@ -102,16 +207,11 @@ index 5f372f6e26fa3..2ae8775ac3f85 100644
  
  	task = pidfd_get_task(pidfd, &f_flags);
  	if (IS_ERR(task))
-@@ -1220,19 +1223,29 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+@@ -1220,19 +1256,24 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
  	}
  
  	mm = p->mm;
 -	mmgrab(mm);
-+	if (reap_kill && mm_flags_test(MMF_MULTIPROCESS, mm)) {
-+		ret = -EINVAL;
-+		task_unlock(p);
-+		goto put_task;
-+	}
  
 -	if (task_will_free_mem(p))
 -		reap = true;
@@ -131,7 +231,7 @@ index 5f372f6e26fa3..2ae8775ac3f85 100644
 -	if (!reap)
 -		goto drop_mm;
 +	if (reap_kill) {
-+		ret = kill_pid(task_tgid(task), SIGKILL, 0);
++		ret = kill_all_shared_mm(task, mm);
 +		if (ret)
 +			goto drop_mm;
 +	}

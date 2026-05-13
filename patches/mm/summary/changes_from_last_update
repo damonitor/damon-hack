@@ -7,13 +7,32 @@
     - maintainer, nobody: 2 -> 2 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 41 -> 41 commits (no change)
+- mm-unstable: 41 -> 42 commits
   - series: 7 (38) -> 7 (38) (no change)
-    - no role, maintainer: 5 -> 5 commits (no change)
+    - no role, maintainer: 5 -> 6 commits
     - maintainer, nobody: 36 -> 36 commits (no change)
-- mm-new: 1 -> 1 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 1 commits (no change)
+  - changed commits
+    - 9525de6408de "mm/damon: replace damon_rand() with a per-ctx lockless PRNG"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20260505145212.108644-1-jiayuan.chen@linux.dev
+      - Link: https://lore.kernel.org/damon/20260426173346.86238-1-sj@kernel.org/T/#m4f1fd74112728f83a41511e394e8c3fef703039c
+      - Link: https://lore.kernel.org/20260509011816.85145-1-sj@kernel.org
+- mm-new: 1 -> 3 commits
+  - series: 0 (0) -> 1 (2)
+    - no role, maintainer: 1 -> 3 commits
+  - new commits
+    - b6f994c2e8e3 "mm/damon/sysfs-schemes: fix double increment of nr_regions"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260512041157.109845-1-agarwal.vineet2006@gmail.com
+    - series "mm/damon: validate min_region_size to be power of 2", v5. (2)
+      - 8cfb9ed945e7 "mm/damon/lru_sort: validate min_region_size to be power of 2 (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260501013750.71704-1-aethernet65535@gmail.com
+        - Link: https://lore.kernel.org/20260501013750.71704-2-aethernet65535@gmail.com
+      - d8fe582fdd24 "mm/damon/reclaim: validate min_region_size to be power of 2 (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260501013750.71704-3-aethernet65535@gmail.com
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

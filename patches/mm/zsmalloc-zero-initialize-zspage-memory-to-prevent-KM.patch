@@ -1,0 +1,49 @@
+From: Kartik Nair <contact.kartikn@gmail.com>
+Date: Tue, 12 May 2026 03:06:58 +0530
+Subject: [PATCH] zsmalloc: zero-initialize zspage memory to prevent KMSAN
+ uninit reads
+
+Pages allocated via alloc_zpdesc() use alloc_pages_node() without
+__GFP_ZERO, leaving physical memory uninitialized.  When a compressed
+object spans two physical pages in a zspage, zs_obj_read_sg_begin() sets
+up a scatterlist pointing directly at the raw second page.  If the second
+page was freshly allocated and never written beyond the object boundary,
+KMSAN detects reads of uninitialized memory downstream in the decompressor
+(e.g.  sw842_decompress reading the CRC trailer).
+
+Fix this by passing __GFP_ZERO to alloc_zpdesc() in alloc_zspage() so
+all pages backing a zspage are zero-initialized at allocation time.
+
+Link: https://lore.kernel.org/20260511213658.25273-1-contact.kartikn@gmail.com
+Fixes: dc2e4982cb018 ("zsmalloc: introduce SG-list based object read API")
+Reported-by: syzbot+8f77ff6144a73f0cf71b@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=8f77ff6144a73f0cf71b
+Signed-off-by: Kartik Nair <contact.kartikn@gmail.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Dan Williams <dan.j.williams@intel.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 63128ddb79598..5bbd417d3d639 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -951,7 +951,7 @@ static struct zspage *alloc_zspage(struct zs_pool *pool,
+ 	for (i = 0; i < class->pages_per_zspage; i++) {
+ 		struct zpdesc *zpdesc;
+ 
+-		zpdesc = alloc_zpdesc(gfp, nid);
++		zpdesc = alloc_zpdesc(gfp | __GFP_ZERO, nid);
+ 		if (!zpdesc) {
+ 			while (--i >= 0) {
+ 				zpdesc_dec_zone_page_state(zpdescs[i]);
+-- 
+2.47.3
+

@@ -1,0 +1,62 @@
+From: Ye Liu <liuye@kylinos.cn>
+Date: Mon, 11 May 2026 10:54:07 +0800
+Subject: [PATCH] mm/khugepaged: fix inconsistent MMF_VM_HUGEPAGE flag due to
+ allocation failure order
+
+__khugepaged_enter() sets MMF_VM_HUGEPAGE before allocating the
+corresponding mm_slot.  If mm_slot_alloc() fails, the function returns
+with the flag set but without inserting the mm into the khugepaged
+tracking structures, leaving the mm in an inconsistent state where future
+registration attempts are skipped.
+
+Fix this by reordering: allocate the mm_slot first, then check and set the
+flag.  If the flag is already set, free the allocated slot and return.
+This ensures the flag is only set when the mm is successfully registered
+in the khugepaged tracking structures.
+
+Link: https://lore.kernel.org/20260511025408.54035-1-ye.liu@linux.dev
+Fixes: 16618670276a ("mm: khugepaged: avoid pointless allocation for "struct mm_slot"")
+Signed-off-by: Ye Liu <liuye@kylinos.cn>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Xin Hao <xhao@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index bb4d6e0fa8a60..87fc11c66ef08 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -559,13 +559,16 @@ void __khugepaged_enter(struct mm_struct *mm)
+ 
+ 	/* __khugepaged_exit() must not run from under us */
+ 	VM_BUG_ON_MM(collapse_test_exit(mm), mm);
+-	if (unlikely(mm_flags_test_and_set(MMF_VM_HUGEPAGE, mm)))
+-		return;
+ 
+ 	slot = mm_slot_alloc(mm_slot_cache);
+ 	if (!slot)
+ 		return;
+ 
++	if (unlikely(mm_flags_test_and_set(MMF_VM_HUGEPAGE, mm))) {
++		mm_slot_free(mm_slot_cache, slot);
++		return;
++	}
++
+ 	spin_lock(&khugepaged_mm_lock);
+ 	mm_slot_insert(mm_slots_hash, mm, slot);
+ 	/*
+-- 
+2.47.3
+

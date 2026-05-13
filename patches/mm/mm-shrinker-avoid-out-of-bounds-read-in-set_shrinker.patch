@@ -1,0 +1,48 @@
+From: David Carlier <devnexen@gmail.com>
+Date: Sun, 10 May 2026 19:37:00 +0100
+Subject: [PATCH] mm/shrinker: avoid out-of-bounds read in set_shrinker_bit()
+
+set_shrinker_bit() reads info->unit[shrinker_id_to_index(shrinker_id)]
+before checking shrinker_id against info->map_nr_max, so an id past the
+currently visible map_nr_max reads past the unit[] array before the
+WARN_ON_ONCE() catches it.
+
+Determined from code inspection.
+
+Move the load into the bounded branch.
+
+Link: https://lore.kernel.org/20260510183700.102475-1-devnexen@gmail.com
+Fixes: 307bececcd12 ("mm: shrinker: add a secondary array for shrinker_info::{map, nr_deferred}")
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shrinker.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/shrinker.c b/mm/shrinker.c
+index 76b3f750cf655..49256f81199f1 100644
+--- a/mm/shrinker.c
++++ b/mm/shrinker.c
+@@ -197,12 +197,13 @@ void set_shrinker_bit(struct mem_cgroup *memcg, int nid, int shrinker_id)
+ {
+ 	if (shrinker_id >= 0 && memcg && !mem_cgroup_is_root(memcg)) {
+ 		struct shrinker_info *info;
+-		struct shrinker_info_unit *unit;
+ 
+ 		rcu_read_lock();
+ 		info = rcu_dereference(memcg->nodeinfo[nid]->shrinker_info);
+-		unit = info->unit[shrinker_id_to_index(shrinker_id)];
+ 		if (!WARN_ON_ONCE(shrinker_id >= info->map_nr_max)) {
++			struct shrinker_info_unit *unit;
++
++			unit = info->unit[shrinker_id_to_index(shrinker_id)];
+ 			/* Pairs with smp mb in shrink_slab() */
+ 			smp_mb__before_atomic();
+ 			set_bit(shrinker_id_to_offset(shrinker_id), unit->map);
+-- 
+2.47.3
+
