@@ -1,0 +1,86 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 12 May 2026 16:45:59 -0400
+Subject: [PATCH] mm/filemap: fix page_cache_prev_miss() when no hole is found
+
+page_cache_prev_miss() is documented to return a value outside the
+searched range when no gap is found.  However, the no-gap-found path
+returns xas.xa_index, which after a successful loop is the first index in
+the range.  As such, that index is misreported as a gap.
+
+The sole caller, page_cache_sync_ra(), uses the return value to estimate
+the cached run preceding a sequential read.  In some cases, the buggy
+return value can undercount the contiguous range by one, shrinking the
+readahead window or pushing borderline requests into the small-random-read
+branch.
+
+Fix this by returning the start of the range - 1 when no hole is found.
+Update page_cache_next_miss() for clarity as well.
+
+Both helpers were previously fixed together in commit 9425c591e06a ("page
+cache: fix page_cache_next/prev_miss off by one"), but the fix was
+reverted because it caused a hugetlb performance regression.  hugetlb no
+longer uses these functions and next_miss was subsequently refixed in
+commit 901a269ff3d5 ("filemap: fix page_cache_next_miss() when no hole
+found") and commit bbcaee20e03e ("readahead: fix return value of
+page_cache_next_miss() when no hole is found"), but prev_miss was not
+addressed.
+
+This was found by pointing Claude Opus 4.7 at mm/filemap.c.
+
+Link: https://lore.kernel.org/20260512-prev_miss_fix-v2-1-4af8e5c1ae62@columbia.edu
+Fixes: 0d3f92966629 ("page cache: Convert hole search to XArray")
+Assisted-by: Claude:claude-opus-4-7
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Reviewed-by: Vishal Moola <vishal.moola@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/filemap.c | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 9a5e23fa6a238..5aaba0d3e81d6 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1807,9 +1807,8 @@ pgoff_t page_cache_next_miss(struct address_space *mapping,
+ 			     pgoff_t index, unsigned long max_scan)
+ {
+ 	XA_STATE(xas, &mapping->i_pages, index);
+-	unsigned long nr = max_scan;
+ 
+-	while (nr--) {
++	while (max_scan--) {
+ 		void *entry = xas_next(&xas);
+ 		if (!entry || xa_is_value(entry))
+ 			return xas.xa_index;
+@@ -1817,7 +1816,8 @@ pgoff_t page_cache_next_miss(struct address_space *mapping,
+ 			return 0;
+ 	}
+ 
+-	return index + max_scan;
++	/* Return end of the range + 1 when no hole is found */
++	return xas.xa_index + 1;
+ }
+ EXPORT_SYMBOL(page_cache_next_miss);
+ 
+@@ -1848,12 +1848,13 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
+ 	while (max_scan--) {
+ 		void *entry = xas_prev(&xas);
+ 		if (!entry || xa_is_value(entry))
+-			break;
++			return xas.xa_index;
+ 		if (xas.xa_index == ULONG_MAX)
+-			break;
++			return ULONG_MAX;
+ 	}
+ 
+-	return xas.xa_index;
++	/* Return start of the range - 1 when no hole is found */
++	return xas.xa_index - 1;
+ }
+ EXPORT_SYMBOL(page_cache_prev_miss);
+ 
+-- 
+2.47.3
+

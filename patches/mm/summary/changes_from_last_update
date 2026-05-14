@@ -1,38 +1,50 @@
-- baseline: v7.1-rc1 -> v7.1-rc1 (no change)
-- mm-hotfixes-stable: 5 -> 5 commits (no change)
-  - series: 2 (5) -> 2 (5) (no change)
-    - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-hotfixes-unstable: 2 -> 2 commits (no change)
+- baseline: v7.1-rc1 -> v7.1-rc3
+- mm-hotfixes-stable: 5 -> 2 commits
+  - series: 2 (5) -> 0 (0)
+    - maintainer, nobody: 5 -> 2 commits
+  - changed commits
+    - d4e7b5c4cc35 "mm/damon/sysfs-schemes: call missing mem_cgroup_iter_break()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260426173625.86521-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260423004148.74722-1-sj@kernel.org [1]
+    - 620072fd7832 "mm/damon: fix damos_stat tracepoint format for sz_applied"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260426193119.88095-1-sj@kernel.org
+  - dropped commits
+    - series "mm/damon/sysfs-schemes: fix use-after-free for [memcg_]path". (2)
+      - 1e68eb96e8be "mm/damon/sysfs-schemes: protect memcg_path kfree() with damon_sysfs_lock (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260423150253.111520-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260423150253.111520-2-sj@kernel.org
+      - cf3b71421ca0 "mm/damon/sysfs-schemes: protect path kfree() with damon_sysfs_lock (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260423150253.111520-3-sj@kernel.org
+    - series "mm/damon/modules: detect and use fresh status", v3. (3)
+      - 64a140afa5ed "mm/damon/reclaim: detect and use fresh enabled and kdamond_pid values (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260419161003.79176-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260419161003.79176-2-sj@kernel.org
+      - b98b7ff6025a "mm/damon/lru_sort: detect and use fresh enabled and kdamond_pid values (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260419161003.79176-3-sj@kernel.org
+      - f98590bc08d4 "mm/damon/stat: detect and use fresh enabled value (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260419161003.79176-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260416040602.88665-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 2 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 2 commits (no change)
+    - maintainer, nobody: 2 -> 0 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 41 -> 42 commits
+- mm-unstable: 42 -> 42 commits (no change)
   - series: 7 (38) -> 7 (38) (no change)
-    - no role, maintainer: 5 -> 6 commits
+    - no role, maintainer: 6 -> 6 commits (no change)
     - maintainer, nobody: 36 -> 36 commits (no change)
-  - changed commits
-    - 9525de6408de "mm/damon: replace damon_rand() with a per-ctx lockless PRNG"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260505145212.108644-1-jiayuan.chen@linux.dev
-      - Link: https://lore.kernel.org/damon/20260426173346.86238-1-sj@kernel.org/T/#m4f1fd74112728f83a41511e394e8c3fef703039c
-      - Link: https://lore.kernel.org/20260509011816.85145-1-sj@kernel.org
-- mm-new: 1 -> 3 commits
-  - series: 0 (0) -> 1 (2)
-    - no role, maintainer: 1 -> 3 commits
-  - new commits
-    - b6f994c2e8e3 "mm/damon/sysfs-schemes: fix double increment of nr_regions"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260512041157.109845-1-agarwal.vineet2006@gmail.com
-    - series "mm/damon: validate min_region_size to be power of 2", v5. (2)
-      - 8cfb9ed945e7 "mm/damon/lru_sort: validate min_region_size to be power of 2 (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260501013750.71704-1-aethernet65535@gmail.com
-        - Link: https://lore.kernel.org/20260501013750.71704-2-aethernet65535@gmail.com
-      - d8fe582fdd24 "mm/damon/reclaim: validate min_region_size to be power of 2 (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260501013750.71704-3-aethernet65535@gmail.com
+- mm-new: 3 -> 3 commits (no change)
+  - series: 1 (2) -> 1 (3)
+    - no role, maintainer: 3 -> 3 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

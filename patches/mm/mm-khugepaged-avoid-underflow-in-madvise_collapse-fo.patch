@@ -1,0 +1,68 @@
+From: Chen Wandun <chenwandun@lixiang.com>
+Date: Wed, 13 May 2026 13:54:28 +0800
+Subject: [PATCH] mm/khugepaged: avoid underflow in madvise_collapse for
+ sub-PMD MADV_COLLAPSE
+
+madvise_collapse() computes the THP-aligned window:
+
+    hstart = ALIGN(start, HPAGE_PMD_SIZE); 	/* round up */
+    hend = ALIGN_DOWN(end, HPAGE_PMD_SIZE);	/* round down */
+
+The following case will cause hstart > hend, and result in underflow in
+the return statement, avoid it by returning zero early when hstart > hend.
+The return value is due to input is valid to madvise(), and there is
+nothing to collapse.
+
+    madvise(PMD-aligned + PAGE_SIZE, PAGE_SIZE, MADV_COLLAPSE);
+
+In addition, kmalloc_obj(), mmgrab() and lru_add_drain_all() are
+unnecessary when hstart == hend, so skip these operations by returning
+early too.
+
+Link: https://lore.kernel.org/20260513055428.1664898-1-chenwandun@lixiang.com
+Signed-off-by: Chen Wandun <chenwandun@lixiang.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 87fc11c66ef08..3ad0b71ed76be 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -3202,6 +3202,12 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 	if (!collapse_allowable_orders(vma, vma->vm_flags, TVA_FORCED_COLLAPSE))
+ 		return -EINVAL;
+ 
++	hstart = ALIGN(start, HPAGE_PMD_SIZE);
++	hend = ALIGN_DOWN(end, HPAGE_PMD_SIZE);
++
++	if (hstart >= hend)
++		return 0;
++
+ 	cc = kmalloc_obj(*cc);
+ 	if (!cc)
+ 		return -ENOMEM;
+@@ -3211,9 +3217,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+ 	mmgrab(mm);
+ 	lru_add_drain_all();
+ 
+-	hstart = ALIGN(start, HPAGE_PMD_SIZE);
+-	hend = ALIGN_DOWN(end, HPAGE_PMD_SIZE);
+-
+ 	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
+ 		enum scan_result result = SCAN_FAIL;
+ 
+-- 
+2.47.3
+
