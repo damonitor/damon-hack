@@ -1,5 +1,5 @@
 From: Zi Yan <ziy@nvidia.com>
-Date: Wed, 29 Apr 2026 11:35:37 -0400
+Date: Sun, 17 May 2026 09:54:16 -0400
 Subject: [PATCH] selftests/mm: add writable-file collapse tests for khugepaged
 
 collapse_file() now supports collapsing clean pagecache folios from
@@ -10,7 +10,7 @@ writable files, because collapse_single_pmd() triggers a synchronous
 writeback when first attempt of collapse_file() fails.  That writeback
 makes dirty folios clean and the retry of collapse_file() succeeds.
 
-Link: https://lore.kernel.org/20260429153538.727855-10-ziy@nvidia.com
+Link: https://lore.kernel.org/20260517135416.1434539-15-ziy@nvidia.com
 Signed-off-by: Zi Yan <ziy@nvidia.com>
 Cc: Al Viro <viro@zeniv.linux.org.uk>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
@@ -35,11 +35,11 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/khugepaged.c | 113 ++++++++++++++++++------
- 1 file changed, 86 insertions(+), 27 deletions(-)
+ tools/testing/selftests/mm/khugepaged.c | 111 ++++++++++++++++++------
+ 1 file changed, 85 insertions(+), 26 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
-index 97b04adc1075c..df6ce6719e6b6 100644
+index 7ee6dfe93b3d9..9ce0a11b461df 100644
 --- a/tools/testing/selftests/mm/khugepaged.c
 +++ b/tools/testing/selftests/mm/khugepaged.c
 @@ -41,6 +41,12 @@ enum vma_type {
@@ -75,38 +75,33 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  	    finfo.type == VMA_FILE)
  		thp_set_read_ahead_path(finfo.dev_queue_read_ahead_path);
  	thp_save_settings();
-@@ -366,14 +374,14 @@ static bool anon_check_huge(void *addr, int nr_hpages)
+@@ -366,10 +374,10 @@ static bool anon_check_huge(void *addr, int nr_hpages)
  	return check_huge_anon(addr, nr_hpages, hpage_pmd_size);
  }
  
 -static void *file_setup_area_common(int nr_hpages, bool read_only)
 +static void *file_setup_area_common(int nr_hpages, enum file_setup_ops setup)
  {
+-	const int open_opt = read_only ? O_RDONLY : O_RDWR;
+-	const int mmap_prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
++	const int open_opt = setup == FILE_SETUP_READ_ONLY_FS ? O_RDONLY : O_RDWR;
++	const int mmap_prot = setup == FILE_SETUP_READ_ONLY_FS ? PROT_READ : (PROT_READ | PROT_WRITE);
  	int fd;
  	void *p;
  	unsigned long size;
--	int open_opt = read_only ? O_RDONLY : O_RDWR;
--	int mmap_prot = read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
--	int mmap_opt = read_only ? MAP_PRIVATE : MAP_SHARED;
-+	int open_opt = setup == FILE_SETUP_READ_ONLY_FS ? O_RDONLY : O_RDWR;
-+	int mmap_prot = setup == FILE_SETUP_READ_ONLY_FS ? PROT_READ : (PROT_READ | PROT_WRITE);
-+	int mmap_opt = setup == FILE_SETUP_READ_ONLY_FS ? MAP_PRIVATE : MAP_SHARED;
- 
- 	unlink(finfo.path);  /* Cleanup from previous failed tests */
- 	printf("Creating %s for collapse%s...", finfo.path,
-@@ -406,7 +414,10 @@ static void *file_setup_area_common(int nr_hpages, bool read_only)
+@@ -405,7 +413,10 @@ static void *file_setup_area_common(int nr_hpages, bool read_only)
  	success("OK");
  
  	printf("Opening %s %s for collapse...", finfo.path,
--	       read_only ? "read only" : "read-write");
-+	       setup == FILE_SETUP_READ_ONLY_FS ? "read only" :
+-	       read_only ? "read-only" : "read-write");
++	       setup == FILE_SETUP_READ_ONLY_FS ? "read-only" :
 +	       setup == FILE_SETUP_READ_WRITE_FS_READ_DATA ?
 +						  "read-write (read)" :
 +						  "read-write (write)");
  	finfo.fd = open(finfo.path, open_opt, 777);
  	if (finfo.fd < 0) {
  		perror("open()");
-@@ -427,12 +438,17 @@ static void *file_setup_area_common(int nr_hpages, bool read_only)
+@@ -425,12 +436,17 @@ static void *file_setup_area_common(int nr_hpages, bool read_only)
  
  static void *file_setup_read_only_area(int nr_hpages)
  {
@@ -127,14 +122,13 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  }
  
  static void file_cleanup_area(void *p, unsigned long size)
-@@ -459,6 +475,17 @@ static void file_fault_read(void *p, unsigned long start, unsigned long end)
- 	file_fault_common(p, start, end, MADV_POPULATE_READ);
+@@ -448,6 +464,16 @@ static void file_fault_read(void *p, unsigned long start, unsigned long end)
+ 	}
  }
  
 +static void file_fault_read_and_flush(void *p, unsigned long start, unsigned long end)
 +{
-+	file_fault_common(p, start, end, MADV_POPULATE_READ);
-+
++	file_fault_read(p, start, end);
 +	/*
 +	 * make folio clean, since dirty folios from read&write file are
 +	 * rejected and not flushed
@@ -144,8 +138,8 @@ index 97b04adc1075c..df6ce6719e6b6 100644
 +
  static void file_fault_write(void *p, unsigned long start, unsigned long end)
  {
- 	file_fault_common(p, start, end, MADV_POPULATE_WRITE);
-@@ -527,8 +554,16 @@ static struct mem_ops __read_only_file_ops = {
+ 	if (madvise(((char *)p) + start, end - start, MADV_POPULATE_WRITE)) {
+@@ -519,8 +545,16 @@ static struct mem_ops __read_only_file_ops = {
  	.name = "file",
  };
  
@@ -164,17 +158,18 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  	.cleanup_area = &file_cleanup_area,
  	.fault = &file_fault_write,
  	.check_huge = &file_check_huge,
-@@ -546,7 +581,8 @@ static struct mem_ops __shmem_ops = {
+@@ -537,7 +571,9 @@ static struct mem_ops __shmem_ops = {
+ 
  static bool is_tmpfs(struct mem_ops *ops)
  {
- 	return (ops == &__read_only_file_ops ||
--		ops == &__read_write_file_ops) &&
+-	return (ops == &__read_only_file_ops || ops == &__read_write_file_ops) &&
++	return (ops == &__read_only_file_ops ||
 +		ops == &__read_write_file_read_ops ||
 +		ops == &__read_write_file_write_ops) &&
  	       finfo.type == VMA_SHMEM;
  }
  
-@@ -563,9 +599,11 @@ static void __madvise_collapse(const char *msg, char *p, int nr_hpages,
+@@ -554,9 +590,11 @@ static void __madvise_collapse(const char *msg, char *p, int nr_hpages,
  
  	printf("%s...", msg);
  
@@ -189,7 +184,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  
  	/*
  	 * Prevent khugepaged interference and tests that MADV_COLLAPSE
-@@ -633,8 +671,11 @@ static bool wait_for_scan(const char *msg, char *p, int nr_hpages,
+@@ -624,8 +662,11 @@ static bool wait_for_scan(const char *msg, char *p, int nr_hpages,
  static void khugepaged_collapse(const char *msg, char *p, int nr_hpages,
  				struct mem_ops *ops, bool expect)
  {
@@ -203,7 +198,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  		expect = false;
  
  	if (wait_for_scan(msg, p, nr_hpages, ops)) {
-@@ -757,6 +798,9 @@ static void collapse_max_ptes_none(struct collapse_context *c, struct mem_ops *o
+@@ -748,6 +789,9 @@ static void collapse_max_ptes_none(struct collapse_context *c, struct mem_ops *o
  	validate_memory(p, 0, (hpage_pmd_nr - max_ptes_none - fault_nr_pages) * page_size);
  
  	if (c->enforce_pte_scan_limits) {
@@ -213,7 +208,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  		ops->fault(p, 0, (hpage_pmd_nr - max_ptes_none) * page_size);
  		c->collapse("Collapse with max_ptes_none PTEs empty", p, 1, ops,
  			    true);
-@@ -1204,21 +1248,24 @@ static void parse_test_type(int argc, char **argv)
+@@ -1195,21 +1239,24 @@ static void parse_test_type(int argc, char **argv)
  
  	if (!strcmp(buf, "all")) {
  		read_only_file_ops =  &__read_only_file_ops;
@@ -241,7 +236,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  		return;
  
  	if (argc != 2)
-@@ -1291,11 +1338,13 @@ int main(int argc, char **argv)
+@@ -1282,11 +1329,13 @@ int main(int argc, char **argv)
  
  	TEST(collapse_full, khugepaged_context, anon_ops);
  	TEST(collapse_full, khugepaged_context, read_only_file_ops);
@@ -257,7 +252,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  	TEST(collapse_full, madvise_context, shmem_ops);
  
  	TEST(collapse_empty, khugepaged_context, anon_ops);
-@@ -1303,30 +1352,38 @@ int main(int argc, char **argv)
+@@ -1294,30 +1343,38 @@ int main(int argc, char **argv)
  
  	TEST(collapse_single_pte_entry, khugepaged_context, anon_ops);
  	TEST(collapse_single_pte_entry, khugepaged_context, read_only_file_ops);
@@ -300,7 +295,7 @@ index 97b04adc1075c..df6ce6719e6b6 100644
  	TEST(collapse_full_of_compound, madvise_context, shmem_ops);
  
  	TEST(collapse_compound_extreme, khugepaged_context, anon_ops);
-@@ -1349,9 +1406,11 @@ int main(int argc, char **argv)
+@@ -1340,9 +1397,11 @@ int main(int argc, char **argv)
  
  	TEST(madvise_collapse_existing_thps, madvise_context, anon_ops);
  	TEST(madvise_collapse_existing_thps, madvise_context, read_only_file_ops);

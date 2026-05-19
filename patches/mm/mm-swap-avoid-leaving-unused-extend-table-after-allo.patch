@@ -8,13 +8,21 @@ value that is no longer maxed out, so the extend table is no longer
 required.  The current allocation path still attach the new extend table
 to the cluster anyway, leaving it unused.
 
-It's not really leaked, the next maxed out count on the same cluster
-reuses the table, and frees it properly.  Swapoff will also clean it up.
+The next maxed out count on the same cluster may still reuse the table,
+and frees it properly.  But swapoff could leak it indeed.
 
-The worst case is one unused page pinned per cluster until the next
-maxed-out allocation or swapoff.  To eliminate the waste, re-check under
-the ci lock that the extend table is still needed before publishing it,
-and free the local allocation otherwise.  The added overhead is ignorable.
+To eliminate the waste, re-check under the ci lock that the extend table
+is still needed before publishing it, and free the local allocation
+otherwise.
+
+Also close the check window by ensuring every count decrement that brings
+a slot below SWP_TB_COUNT_MAX - 1 runs swap_extend_table_try_free(), not
+just the MAX to MAX - 1 transition.  With this, a freshly published extend
+table that becomes redundant due to a racing put is freed on the very next
+decrement, restoring the invariant that an empty cluster never has a
+non-NULL ci->extend_table.
+
+The added overhead is ignorable.
 
 Link: https://lore.kernel.org/20260513-swap-extend-table-fix-v1-1-a71dea851fb3@tencent.com
 Fixes: 0d6af9bcf383 ("mm, swap: use the swap table to track the swap count")
@@ -33,7 +41,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  1 file changed, 25 insertions(+), 7 deletions(-)
 
 diff --git a/mm/swapfile.c b/mm/swapfile.c
-index 08309c1dafa3b..de5f7f5ecbaba 100644
+index 74a1e324449dc..3eddaa7e5bf62 100644
 --- a/mm/swapfile.c
 +++ b/mm/swapfile.c
 @@ -1443,8 +1443,10 @@ static bool swap_sync_discard(void)

@@ -1,5 +1,5 @@
 From: Joonwon Kang <joonwonkang@google.com>
-Date: Sun, 10 May 2026 07:21:49 +0000
+Date: Wed, 13 May 2026 08:51:16 +0000
 Subject: [PATCH] percpu: fix hint invariant breakage
 
 The invariant "scan_hint_start > contig_hint_start if and only if
@@ -39,19 +39,17 @@ This commit mainly fixes this invariant breakage and includes more:
       due to its better alignment, then update scan_hint to the old
       contig_hint instead of invalidating or keeping it.
 
-Link: https://lore.kernel.org/20260510072149.1279887-4-joonwonkang@google.com
+Link: https://lore.kernel.org/20260513085117.1024175-4-joonwonkang@google.com
 Signed-off-by: Joonwon Kang <joonwonkang@google.com>
-Cc: Christoph Lameter <cl@linux.com>
 Cc: Dennis Zhou <dennis@kernel.org>
 Cc: Tejun Heo <tj@kernel.org>
-Cc: <dodam@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/percpu.c | 119 +++++++++++++++++++++++++++++++++++++++++-----------
- 1 file changed, 94 insertions(+), 25 deletions(-)
+ mm/percpu.c | 118 +++++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 93 insertions(+), 25 deletions(-)
 
 diff --git a/mm/percpu.c b/mm/percpu.c
-index 35e058f56a6fd..359f92d9637db 100644
+index 35e058f56a6fd..71a85d7245c7b 100644
 --- a/mm/percpu.c
 +++ b/mm/percpu.c
 @@ -616,6 +616,20 @@ static inline bool pcpu_region_overlap(struct pcpu_region a,
@@ -153,7 +151,7 @@ index 35e058f56a6fd..359f92d9637db 100644
  			block->scan_hint.size = 0;
  		}
  		block->contig_hint = free;
-@@ -661,21 +710,41 @@ static void pcpu_block_update(struct pcpu_block_md *block, int start, int end)
+@@ -661,21 +710,40 @@ static void pcpu_block_update(struct pcpu_block_md *block, int start, int end)
  		if (block->contig_hint.start &&
  		    (!free.start ||
  		     __ffs(free.start) > __ffs(block->contig_hint.start))) {
@@ -188,19 +186,18 @@ index 35e058f56a6fd..359f92d9637db 100644
 -			block->scan_hint = free;
 +		} else {
 +			if (block->contig_hint.size > block->scan_hint.size) {
-+				if (free.start < block->contig_hint.start) {
++				if (free.start > block->contig_hint.start) {
++					block->scan_hint = free;
++				} else if (block->scan_hint.size &&
++					   free.start < block->scan_hint.start) {
 +					/*
 +					 * old scan_hint.size < new contig size
 +					 * == old contig_hint.size. But, the new
-+					 * contig is before the old contig_hint
-+					 * so hold the invariant
-+					 * scan_hint.start > contig_hint.start
-+					 * iff scan_hint.size ==
-+					 * contig_hint.size.
++					 * contig is before the old scan_hint
++					 * so invalidate the scan_hint to
++					 * protect the contig_hint.
 +					 */
 +					block->scan_hint.size = 0;
-+				} else {
-+					block->scan_hint = free;
 +				}
 +			} else if (free.start > block->scan_hint.start) {
 +				block->scan_hint = free;
