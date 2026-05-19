@@ -1,0 +1,199 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Tue, 19 May 2026 08:25:16 +0300
+Subject: [PATCH] userfaultfd: snapshot VMA state across UFFDIO_COPY retry
+
+mfill_copy_folio_retry() drops the VMA lock for copy_from_user() and
+reacquires it afterwards.  The destination VMA can be replaced during that
+window.
+
+The existing check compares vma_uffd_ops() before and after the retry, but
+if a shmem VMA with MAP_SHARED is replaced with a shmem VMA with
+MAP_PRIVATE (or vice versa) the replacement goes undetected.
+
+The change from MAP_PRIVATE to MAP_SHARED will treat the folio allocated
+with shmem_alloc_folio() as anonymous and this will cause BUG() when
+mfill_atomic_install_pte() will try to folio_add_new_anon_rmap().
+
+The change from MAP_SHARED to MAP_PRIVATE allows injection of folios into
+the page cache of the original VMA.
+
+Introduce helpers for more comprehensive comparison of VMA state:
+- vma_snapshot_get() to save the relevant VMA state into a struct
+  vma_snapshot (original uffd_ops, actual uffd_ops, relevant VMA flags,
+  vm_file and pgoff) before dropping the lock
+- vma_snapshot_changed() to compare the saved state with the state of the
+  VMA acquired after retaking the locks
+- vma_snapshot_put() to release vm_file pinning.
+
+Use DEFINE_FREE() cleanup to wrap vma_snapshot_put() to avoid complicating
+error handling paths in mfill_copy_folio_retry().
+
+Add vma_uffd_copy_ops() to avoid code duplication when original ops of
+shmem VMA with MAP_PRIVATE are replaced with anon_uffd_ops.
+
+Link: https://lore.kernel.org/20260519052516.3315196-1-rppt@kernel.org
+Fixes: 292411fda25b ("mm/userfaultfd: detect VMA type change after copy retry in mfill_copy_folio_retry()")
+Fixes: 6ab703034f14 ("userfaultfd: mfill_atomic(): remove retry logic")
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Co-developed-by: Michael Bommarito <michael.bommarito@gmail.com>
+Signed-off-by: Michael Bommarito <michael.bommarito@gmail.com>
+Co-developed-by: David Carlier <devnexen@gmail.com>
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Tested-by: Heechan Kang <gganji11@naver.com>
+Suggested-by: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/userfaultfd.c | 99 ++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 79 insertions(+), 20 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 180bad42fc79d..b70b84776a79a 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -14,6 +14,8 @@
+ #include <linux/userfaultfd_k.h>
+ #include <linux/mmu_notifier.h>
+ #include <linux/hugetlb.h>
++#include <linux/file.h>
++#include <linux/cleanup.h>
+ #include <asm/tlbflush.h>
+ #include <asm/tlb.h>
+ #include "internal.h"
+@@ -69,6 +71,24 @@ static const struct vm_uffd_ops *vma_uffd_ops(struct vm_area_struct *vma)
+ 	return vma->vm_ops ? vma->vm_ops->uffd_ops : NULL;
+ }
+ 
++static const struct vm_uffd_ops *vma_uffd_copy_ops(struct vm_area_struct *vma)
++{
++	const struct vm_uffd_ops *ops = vma_uffd_ops(vma);
++
++	if (!ops)
++		return NULL;
++
++	/*
++	 * UFFDIO_COPY fills MAP_PRIVATE file-backed mappings as anonymous
++	 * memory. This is an effective ops override, so retry validation must
++	 * compare the override result, not just vma->vm_ops->uffd_ops.
++	 */
++	if (!(vma->vm_flags & VM_SHARED))
++		return &anon_uffd_ops;
++
++	return ops;
++}
++
+ static __always_inline
+ bool validate_dst_vma(struct vm_area_struct *dst_vma, unsigned long dst_end)
+ {
+@@ -443,14 +463,70 @@ static int mfill_copy_folio_locked(struct folio *folio, unsigned long src_addr)
+ 	return ret;
+ }
+ 
++#define VMA_SNAPSHOT_FLAGS append_vma_flags(__VMA_UFFD_FLAGS, VMA_SHARED_BIT)
++
++struct vma_snapshot {
++	const struct vm_uffd_ops *copy_ops;
++	const struct vm_uffd_ops *ops;
++	struct file *file;
++	vma_flags_t flags;
++	pgoff_t pgoff;
++};
++
++static void vma_snapshot_get(struct vma_snapshot *s, struct vm_area_struct *vma)
++{
++	s->flags = vma_flags_and_mask(&vma->flags, VMA_SNAPSHOT_FLAGS);
++	s->copy_ops = vma_uffd_copy_ops(vma);
++	s->ops = vma_uffd_ops(vma);
++	s->pgoff = vma->vm_pgoff;
++
++	if (vma->vm_file)
++		s->file = get_file(vma->vm_file);
++}
++
++static bool vma_snapshot_changed(struct vma_snapshot *s,
++				 struct vm_area_struct *vma)
++{
++	vma_flags_t flags = vma_flags_and_mask(&vma->flags, VMA_SNAPSHOT_FLAGS);
++
++	if (!vma_flags_same_pair(&s->flags, &flags))
++		return true;
++
++	/* VMA type or effective uffd_ops changed while the lock was dropped */
++	if (s->ops != vma_uffd_ops(vma) || s->copy_ops != vma_uffd_copy_ops(vma))
++		return true;
++
++	/* VMA was anonymous before; changed only if it no longer is */
++	if (!s->file)
++		return !vma_is_anonymous(vma);
++
++	/* VMA was file backed, but inode or offset has changed */
++	if (!vma->vm_file || vma->vm_file->f_inode != s->file->f_inode ||
++	    vma->vm_pgoff != s->pgoff)
++		return true;
++
++	return false;
++}
++
++static void vma_snapshot_put(struct vma_snapshot *s)
++{
++	if (s->file)
++		fput(s->file);
++}
++
++DEFINE_FREE(snapshot_put, struct vma_snapshot *, if (_T) vma_snapshot_put(_T));
++
+ static int mfill_copy_folio_retry(struct mfill_state *state,
+ 				  struct folio *folio)
+ {
+-	const struct vm_uffd_ops *orig_ops = vma_uffd_ops(state->vma);
++	struct vma_snapshot s = { 0 };
++	struct vma_snapshot *p __free(snapshot_put) = &s;
+ 	unsigned long src_addr = state->src_addr;
+ 	void *kaddr;
+ 	int err;
+ 
++	vma_snapshot_get(&s, state->vma);
++
+ 	/* retry copying with mm_lock dropped */
+ 	mfill_put_vma(state);
+ 
+@@ -467,12 +543,7 @@ static int mfill_copy_folio_retry(struct mfill_state *state,
+ 	if (err)
+ 		return err;
+ 
+-	/*
+-	 * The VMA type may have changed while the lock was dropped
+-	 * (e.g. replaced with a hugetlb mapping), making the caller's
+-	 * ops pointer stale.
+-	 */
+-	if (vma_uffd_ops(state->vma) != orig_ops)
++	if (vma_snapshot_changed(&s, state->vma))
+ 		return -EAGAIN;
+ 
+ 	err = mfill_establish_pmd(state);
+@@ -545,19 +616,7 @@ static int __mfill_atomic_pte(struct mfill_state *state,
+ 
+ static int mfill_atomic_pte_copy(struct mfill_state *state)
+ {
+-	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+-
+-	/*
+-	 * The normal page fault path for a MAP_PRIVATE mapping in a
+-	 * file-backed VMA will invoke the fault, fill the hole in the file and
+-	 * COW it right away. The result generates plain anonymous memory.
+-	 * So when we are asked to fill a hole in a MAP_PRIVATE mapping, we'll
+-	 * generate anonymous memory directly without actually filling the
+-	 * hole. For the MAP_PRIVATE case the robustness check only happens in
+-	 * the pagetable (to verify it's still none) and not in the page cache.
+-	 */
+-	if (!(state->vma->vm_flags & VM_SHARED))
+-		ops = &anon_uffd_ops;
++	const struct vm_uffd_ops *ops = vma_uffd_copy_ops(state->vma);
+ 
+ 	return __mfill_atomic_pte(state, ops);
+ }
+-- 
+2.47.3
+

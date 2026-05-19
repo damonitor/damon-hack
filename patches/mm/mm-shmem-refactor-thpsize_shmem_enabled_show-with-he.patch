@@ -1,0 +1,83 @@
+From: Ran Xiaokai <ran.xiaokai@zte.com.cn>
+Date: Mon, 18 May 2026 12:32:38 +0000
+Subject: [PATCH] mm: shmem: refactor thpsize_shmem_enabled_show() with helper
+ arrays
+
+Replace the hardcoded if/else chain of test_bit() calls and string
+literals in thpsize_shmem_enabled_show() with a loop over
+huge_shmem_orders_by_mode[] and huge_shmem_enabled_mode_strings[] arrays.
+
+This makes thpsize_shmem_enabled_show() consistent with
+thpsize_shmem_enabled_store() and eliminates duplicated mode name strings.
+
+Link: https://lore.kernel.org/20260518123238.56344-3-ranxiaokai627@163.com
+Signed-off-by: Ran Xiaokai <ran.xiaokai@zte.com.cn>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Tested-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Breno Leitao <leitao@debian.org>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 36 +++++++++++++++++++++++-------------
+ 1 file changed, 23 insertions(+), 13 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 6311b65f20b41..e37a3a23cfb87 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -5490,20 +5490,30 @@ static ssize_t thpsize_shmem_enabled_show(struct kobject *kobj,
+ 					  struct kobj_attribute *attr, char *buf)
+ {
+ 	int order = to_thpsize(kobj)->order;
+-	const char *output;
+-
+-	if (test_bit(order, &huge_shmem_orders_always))
+-		output = "[always] inherit within_size advise never";
+-	else if (test_bit(order, &huge_shmem_orders_inherit))
+-		output = "always [inherit] within_size advise never";
+-	else if (test_bit(order, &huge_shmem_orders_within_size))
+-		output = "always inherit [within_size] advise never";
+-	else if (test_bit(order, &huge_shmem_orders_madvise))
+-		output = "always inherit within_size [advise] never";
+-	else
+-		output = "always inherit within_size advise [never]";
++	int active = HUGE_SHMEM_ENABLED_NEVER;
++	int len = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(huge_shmem_orders_by_mode); i++) {
++		if (test_bit(order, huge_shmem_orders_by_mode[i])) {
++			active = i;
++			break;
++		}
++	}
++
++	for (i = 0; i < ARRAY_SIZE(huge_shmem_enabled_mode_strings); i++) {
++		if (i == active)
++			len += sysfs_emit_at(buf, len, "[%s] ",
++					     huge_shmem_enabled_mode_strings[i]);
++		else
++			len += sysfs_emit_at(buf, len, "%s ",
++					     huge_shmem_enabled_mode_strings[i]);
++	}
++
++	/* Replace trailing space with newline */
++	buf[len - 1] = '\n';
+ 
+-	return sysfs_emit(buf, "%s\n", output);
++	return len;
+ }
+ 
+ static bool set_shmem_enabled_mode(int order, enum huge_shmem_enabled_mode mode)
+-- 
+2.47.3
+

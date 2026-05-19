@@ -1,0 +1,53 @@
+From: Brendan Jackman <jackmanb@google.com>
+Date: Tue, 19 May 2026 14:17:58 +0000
+Subject: [PATCH] mm/page_alloc: document that alloc_pages_nolock() uses RCU
+
+The allocator interacts with cgroups which rely on RCU.  RCU does not work
+everywhere, so the "any context" claim is slightly overstated here.
+
+This should already be enforced by objtool, since this function is not
+marked noinstr the x86 build should fail if you call it from a place where
+RCU is not watching.  But, expecting readers to make that connection for
+themselves seems a bit cruel (I don't think there is even any
+documentation of what noinstr means at all, let alone the connection with
+RCU).
+
+Note this is not claiming that any cgroup code called from the allocator
+would actually break if this restriction was violated, it could very well
+be that there's no real way for the allocator to act on a cgroup that can
+disappear concurrently.  But, since it's likely nobody has verified this
+one way or another, better to just be safe and declare that RCU is
+required.  Allocating from an RCU-unsafe context seems a bit crazy anyway.
+
+Link: https://lore.kernel.org/20260519-nolock-rcu-comment-v1-1-4a630c8794e5@google.com
+Signed-off-by: Brendan Jackman <jackmanb@google.com>
+Suggested-by: Junaid Shahid <jackmanb@google.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index fdf34534ce3e7..ef6c96e2b1ce4 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -7937,8 +7937,8 @@ struct page *alloc_frozen_pages_nolock_noprof(gfp_t gfp_flags, int nid, unsigned
+  * @order: allocation order size
+  *
+  * Allocates pages of a given order from the given node. This is safe to
+- * call from any context (from atomic, NMI, and also reentrant
+- * allocator -> tracepoint -> alloc_pages_nolock_noprof).
++ * call from any context where RCU is watching (from atomic, NMI, and also
++ * reentrant allocator -> tracepoint -> alloc_pages_nolock_noprof).
+  * Allocation is best effort and to be expected to fail easily so nobody should
+  * rely on the success. Failures are not reported via warn_alloc().
+  * See always fail conditions below.
+-- 
+2.47.3
+

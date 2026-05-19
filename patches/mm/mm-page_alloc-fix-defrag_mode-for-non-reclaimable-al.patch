@@ -1,0 +1,64 @@
+From: Dmitry Ilvokhin <d@ilvokhin.com>
+Date: Mon, 18 May 2026 16:37:36 +0000
+Subject: [PATCH] mm/page_alloc: fix defrag_mode for non-reclaimable
+ allocations
+
+When defrag_mode is enabled, ALLOC_NOFRAGMENT is enforced to prevent
+migratetype fallbacks and keep pageblocks clean.  The allocator relies on
+reclaim and compaction to free pages of the correct type before allowing
+fallback as a last resort.
+
+However, non-reclaimable allocations such as GFP_ATOMIC cannot invoke
+direct reclaim or compaction.  With defrag_mode=1, these allocations hit
+the !can_direct_reclaim bailout in __alloc_pages_slowpath() with
+ALLOC_NOFRAGMENT still set, and fail without ever attempting a fallback.
+
+This causes a large number of SLUB allocation failures for
+skbuff_head_cache under network-heavy workloads, despite free memory being
+available in other migratetype freelists.
+
+Clear ALLOC_NOFRAGMENT and retry before giving up on allocations that
+cannot reclaim, following the same pattern used after reclaim/compaction
+exhaustion later in the slowpath.
+
+Link: https://lore.kernel.org/20260518163736.173910-1-d@ilvokhin.com
+Fixes: e3aa7df331bc ("mm: page_alloc: defrag_mode")
+Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index ef6c96e2b1ce4..602d844732454 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4853,8 +4853,18 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	}
+ 
+ 	/* Caller is not willing to reclaim, we can't balance anything */
+-	if (!can_direct_reclaim)
++	if (!can_direct_reclaim) {
++		/*
++		 * Reclaim/compaction cannot run, so defrag_mode's strategy
++		 * of enforcing ALLOC_NOFRAGMENT cannot be fulfilled. Allow
++		 * fallbacks rather than failing the allocation outright.
++		 */
++		if (defrag_mode && (alloc_flags & ALLOC_NOFRAGMENT)) {
++			alloc_flags &= ~ALLOC_NOFRAGMENT;
++			goto retry;
++		}
+ 		goto nopage;
++	}
+ 
+ 	/* Avoid recursion of direct reclaim */
+ 	if (current->flags & PF_MEMALLOC)
+-- 
+2.47.3
+
