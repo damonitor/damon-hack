@@ -1,0 +1,53 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 15 Feb 2026 13:26:08 -0800
+Subject: [RFC PATCH v1.2 01/14] mm/damon/core: safely handle no region case in
+         damon_set_regions()
+
+damon_set_regions() calls damon_first_region() regardless of the number
+of DAMON regions in a given DAMON target.  damon_first_region()
+internally uses list_first_entry(), which clearly documents the list is
+expected to be not empty.  Due to the internal implementation of the
+macro, damon_set_regions() is safe for now.  But the internal
+implementation of the macro can be changed in future.  Refactor the
+function to explicitly and safely handle the empty region list case
+without depending on the internal implementation.
+
+No behavioral change is intended.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0267faf216b95..40946a7f6f549 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -356,6 +356,19 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 			damon_destroy_region(r, t);
+ 	}
+ 
++	if (!damon_nr_regions(t)) {
++		for (i = 0; i < nr_ranges; i++) {
++			r = damon_new_region(
++					ALIGN_DOWN(ranges[i].start,
++						min_region_sz),
++					ALIGN(ranges[i].end, min_region_sz));
++			if (!r)
++				return -ENOMEM;
++			damon_add_region(r, t);
++		}
++		return 0;
++	}
++
+ 	r = damon_first_region(t);
+ 	/* Add new regions or resize existing regions to fit in the ranges */
+ 	for (i = 0; i < nr_ranges; i++) {
+-- 
+2.47.3
