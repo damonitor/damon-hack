@@ -1,0 +1,63 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sun, 15 Feb 2026 13:46:43 -0800
+Subject: [PATCH 02/14] mm/damon/core: do not use region out of a loop in
+         damon_set_regions()
+
+damon_set_regions() assumes the DAMON region iterator is referencing the
+last region after the region iteration loop is completed.  The code is
+indeed implemented in the way, but that is not a documented safe
+behavior.  Hence it is unreliable and difficult to read.  Cleanup the
+code to avoid the case.
+
+No behavioral change is intended.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 40946a7f6f549..e8cf3632115e5 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -374,6 +374,7 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 	for (i = 0; i < nr_ranges; i++) {
+ 		struct damon_region *first = NULL, *last, *newr;
+ 		struct damon_addr_range *range;
++		bool insert_before_r = false;
+ 
+ 		range = &ranges[i];
+ 		/* Get the first/last regions intersecting with the range */
+@@ -383,8 +384,10 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 					first = r;
+ 				last = r;
+ 			}
+-			if (r->ar.start >= range->end)
++			if (r->ar.start >= range->end) {
++				insert_before_r = true;
+ 				break;
++			}
+ 		}
+ 		if (!first) {
+ 			/* no region intersects with this range */
+@@ -394,7 +397,11 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 					ALIGN(range->end, min_region_sz));
+ 			if (!newr)
+ 				return -ENOMEM;
+-			damon_insert_region(newr, damon_prev_region(r), r, t);
++			if (insert_before_r)
++				damon_insert_region(newr, damon_prev_region(r),
++						r, t);
++			else
++				damon_add_region(newr, t);
+ 		} else {
+ 			/* resize intersecting regions to fit in this range */
+ 			first->ar.start = ALIGN_DOWN(range->start,
+-- 
+2.47.3
