@@ -1,0 +1,82 @@
+From: "JP Kobryn (Meta)" <jp.kobryn@linux.dev>
+Date: Tue, 19 May 2026 13:08:51 -0700
+Subject: [PATCH] mm/compaction: cap compact_gap() at COMPACT_CLUSTER_MAX
+
+compact_gap() returns 2 << order, which is used as watermark headroom in
+__compaction_suitable() and as a reclaim target in kswapd.  The computed
+value scales exponentially by order.  For order-9 THP allocations this
+evaluates to 1024 pages, but the compaction free scanner's working set is
+bounded by COMPACT_CLUSTER_MAX (32 pages).  The scanner stops isolating
+free pages once it matches the migration batch.  The current gap
+over-reserves by 32x.
+
+On fragmented production hosts, kswapd will try and reclaim up to the gap,
+but it only reaches that threshold 18% of the time, causing reclaim to
+continue a majority of the time.  The over-sized gap also causes 46% of
+order-9 compaction suitability checks to fail unnecessarily - the zone has
+sufficient free pages for the scanner to operate, but not enough to clear
+the inflated threshold.
+
+Cap compact_gap() at COMPACT_CLUSTER_MAX to align the watermark headroom
+with the scanner's actual capacity.  Orders 0-4 are unaffected since their
+gap is <= 32.
+
+A/B test on ~100 instagram production hosts (64GB, 60s measurement):
+
+Unpatched (43 hosts)
+pgscan_kswapd (mean/host): ~1.6M
+reclaim efficiency (steal/scan): 83.8%
+compaction success (success/stall): 2.1%
+THP success (alloc/alloc+fallback): 4.9%
+forced lru_add_drain (mean/host): ~107K
+
+Patched (59 hosts)
+pgscan_kswapd (mean/host): ~449K
+reclaim efficiency (steal/scan): 91.0%
+compaction success (success/stall): 28.3%
+THP success (alloc/alloc+fallback): 17.2%
+forced lru_add_drain (mean/host): ~64K
+
+Link: https://lore.kernel.org/20260519200851.141955-1-jp.kobryn@linux.dev
+Signed-off-by: JP Kobryn (Meta) <jp.kobryn@linux.dev>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/compaction.h | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/compaction.h b/include/linux/compaction.h
+index 173d9c07a8952..09aea63b8a89d 100644
+--- a/include/linux/compaction.h
++++ b/include/linux/compaction.h
+@@ -2,6 +2,8 @@
+ #ifndef _LINUX_COMPACTION_H
+ #define _LINUX_COMPACTION_H
+ 
++#include <linux/swap.h>
++
+ /*
+  * Determines how hard direct compaction should try to succeed.
+  * Lower value means higher priority, analogically to reclaim priority.
+@@ -73,11 +75,9 @@ static inline unsigned long compact_gap(unsigned int order)
+ 	 * effectively limited by COMPACT_CLUSTER_MAX, as that's the maximum
+ 	 * that the migrate scanner can have isolated on migrate list, and free
+ 	 * scanner is only invoked when the number of isolated free pages is
+-	 * lower than that. But it's not worth to complicate the formula here
+-	 * as a bigger gap for higher orders than strictly necessary can also
+-	 * improve chances of compaction success.
++	 * lower than that.
+ 	 */
+-	return 2UL << order;
++	return min(2UL << order, COMPACT_CLUSTER_MAX);
+ }
+ 
+ static inline int current_is_kcompactd(void)
+-- 
+2.47.3
+

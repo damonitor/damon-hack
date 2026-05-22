@@ -1,32 +1,153 @@
-- baseline: v7.1-rc3 -> v7.1-rc4-93-g27fa82620cbaa
-- mm-hotfixes-stable: 2 -> 0 commits
+- baseline: v7.1-rc4-93-g27fa82620cbaa -> v7.1-rc4-93-g27fa82620cbaa (no change)
+- mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 0 commits
-  - dropped commits
-    - d4e7b5c4cc35 "mm/damon/sysfs-schemes: call missing mem_cgroup_iter_break()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260426173625.86521-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260423004148.74722-1-sj@kernel.org [1]
-    - 620072fd7832 "mm/damon: fix damos_stat tracepoint format for sz_applied"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260426193119.88095-1-sj@kernel.org
 - mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 45 -> 45 commits (no change)
-  - series: 8 (40) -> 8 (40) (no change)
-    - no role, maintainer: 9 -> 9 commits (no change)
-    - maintainer, nobody: 36 -> 36 commits (no change)
-- mm-new: 28 -> 29 commits
-  - series: 1 (28) -> 1 (28) (no change)
-    - no role, maintainer: 0 -> 1 commits
-    - maintainer, nobody: 28 -> 28 commits (no change)
+- mm-unstable: 45 -> 77 commits
+  - series: 8 (40) -> 10 (71)
+    - no role, maintainer: 9 -> 13 commits
+    - maintainer, nobody: 36 -> 64 commits
   - new commits
-    - ee689562554c "mm/damon/vaddr: attempt per-vma lock during page table walk"
+    - series "mm/damon: documentation and comment fixes". (3)
+      - 3cbe8f7ca720 "mm/damon/core: clarify next_intervals_tune_sis update path (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260520012104.93602-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260520012104.93602-2-sj@kernel.org
+      - a721e0bb4e98 "Docs/mm/damon/design: fix three typos (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260520012104.93602-3-sj@kernel.org
+      - 686099898049 "Docs/{ABI,admin-guide}/damon: fix various typoes (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260520012104.93602-4-sj@kernel.org
+  - changed commits
+    - series "mm/damon: introduce data attributes monitoring". (28)
+      - 68158ce14f75 "mm/damon/core: introduce struct damon_probe (0/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260518234119.97569-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20250106193401.109161-1-sj@kernel.org [1]
+        - Link: https://lore.kernel.org/20251208062943.68824-1-sj@kernel.org/ [2]
+        - Link: https://lore.kernel.org/20260423004211.7037-1-akinobu.mita@gmail.com [3]
+      - cdd5bfb4f33f "mm/damon/core: embed damon_probe objects in damon_ctx (1/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-3-sj@kernel.org
+      - f26466fe8928 "mm/damon/core: introduce damon_filter (2/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-4-sj@kernel.org
+      - 098ace4120df "mm/damon/core: commit probes (3/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-5-sj@kernel.org
+      - 27c66d5ef6c7 "mm/damon/core: introduce damon_region->probe_hits (4/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-6-sj@kernel.org
+      - 2eeeb3e7ac5c "mm/damon/core: introduce damon_ops->apply_probes (5/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-7-sj@kernel.org
+      - a3de1d65fff5 "mm/damon/core: do data attributes monitoring (6/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-8-sj@kernel.org
+      - f30e1a27bc32 "mm/damon/paddr: support data attributes monitoring (7/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-9-sj@kernel.org
+      - 673b282492b5 "mm/damon/sysfs: implement probes dir (8/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-10-sj@kernel.org
+      - e9a0d5f92f02 "mm/damon/sysfs: implement probe dir (9/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-11-sj@kernel.org
+      - ba4a4ef789d7 "mm/damon/sysfs: implement filters directory (10/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-12-sj@kernel.org
+      - 0704a8cefdfa "mm/damon/sysfs: implement filter dir (11/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-13-sj@kernel.org
+      - e3bdf3c67e37 "mm/damon/sysfs: implement filter dir files (12/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-14-sj@kernel.org
+      - f09ee5d4f03d "mm/damon/sysfs: setup probes on DAMON core API parameters (13/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-15-sj@kernel.org
+      - 1762bc6b704f "mm/damon/sysfs-schemes: implement tried_regions/<r>/probes/ (14/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-16-sj@kernel.org
+      - 7408c97ee787 "mm/damon/sysfs-schemes: implement probe dir (15/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-17-sj@kernel.org
+      - 0255ece9df1d "mm/damon/sysfs-schemes: implement probe/hits file (16/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-18-sj@kernel.org
+      - 3f52ebdfa1f9 "mm/damon: trace probe_hits (17/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-19-sj@kernel.org
+      - c1b17caafaad "selftests/damon/sysfs.sh: test probes dir (18/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-20-sj@kernel.org
+      - 7df1094abd9c "Docs/mm/damon/design: document data attributes monitoring (19/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-21-sj@kernel.org
+      - c1c9008d1a7f "Docs/admin-guide/mm/damon/usage: document data attributes monitoring (20/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-22-sj@kernel.org
+      - 0d7cc8eb38e6 "mm/damon/core: introduce DAMON_FILTER_TYPE_MEMCG (21/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-23-sj@kernel.org
+      - b55f11cb1b07 "mm/damon/paddr: support DAMON_FILTER_TYPE_MEMCG (22/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-24-sj@kernel.org
+      - 0db0e9a873fa "mm/damon/sysfs: add filters/<F>/path file (23/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-25-sj@kernel.org
+      - 9b7b2a2b1f87 "mm/damon/sysfs-schemes: move memcg_path_to_id() to sysfs-common (24/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-26-sj@kernel.org
+      - 161738b9e670 "mm/damon/sysfs: setup damon_filter->memcg_id from path (25/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-27-sj@kernel.org
+      - 238667f0a054 "Docs/mm/damon/design: update for memcg damon filter (26/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-28-sj@kernel.org
+      - 6d9e89dd16aa "Docs/admin-guide/mm/damon/usage: update for memcg damon filter (27/28)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260518234119.97569-29-sj@kernel.org
+    - 909d8bf8d25e "mm/damon/vaddr: attempt per-vma lock during page table walk"
       - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
       - Link: https://lore.kernel.org/20260512151523.2092638-1-wangkefeng.wang@huawei.com
+- mm-new: 29 -> 0 commits
+  - series: 1 (28) -> 0 (0)
+    - no role, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 28 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

@@ -1,5 +1,5 @@
 From: Dmitry Ilvokhin <d@ilvokhin.com>
-Date: Mon, 18 May 2026 16:37:36 +0000
+Date: Wed, 20 May 2026 12:22:28 +0000
 Subject: [PATCH] mm/page_alloc: fix defrag_mode for non-reclaimable
  allocations
 
@@ -17,11 +17,13 @@ This causes a large number of SLUB allocation failures for
 skbuff_head_cache under network-heavy workloads, despite free memory being
 available in other migratetype freelists.
 
-Clear ALLOC_NOFRAGMENT and retry before giving up on allocations that
-cannot reclaim, following the same pattern used after reclaim/compaction
-exhaustion later in the slowpath.
+Clear ALLOC_NOFRAGMENT and retry for allocations that request kswapd
+reclaim but cannot do direct reclaim themselves (GFP_ATOMIC).  Purely
+speculative allocations like GFP_TRANSHUGE_LIGHT that don't set
+__GFP_KSWAPD_RECLAIM are left to fail, since they have reasonable
+fallbacks and should not cause fragmentation.
 
-Link: https://lore.kernel.org/20260518163736.173910-1-d@ilvokhin.com
+Link: https://lore.kernel.org/20260520122228.201550-1-d@ilvokhin.com
 Fixes: e3aa7df331bc ("mm: page_alloc: defrag_mode")
 Signed-off-by: Dmitry Ilvokhin <d@ilvokhin.com>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
@@ -32,14 +34,14 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/page_alloc.c | 12 +++++++++++-
- 1 file changed, 11 insertions(+), 1 deletion(-)
+ mm/page_alloc.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index ef6c96e2b1ce4..602d844732454 100644
+index ef6c96e2b1ce4..1b5b1e556f76f 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
-@@ -4853,8 +4853,18 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+@@ -4853,8 +4853,19 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
  	}
  
  	/* Caller is not willing to reclaim, we can't balance anything */
@@ -50,7 +52,8 @@ index ef6c96e2b1ce4..602d844732454 100644
 +		 * of enforcing ALLOC_NOFRAGMENT cannot be fulfilled. Allow
 +		 * fallbacks rather than failing the allocation outright.
 +		 */
-+		if (defrag_mode && (alloc_flags & ALLOC_NOFRAGMENT)) {
++		if (defrag_mode && (alloc_flags & ALLOC_NOFRAGMENT) &&
++		    (gfp_mask & __GFP_KSWAPD_RECLAIM)) {
 +			alloc_flags &= ~ALLOC_NOFRAGMENT;
 +			goto retry;
 +		}
