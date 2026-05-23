@@ -1,6 +1,6 @@
 From: Nico Pache <npache@redhat.com>
-Date: Mon, 11 May 2026 12:58:11 -0600
-Subject: [PATCH] mm/khugepaged: introduce mTHP collapse support
+Date: Fri, 22 May 2026 09:00:06 -0600
+Subject: [PATCH] mm/khugepaged: Introduce mTHP collapse support
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -72,8 +72,9 @@ HPAGE_PMD_NR - 1.  resulting in the following behavior:
     - max_ptes_none=HPAGE_PMD_NR-1: Always try collapse to the highest
       available mTHP order
 
-Any other max_ptes_none value will emit a warning and skip mTHP collapse
-attempts.  There should be no behavior change for PMD collapse.
+Any other max_ptes_none value will emit a warning and default mTHP
+collapse to max_ptes_none=0.  There should be no behavior change for PMD
+collapse.
 
 Once we determine what mTHP sizes fits best in that PMD range a collapse
 is attempted.  A minimum collapse order of 2 is used as this is the lowest
@@ -85,18 +86,17 @@ collapse.
 We can also remove the check for is_khugepaged inside the PMD scan as the
 collapse_max_ptes_none() function handles this logic now.
 
-Link: https://lore.kernel.org/20260511185817.686831-12-npache@redhat.com
+Link: https://lore.kernel.org/20260522150009.121603-12-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
-Cc: Bagas Sanjaya <bagasdotme@gmail.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Byungchul Park <byungchul@sk.com>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
 Cc: David Rientjes <rientjes@google.com>
 Cc: Dev Jain <dev.jain@arm.com>
 Cc: Gregory Price <gourry@gourry.net>
@@ -130,7 +130,6 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
 Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
 Cc: Usama Arif <usamaarif642@gmail.com>
-Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Wei Yang <richard.weiyang@gmail.com>
@@ -138,16 +137,18 @@ Cc: Will Deacon <will@kernel.org>
 Cc: Yang Shi <yang@os.amperecomputing.com>
 Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
+Cc: Bagas Sanjaya <bagasdotme@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 182 +++++++++++++++++++++++++++++++++++++++++++++---
- 1 file changed, 174 insertions(+), 8 deletions(-)
+ mm/khugepaged.c | 181 +++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 172 insertions(+), 9 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 3492b135d667d..39bf7ea8a6e82 100644
+index 5088a528ed941..c8aea4b125145 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -100,6 +100,30 @@ static DEFINE_READ_MOSTLY_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
+@@ -99,6 +99,30 @@ static DEFINE_READ_MOSTLY_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
  
  static struct kmem_cache *mm_slot_cache __ro_after_init;
  
@@ -178,7 +179,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  struct collapse_control {
  	bool is_khugepaged;
  
-@@ -111,6 +135,12 @@ struct collapse_control {
+@@ -110,6 +134,12 @@ struct collapse_control {
  
  	/* nodemask for allocation fallback */
  	nodemask_t alloc_nmask;
@@ -191,7 +192,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  };
  
  /**
-@@ -1404,20 +1434,140 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1411,20 +1441,137 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  	return result;
  }
  
@@ -256,12 +257,12 @@ index 3492b135d667d..39bf7ea8a6e82 100644
 + * If a collapse is permitted, we attempt to collapse the PTE range into a
 + * mTHP.
 + */
-+static int mthp_collapse(struct mm_struct *mm, unsigned long address,
-+		int referenced, int unmapped, struct collapse_control *cc,
-+		unsigned long enabled_orders)
++static int mthp_collapse(struct mm_struct *mm, struct vm_area_struct *vma,
++		unsigned long address, int referenced, int unmapped,
++		struct collapse_control *cc, unsigned long enabled_orders)
 +{
-+	unsigned int nr_occupied_ptes, nr_ptes;
-+	int max_ptes_none, collapsed = 0, stack_size = 0;
++	unsigned int nr_occupied_ptes, nr_ptes, max_ptes_none;
++	int collapsed = 0, stack_size = 0;
 +	unsigned long collapse_address;
 +	struct mthp_range range;
 +	u16 offset;
@@ -278,10 +279,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
 +		if (!test_bit(order, &enabled_orders))
 +			goto next_order;
 +
-+		max_ptes_none = collapse_max_ptes_none(cc, NULL, order);
-+
-+		if (max_ptes_none < 0)
-+			return collapsed;
++		max_ptes_none = collapse_max_ptes_none(cc, vma, order);
 +
 +		nr_occupied_ptes = collapse_mthp_count_present(cc, offset,
 +							       nr_ptes);
@@ -299,7 +297,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
 +		}
 +
 +next_order:
-+		if (order > KHUGEPAGED_MIN_MTHP_ORDER) {
++		if ((BIT(order) - 1) & enabled_orders) {
 +			const u8 next_order = order - 1;
 +			const u16 mid_offset = offset + (nr_ptes / 2);
 +
@@ -316,10 +314,10 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  		struct vm_area_struct *vma, unsigned long start_addr,
  		bool *lock_dropped, struct collapse_control *cc)
  {
--	const int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
-+	int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
+-	const unsigned int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
  	const unsigned int max_ptes_shared = collapse_max_ptes_shared(cc, HPAGE_PMD_ORDER);
  	const unsigned int max_ptes_swap = collapse_max_ptes_swap(cc, HPAGE_PMD_ORDER);
++	unsigned int max_ptes_none = collapse_max_ptes_none(cc, vma, HPAGE_PMD_ORDER);
 +	enum tva_type tva_flags = cc->is_khugepaged ? TVA_KHUGEPAGED : TVA_FORCED_COLLAPSE;
  	pmd_t *pmd;
 -	pte_t *pte, *_pte;
@@ -335,7 +333,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  	spinlock_t *ptl;
  	int node = NUMA_NO_NODE, unmapped = 0;
  
-@@ -1429,8 +1579,19 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1436,8 +1583,19 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		goto out;
  	}
  
@@ -355,7 +353,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  	pte = pte_offset_map_lock(mm, pmd, start_addr, &ptl);
  	if (!pte) {
  		cc->progress++;
-@@ -1438,11 +1599,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1445,11 +1603,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		goto out;
  	}
  
@@ -372,7 +370,7 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  		if (pte_none_or_zero(pteval)) {
  			if (++none_or_zero > max_ptes_none) {
  				result = SCAN_EXCEED_NONE_PTE;
-@@ -1522,6 +1685,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1529,6 +1689,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  			}
  		}
  
@@ -381,15 +379,16 @@ index 3492b135d667d..39bf7ea8a6e82 100644
  		/*
  		 * Record which node the original page is from and save this
  		 * information to cc->node_load[].
-@@ -1580,10 +1745,11 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1587,10 +1749,11 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  	if (result == SCAN_SUCCEED) {
  		/* collapse_huge_page expects the lock to be dropped before calling */
  		mmap_read_unlock(mm);
 -		result = collapse_huge_page(mm, start_addr, referenced,
 -					    unmapped, cc, HPAGE_PMD_ORDER);
-+		nr_collapsed = mthp_collapse(mm, start_addr, referenced, unmapped,
-+					      cc, enabled_orders);
- 		/* collapse_huge_page will return with the mmap_lock released */
+-		/* collapse_huge_page will return with the mmap_lock released */
++		nr_collapsed = mthp_collapse(mm, vma, start_addr, referenced,
++					     unmapped, cc, enabled_orders);
++		/* mmap_lock was released above, set lock_dropped */
  		*lock_dropped = true;
 +		result = nr_collapsed ? SCAN_SUCCEED : SCAN_FAIL;
  	}

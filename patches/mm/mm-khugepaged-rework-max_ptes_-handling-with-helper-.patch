@@ -1,5 +1,5 @@
 From: Nico Pache <npache@redhat.com>
-Date: Mon, 11 May 2026 12:58:03 -0600
+Date: Fri, 22 May 2026 08:59:58 -0600
 Subject: [PATCH] mm/khugepaged: rework max_ptes_* handling with helper
  functions
 MIME-Version: 1.0
@@ -10,21 +10,21 @@ The following cleanup reworks all the max_ptes_* handling into helper
 functions.  This increases the code readability and will later be used to
 implement the mTHP handling of these variables.
 
-With these changes we abstract all the madvise_collapse() special
-casing (do not respect the sysctls) away from the functions that
-utilize them.  And will be used later in this series to cleanly
-restrict the mTHP collapse behavior.
+With these changes we abstract all the madvise_collapse() special casing
+(do not respect the sysctls) away from the functions that utilize them.
+And will be used later in this series to cleanly restrict the mTHP
+collapse behavior.
 
 No functional change is intended; however, we are now only reading the
 sysfs variables once per scan, whereas before these variables were being
 read on each loop iteration.
 
-Link: https://lore.kernel.org/20260511185817.686831-4-npache@redhat.com
+Link: https://lore.kernel.org/20260522150009.121603-4-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Suggested-by: David Hildenbrand <david@kernel.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Usama Arif <usama.arif@linux.dev>
-Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
@@ -75,36 +75,34 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 118 +++++++++++++++++++++++++++++++++---------------
- 1 file changed, 82 insertions(+), 36 deletions(-)
+ mm/khugepaged.c | 120 +++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 84 insertions(+), 36 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index f0e29d5c7b1f1..f68853b3caa7b 100644
+index bba7b94818fb0..22c7789a96e76 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -348,6 +348,62 @@ static bool pte_none_or_zero(pte_t pte)
+@@ -348,6 +348,64 @@ static bool pte_none_or_zero(pte_t pte)
  	return pte_present(pte) && is_zero_pfn(pte_pfn(pte));
  }
  
 +/**
-+ * collapse_max_ptes_none - Calculate maximum allowed none-page or zero-page
-+ * PTEs for the given collapse operation.
++ * collapse_max_ptes_none - Calculate maximum allowed empty PTEs or PTEs mapping
++ * the shared zeropage for the given collapse operation.
 + * @cc: The collapse control struct
 + * @vma: The vma to check for userfaultfd
 + *
-+ * Return: Maximum number of none-page or zero-page PTEs allowed for the
-+ * collapse operation.
++ * Return: Maximum number of empty/shared zeropage PTEs for the collapse operation
 + */
 +static unsigned int collapse_max_ptes_none(struct collapse_control *cc,
 +		struct vm_area_struct *vma)
 +{
-+	// If the vma is userfaultfd-armed, allow no none-page or zero-page PTEs.
 +	if (vma && userfaultfd_armed(vma))
 +		return 0;
-+	// for MADV_COLLAPSE, allow any none-page or zero-page PTEs.
++	/* for MADV_COLLAPSE, allow any empty/shared zeropage PTEs */
 +	if (!cc->is_khugepaged)
 +		return HPAGE_PMD_NR;
-+	// For all other cases repect the user defined maximum.
++	/* For all other cases respect the user defined maximum */
 +	return khugepaged_max_ptes_none;
 +}
 +
@@ -118,8 +116,10 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
 + */
 +static unsigned int collapse_max_ptes_shared(struct collapse_control *cc)
 +{
-+	// for MADV_COLLAPSE, do not restrict the number of PTEs that map shared
-+	// anonymous pages.
++	/*
++	 * For MADV_COLLAPSE, do not restrict the number of PTEs that map shared
++	 * anonymous pages.
++	 */
 +	if (!cc->is_khugepaged)
 +		return HPAGE_PMD_NR;
 +	return khugepaged_max_ptes_shared;
@@ -135,8 +135,10 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
 + */
 +static unsigned int collapse_max_ptes_swap(struct collapse_control *cc)
 +{
-+	// for MADV_COLLAPSE, do not restrict the number PTEs entries or
-+	// pagecache entries that are non-present.
++	/*
++	 * For MADV_COLLAPSE, do not restrict the number PTEs entries or
++	 * pagecache entries that are non-present.
++	 */
 +	if (!cc->is_khugepaged)
 +		return HPAGE_PMD_NR;
 +	return khugepaged_max_ptes_swap;
@@ -145,14 +147,16 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  int hugepage_madvise(struct vm_area_struct *vma,
  		     vm_flags_t *vm_flags, int advice)
  {
-@@ -546,21 +602,19 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
- 	pte_t *_pte;
- 	int none_or_zero = 0, shared = 0, referenced = 0;
- 	enum scan_result result = SCAN_FAIL;
-+	unsigned int max_ptes_none = collapse_max_ptes_none(cc, vma);
-+	unsigned int max_ptes_shared = collapse_max_ptes_shared(cc);
- 
- 	for (_pte = pte; _pte < pte + HPAGE_PMD_NR;
+@@ -540,6 +598,8 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 		unsigned long start_addr, pte_t *pte, struct collapse_control *cc,
+ 		struct list_head *compound_pagelist)
+ {
++	const unsigned int max_ptes_none = collapse_max_ptes_none(cc, vma);
++	const unsigned int max_ptes_shared = collapse_max_ptes_shared(cc);
+ 	struct page *page = NULL;
+ 	struct folio *folio = NULL;
+ 	unsigned long addr = start_addr;
+@@ -551,16 +611,12 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
  	     _pte++, addr += PAGE_SIZE) {
  		pte_t pteval = ptep_get(_pte);
  		if (pte_none_or_zero(pteval)) {
@@ -171,7 +175,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  		}
  		if (!pte_present(pteval)) {
  			result = SCAN_PTE_NON_PRESENT;
-@@ -591,9 +645,7 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+@@ -591,9 +647,7 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
  
  		/* See collapse_scan_pmd(). */
  		if (folio_maybe_mapped_shared(folio)) {
@@ -182,7 +186,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  				result = SCAN_EXCEED_SHARED_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
  				goto out;
-@@ -1261,6 +1313,9 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1262,6 +1316,9 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		struct vm_area_struct *vma, unsigned long start_addr,
  		bool *lock_dropped, struct collapse_control *cc)
  {
@@ -192,7 +196,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  	pmd_t *pmd;
  	pte_t *pte, *_pte;
  	int none_or_zero = 0, shared = 0, referenced = 0;
-@@ -1294,36 +1349,29 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1295,36 +1352,29 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  
  		pte_t pteval = ptep_get(_pte);
  		if (pte_none_or_zero(pteval)) {
@@ -242,7 +246,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  		}
  		if (pte_uffd_wp(pteval)) {
  			/*
-@@ -1366,9 +1414,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1367,9 +1417,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		 * is shared.
  		 */
  		if (folio_maybe_mapped_shared(folio)) {
@@ -253,7 +257,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  				result = SCAN_EXCEED_SHARED_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
  				goto out_unmap;
-@@ -2323,6 +2369,8 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2324,6 +2372,8 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  		unsigned long addr, struct file *file, pgoff_t start,
  		struct collapse_control *cc)
  {
@@ -262,7 +266,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  	struct folio *folio = NULL;
  	struct address_space *mapping = file->f_mapping;
  	XA_STATE(xas, &mapping->i_pages, start);
-@@ -2341,8 +2389,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2342,8 +2392,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  
  		if (xa_is_value(folio)) {
  			swap += 1 << xas_get_order(&xas);
@@ -272,7 +276,7 @@ index f0e29d5c7b1f1..f68853b3caa7b 100644
  				result = SCAN_EXCEED_SWAP_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SWAP_PTE);
  				break;
-@@ -2413,8 +2460,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2414,8 +2463,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  		cc->progress += HPAGE_PMD_NR;
  
  	if (result == SCAN_SUCCEED) {

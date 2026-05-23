@@ -1,0 +1,92 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 22 May 2026 17:00:10 +0100
+Subject: [PATCH] mm/vma: remove mmap_action->success_hook
+
+This hook was introduced to work around code that seemed to absolutely
+require access to a VMA pointer upon mmap().
+
+However, providing this hook leaves a backdoor to drivers getting access
+to the very thing mmap_prepare eliminates - a pointer to the VMA.
+
+Let's solve this contradiction by removing it.  The key intended user was
+hugetlb, however it seems that the best course now is to avoid allowing
+all drivers the ability to work around mmap_prepare, and find a different
+solution there.
+
+Link: https://lore.kernel.org/2521c19866f3f10f9085d094cc4f06769042be71.1779462249.git.ljs@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_types.h        | 10 ----------
+ mm/util.c                       |  2 --
+ tools/testing/vma/include/dup.h | 10 ----------
+ 3 files changed, 22 deletions(-)
+
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index a308e2c23b829..945c0a5386d61 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -843,16 +843,6 @@ struct mmap_action {
+ 	};
+ 	enum mmap_action_type type;
+ 
+-	/*
+-	 * If specified, this hook is invoked after the selected action has been
+-	 * successfully completed. Note that the VMA write lock still held.
+-	 *
+-	 * The absolute minimum ought to be done here.
+-	 *
+-	 * Returns 0 on success, or an error code.
+-	 */
+-	int (*success_hook)(const struct vm_area_struct *vma);
+-
+ 	/*
+ 	 * If specified, this hook is invoked when an error occurred when
+ 	 * attempting the selected action.
+diff --git a/mm/util.c b/mm/util.c
+index 2b2a9df689d7c..4e172990afcd2 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -1397,8 +1397,6 @@ static int mmap_action_finish(struct vm_area_struct *vma,
+ 
+ 	if (!err)
+ 		err = call_vma_mapped(vma);
+-	if (!err && action->success_hook)
+-		err = action->success_hook(vma);
+ 
+ 	/* do_munmap() might take rmap lock, so release if held. */
+ 	maybe_rmap_unlock_action(vma, action);
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index 306171d061e70..fddfd1b57c090 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -482,16 +482,6 @@ struct mmap_action {
+ 	};
+ 	enum mmap_action_type type;
+ 
+-	/*
+-	 * If specified, this hook is invoked after the selected action has been
+-	 * successfully completed. Note that the VMA write lock still held.
+-	 *
+-	 * The absolute minimum ought to be done here.
+-	 *
+-	 * Returns 0 on success, or an error code.
+-	 */
+-	int (*success_hook)(const struct vm_area_struct *vma);
+-
+ 	/*
+ 	 * If specified, this hook is invoked when an error occurred when
+ 	 * attempting the selection action.
+-- 
+2.47.3
+

@@ -1,0 +1,59 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 22 May 2026 14:26:58 +0800
+Subject: [PATCH] mm/cma: fix reserved page leak on activation failure
+
+If cma_activate_area() fails after allocating only part of the range
+bitmaps, its cleanup path frees the bitmaps for the ranges below
+allocrange and then releases reserved pages using the same bound.
+
+That bound is only correct for bitmap freeing.  Pages in ranges that did
+not reach bitmap allocation are still reserved and should also be returned
+to the buddy when CMA_RESERVE_PAGES_ON_ERROR is clear.  As a result, a
+partial bitmap allocation failure can permanently leak the reserved pages
+from the failed range and all later ranges.
+
+Fix this by releasing reserved pages for all ranges.  For ranges whose
+bitmap allocation succeeded, use the early_pfn[] snapshot saved before the
+bitmap pointer overwrote the union field.  For later ranges, continue to
+use cmr->early_pfn directly.
+
+Link: https://lore.kernel.org/20260522062658.4095405-1-songmuchun@bytedance.com
+Fixes: c009da4258f9 ("mm, cma: support multiple contiguous ranges, if requested")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/cma.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/mm/cma.c b/mm/cma.c
+index c7ca567f4c5ce..a30075507d411 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -188,10 +188,13 @@ static void __init cma_activate_area(struct cma *cma)
+ 
+ 	/* Expose all pages to the buddy, they are useless for CMA. */
+ 	if (!test_bit(CMA_RESERVE_PAGES_ON_ERROR, &cma->flags)) {
+-		for (r = 0; r < allocrange; r++) {
++		for (r = 0; r < cma->nranges; r++) {
++			unsigned long start_pfn;
++
+ 			cmr = &cma->ranges[r];
++			start_pfn = r < allocrange ? early_pfn[r] : cmr->early_pfn;
+ 			end_pfn = cmr->base_pfn + cmr->count;
+-			for (pfn = early_pfn[r]; pfn < end_pfn; pfn++)
++			for (pfn = start_pfn; pfn < end_pfn; pfn++)
+ 				free_reserved_page(pfn_to_page(pfn));
+ 		}
+ 	}
+-- 
+2.47.3
+

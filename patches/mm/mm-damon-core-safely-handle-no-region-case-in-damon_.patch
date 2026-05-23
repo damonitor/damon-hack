@@ -1,0 +1,73 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 22 May 2026 08:40:12 -0700
+Subject: [PATCH] mm/damon/core: safely handle no region case in
+ damon_set_regions()
+
+Patch series "mm/damon: minor improvements for code readability and tests".
+
+Implement minor improvements on code readability and tests for DAMON.
+
+First seven patches are for DAMON code readability and resulting
+maintenance.  Patches 1 and 2 make damon_set_regions() safer and easier to
+read.  Patches 3 and 4 remove fragmented DAMON API use cases.  Patches 5-7
+hides unused core functions that are unnecessarily exposed to API callers.
+
+The following seven patches are for DAMON tests improvement.  Patches 8
+and 9 adds and removes DAMON_DEBUG_SANITY verifications to ensure
+reasonable test coverage without too high overhead.  Patch 10 adds a new
+kunit test for damon_set_regions().  Patch 11 makes sysfs.py selftest more
+gracefully finishes under test failures.  Patches 12-13 adds simple
+sysfs.sh test cases for the monitoring intervals goal directory, the
+addr_unit file and the pause file.
+
+
+This patch (of 14):
+
+damon_set_regions() calls damon_first_region() regardless of the number of
+DAMON regions in a given DAMON target.  damon_first_region() internally
+uses list_first_entry(), which clearly documents the list is expected to
+be not empty.  Due to the internal implementation of the macro,
+damon_set_regions() is safe for now.  But the internal implementation of
+the macro can be changed in future.  Refactor the function to explicitly
+and safely handle the empty region list case without depending on the
+internal implementation.
+
+No behavioral change is intended.
+
+Link: https://lore.kernel.org/20260522154026.80546-1-sj@kernel.org
+Link: https://lore.kernel.org/20260522154026.80546-2-sj@kernel.org
+Signed-off-by: SeongJae Park <sj@kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 68b3b4bbc8fc9..8360cb4c506ef 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -356,6 +356,19 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 			damon_destroy_region(r, t);
+ 	}
+ 
++	if (!damon_nr_regions(t)) {
++		for (i = 0; i < nr_ranges; i++) {
++			r = damon_new_region(
++					ALIGN_DOWN(ranges[i].start,
++						min_region_sz),
++					ALIGN(ranges[i].end, min_region_sz));
++			if (!r)
++				return -ENOMEM;
++			damon_add_region(r, t);
++		}
++		return 0;
++	}
++
+ 	r = damon_first_region(t);
+ 	/* Add new regions or resize existing regions to fit in the ranges */
+ 	for (i = 0; i < nr_ranges; i++) {
+-- 
+2.47.3
+
