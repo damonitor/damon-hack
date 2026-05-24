@@ -1,23 +1,29 @@
 From: Muchun Song <songmuchun@bytedance.com>
-Date: Fri, 22 May 2026 14:26:58 +0800
+Date: Sat, 23 May 2026 14:01:23 +0800
 Subject: [PATCH] mm/cma: fix reserved page leak on activation failure
 
 If cma_activate_area() fails after allocating only part of the range
-bitmaps, its cleanup path frees the bitmaps for the ranges below
-allocrange and then releases reserved pages using the same bound.
+bitmaps, the cleanup path still has to release the reserved pages when
+CMA_RESERVE_PAGES_ON_ERROR is clear.
 
-That bound is only correct for bitmap freeing.  Pages in ranges that did
-not reach bitmap allocation are still reserved and should also be returned
-to the buddy when CMA_RESERVE_PAGES_ON_ERROR is clear.  As a result, a
-partial bitmap allocation failure can permanently leak the reserved pages
-from the failed range and all later ranges.
+That is still worth doing even in this __init path.  A bitmap_zalloc()
+failure does not necessarily mean the system cannot make further progress:
+freeing the reserved CMA pages can return a substantial amount of memory
+to the buddy allocator and may relieve the temporary memory shortage that
+caused the allocation failure in the first place.
 
-Fix this by releasing reserved pages for all ranges.  For ranges whose
-bitmap allocation succeeded, use the early_pfn[] snapshot saved before the
-bitmap pointer overwrote the union field.  For later ranges, continue to
-use cmr->early_pfn directly.
+However, the cleanup path currently uses the bitmap-freeing bound for page
+release as well.  That is only correct for ranges whose bitmap allocation
+already succeeded.  The failed range and all later ranges still keep their
+reserved pages, so a partial bitmap allocation failure can permanently
+leak them.
 
-Link: https://lore.kernel.org/20260522062658.4095405-1-songmuchun@bytedance.com
+Fix this by releasing reserved pages for all ranges.  Use the saved
+early_pfn[] value for ranges whose bitmap allocation already succeeded and
+for the failed range, and use cmr->early_pfn for later ranges whose bitmap
+allocation was never attempted.
+
+Link: https://lore.kernel.org/20260523060123.2207992-1-songmuchun@bytedance.com
 Fixes: c009da4258f9 ("mm, cma: support multiple contiguous ranges, if requested")
 Signed-off-by: Muchun Song <songmuchun@bytedance.com>
 Cc: David Hildenbrand <david@kernel.org>
@@ -35,7 +41,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/mm/cma.c b/mm/cma.c
-index c7ca567f4c5ce..a30075507d411 100644
+index c7ca567f4c5ce..a13ce4999b39f 100644
 --- a/mm/cma.c
 +++ b/mm/cma.c
 @@ -188,10 +188,13 @@ static void __init cma_activate_area(struct cma *cma)
@@ -47,7 +53,7 @@ index c7ca567f4c5ce..a30075507d411 100644
 +			unsigned long start_pfn;
 +
  			cmr = &cma->ranges[r];
-+			start_pfn = r < allocrange ? early_pfn[r] : cmr->early_pfn;
++			start_pfn = r <= allocrange ? early_pfn[r] : cmr->early_pfn;
  			end_pfn = cmr->base_pfn + cmr->count;
 -			for (pfn = early_pfn[r]; pfn < end_pfn; pfn++)
 +			for (pfn = start_pfn; pfn < end_pfn; pfn++)
