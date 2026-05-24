@@ -1,0 +1,74 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 24 May 2026 12:04:46 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: kobject_del() region dir
+
+TODO: do this for all user-triggerable kobject_put()/repopulation, e.g.,
+for nr_schemes, nr_targets, ...
+
+damon_sysfs_scheme_regions_rm_dirs() only puts the region directory
+kobject.  On CONFIG_DEBUG_KOBJECT_RELEASE enabled kernel, this causes
+below verbose kernel log.
+
+    # damo start --damos_action stat
+    # cd /sys/kernel/mm/damon/admin/kdamonds/0/
+    # for i in {1..2}; do echo update_schemes_tried_regions > state; done
+    # dmesg
+    [...]
+    [   82.669096] sysfs: cannot create duplicate filename
+    '/kernel/mm/damon/admin/kdamonds/0/contexts/0/schemes/0/tried_regions/0'
+    [   82.671526] CPU: 1 UID: 0 PID: 770 Comm: kdamond.0 Not tainted
+    7.1.0-rc4-mm-new-damon+ #8 PREEMPT(full)
+    [   82.671529] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996),
+    BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+    [   82.671531] Call Trace:
+    [   82.671533]  <TASK>
+    [   82.671535]  dump_stack_lvl+0x5d/0x80
+    [   82.671541]  sysfs_warn_dup.cold+0x17/0x27
+    [   82.671543]  sysfs_create_dir_ns+0xcc/0xe0
+    [   82.671549]  kobject_add_internal+0xba/0x260
+    [   82.671554]  kobject_init_and_add+0x90/0xc0
+    [   82.671557]  ? __kmalloc_cache_noprof+0x15e/0x480
+    [   82.671562]  damos_sysfs_populate_region_dir+0x18f/0x580
+    [   82.671568]  damon_sysfs_schemes_tried_regions_upd_one+0x33/0x40
+    [   82.671573]  kdamond_fn+0x1c60/0x2070
+    [   82.671578]  ? __pfx_kdamond_fn+0x10/0x10
+    [   82.671580]  ? __pfx_kdamond_fn+0x10/0x10
+    [   82.671581]  kthread+0xe3/0x120
+    [   82.671584]  ? __pfx_kthread+0x10/0x10
+    [   82.671585]  ret_from_fork+0x230/0x2f0
+    [   82.671590]  ? __pfx_kthread+0x10/0x10
+    [   82.671591]  ret_from_fork_asm+0x1a/0x30
+    [   82.671595]  </TASK>
+    [   82.671600] kobject: kobject_add_internal failed for 0 with -EEXIST,
+    don't try to register things with the same name in the same directory.
+    [...]
+
+Technically speaking not a real issue, but better to keep the kernel log
+clean and work in more deterministic way.
+
+Remove the directory synchronously using kobject_del().
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260517205828.6204-1-sj@kernel.org
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 26c17c98c8659..aaf14ce984854 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -334,6 +334,7 @@ static void damon_sysfs_scheme_regions_rm_dirs(
+ 	list_for_each_entry_safe(r, next, &regions->regions_list, list) {
+ 		damos_sysfs_region_rm_dirs(r);
+ 		list_del(&r->list);
++		kobject_del(&r->kobj);
+ 		kobject_put(&r->kobj);
+ 		regions->nr_regions--;
+ 	}
+-- 
+2.47.3
+
