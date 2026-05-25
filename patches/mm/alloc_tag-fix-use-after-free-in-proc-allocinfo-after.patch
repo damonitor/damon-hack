@@ -1,0 +1,77 @@
+From: Hao Ge <hao.ge@linux.dev>
+Date: Mon, 25 May 2026 15:21:17 +0800
+Subject: [PATCH] alloc_tag: fix use-after-free in /proc/allocinfo after module
+ unload
+
+allocinfo_start() only reinitializes the codetag iterator at position 0.
+For subsequent reads (position > 0), it reuses cached iterator state from
+the previous batch.  allocinfo_stop() drops mod_lock between read batches,
+which allows module unload to complete and free the module memory that the
+cached iterator still references:
+
+  CPU0 (read)                        CPU1 (rmmod)
+  ----                               ----
+  allocinfo_start(pos=0)
+    down_read(mod_lock)
+    allocinfo_show()
+    ...
+  allocinfo_stop()
+    up_read(mod_lock)
+                                     codetag_unload_module()
+                                       kfree(cmod)
+                                       release_module_tags()
+                                     ...
+                                     free_mod_mem()
+  allocinfo_start(pos=N)
+    down_read(mod_lock)
+    // reuses cached iter, skips re-init
+  allocinfo_show()
+    ct->filename   <-- UAF
+
+After free_mod_mem() frees the module's .rodata, allocinfo_show()
+dereferences ct->filename, ct->function which point there.
+
+Fix by always reinitializing the iterator in allocinfo_start().
+
+Link: https://lore.kernel.org/20260525072117.112779-1-hao.ge@linux.dev
+Fixes: 9f44df50fee4 ("alloc_tag: keep codetag iterator active between read()")
+Signed-off-by: Hao Ge <hao.ge@linux.dev>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/alloc_tag.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/lib/alloc_tag.c b/lib/alloc_tag.c
+index b9ca95d1f5065..d61789bacab32 100644
+--- a/lib/alloc_tag.c
++++ b/lib/alloc_tag.c
+@@ -51,16 +51,19 @@ struct allocinfo_private {
+ static void *allocinfo_start(struct seq_file *m, loff_t *pos)
+ {
+ 	struct allocinfo_private *priv;
++	struct codetag *ct;
+ 	loff_t node = *pos;
+ 
+ 	priv = (struct allocinfo_private *)m->private;
+ 	codetag_lock_module_list(alloc_tag_cttype, true);
+-	if (node == 0) {
++	if (node == 0)
+ 		priv->print_header = true;
+-		priv->iter = codetag_get_ct_iter(alloc_tag_cttype);
+-		codetag_next_ct(&priv->iter);
+-	}
+-	return priv->iter.ct ? priv : NULL;
++
++	priv->iter = codetag_get_ct_iter(alloc_tag_cttype);
++	while ((ct = codetag_next_ct(&priv->iter)) != NULL && node)
++		node--;
++
++	return ct ? priv : NULL;
+ }
+ 
+ static void *allocinfo_next(struct seq_file *m, void *arg, loff_t *pos)
+-- 
+2.47.3
+
