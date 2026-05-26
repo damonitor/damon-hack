@@ -1,98 +1,23 @@
-- baseline: v7.1-rc4-93-g27fa82620cbaa -> v7.1-rc4-93-g27fa82620cbaa (no change)
-- mm-hotfixes-stable: 1 -> 1 commits (no change)
+- baseline: v7.1-rc4-93-g27fa82620cbaa -> v7.1-rc5-20-gd60ec36cab338
+- mm-hotfixes-stable: 1 -> 0 commits
+  - series: 0 (0) -> 0 (0) (no change)
+    - maintainer, nobody: 1 -> 0 commits
+  - dropped commits
+    - 441f92f7d386 "mm/damon/sysfs-schemes: delete tried region in regions_rmdirs()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260518152559.93038-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260513011920.119183-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 1 -> 1 commits (no change)
-- mm-hotfixes-unstable: 0 -> 1 commits
-  - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - 0184b0254774 "mm/damon/ops-common: call folio_test_lru() after folio_get()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260525162256.8317-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260517234112.89245-1-sj@kernel.org [1]
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 77 -> 94 commits
-  - series: 10 (71) -> 12 (87)
-    - no role, maintainer: 13 -> 15 commits
-    - maintainer, nobody: 64 -> 79 commits
-  - changed commits
-    - series "mm/damon: minor improvements for code readability and tests". (14)
-      - 2ecc5346d6eb "mm/damon/core: safely handle no region case in damon_set_regions() (0/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260522154026.80546-2-sj@kernel.org
-      - 4521be775a9b "mm/damon/core: do not use region out of a loop in damon_set_regions() (1/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-3-sj@kernel.org
-      - ad06d5ad88fa "samples/damon/mtier: replace damon_add_region() with damon_set_regions() (2/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-4-sj@kernel.org
-      - d7d5f045f500 "mm/damon/tests/vaddr-kunit: replace damon_add_region() with damon_set_regions() (3/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-5-sj@kernel.org
-      - 157b4d3e0a2d "mm/damon/core: hide damon_add_region() (4/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-6-sj@kernel.org
-      - 404e0c8b27e9 "mm/damon/core: hide damon_insert_region() (5/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-7-sj@kernel.org
-      - 58f171689f53 "mm/damon/core: hide damon_destroy_region() (6/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-8-sj@kernel.org
-      - 6cef502a595d "mm/damon/core: add kdamond_call() debug_sanity check (7/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-9-sj@kernel.org
-      - 2cd279bfc6dc "mm/damon/core: remove damon_verify_nr_regions() (8/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-10-sj@kernel.org
-      - 22376855a486 "mm/damon/tests/core-kunit: add damon_set_regions() test cases (9/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-11-sj@kernel.org
-      - 88c2a4263266 "selftests/damon/sysfs.py: stop kdamonds before failing (10/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-12-sj@kernel.org
-      - 7b10e1e6fe6f "selftests/damon/sysfs.sh: test monitoring intervals goal dir (11/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-13-sj@kernel.org
-      - f9e4a93e6135 "selftests/damon/sysfs.sh: test addr_unit file existence (12/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-14-sj@kernel.org
-      - 8bf4fac12daf "selftests/damon/sysfs.sh: test pause file existence (13/14)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260522154026.80546-15-sj@kernel.org
-    - series "mm/damon: fix macro arguments and clarify quota goals doc", v2. (2)
-      - aae9026d8cfb "mm/damon: fix missing parens in macro arguments (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260521202020.126500-1-maksym.shcherba@lnu.edu.ua
-        - Link: https://lore.kernel.org/20260521202020.126500-2-maksym.shcherba@lnu.edu.ua
-      - 47c8411a5db9 "Docs/admin-guide/mm/damon/usage: clarify current_value of quota goals (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260521202020.126500-3-maksym.shcherba@lnu.edu.ua
-    - 40c3face4ce1 "mm/damon/core: trace esz at first setup"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260520150311.80925-1-sj@kernel.org
-- mm-new: 17 -> 0 commits
-  - series: 2 (16) -> 0 (0)
-    - no role, maintainer: 2 -> 0 commits
-    - maintainer, nobody: 15 -> 0 commits
+- mm-unstable: 94 -> 94 commits (no change)
+  - series: 12 (87) -> 12 (87) (no change)
+    - no role, maintainer: 15 -> 15 commits (no change)
+    - maintainer, nobody: 79 -> 79 commits (no change)
+- mm-new: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

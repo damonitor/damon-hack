@@ -1,0 +1,74 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Tue, 26 May 2026 16:42:11 +0200
+Subject: [PATCH] mm/migrate: find_mm_struct: fix race between security checks
+ and suid exec
+
+The target task can execute a setuid binary between ptrace_may_access()
+and get_task_mm().  Protect this critical section with exec_update_lock.
+
+I don't think cpuset_mems_allowed(task) should be called under
+exec_update_lock, but this patch just tries to add the minimal fix.
+
+Perhaps we can later add a common helper which can be used by
+find_mm_struct() and kernel_migrate_pages().
+
+Link: https://lore.kernel.org/ahWxQ3JxdR5ff2qf@redhat.com
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index d8090cdda4f98..d9b23909d716c 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -2555,24 +2555,29 @@ static struct mm_struct *find_mm_struct(pid_t pid, nodemask_t *mem_nodes)
+ 	}
+ 
+ 	task = find_get_task_by_vpid(pid);
+-	if (!task) {
++	if (!task)
+ 		return ERR_PTR(-ESRCH);
+-	}
+ 
++	if (down_read_killable(&task->signal->exec_update_lock)) {
++		mm = ERR_PTR(-EINTR);
++		goto out;
++	}
+ 	/*
+ 	 * Check if this process has the right to modify the specified
+ 	 * process. Use the regular "ptrace_may_access()" checks.
+ 	 */
+ 	if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS)) {
+ 		mm = ERR_PTR(-EPERM);
+-		goto out;
++		goto unlock;
+ 	}
+ 
+ 	mm = ERR_PTR(security_task_movememory(task));
+ 	if (IS_ERR(mm))
+-		goto out;
++		goto unlock;
+ 	*mem_nodes = cpuset_mems_allowed(task);
+ 	mm = get_task_mm(task);
++unlock:
++	up_read(&task->signal->exec_update_lock);
+ out:
+ 	put_task_struct(task);
+ 	if (!mm)
+-- 
+2.47.3
+

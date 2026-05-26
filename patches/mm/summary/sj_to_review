@@ -1,4 +1,4 @@
-- baseline: v7.1-rc4-93-g27fa82620cbaa
+- baseline: v7.1-rc5-20-gd60ec36cab338
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits

@@ -1,0 +1,91 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Mon, 25 May 2026 20:39:30 -0700
+Subject: [PATCH] memcg: int16_t for cached slab stats
+
+Currently struct obj_stock_pcp stores cached slab stats in 'int' which is
+4 bytes per counter on 64-bit machines.  Switch them to int16_t to shrink
+the cached metadata.
+
+The existing PAGE_SIZE flush in __account_obj_stock() bounds *bytes at
+PAGE_SIZE on 4KiB and 16KiB page archs, well within int16_t.  On 64KiB
+pages PAGE_SIZE is well above S16_MAX so that flush never fires, and a
+sufficiently long run of accumulations would overflow the cache.  Add an
+explicit S16_MAX guard before each add: when the next add would push
+abs(*bytes) past S16_MAX, fold the cached value into @nr and flush
+directly via mod_objcg_mlstate() before the accumulation.
+
+Link: https://lore.kernel.org/20260526033931.1760588-4-shakeel.butt@linux.dev
+Fixes: 01b9da291c49 ("mm: memcontrol: convert objcg to be per-memcg per-node type")
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Tested-by: kernel test robot <oliver.sang@intel.com>
+Reviewed-by: Harry Yoo (Oracle) <harry@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 25 ++++++++++++-------------
+ 1 file changed, 12 insertions(+), 13 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 8bbcc7bc42e3d..ac7c99e32f99a 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2032,8 +2032,8 @@ struct obj_stock_pcp {
+ 	uint16_t nr_bytes;
+ #endif
+ 	int16_t node_id;
+-	int nr_slab_reclaimable_b;
+-	int nr_slab_unreclaimable_b;
++	int16_t nr_slab_reclaimable_b;
++	int16_t nr_slab_unreclaimable_b;
+ 
+ 	struct work_struct work;
+ 	unsigned long flags;
+@@ -3170,7 +3170,7 @@ static void __account_obj_stock(struct obj_cgroup *objcg,
+ 				struct obj_stock_pcp *stock, int nr,
+ 				struct pglist_data *pgdat, enum node_stat_item idx)
+ {
+-	int *bytes;
++	int16_t *bytes;
+ 
+ 	/*
+ 	 * Though at the moment MAX_NUMNODES <= 1024 in all archs but let's make
+@@ -3207,21 +3207,20 @@ static void __account_obj_stock(struct obj_cgroup *objcg,
+ 
+ 	bytes = (idx == NR_SLAB_RECLAIMABLE_B) ? &stock->nr_slab_reclaimable_b
+ 					       : &stock->nr_slab_unreclaimable_b;
++
+ 	/*
+-	 * Even for large object >= PAGE_SIZE, the vmstat data will still be
+-	 * cached locally at least once before pushing it out.
++	 * Fold @nr into the cached value and decide whether to keep it cached
++	 * or flush it directly. Cache the combined value when it fits in the
++	 * int16_t storage and either the cache was empty (so even a value
++	 * above PAGE_SIZE gets a chance to be canceled by a paired delta) or
++	 * the combined value is within the PAGE_SIZE flush threshold.
+ 	 */
+-	if (!*bytes) {
++	nr += *bytes;
++	if (abs(nr) <= S16_MAX && (!*bytes || abs(nr) <= PAGE_SIZE)) {
+ 		*bytes = nr;
+ 		nr = 0;
+ 	} else {
+-		*bytes += nr;
+-		if (abs(*bytes) > PAGE_SIZE) {
+-			nr = *bytes;
+-			*bytes = 0;
+-		} else {
+-			nr = 0;
+-		}
++		*bytes = 0;
+ 	}
+ direct:
+ 	if (nr)
+-- 
+2.47.3
+
