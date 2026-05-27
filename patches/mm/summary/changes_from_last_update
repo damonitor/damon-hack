@@ -1,12 +1,6 @@
-- baseline: v7.1-rc4-93-g27fa82620cbaa -> v7.1-rc5-20-gd60ec36cab338
-- mm-hotfixes-stable: 1 -> 0 commits
+- baseline: v7.1-rc5-20-gd60ec36cab338 -> v7.1-rc5-20-gd60ec36cab338 (no change)
+- mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 0 commits
-  - dropped commits
-    - 441f92f7d386 "mm/damon/sysfs-schemes: delete tried region in regions_rmdirs()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260518152559.93038-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260513011920.119183-1-sj@kernel.org [1]
 - mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, nobody: 1 -> 1 commits (no change)
