@@ -31,6 +31,8 @@ Kernel time (sys) reduction per workload with init_on_alloc=1:
   Pagerank 32T         1m 58.5s     1m 12.8s   -38.5%
   Pagerank 128T        2m 36.3s     1m 40.4s   -35.7%
 
+[hsalunke@amd.com: move clear_highpages_kasan_tagged() to page_alloc.c]
+  Link: https://lore.kernel.org/20260504063942.553438-1-hsalunke@amd.com
 Link: https://lore.kernel.org/20260422102729.166599-1-hsalunke@amd.com
 Signed-off-by: Hrushikesh Salunke <hsalunke@amd.com>
 Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
@@ -49,22 +51,26 @@ Cc: Shivank Garg <shivankg@amd.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/highmem.h | 15 +++++++++++++++
- mm/page_alloc.c         | 15 ++-------------
- 2 files changed, 17 insertions(+), 13 deletions(-)
+ mm/page_alloc.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
 
-diff --git a/include/linux/highmem.h b/include/linux/highmem.h
-index d7aac9de1c8a4..871d817426bc9 100644
---- a/include/linux/highmem.h
-+++ b/include/linux/highmem.h
-@@ -345,6 +345,21 @@ static inline void clear_highpage_kasan_tagged(struct page *page)
- 	kunmap_local(kaddr);
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index d49c254174da7..bf53242d3db7f 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -1211,14 +1211,18 @@ static inline bool should_skip_kasan_poison(struct page *page)
+ 	return page_kasan_tag(page) == KASAN_TAG_KERNEL;
  }
  
-+static inline void clear_highpages_kasan_tagged(struct page *page, int numpages)
-+{
-+	/* s390's use of memset() could override KASAN redzones. */
-+	kasan_disable_current();
+-static void kernel_init_pages(struct page *page, int numpages)
++static void clear_highpages_kasan_tagged(struct page *page, int numpages)
+ {
+-	int i;
+-
+ 	/* s390's use of memset() could override KASAN redzones. */
+ 	kasan_disable_current();
+-	for (i = 0; i < numpages; i++)
+-		clear_highpage_kasan_tagged(page + i);
 +	if (!IS_ENABLED(CONFIG_HIGHMEM)) {
 +		clear_pages(kasan_reset_tag(page_address(page)), numpages);
 +	} else {
@@ -73,35 +79,10 @@ index d7aac9de1c8a4..871d817426bc9 100644
 +		for (i = 0; i < numpages; i++)
 +			clear_highpage_kasan_tagged(page + i);
 +	}
-+	kasan_enable_current();
-+}
-+
- #ifndef __HAVE_ARCH_TAG_CLEAR_HIGHPAGES
- 
- /* Returns true if the caller has to initialize the pages */
-diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index d49c254174da7..07640893fefbc 100644
---- a/mm/page_alloc.c
-+++ b/mm/page_alloc.c
-@@ -1211,17 +1211,6 @@ static inline bool should_skip_kasan_poison(struct page *page)
- 	return page_kasan_tag(page) == KASAN_TAG_KERNEL;
+ 	kasan_enable_current();
  }
  
--static void kernel_init_pages(struct page *page, int numpages)
--{
--	int i;
--
--	/* s390's use of memset() could override KASAN redzones. */
--	kasan_disable_current();
--	for (i = 0; i < numpages; i++)
--		clear_highpage_kasan_tagged(page + i);
--	kasan_enable_current();
--}
--
- #ifdef CONFIG_MEM_ALLOC_PROFILING
- 
- /* Should be called only if mem_alloc_profiling_enabled() */
-@@ -1423,7 +1412,7 @@ __always_inline bool __free_pages_prepare(struct page *page,
+@@ -1423,7 +1427,7 @@ __always_inline bool __free_pages_prepare(struct page *page,
  			init = false;
  	}
  	if (init)
@@ -110,7 +91,7 @@ index d49c254174da7..07640893fefbc 100644
  
  	/*
  	 * arch_free_page() can make the page's contents inaccessible.  s390
-@@ -1848,7 +1837,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
+@@ -1848,7 +1852,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
  	}
  	/* If memory is still not initialized, initialize it now. */
  	if (init)

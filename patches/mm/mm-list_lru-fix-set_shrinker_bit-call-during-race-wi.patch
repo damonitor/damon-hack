@@ -1,0 +1,166 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Wed, 27 May 2026 16:45:08 -0400
+Subject: [PATCH] mm: list_lru: fix set_shrinker_bit() call during race with
+ cgroup deletion
+
+Patch series "mm: switch THP shrinker to list_lru", v5.
+
+The open-coded deferred split queue has issues.  It's not NUMA-aware (when
+cgroup is enabled), and it's more complicated in the callsites interacting
+with it.  Switching to list_lru fixes the NUMA problem and streamlines
+things.  It also simplifies planned shrinker work.
+
+Patch 1 fixes a pre-existing list_lru bug where the shrinker bit is set on
+the caller's memcg rather than the ancestor whose sublist the item
+actually lands on after a walk-up.  Standalone, backportable; the rest of
+the series depends on it.
+
+Patches 2-5 are cleanups and small refactors in list_lru code.  They're
+basically independent, but make the THP shrinker conversion easier.
+
+Patch 6 extends the list_lru API to allow the caller to control the
+locking scope.  The THP shrinker has private state it needs to keep
+synchronized with the LRU state.
+
+Patch 7 extends the list_lru API with a convenience helper to do list_lru
+head allocation (memcg_list_lru_alloc) when coming from a folio.  Anon
+THPs are instantiated in several places, and with the folio reparenting
+patches pending, folio_memcg() access is now a more delicate dance.  This
+avoids having to replicate that dance everywhere.
+
+Patch 8 flattens the alloc_anon_folio() retry loop so the next patch's
+list_lru hook lands as a clean addition rather than nested deep inside an
+if (folio) block.
+
+Patch 9 finally switches the deferred_split_queue to list_lru.
+
+
+This patch (of 9):
+
+When list_lru_add() races with cgroup deletion, the shrinker bit is set on
+the wrong group and lost.  This can cause a shrinker run to miss the
+cgroup that actually has the object.
+
+When the passed in memcg is dead, the function finds the first non-dead
+parent from the passed in memcg and adds the object there; but the
+shrinker bit is set on the memcg that was passed in.
+
+This bug is as old as the shrinker bitmap itself.
+
+Fix it by returning the "effective" memcg from the locking function, and
+have the caller use that.
+
+Link: https://lore.kernel.org/20260527204757.2544958-1-hannes@cmpxchg.org
+Link: https://lore.kernel.org/20260527204757.2544958-2-hannes@cmpxchg.org
+Fixes: fae91d6d8be5 ("mm/list_lru.c: set bit in memcg shrinker bitmap on first list_lru item appearance")
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Reported-by: Usama Arif <usama.arif@linux.dev>
+Reported-by: Sashiko
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mikhail Zaslonko <zaslonko@linux.ibm.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/list_lru.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index dd29bcf8eb5f3..45d1b97737eae 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -77,14 +77,14 @@ static inline bool lock_list_lru(struct list_lru_one *l, bool irq)
+ }
+ 
+ static inline struct list_lru_one *
+-lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+-		       bool irq, bool skip_empty)
++lock_list_lru_of_memcg(struct list_lru *lru, int nid,
++		       struct mem_cgroup **memcg, bool irq, bool skip_empty)
+ {
+ 	struct list_lru_one *l;
+ 
+ 	rcu_read_lock();
+ again:
+-	l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(memcg));
++	l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(*memcg));
+ 	if (likely(l) && lock_list_lru(l, irq)) {
+ 		rcu_read_unlock();
+ 		return l;
+@@ -97,8 +97,8 @@ lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+ 		rcu_read_unlock();
+ 		return NULL;
+ 	}
+-	VM_WARN_ON(!css_is_dying(&memcg->css));
+-	memcg = parent_mem_cgroup(memcg);
++	VM_WARN_ON(!css_is_dying(&(*memcg)->css));
++	*memcg = parent_mem_cgroup(*memcg);
+ 	goto again;
+ }
+ 
+@@ -135,8 +135,8 @@ list_lru_from_memcg_idx(struct list_lru *lru, int nid, int idx)
+ }
+ 
+ static inline struct list_lru_one *
+-lock_list_lru_of_memcg(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+-		       bool irq, bool skip_empty)
++lock_list_lru_of_memcg(struct list_lru *lru, int nid,
++		       struct mem_cgroup **memcg, bool irq, bool skip_empty)
+ {
+ 	struct list_lru_one *l = &lru->node[nid].lru;
+ 
+@@ -164,12 +164,16 @@ bool list_lru_add(struct list_lru *lru, struct list_head *item, int nid,
+ 	struct list_lru_node *nlru = &lru->node[nid];
+ 	struct list_lru_one *l;
+ 
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, false, false);
++	l = lock_list_lru_of_memcg(lru, nid, &memcg, false, false);
+ 	if (!l)
+ 		return false;
+ 	if (list_empty(item)) {
+ 		list_add_tail(item, &l->list);
+-		/* Set shrinker bit if the first element was added */
++		/*
++		 * Set shrinker bit on the memcg that owns the locked
++		 * sublist - lock_list_lru_of_memcg() may have walked up
++		 * past a dying memcg, and the bit must be set there.
++		 */
+ 		if (!l->nr_items++)
+ 			set_shrinker_bit(memcg, nid, lru_shrinker_id(lru));
+ 		unlock_list_lru(l, false);
+@@ -204,7 +208,7 @@ bool list_lru_del(struct list_lru *lru, struct list_head *item, int nid,
+ {
+ 	struct list_lru_node *nlru = &lru->node[nid];
+ 	struct list_lru_one *l;
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, false, false);
++	l = lock_list_lru_of_memcg(lru, nid, &memcg, false, false);
+ 	if (!l)
+ 		return false;
+ 	if (!list_empty(item)) {
+@@ -288,7 +292,7 @@ __list_lru_walk_one(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+ 	unsigned long isolated = 0;
+ 
+ restart:
+-	l = lock_list_lru_of_memcg(lru, nid, memcg, irq_off, true);
++	l = lock_list_lru_of_memcg(lru, nid, &memcg, irq_off, true);
+ 	if (!l)
+ 		return isolated;
+ 	list_for_each_safe(item, n, &l->list) {
+-- 
+2.47.3
+
