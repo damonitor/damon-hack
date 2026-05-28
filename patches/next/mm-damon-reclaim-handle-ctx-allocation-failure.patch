@@ -1,0 +1,46 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 27 May 2026 17:50:30 -0700
+Subject: [PATCH] mm/damon/reclaim: handle ctx allocation failure
+
+DAMON_RECLAIM allocates its damon_ctx object in its init function.  If
+the allocation fails, damon_reclaim_enabled_store() could dereference
+the NULL pointer.  Fix by checking if the previous allocation is failed,
+and retry the allocation in the case.
+
+Note that this is slightly changing the module's behavior.  Before the
+broken commit, writing 'Y' to 'enabled' always failed when the ctx
+allocation in the init function is failed.   This commit makes it to
+always retry the allocation.  It is hard to imagine users who depend on
+the old behavior.  Also, the level of memory pressure that can make even
+one damon_ctx allocation fails can reasonably be expected to be only
+temporal.  Hence this behavioral change wouldn't break users but improve
+the user experience.
+
+Fixes: 3f7a914ab9a5 ("mm/damon/reclaim: use damon_initialized()")
+Cc: <stable@vger.kernel.org> # 6.18.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/reclaim.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index ed446d00ef1cf..88f74b72d8902 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -399,6 +399,13 @@ static int damon_reclaim_enabled_store(const char *val,
+ 	if (!damon_initialized())
+ 		return 0;
+ 
++	/* init function's allocation could be failed. */
++	if (!ctx) {
++		err = damon_modules_new_paddr_ctx_target(&ctx, &target);
++		if (!err)
++			return -ENOMEM;
++	}
++
+ 	return damon_reclaim_turn(enabled);
+ }
+ 
+-- 
+2.47.3
+
