@@ -24,6 +24,8 @@ non-NULL ci->extend_table.
 
 The added overhead is ignorable.
 
+[kasong@tencent.com: v2]
+  Link: https://lore.kernel.org/20260515-swap-extend-table-fix-v2-1-833d72ad53e5@tencent.com
 Link: https://lore.kernel.org/20260513-swap-extend-table-fix-v1-1-a71dea851fb3@tencent.com
 Fixes: 0d6af9bcf383 ("mm, swap: use the swap table to track the swap count")
 Signed-off-by: Kairui Song <kasong@tencent.com>
@@ -37,11 +39,11 @@ Cc: Kemeng Shi <shikemeng@huaweicloud.com>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/swapfile.c | 32 +++++++++++++++++++++++++-------
- 1 file changed, 25 insertions(+), 7 deletions(-)
+ mm/swapfile.c | 42 ++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 34 insertions(+), 8 deletions(-)
 
 diff --git a/mm/swapfile.c b/mm/swapfile.c
-index 74a1e324449dc..3eddaa7e5bf62 100644
+index 74a1e324449dc..ee515a6fbccd4 100644
 --- a/mm/swapfile.c
 +++ b/mm/swapfile.c
 @@ -1443,8 +1443,10 @@ static bool swap_sync_discard(void)
@@ -56,7 +58,7 @@ index 74a1e324449dc..3eddaa7e5bf62 100644
  	void *table;
  
  	table = kzalloc(sizeof(ci->extend_table[0]) * SWAPFILE_CLUSTER, gfp);
-@@ -1452,11 +1454,27 @@ static int swap_extend_table_alloc(struct swap_info_struct *si,
+@@ -1452,12 +1454,28 @@ static int swap_extend_table_alloc(struct swap_info_struct *si,
  		return -ENOMEM;
  
  	spin_lock(&ci->lock);
@@ -79,15 +81,16 @@ index 74a1e324449dc..3eddaa7e5bf62 100644
 +		goto out_free;
 +
 +	ci->extend_table = table;
-+	spin_unlock(&ci->lock);
-+	return 0;
+ 	spin_unlock(&ci->lock);
+ 	return 0;
 +
 +out_free:
- 	spin_unlock(&ci->lock);
++	spin_unlock(&ci->lock);
 +	kfree(table);
- 	return 0;
++	return 0;
  }
  
+ int swap_retry_table_alloc(swp_entry_t entry, gfp_t gfp)
 @@ -1472,7 +1490,7 @@ int swap_retry_table_alloc(swp_entry_t entry, gfp_t gfp)
  		return 0;
  
@@ -97,7 +100,30 @@ index 74a1e324449dc..3eddaa7e5bf62 100644
  
  	put_swap_device(si);
  	return ret;
-@@ -1665,7 +1683,7 @@ static int swap_dup_entries_cluster(struct swap_info_struct *si,
+@@ -1519,13 +1537,21 @@ static void __swap_cluster_put_entry(struct swap_cluster_info *ci,
+ 		if (count == (SWP_TB_COUNT_MAX - 1)) {
+ 			ci->extend_table[ci_off] = 0;
+ 			__swap_table_set(ci, ci_off, __swp_tb_mk_count(swp_tb, count));
+-			swap_extend_table_try_free(ci);
+ 		} else {
+ 			ci->extend_table[ci_off] = count;
+ 		}
+ 	} else {
+ 		__swap_table_set(ci, ci_off, __swp_tb_mk_count(swp_tb, --count));
+ 	}
++
++	/*
++	 * `SWP_TB_COUNT_MAX - 1` triggers extend table allocation. If the
++	 * count was above that, then the extend table is no longer needed,
++	 * so free it. And if we just put the count value from MAX - 1, it's
++	 * also possible that a pending dup just attached an extend table.
++	 */
++	if (unlikely(count == SWP_TB_COUNT_MAX - 2 || count == SWP_TB_COUNT_MAX - 1))
++		swap_extend_table_try_free(ci);
+ }
+ 
+ /**
+@@ -1665,7 +1691,7 @@ static int swap_dup_entries_cluster(struct swap_info_struct *si,
  		if (unlikely(err)) {
  			if (err == -ENOMEM) {
  				spin_unlock(&ci->lock);

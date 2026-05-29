@@ -37,6 +37,9 @@ into get_huge_page_for_hwpoison().  Place spin_unlock_irq() before the
 folio_put() at the out: label so the folio is always released outside the
 lock.
 
+[akpm@linux-foundation.org: fix race, rename label per Miaohe]
+  Link: https://sashiko.dev/#/patchset/20260522010305.4099834-1-mawupeng1@huawei.com
+  Link: https://lore.kernel.org/f39f405e-4b4b-8f79-70fe-a2b5b62114eb@huawei.com
 Link: https://lore.kernel.org/20260522010305.4099834-1-mawupeng1@huawei.com
 Fixes: 405ce051236c ("mm/hwpoison: fix race between hugetlb free/demotion and memory_failure_hugetlb()")
 Signed-off-by: Wupeng Ma <mawupeng1@huawei.com>
@@ -58,8 +61,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  include/linux/hugetlb.h |  8 --------
  include/linux/mm.h      |  8 --------
  mm/hugetlb.c            | 11 -----------
- mm/memory-failure.c     |  8 ++++----
- 4 files changed, 4 insertions(+), 31 deletions(-)
+ mm/memory-failure.c     | 19 ++++++++++---------
+ 4 files changed, 10 insertions(+), 36 deletions(-)
 
 diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
 index 5957bc25efa85..2abaf99321e90 100644
@@ -136,10 +139,10 @@ index 1b1d4f87a3a4c..c921287489de3 100644
   * folio_putback_hugetlb - unisolate a hugetlb folio
   * @folio: the isolated hugetlb folio
 diff --git a/mm/memory-failure.c b/mm/memory-failure.c
-index ee42d43613097..28522180cf7f8 100644
+index ee42d43613097..d47aef256a324 100644
 --- a/mm/memory-failure.c
 +++ b/mm/memory-failure.c
-@@ -1966,10 +1966,7 @@ void folio_clear_hugetlb_hwpoison(struct folio *folio)
+@@ -1966,20 +1966,19 @@ void folio_clear_hugetlb_hwpoison(struct folio *folio)
  	folio_free_raw_hwp(folio, true);
  }
  
@@ -151,21 +154,44 @@ index ee42d43613097..28522180cf7f8 100644
  				 bool *migratable_cleared)
  {
  	struct page *page = pfn_to_page(pfn);
-@@ -1977,6 +1974,7 @@ int __get_huge_page_for_hwpoison(unsigned long pfn, int flags,
+-	struct folio *folio = page_folio(page);
++	struct folio *folio;
  	bool count_increased = false;
  	int ret, rc;
  
 +	spin_lock_irq(&hugetlb_lock);
++	folio = page_folio(page);
  	if (!folio_test_hugetlb(folio)) {
  		ret = MF_HUGETLB_NON_HUGEPAGE;
- 		goto out;
-@@ -2013,8 +2011,10 @@ int __get_huge_page_for_hwpoison(unsigned long pfn, int flags,
+-		goto out;
++		goto out_unlock;
+ 	} else if (flags & MF_COUNT_INCREASED) {
+ 		ret = MF_HUGETLB_IN_USED;
+ 		count_increased = true;
+@@ -1995,13 +1994,13 @@ int __get_huge_page_for_hwpoison(unsigned long pfn, int flags,
+ 	} else {
+ 		ret = MF_HUGETLB_RETRY;
+ 		if (!(flags & MF_NO_RETRY))
+-			goto out;
++			goto out_unlock;
+ 	}
+ 
+ 	rc = hugetlb_update_hwpoison(folio, page);
+ 	if (rc >= MF_HUGETLB_FOLIO_PRE_POISONED) {
+ 		ret = rc;
+-		goto out;
++		goto out_unlock;
+ 	}
+ 
+ 	/*
+@@ -2013,8 +2012,10 @@ int __get_huge_page_for_hwpoison(unsigned long pfn, int flags,
  		*migratable_cleared = true;
  	}
  
 +	spin_unlock_irq(&hugetlb_lock);
  	return ret;
- out:
+-out:
++out_unlock:
 +	spin_unlock_irq(&hugetlb_lock);
  	if (count_increased)
  		folio_put(folio);
