@@ -1,0 +1,158 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Thu, 28 May 2026 09:55:19 -0700
+Subject: [PATCH] mm: bypass mmap_miss heuristic for VM_EXEC readahead
+
+Patch series "mm: improve large folio readahead for exec memory", v6.
+
+Two checks in do_sync_mmap_readahead() limit large-folio readahead:
+
+  1. The mmap_miss heuristic is meant to throttle wasteful speculative
+     readahead. It is currently also applied to the VM_EXEC readahead
+     path, which is targeted rather than speculative. Once mmap_miss exceeds
+     MMAP_LOTSAMISS, exec readahead - including the large-folio
+     order requested by exec_folio_order() - is disabled. On
+     configurations where the mmap_miss decrement paths are not
+     active (see patch 1) the counter only grows, so exec readahead
+     is permanently disabled after the first 100 faults.
+
+  2. The force_thp_readahead path is gated only on
+     HPAGE_PMD_ORDER <= MAX_PAGECACHE_ORDER and always drives the
+     readahead at HPAGE_PMD_ORDER. Configurations where
+     HPAGE_PMD_ORDER exceeds MAX_PAGECACHE_ORDER never reach this
+     path, even when the mapping itself supports usefully large
+     folios well below the cap.
+
+Both issues are most visible on arm64 with a 64K base page size, where
+HPAGE_PMD_ORDER is 13 (512MB) -- above MAX_PAGECACHE_ORDER (11) -- and
+where fault_around_pages collapses to 1 disabling should_fault_around()
+(one of the two mmap_miss decrement sites).  However the fixes are
+architecture-agnostic: patch 1 reflects the nature of VM_EXEC readahead
+regardless of base page size, and patch 2 generalises the gate so any
+mapping advertising a usefully large maximum folio order can benefit.
+
+I created a benchmark that mmaps a large executable file madvises it as
+huge and calls RET-stub functions at PAGE_SIZE offsets across it.  "Cold"
+measures fault + readahead cost.  "Random" first faults in all pages with
+a sequential sweep (not measured), then measures time for calling random
+offsets, isolating iTLB miss cost for scattered execution.
+
+The benchmark results on Neoverse V2 (Grace), arm64 with 64K base pages,
+512MB executable file on ext4, averaged over 3 runs:
+
+  Phase      | Baseline     | Patched      | Improvement
+  -----------|--------------|--------------|------------------
+  Cold fault | 83.4 ms      | 41.3 ms      | 50% faster
+  Random     | 76.0 ms      | 58.3 ms      | 23% faster
+
+
+This patch (of 2):
+
+The mmap_miss heuristic is intended to stop speculative mmap readahead
+when a file looks like a random-access workload.  That does not fit the
+VM_EXEC path very well.
+
+VM_EXEC readahead is already constrained differently from ordinary mmap
+read-around: it is bounded by the VMA, uses exec_folio_order() to choose
+an order useful for executable mappings, and sets async_size to 0 so it
+does not create follow-on readahead.  When VM_HUGEPAGE is also present,
+the larger readahead is an explicit userspace opt-in.
+
+The mmap_miss counter is decremented from cache-hit paths in
+do_async_mmap_readahead() and filemap_map_pages().  Those paths are not
+always enough to balance the synchronous miss increments for executable
+mappings.  In particular, when fault-around is effectively disabled, such
+as configurations where fault_around_pages is 1, filemap_map_pages() is
+not reached from the fault path.  The counter can then become a stale
+throttle for VM_EXEC mappings and suppress the readahead behavior that the
+executable-specific path is trying to provide.
+
+Skip both mmap_miss increments and decrements for VM_EXEC mappings,
+matching the existing VM_SEQ_READ treatment and keeping the counter
+accounting symmetric.
+
+Link: https://lore.kernel.org/20260528165635.2068012-1-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260528165635.2068012-2-usama.arif@linux.dev
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Heiher <r@hev.cc>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Rohan McLure <rmclure@linux.ibm.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/filemap.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index cca20e350c952..a16b33e0fc71c 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -3339,7 +3339,7 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
+ 		}
+ 	}
+ 
+-	if (!(vm_flags & VM_SEQ_READ)) {
++	if (!(vm_flags & (VM_SEQ_READ | VM_EXEC))) {
+ 		/* Avoid banging the cache line if not needed */
+ 		mmap_miss = READ_ONCE(ra->mmap_miss);
+ 		if (mmap_miss < MMAP_LOTSAMISS * 10)
+@@ -3434,12 +3434,12 @@ static struct file *do_async_mmap_readahead(struct vm_fault *vmf,
+ 	 * times for a single folio and break the balance with mmap_miss
+ 	 * increase in do_sync_mmap_readahead().
+ 	 *
+-	 * VM_SEQ_READ mappings skip the mmap_miss increment in
++	 * VM_SEQ_READ and VM_EXEC mappings skip the mmap_miss increment in
+ 	 * do_sync_mmap_readahead(), so skip the decrement here as well to
+ 	 * keep the counter symmetric.
+ 	 */
+ 	if (likely(!folio_test_locked(folio)) &&
+-	    !(vmf->vma->vm_flags & VM_SEQ_READ)) {
++	    !(vmf->vma->vm_flags & (VM_SEQ_READ | VM_EXEC))) {
+ 		mmap_miss = READ_ONCE(ra->mmap_miss);
+ 		if (mmap_miss)
+ 			WRITE_ONCE(ra->mmap_miss, --mmap_miss);
+@@ -3941,14 +3941,14 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
+ 		 * Don't decrease mmap_miss in this scenario to make sure
+ 		 * we can stop read-ahead.
+ 		 *
+-		 * VM_SEQ_READ mappings skip the mmap_miss increment in
+-		 * do_sync_mmap_readahead(), so skip the decrement here as
+-		 * well to keep the counter symmetric.
++		 * VM_SEQ_READ and VM_EXEC mappings skip the mmap_miss
++		 * increment in do_sync_mmap_readahead(), so skip the
++		 * decrement here as well to keep the counter symmetric.
+ 		 */
+ 		if ((map_ret & VM_FAULT_NOPAGE) &&
+ 		    !(vmf->flags & FAULT_FLAG_TRIED) &&
+ 		    !folio_test_workingset(folio) &&
+-		    !(vma->vm_flags & VM_SEQ_READ)) {
++		    !(vma->vm_flags & (VM_SEQ_READ | VM_EXEC))) {
+ 			unsigned short mmap_miss;
+ 
+ 			mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
+-- 
+2.47.3
+

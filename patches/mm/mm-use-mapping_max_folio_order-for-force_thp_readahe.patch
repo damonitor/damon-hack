@@ -1,0 +1,123 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Thu, 28 May 2026 09:55:20 -0700
+Subject: [PATCH] mm: use mapping_max_folio_order() for force_thp_readahead
+ order
+
+The force_thp_readahead path in do_sync_mmap_readahead() is gated on
+HPAGE_PMD_ORDER <= MAX_PAGECACHE_ORDER and always requests HPAGE_PMD_ORDER
+/ HPAGE_PMD_NR.  On configurations where HPAGE_PMD_ORDER exceeds
+MAX_PAGECACHE_ORDER, notably arm64 with a 64K base page size, VM_HUGEPAGE
+mappings cannot use this path and fall back to the non-forced mmap
+readahead path even when the mapping supports useful large folios.
+
+Keep the existing PMD-sized behavior when HPAGE_PMD_ORDER fits in the page
+cache.  When it does not, enable forced readahead for mappings that
+support large folios and request an order capped by both
+mapping_max_folio_order(mapping) and 2MB.
+
+2MB is chosen as the cap because it matches the PMD size on x86_64 and on
+arm64 with 4K or 16K base pages, so the size/memory-pressure tradeoff for
+folios of that size is already well understood.  On arm64 with a 64K base
+page size, 2MB is also the contiguous-PTE (contpte) block size, so the
+resulting folios coalesce into a single TLB entry and reduce TLB pressure
+on the readahead path.
+
+The final allocation order may still be clamped by page_cache_ra_order()
+to the mapping and request geometry, but this gives VM_HUGEPAGE mappings
+on such configurations a large-folio readahead request instead of dropping
+back to base-page readahead.
+
+Link: https://lore.kernel.org/20260528165635.2068012-3-usama.arif@linux.dev
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Heiher <r@hev.cc>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Rohan McLure <rmclure@linux.ibm.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/filemap.c | 27 +++++++++++++++++++--------
+ 1 file changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index a16b33e0fc71c..bfb891d9da1f1 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -3312,14 +3312,23 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
+ 	struct file *fpin = NULL;
+ 	vm_flags_t vm_flags = vmf->vma->vm_flags;
+ 	bool force_thp_readahead = false;
++	unsigned int thp_order = 0;
+ 	unsigned short mmap_miss;
+ 
+ 	ractl._max_index = vmf->vma->vm_pgoff + vma_pages(vmf->vma) - 1;
+ 
+ 	/* Use the readahead code, even if readahead is disabled */
+-	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+-	    (vm_flags & VM_HUGEPAGE) && HPAGE_PMD_ORDER <= MAX_PAGECACHE_ORDER)
+-		force_thp_readahead = true;
++	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && (vm_flags & VM_HUGEPAGE)) {
++		if (HPAGE_PMD_ORDER <= MAX_PAGECACHE_ORDER) {
++			force_thp_readahead = true;
++			thp_order = HPAGE_PMD_ORDER;
++		} else if (mapping_large_folio_support(mapping)) {
++			force_thp_readahead = true;
++			thp_order = min_t(unsigned int,
++					  mapping_max_folio_order(mapping),
++					  get_order(SZ_2M));
++		}
++	}
+ 
+ 	if (!force_thp_readahead) {
+ 		/*
+@@ -3354,17 +3363,19 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
+ 	}
+ 
+ 	if (force_thp_readahead) {
++		unsigned long folio_nr_pages = 1UL << thp_order;
++
+ 		fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+-		ractl._index &= ~((unsigned long)HPAGE_PMD_NR - 1);
+-		ra->size = HPAGE_PMD_NR;
++		ractl._index &= ~(folio_nr_pages - 1);
++		ra->size = folio_nr_pages;
+ 		/*
+-		 * Fetch two PMD folios, so we get the chance to actually
++		 * Fetch two folios so we get the chance to actually
+ 		 * readahead, unless we've been told not to.
+ 		 */
+ 		if (!(vm_flags & VM_RAND_READ))
+ 			ra->size *= 2;
+-		ra->async_size = HPAGE_PMD_NR;
+-		ra->order = HPAGE_PMD_ORDER;
++		ra->async_size = folio_nr_pages;
++		ra->order = thp_order;
+ 		page_cache_ra_order(&ractl, ra);
+ 		return fpin;
+ 	}
+-- 
+2.47.3
+

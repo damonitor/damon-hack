@@ -1,0 +1,138 @@
+From: fujunjie <fujunjie1@qq.com>
+Date: Tue, 26 May 2026 12:22:41 +0000
+Subject: [PATCH] mm/compaction: respect cpusets when checking retry
+ suitability
+
+should_compact_retry() handles COMPACT_SKIPPED by asking
+compaction_zonelist_suitable() whether reclaim can make a later compaction
+attempt worthwhile.  That answer is used for the current allocation, so it
+should follow the same zone eligibility rules as the allocation itself.
+
+When cpusets are enabled, allocator slowpath decisions are marked with
+ALLOC_CPUSET.  The allocation path, direct compaction and reclaim retry
+all skip zones rejected by __cpuset_zone_allowed().
+
+compaction_zonelist_suitable() does not apply that filter.  It only walks
+ac->zonelist/ac->nodemask, so it can return true because a zone that is
+not usable for the current allocation would pass __compaction_suitable().
+
+That does not let the allocation use the disallowed zone.  Later
+allocation and direct compaction paths still apply cpuset filtering.
+However, it can make should_compact_retry() retry based on memory that
+this allocation cannot use.
+
+Pass gfp_mask down and apply the same ALLOC_CPUSET check in
+compaction_zonelist_suitable().  This keeps the retry decision aligned
+with the zones that the allocation is allowed to use.
+
+A temporary debugfs probe was also used to call the old and new
+compaction_zonelist_suitable() predicates in the same two-node NUMA guest.
+The task was restricted to mems=0 while ac->nodemask covered nodes 0-1.
+After putting pressure on node0, node0 failed __compaction_suitable() for
+order-10 and node1 passed it, but node1 was rejected by
+__cpuset_zone_allowed().  In that state the old predicate returned true
+and the patched predicate returned false.
+
+Link: https://lore.kernel.org/tencent_F59F2BA2CC5779308E10DF54593C736D3E0A@qq.com
+Fixes: 435b3894e742 ("mm:page_alloc: fix the NULL ac->nodemask in __alloc_pages_slowpath()")
+Signed-off-by: fujunjie <fujunjie1@qq.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/compaction.h |  2 +-
+ mm/compaction.c            |  6 +++++-
+ mm/page_alloc.c            | 15 +++++++++------
+ 3 files changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/compaction.h b/include/linux/compaction.h
+index 09aea63b8a89d..f29ef0653546e 100644
+--- a/include/linux/compaction.h
++++ b/include/linux/compaction.h
+@@ -101,7 +101,7 @@ extern void compaction_defer_reset(struct zone *zone, int order,
+ 				bool alloc_success);
+ 
+ bool compaction_zonelist_suitable(struct alloc_context *ac, int order,
+-					int alloc_flags);
++					int alloc_flags, gfp_t gfp_mask);
+ 
+ extern void __meminit kcompactd_run(int nid);
+ extern void __meminit kcompactd_stop(int nid);
+diff --git a/mm/compaction.c b/mm/compaction.c
+index 8f664fb09f248..b776f35ad0200 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -2448,7 +2448,7 @@ bool compaction_suitable(struct zone *zone, int order, unsigned long watermark,
+ 
+ /* Used by direct reclaimers */
+ bool compaction_zonelist_suitable(struct alloc_context *ac, int order,
+-		int alloc_flags)
++		int alloc_flags, gfp_t gfp_mask)
+ {
+ 	struct zone *zone;
+ 	struct zoneref *z;
+@@ -2461,6 +2461,10 @@ bool compaction_zonelist_suitable(struct alloc_context *ac, int order,
+ 				ac->highest_zoneidx, ac->nodemask) {
+ 		unsigned long available;
+ 
++		if (cpusets_enabled() && (alloc_flags & ALLOC_CPUSET) &&
++		    !__cpuset_zone_allowed(zone, gfp_mask))
++			continue;
++
+ 		/*
+ 		 * Do not consider all the reclaimable memory because we do not
+ 		 * want to trash just for a single high order allocation which
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index e47679e7a9dbc..363a386dee20c 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4198,7 +4198,8 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
+ }
+ 
+ static inline bool
+-should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
++should_compact_retry(gfp_t gfp_mask, struct alloc_context *ac, int order,
++		     int alloc_flags,
+ 		     enum compact_result compact_result,
+ 		     enum compact_priority *compact_priority,
+ 		     int *compaction_retries)
+@@ -4220,7 +4221,8 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
+ 	 * migration targets. Continue if reclaim can help.
+ 	 */
+ 	if (compact_result == COMPACT_SKIPPED) {
+-		ret = compaction_zonelist_suitable(ac, order, alloc_flags);
++		ret = compaction_zonelist_suitable(ac, order, alloc_flags,
++						   gfp_mask);
+ 		goto out;
+ 	}
+ 
+@@ -4273,7 +4275,8 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
+ }
+ 
+ static inline bool
+-should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
++should_compact_retry(gfp_t gfp_mask, struct alloc_context *ac, int order,
++		     int alloc_flags,
+ 		     enum compact_result compact_result,
+ 		     enum compact_priority *compact_priority,
+ 		     int *compaction_retries)
+@@ -4940,9 +4943,9 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+ 	 * of free memory (see __compaction_suitable)
+ 	 */
+ 	if (did_some_progress > 0 && can_compact &&
+-			should_compact_retry(ac, order, alloc_flags,
+-				compact_result, &compact_priority,
+-				&compaction_retries))
++	    should_compact_retry(gfp_mask, ac, order, alloc_flags,
++				 compact_result, &compact_priority,
++				 &compaction_retries))
+ 		goto retry;
+ 
+ 	/* Reclaim/compaction failed to prevent the fallback */
+-- 
+2.47.3
+

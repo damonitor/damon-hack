@@ -1,0 +1,53 @@
+From: fujunjie <fujunjie1@qq.com>
+Date: Tue, 26 May 2026 09:12:48 +0000
+Subject: [PATCH] mm/page_alloc: fix deferred compaction accounting
+
+COMPACT_DEFERRED means compaction did not start because past failures
+caused the zone to be deferred.  try_to_compact_pages() returns the
+maximum result seen while walking the zonelist, so a final
+COMPACT_DEFERRED result means no later zone reported that compaction
+actually ran.
+
+__alloc_pages_direct_compact() skips COMPACTSTALL and COMPACTFAIL
+accounting when try_to_compact_pages() returns COMPACT_SKIPPED, but not
+when it returns COMPACT_DEFERRED.  A deferred-only direct compaction
+attempt can therefore look like a stall, and then a failure if the
+allocation still cannot be satisfied.
+
+Treat COMPACT_DEFERRED like COMPACT_SKIPPED in this accounting path.  If a
+later zone runs compaction and returns a result above COMPACT_DEFERRED, or
+compact_zone_order() reports COMPACT_SUCCESS for a captured page, the
+final result is not COMPACT_DEFERRED and the existing accounting still
+runs.
+
+Link: https://lore.kernel.org/tencent_368AF1F3821E46232637BE16D65C45CF3308@qq.com
+Fixes: 06dac2f467fe ("mm: compaction: update the COMPACT[STALL|FAIL] events properly")
+Signed-off-by: fujunjie <fujunjie1@qq.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 363a386dee20c..81a9d4d1e6c0a 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -4161,7 +4161,8 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
+ 	psi_memstall_leave(&pflags);
+ 	delayacct_compact_end();
+ 
+-	if (*compact_result == COMPACT_SKIPPED)
++	if (*compact_result == COMPACT_SKIPPED ||
++	    *compact_result == COMPACT_DEFERRED)
+ 		return NULL;
+ 	/*
+ 	 * At least in one zone compaction wasn't deferred or skipped, so let's
+-- 
+2.47.3
+
