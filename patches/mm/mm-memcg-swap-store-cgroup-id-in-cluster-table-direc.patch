@@ -11,6 +11,8 @@ the cluster lock.  That keeps things simple, lets the allocation use plain
 kmalloc with immediate kfree (no deferred free), and keeps fragmentation
 acceptable.
 
+[akpm@linux-foundation.org: memcgv1: don't compile swap functions when CONFIG_SWAP=n]
+  Link: https://lore.kernel.org/202605281711.bSeZlErK-lkp@intel.com
 [akpm@linux-foundation.org: fix CONFIG_SWAP=n build]
 Link: https://lore.kernel.org/20260517-swap-table-p4-v5-10-88ae43e064c7@tencent.com
 Signed-off-by: Kairui Song <kasong@tencent.com>
@@ -32,19 +34,19 @@ Cc: Youngjun Park <youngjun.park@lge.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/memcontrol.h |  6 ++--
+ include/linux/memcontrol.h | 19 +++++++----
  include/linux/swap.h       |  8 ++---
- mm/memcontrol-v1.c         | 42 ++++++++++++++++---------
+ mm/memcontrol-v1.c         | 44 +++++++++++++++++---------
  mm/memcontrol.c            | 13 +++++---
  mm/swap.h                  |  4 +++
  mm/swap_state.c            |  6 ++--
  mm/swap_table.h            | 64 ++++++++++++++++++++++++++++++++++++++
  mm/swapfile.c              | 37 +++++++++++++++-------
  mm/vmscan.c                |  2 +-
- 9 files changed, 139 insertions(+), 43 deletions(-)
+ 9 files changed, 150 insertions(+), 47 deletions(-)
 
 diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
-index a013f37f24aa0..bf1a6e131ecaa 100644
+index a013f37f24aa0..8f2662db166b4 100644
 --- a/include/linux/memcontrol.h
 +++ b/include/linux/memcontrol.h
 @@ -29,6 +29,7 @@ struct obj_cgroup;
@@ -55,25 +57,43 @@ index a013f37f24aa0..bf1a6e131ecaa 100644
  
  /* Cgroup-specific page state, on top of universal node page state */
  enum memcg_stat_item {
-@@ -1899,7 +1900,7 @@ static inline void mem_cgroup_exit_user_fault(void)
+@@ -1899,9 +1900,6 @@ static inline void mem_cgroup_exit_user_fault(void)
  	current->in_user_fault = 0;
  }
  
 -void __memcg1_swapout(struct folio *folio);
-+void __memcg1_swapout(struct folio *folio, struct swap_cluster_info *ci);
- void memcg1_swapin(struct folio *folio);
- 
+-void memcg1_swapin(struct folio *folio);
+-
  #else /* CONFIG_MEMCG_V1 */
-@@ -1929,7 +1930,8 @@ static inline void mem_cgroup_exit_user_fault(void)
+ static inline
+ unsigned long memcg1_soft_limit_reclaim(pg_data_t *pgdat, int order,
+@@ -1929,14 +1927,23 @@ static inline void mem_cgroup_exit_user_fault(void)
  {
  }
  
 -static inline void __memcg1_swapout(struct folio *folio)
++#endif /* CONFIG_MEMCG_V1 */
++
++#if defined(CONFIG_MEMCG_V1) && defined(CONFIG_SWAP)
++
++void __memcg1_swapout(struct folio *folio, struct swap_cluster_info *ci);
++void memcg1_swapin(struct folio *folio);
++
++#else
++
 +static inline void __memcg1_swapout(struct folio *folio,
 +		struct swap_cluster_info *ci)
  {
  }
  
+ static inline void memcg1_swapin(struct folio *folio)
+ {
+ }
+-
+-#endif /* CONFIG_MEMCG_V1 */
++#endif
+ 
+ #endif /* _LINUX_MEMCONTROL_H */
 diff --git a/include/linux/swap.h b/include/linux/swap.h
 index f907d3df52d0f..200e7c345f26a 100644
 --- a/include/linux/swap.h
@@ -104,7 +124,7 @@ index f907d3df52d0f..200e7c345f26a 100644
  {
  }
 diff --git a/mm/memcontrol-v1.c b/mm/memcontrol-v1.c
-index 36c507d81dc51..494e7b9adc60a 100644
+index 36c507d81dc51..517b21236672b 100644
 --- a/mm/memcontrol-v1.c
 +++ b/mm/memcontrol-v1.c
 @@ -14,6 +14,7 @@
@@ -115,7 +135,11 @@ index 36c507d81dc51..494e7b9adc60a 100644
  #include "memcontrol-v1.h"
  
  /*
-@@ -606,14 +607,15 @@ void memcg1_commit_charge(struct folio *folio, struct mem_cgroup *memcg)
+@@ -603,17 +604,19 @@ void memcg1_commit_charge(struct folio *folio, struct mem_cgroup *memcg)
+ 	local_irq_restore(flags);
+ }
+ 
++#ifdef CONFIG_SWAP
  /**
   * __memcg1_swapout - transfer a memsw charge to swap
   * @folio: folio whose memsw charge to transfer
@@ -134,7 +158,7 @@ index 36c507d81dc51..494e7b9adc60a 100644
  {
  	struct mem_cgroup *memcg, *swap_memcg;
  	struct obj_cgroup *objcg;
-@@ -646,7 +648,8 @@ void __memcg1_swapout(struct folio *folio)
+@@ -646,7 +649,8 @@ void __memcg1_swapout(struct folio *folio)
  	swap_memcg = mem_cgroup_private_id_get_online(memcg, nr_entries);
  	mod_memcg_state(swap_memcg, MEMCG_SWAP, nr_entries);
  
@@ -144,7 +168,7 @@ index 36c507d81dc51..494e7b9adc60a 100644
  
  	folio_unqueue_deferred_split(folio);
  	folio->memcg_data = 0;
-@@ -661,8 +664,7 @@ void __memcg1_swapout(struct folio *folio)
+@@ -661,8 +665,7 @@ void __memcg1_swapout(struct folio *folio)
  	}
  
  	/*
@@ -154,7 +178,7 @@ index 36c507d81dc51..494e7b9adc60a 100644
  	 * important here to have the interrupts disabled because it is the
  	 * only synchronisation we have for updating the per-CPU variables.
  	 */
-@@ -677,7 +679,7 @@ void __memcg1_swapout(struct folio *folio)
+@@ -677,7 +680,7 @@ void __memcg1_swapout(struct folio *folio)
  }
  
  /**
@@ -163,7 +187,7 @@ index 36c507d81dc51..494e7b9adc60a 100644
   * @folio: folio being swapped in
   *
   * Call this function after successfully adding the charged
-@@ -687,6 +689,10 @@ void __memcg1_swapout(struct folio *folio)
+@@ -687,6 +690,10 @@ void __memcg1_swapout(struct folio *folio)
   */
  void memcg1_swapin(struct folio *folio)
  {
@@ -174,7 +198,7 @@ index 36c507d81dc51..494e7b9adc60a 100644
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_swapcache(folio), folio);
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
  
-@@ -702,14 +708,20 @@ void memcg1_swapin(struct folio *folio)
+@@ -702,15 +709,22 @@ void memcg1_swapin(struct folio *folio)
  	 * correspond 1:1 to page and swap slot lifetimes: we charge the
  	 * page to memory here, and uncharge swap when the slot is freed.
  	 */
@@ -201,8 +225,10 @@ index 36c507d81dc51..494e7b9adc60a 100644
 +	swap_cluster_unlock(ci);
 +	mem_cgroup_uncharge_swap(id, nr_pages);
  }
++#endif
  
  void memcg1_uncharge_batch(struct mem_cgroup *memcg, unsigned long pgpgout,
+ 			   unsigned long nr_memory, int nid)
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
 index 1b58b314cb186..beecfc6f376dc 100644
 --- a/mm/memcontrol.c

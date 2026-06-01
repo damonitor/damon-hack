@@ -1,9 +1,16 @@
 - baseline: v7.1-rc5-20-gd60ec36cab338 -> v7.1-rc5-20-gd60ec36cab338 (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
+- mm-hotfixes-stable: 0 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 3 -> 3 commits (no change)
+    - maintainer, nobody: 0 -> 1 commits
+  - changed commits
+    - d6b8b02a27b3 "mm/damon/ops-common: call folio_test_lru() after folio_get()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260525162256.8317-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260517234112.89245-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 3 -> 2 commits
   - series: 1 (2) -> 1 (2) (no change)
-    - maintainer, nobody: 3 -> 3 commits (no change)
+    - maintainer, nobody: 3 -> 2 commits
 - mm-stable: 41 -> 41 commits (no change)
   - series: 7 (38) -> 7 (38) (no change)
     - no role, maintainer: 5 -> 5 commits (no change)
