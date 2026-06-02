@@ -1,0 +1,86 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Mon, 1 Jun 2026 16:48:40 +0800
+Subject: [PATCH] mm/sparse-vmemmap: provide generic vmemmap_set_pmd() and
+ vmemmap_check_pmd()
+
+Patch series "mm/sparse-vmemmap: Provide generic vmemmap_set_pmd() and
+vmemmap_check_pmd()", v3.
+
+The weak vmemmap_set_pmd() and vmemmap_check_pmd() hooks are currently
+no-ops in the generic code, which leaves architectures that need PMD-level
+handling to open-code the same logic locally.
+
+This series provides generic implementations for both helpers in
+mm/sparse-vmemmap.c.  vmemmap_set_pmd() installs a huge PMD with
+PAGE_KERNEL protection, and vmemmap_check_pmd() verifies a present leaf
+PMD before reusing the existing vmemmap_verify() helper.
+
+With those generic helpers in place, patches 2-5 remove the now redundant
+arch-specific implementations from arm64, riscv, loongarch, and sparc.
+
+
+This patch (of 5):
+
+The two weak functions are currently no-ops on every architecture, forcing
+each platform that needs them to duplicate the same handful of lines.
+Provide a generic implementation:
+
+- vmemmap_set_pmd() simply sets a huge PMD with PAGE_KERNEL protection.
+
+- vmemmap_check_pmd() verifies that the PMD is present and leaf,
+  then calls the existing vmemmap_verify() helper.
+
+Architectures that need special handling can continue to override the weak
+symbols; everyone else gets the standard version for free.
+
+Link: https://lore.kernel.org/20260601084845.3792171-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260601084845.3792171-2-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/sparse-vmemmap.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 112ccf9c71caf..99e2be39671b6 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -386,12 +386,17 @@ int __meminit vmemmap_populate_hvo(unsigned long addr, unsigned long end,
+ void __weak __meminit vmemmap_set_pmd(pmd_t *pmd, void *p, int node,
+ 				      unsigned long addr, unsigned long next)
+ {
++	WARN_ON_ONCE(!pmd_set_huge(pmd, virt_to_phys(p), PAGE_KERNEL));
+ }
+ 
+ int __weak __meminit vmemmap_check_pmd(pmd_t *pmd, int node,
+ 				       unsigned long addr, unsigned long next)
+ {
+-	return 0;
++	if (!pmd_leaf(pmdp_get(pmd)))
++		return 0;
++	vmemmap_verify((pte_t *)pmd, node, addr, next);
++
++	return 1;
+ }
+ 
+ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+-- 
+2.47.3
+
