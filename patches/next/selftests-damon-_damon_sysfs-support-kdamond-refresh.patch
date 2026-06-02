@@ -1,0 +1,58 @@
+From: Ruslan Valiyev <linuxoid@gmail.com>
+Date: Tue, 2 Jun 2026 15:12:16 +0200
+Subject: [PATCH] selftests/damon/_damon_sysfs: support kdamond refresh_ms
+
+The Kdamond class has no way to set the kdamond-level 'refresh_ms' sysfs
+file, which makes DAMON periodically update the read-only sysfs files
+(DAMOS stats, tuned monitoring intervals and the kdamond pid) on its own.
+
+Add a 'refresh_ms' parameter to Kdamond.  When it is set (including to
+zero, to disable the periodic update), write it before turning the
+kdamond on, so tests can exercise the auto-update behavior.  Leaving it
+unset keeps the previous behavior of not touching the file, so callers
+running against kernels without the feature are unaffected.
+
+Link: https://lore.kernel.org/20260602131217.2210912-2-linuxoid@gmail.com
+Signed-off-by: Ruslan Valiyev <linuxoid@gmail.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/_damon_sysfs.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/damon/_damon_sysfs.py b/tools/testing/selftests/damon/_damon_sysfs.py
+index c197ab99bcc0a..e6a2265d721e8 100644
+--- a/tools/testing/selftests/damon/_damon_sysfs.py
++++ b/tools/testing/selftests/damon/_damon_sysfs.py
+@@ -698,12 +698,14 @@ class DamonCtx:
+ class Kdamond:
+     state = None
+     pid = None
++    refresh_ms = None
+     contexts = None
+     idx = None      # index of this kdamond between siblings
+     kdamonds = None # parent
+ 
+-    def __init__(self, contexts=[]):
++    def __init__(self, contexts=[], refresh_ms=None):
+         self.contexts = contexts
++        self.refresh_ms = refresh_ms
+         for idx, context in enumerate(self.contexts):
+             context.idx = idx
+             context.kdamond = self
+@@ -726,6 +728,11 @@ class Kdamond:
+             err = context.stage()
+             if err is not None:
+                 return err
++        if self.refresh_ms is not None:
++            err = write_file(os.path.join(self.sysfs_dir(), 'refresh_ms'),
++                             '%d' % self.refresh_ms)
++            if err is not None:
++                return err
+         err = write_file(os.path.join(self.sysfs_dir(), 'state'), 'on')
+         if err is not None:
+             return err
+-- 
+2.47.3
+
