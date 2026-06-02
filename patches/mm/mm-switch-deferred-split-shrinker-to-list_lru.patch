@@ -75,10 +75,10 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  10 files changed, 150 insertions(+), 285 deletions(-)
 
 diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
-index edece3e26985c..f6c2531a27a35 100644
+index 58382e97a66d3..2f43341afbda1 100644
 --- a/include/linux/huge_mm.h
 +++ b/include/linux/huge_mm.h
-@@ -423,10 +423,10 @@ static inline int split_huge_page(struct page *page)
+@@ -439,10 +439,10 @@ static inline int split_huge_page(struct page *page)
  {
  	return split_huge_page_to_list_to_order(page, NULL, 0);
  }
@@ -92,7 +92,7 @@ index edece3e26985c..f6c2531a27a35 100644
  
  void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
  		unsigned long address, bool freeze);
-@@ -664,7 +664,6 @@ static inline int folio_split(struct folio *folio, unsigned int new_order,
+@@ -680,7 +680,6 @@ static inline int try_folio_split_to_order(struct folio *folio,
  }
  
  static inline void deferred_split_folio(struct folio *folio, bool partially_mapped) {}
@@ -146,7 +146,7 @@ index 1331a7b93f33c..8e449f524f266 100644
  	/* start time in ms of current promote rate limit period */
  	unsigned int nbp_rl_start;
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 79463c709c984..b81d1ecb434b1 100644
+index b42070fef5e60..a9106cd16da4c 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
 @@ -14,6 +14,7 @@
@@ -166,7 +166,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  static struct shrinker *deferred_split_shrinker;
  static unsigned long deferred_split_count(struct shrinker *shrink,
  					  struct shrink_control *sc);
-@@ -943,6 +946,13 @@ static inline void hugepage_exit_sysfs(struct kobject *hugepage_kobj)
+@@ -932,6 +935,13 @@ static inline void hugepage_exit_sysfs(struct kobject *hugepage_kobj)
  }
  #endif /* CONFIG_SYSFS */
  
@@ -180,7 +180,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  static int __init thp_shrinker_init(void)
  {
  	deferred_split_shrinker = shrinker_alloc(SHRINKER_NUMA_AWARE |
-@@ -952,6 +962,13 @@ static int __init thp_shrinker_init(void)
+@@ -941,6 +951,13 @@ static int __init thp_shrinker_init(void)
  	if (!deferred_split_shrinker)
  		return -ENOMEM;
  
@@ -194,7 +194,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  	deferred_split_shrinker->count_objects = deferred_split_count;
  	deferred_split_shrinker->scan_objects = deferred_split_scan;
  	shrinker_register(deferred_split_shrinker);
-@@ -973,6 +990,7 @@ static int __init thp_shrinker_init(void)
+@@ -962,6 +979,7 @@ static int __init thp_shrinker_init(void)
  	huge_zero_folio_shrinker = shrinker_alloc(0, "thp-zero");
  	if (!huge_zero_folio_shrinker) {
  		shrinker_free(deferred_split_shrinker);
@@ -202,7 +202,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  		return -ENOMEM;
  	}
  
-@@ -987,6 +1005,7 @@ static void __init thp_shrinker_exit(void)
+@@ -976,6 +994,7 @@ static void __init thp_shrinker_exit(void)
  {
  	shrinker_free(huge_zero_folio_shrinker);
  	shrinker_free(deferred_split_shrinker);
@@ -210,7 +210,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  }
  
  static int __init hugepage_init(void)
-@@ -1166,119 +1185,6 @@ pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma)
+@@ -1155,119 +1174,6 @@ pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma)
  	return pmd;
  }
  
@@ -330,7 +330,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  static inline bool is_transparent_hugepage(const struct folio *folio)
  {
  	if (!folio_test_large(folio))
-@@ -1379,6 +1285,14 @@ static struct folio *vma_alloc_anon_folio_pmd(struct vm_area_struct *vma,
+@@ -1368,6 +1274,14 @@ static struct folio *vma_alloc_anon_folio_pmd(struct vm_area_struct *vma,
  		count_mthp_stat(order, MTHP_STAT_ANON_FAULT_FALLBACK_CHARGE);
  		return NULL;
  	}
@@ -345,7 +345,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  	folio_throttle_swaprate(folio, gfp);
  
         /*
-@@ -3890,34 +3804,43 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+@@ -3903,34 +3817,43 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
  	struct folio *end_folio = folio_next(folio);
  	struct folio *new_folio, *next;
  	int old_order = folio_order(folio);
@@ -404,7 +404,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  		if (mapping) {
  			int nr = folio_nr_pages(folio);
  
-@@ -4017,7 +3940,10 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+@@ -4031,7 +3954,10 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
  		if (ci)
  			swap_cluster_unlock(ci);
  	} else {
@@ -416,7 +416,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  		return -EAGAIN;
  	}
  
-@@ -4383,33 +4309,37 @@ int split_folio_to_list(struct folio *folio, struct list_head *list)
+@@ -4397,33 +4323,37 @@ int split_folio_to_list(struct folio *folio, struct list_head *list)
   * queueing THP splits, and that list is (racily observed to be) non-empty.
   *
   * It is unsafe to call folio_unqueue_deferred_split() until folio refcount is
@@ -464,7 +464,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  
  	return unqueued;	/* useful for debug warnings */
  }
-@@ -4417,7 +4347,9 @@ bool __folio_unqueue_deferred_split(struct folio *folio)
+@@ -4431,7 +4361,9 @@ bool __folio_unqueue_deferred_split(struct folio *folio)
  /* partially_mapped=false won't clear PG_partially_mapped folio flag */
  void deferred_split_folio(struct folio *folio, bool partially_mapped)
  {
@@ -475,7 +475,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  	unsigned long flags;
  
  	/*
-@@ -4440,7 +4372,11 @@ void deferred_split_folio(struct folio *folio, bool partially_mapped)
+@@ -4454,7 +4386,11 @@ void deferred_split_folio(struct folio *folio, bool partially_mapped)
  	if (folio_test_swapcache(folio))
  		return;
  
@@ -488,7 +488,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  	if (partially_mapped) {
  		if (!folio_test_partially_mapped(folio)) {
  			folio_set_partially_mapped(folio);
-@@ -4448,36 +4384,20 @@ void deferred_split_folio(struct folio *folio, bool partially_mapped)
+@@ -4462,36 +4398,20 @@ void deferred_split_folio(struct folio *folio, bool partially_mapped)
  				count_vm_event(THP_DEFERRED_SPLIT_PAGE);
  			count_mthp_stat(folio_order(folio), MTHP_STAT_SPLIT_DEFERRED);
  			mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, 1);
@@ -529,7 +529,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  }
  
  static bool thp_underused(struct folio *folio)
-@@ -4507,45 +4427,49 @@ static bool thp_underused(struct folio *folio)
+@@ -4521,45 +4441,49 @@ static bool thp_underused(struct folio *folio)
  	return false;
  }
  
@@ -609,7 +609,7 @@ index 79463c709c984..b81d1ecb434b1 100644
  		if (!folio_test_partially_mapped(folio)) {
  			/*
  			 * See try_to_map_unused_to_zeropage(): we cannot
-@@ -4574,63 +4498,23 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
+@@ -4588,63 +4512,23 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
  		 * underused, then consider it used and don't add it back to
  		 * split_queue.
  		 */
@@ -696,10 +696,10 @@ index 5602393054f3e..181e79f1d6a20 100644
  	if (data_race(list_empty(&folio->_deferred_list)))
  		return false;
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 35a5f8c44c181..8ffb47f1e8453 100644
+index a4b97ec8ce56c..73e262cb30dd3 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -1306,6 +1306,11 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1123,6 +1123,11 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	if (result != SCAN_SUCCEED)
  		goto out_nolock;
  
@@ -709,8 +709,8 @@ index 35a5f8c44c181..8ffb47f1e8453 100644
 +	}
 +
  	mmap_read_lock(mm);
- 	result = hugepage_vma_revalidate(mm, pmd_addr, /*expect_anon=*/ true,
- 					 &vma, cc, order);
+ 	result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
+ 	if (result != SCAN_SUCCEED) {
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
 index e24114a4493a3..56cd4af082326 100644
 --- a/mm/memcontrol.c

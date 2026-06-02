@@ -73,14 +73,14 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 93 +++++++++++++++++++++++++++++--------------------
- 1 file changed, 55 insertions(+), 38 deletions(-)
+ mm/khugepaged.c | 91 +++++++++++++++++++++++++++++--------------------
+ 1 file changed, 54 insertions(+), 37 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index ce69611e2fb26..89718734015bf 100644
+index 15bb35f389d83..3af1fe13b7e8c 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -1216,34 +1216,36 @@ static enum scan_result alloc_charge_folio(struct folio **foliop, struct mm_stru
+@@ -1216,9 +1216,12 @@ static enum scan_result alloc_charge_folio(struct folio **foliop, struct mm_stru
   * while allocating a THP, as that could trigger direct reclaim/compaction.
   * Note that the VMA must be rechecked after grabbing the mmap_lock again.
   */
@@ -94,11 +94,8 @@ index ce69611e2fb26..89718734015bf 100644
 +	const unsigned long end_addr = start_addr + (PAGE_SIZE << order);
  	LIST_HEAD(compound_pagelist);
  	pmd_t *pmd, _pmd;
--	pte_t *pte;
-+	pte_t *pte = NULL;
- 	pgtable_t pgtable;
- 	struct folio *folio;
- 	spinlock_t *pmd_ptl, *pte_ptl;
+ 	pte_t *pte;
+@@ -1228,10 +1231,9 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	enum scan_result result = SCAN_FAIL;
  	struct vm_area_struct *vma;
  	struct mmu_notifier_range range;
@@ -110,6 +107,9 @@ index ce69611e2fb26..89718734015bf 100644
 +	result = alloc_charge_folio(&folio, mm, cc, order);
  	if (result != SCAN_SUCCEED)
  		goto out_nolock;
+ 
+@@ -1241,14 +1243,14 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+ 	}
  
  	mmap_read_lock(mm);
 -	result = hugepage_vma_revalidate(mm, address, true, &vma, cc,
@@ -126,7 +126,7 @@ index ce69611e2fb26..89718734015bf 100644
  	if (result != SCAN_SUCCEED) {
  		mmap_read_unlock(mm);
  		goto out_nolock;
-@@ -1255,8 +1257,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1260,8 +1262,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  		 * released when it fails. So we jump out_nolock directly in
  		 * that case.  Continuing to collapse causes inconsistency.
  		 */
@@ -137,7 +137,7 @@ index ce69611e2fb26..89718734015bf 100644
  		if (result != SCAN_SUCCEED)
  			goto out_nolock;
  	}
-@@ -1271,20 +1273,21 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1276,20 +1278,21 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * mmap_lock.
  	 */
  	mmap_write_lock(mm);
@@ -164,7 +164,7 @@ index ce69611e2fb26..89718734015bf 100644
  	mmu_notifier_invalidate_range_start(&range);
  
  	pmd_ptl = pmd_lock(mm, pmd); /* probably unnecessary */
-@@ -1296,26 +1299,23 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1301,26 +1304,23 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * Parallel GUP-fast is fine since GUP-fast will back off when
  	 * it detects PMD is changed.
  	 */
@@ -196,7 +196,7 @@ index ce69611e2fb26..89718734015bf 100644
  		/*
  		 * We can only use set_pmd_at when establishing
  		 * hugepmds and never for establishing regular pmds that
-@@ -1323,21 +1323,24 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1328,21 +1328,24 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  		 */
  		pmd_populate(mm, pmd, pmd_pgtable(_pmd));
  		spin_unlock(pmd_ptl);
@@ -229,7 +229,7 @@ index ce69611e2fb26..89718734015bf 100644
  	if (unlikely(result != SCAN_SUCCEED))
  		goto out_up_write;
  
-@@ -1347,18 +1350,32 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
+@@ -1352,18 +1355,32 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long a
  	 * write.
  	 */
  	__folio_mark_uptodate(folio);
@@ -267,7 +267,7 @@ index ce69611e2fb26..89718734015bf 100644
  	mmap_write_unlock(mm);
  out_nolock:
  	if (folio)
-@@ -1538,7 +1555,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1543,7 +1560,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		/* collapse_huge_page expects the lock to be dropped before calling */
  		mmap_read_unlock(mm);
  		result = collapse_huge_page(mm, start_addr, referenced,

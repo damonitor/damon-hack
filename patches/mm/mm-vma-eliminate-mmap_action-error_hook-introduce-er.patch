@@ -1,12 +1,12 @@
 From: Lorenzo Stoakes <ljs@kernel.org>
-Date: Fri, 22 May 2026 17:00:11 +0100
+Date: Tue, 2 Jun 2026 12:06:27 +0100
 Subject: [PATCH] mm/vma: eliminate mmap_action->error_hook, introduce
- error_filter
+ error_override
 
 Rather than providing a hook, simplify things by providing the ability to
-filter errors.  This allows us to more carefully validate the value
-provided and thus ensure only a valid error code is specified, and
-simplifies the interface.
+override mmap action errors.  This allows us to more carefully validate
+the value provided and thus ensure only a valid error code is specified,
+and simplifies the interface.
 
 This way, we eliminate all hooks but mmap_prepare and allow only mmap
 actions to be specified (which core mm controls).
@@ -15,12 +15,12 @@ This significantly improves robustness and eliminates any unnecessary code
 duplication in driver mmap hooks.
 
 We also update the /dev/mem logic (the only user) to use
-mmap_action->error_filter instead.
+mmap_action->error_override instead.
 
-Link: https://lore.kernel.org/e770b28427937057fa953ac380a134b24acd8bb4.1779462249.git.ljs@kernel.org
+Link: https://lore.kernel.org/55d13f7d016b827c459946d46a56105635be111c.1780397980.git.ljs@kernel.org
 Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Liam R. Howlett <liam@infradead.org>
@@ -38,7 +38,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  4 files changed, 28 insertions(+), 27 deletions(-)
 
 diff --git a/drivers/char/mem.c b/drivers/char/mem.c
-index a4297eb39887f..11639d988e47a 100644
+index a4297eb39887f..63253d1de5d70 100644
 --- a/drivers/char/mem.c
 +++ b/drivers/char/mem.c
 @@ -322,11 +322,6 @@ static const struct vm_operations_struct mmap_mem_ops = {
@@ -59,12 +59,12 @@ index a4297eb39887f..11639d988e47a 100644
  	mmap_action_remap_full(desc, desc->pgoff);
 -	/* We filter remap errors to -EAGAIN. */
 -	desc->action.error_hook = mmap_filter_error;
-+	desc->action.error_filter = -EAGAIN;
++	desc->action.error_override = -EAGAIN;
  
  	return 0;
  }
 diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-index 945c0a5386d61..8d1fb85e76847 100644
+index 945c0a5386d61..5ef78617ce93b 100644
 --- a/include/linux/mm_types.h
 +++ b/include/linux/mm_types.h
 @@ -844,13 +844,10 @@ struct mmap_action {
@@ -76,16 +76,16 @@ index 945c0a5386d61..8d1fb85e76847 100644
 -	 *
 -	 * The hook can return an error code in order to filter the error, but
 -	 * it is not valid to clear the error here.
-+	 * If non-zero, filter errors that arise from mmap actions such that we
-+	 * return error_filter instead. Only valid error codes may be specified.
++	 * If non-zero, replace errors that arise from mmap actions with this
++	 * value instead. Only valid error codes may be specified.
  	 */
 -	int (*error_hook)(int err);
-+	int error_filter;
++	int error_override;
  
  	/*
  	 * This should be set in rare instances where the operation required
 diff --git a/mm/util.c b/mm/util.c
-index 4e172990afcd2..9b4e5432d45a2 100644
+index 4e172990afcd2..af2c2103f0d95 100644
 --- a/mm/util.c
 +++ b/mm/util.c
 @@ -1414,16 +1414,22 @@ static int mmap_action_finish(struct vm_area_struct *vma,
@@ -100,16 +100,16 @@ index 4e172990afcd2..9b4e5432d45a2 100644
 -	}
 -	return err;
 +
-+	return action->error_filter ?: err;
++	return action->error_override ?: err;
  }
  
  #ifdef CONFIG_MMU
 +
 +static int check_mmap_action(struct mmap_action *action)
 +{
-+	const unsigned long filter = action->error_filter;
++	const unsigned long override = action->error_override;
 +
-+	if (WARN_ON_ONCE(filter && !IS_ERR_VALUE(filter)))
++	if (WARN_ON_ONCE(override && !IS_ERR_VALUE(override)))
 +		return -EINVAL;
 +
 +	return 0;
@@ -135,7 +135,7 @@ index 4e172990afcd2..9b4e5432d45a2 100644
  		return 0;
  	case MMAP_REMAP_PFN:
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index fddfd1b57c090..bcd569a720879 100644
+index fddfd1b57c090..bf26b3f48d3ab 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -483,13 +483,10 @@ struct mmap_action {
@@ -147,11 +147,11 @@ index fddfd1b57c090..bcd569a720879 100644
 -	 *
 -	 * The hook can return an error code in order to filter the error, but
 -	 * it is not valid to clear the error here.
-+	 * If non-zero, filter errors that arise from mmap actions such that we
-+	 * return error_filter instead. Only valid error codes may be specified.
++	 * If non-zero, replace errors that arise from mmap actions with this
++	 * value instead. Only valid error codes may be specified.
  	 */
 -	int (*error_hook)(int err);
-+	int error_filter;
++	int error_override;
  
  	/*
  	 * This should be set in rare instances where the operation required

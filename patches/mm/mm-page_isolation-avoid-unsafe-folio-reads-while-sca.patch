@@ -1,0 +1,95 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Tue, 2 Jun 2026 21:07:55 +0800
+Subject: [PATCH] mm: page_isolation: avoid unsafe folio reads while scanning
+ compound pages
+
+page_is_unmovable() can inspect compound pages without holding a folio
+reference or any lock.  The folio can therefore be freed, split or reused
+while the scanner is still looking at it.
+
+The existing HugeTLB handling already avoids folio_hstate() for this
+reason, but it still derives the hstate from folio_size() and later
+derives the scan step from folio_nr_pages() and folio_page_idx().  These
+helpers rely on the folio still being a valid folio head.  If the folio
+changed concurrently, the scanner can read inconsistent folio metadata and
+compute a wrong step.  In the worst case, folio_nr_pages() can return 1
+for what used to be a tail page and the subtraction from folio_page_idx()
+can underflow.
+
+There is a similar issue for non-Hugetlb compound pages: folio_test_lru()
+expects a valid folio.  If the previously observed head page has been
+reused as a tail page of another compound page, the folio flag checks can
+trigger VM_BUG_ON_PGFLAGS().
+
+Read the compound order once with compound_order(), reject obviously bogus
+orders, and derive the hstate and scan step from that order instead of
+querying folio size information again.  Also use PageLRU(page), which is
+safe for the page being scanned, instead of folio_test_lru() on a
+potentially stale folio pointer.
+
+Treat an unknown HugeTLB hstate as unmovable so the scanner does not try
+to skip over an unstable HugeTLB folio.
+
+Link: https://lore.kernel.org/20260602130755.38794-1-kaitao.cheng@linux.dev
+Fixes: a0a9f2180b90 ("mm: page_isolation: avoid calling folio_hstate() without hugetlb_lock")
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liu Shixin <liushixin2@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_isolation.c | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/mm/page_isolation.c b/mm/page_isolation.c
+index 7a9d631945a34..32ce8a7d9df35 100644
+--- a/mm/page_isolation.c
++++ b/mm/page_isolation.c
+@@ -41,8 +41,14 @@ bool page_is_unmovable(struct zone *zone, struct page *page,
+ 	 * We need not scan over tail pages because we don't
+ 	 * handle each tail page individually in migration.
+ 	 */
+-	if (PageHuge(page) || PageCompound(page)) {
++	if (PageCompound(page)) {
+ 		struct folio *folio = page_folio(page);
++		unsigned long nr_pages, pfn;
++		unsigned int order;
++
++		order = compound_order(&folio->page);
++		if (order > MAX_FOLIO_ORDER)
++			return true;
+ 
+ 		if (folio_test_hugetlb(folio)) {
+ 			struct hstate *h;
+@@ -54,15 +60,16 @@ bool page_is_unmovable(struct zone *zone, struct page *page,
+ 			 * The huge page may be freed so can not
+ 			 * use folio_hstate() directly.
+ 			 */
+-			h = size_to_hstate(folio_size(folio));
+-			if (h && !hugepage_migration_supported(h))
++			h = size_to_hstate(PAGE_SIZE << order);
++			if (!h || !hugepage_migration_supported(h))
+ 				return true;
+-
+-		} else if (!folio_test_lru(folio)) {
++		} else if (!PageLRU(page)) {
+ 			return true;
+ 		}
+ 
+-		*step = folio_nr_pages(folio) - folio_page_idx(folio, page);
++		nr_pages = 1UL << order;
++		pfn = page_to_pfn(page);
++		*step = (pfn | (nr_pages - 1)) + 1 - pfn;
+ 		return false;
+ 	}
+ 
+-- 
+2.47.3
+
