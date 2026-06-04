@@ -1,0 +1,114 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 3 Jun 2026 18:33:48 -0700
+Subject: [RFC PATCH] mm/damon/core: always put commit-failed target's pids
+
+damon_commit_target() puts and gets the destination and the source
+target pids.  It puts the destination target pid because it will be
+overwritten by the source target pid.  It gets the source pid because
+the caller is supposed to put the pid after the entire
+damon_commit_ctx() is finished.  In more detail, the caller will call
+damon_destroy_ctx() to destroy the entire source context.  And in this
+case, vaddr operation set's cleanup_target() callback will put the pids.
+
+damon_commit_target() can fail from damon_commit_target_regions().  In
+the case, its direct caller, damon_commit_targets(), directly return
+error to abort the entire commit.  Both source and destination contexts
+are cleaned up using damon_destroy_ctx().  The source target pids are
+completely put using the above explained routine.  The destination
+target pids could be leaked if the source context was using vaddr while
+the destination context was using paddr, though.
+
+If the damon_commit_target() calls from damon_commit_targets() failed in
+the middle of the targets list, the targets that successfully committed
+already have the target pids that have the reference count incremented.
+However the destination context is still using paddr ops.  So after
+damon_commit_ctx() returns the error, the caller or the cleaner
+(kdamond_fn()) will invoke damon_destroy_ctx(), but it doesn't put the
+pids because paddr ops doesn't  have a cleanup_target() callback that
+puts the pids.
+
+As a result, in the scenario, the pids can be leaked.  The issue in the
+real world should be not very common because it is difficult to imagine
+common and realistic use cases that convert a DAMON context from the
+paddr to vaddr mode.  Nonetheless, it is a supported DAMON control. And
+the damon_commit_target() failure due to memory allocation is relatively
+realistic if there are a huge number of target regions.
+
+Fix by putting the already-committed reference count incremented pids in
+the case of failure.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260320020056.835-1-sj@kernel.org
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 30 +++++++++++++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 265d51ade25bf..b6e1ab1992030 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1387,6 +1387,31 @@ static int damon_commit_target(
+ 	return 0;
+ }
+ 
++/*
++ * damon_commit_target_fail() - handle damon_commit_target() failure.
++ * @dst:	Commit destination context
++ * @failed:	Commit failed destination target
++ * @src:	Commit source context
++ *
++ * This function is called by damon_commit_targets() for dammon_commit_target()
++ * failure for immediate states cleanups.
++ */
++static void damon_commit_target_fail(struct damon_ctx *dst,
++		struct damon_target *failed, struct damon_ctx *src)
++{
++	struct damon_target *target;
++
++	if (!damon_target_has_pid(src))
++		return;
++	if (damon_target_has_pid(dst))
++		return;
++	damon_for_each_target(target, dst) {
++		if (target == failed)
++			return;
++		put_pid(target->pid);
++	}
++}
++
+ static int damon_commit_targets(
+ 		struct damon_ctx *dst, struct damon_ctx *src)
+ {
+@@ -1404,8 +1429,10 @@ static int damon_commit_targets(
+ 					dst_target, damon_target_has_pid(dst),
+ 					src_target, damon_target_has_pid(src),
+ 					src->min_region_sz);
+-			if (err)
++			if (err) {
++				damon_commit_target_fail(dst, dst_target, src);
+ 				return err;
++			}
+ 		} else {
+ 			struct damos *s;
+ 
+@@ -1432,6 +1459,7 @@ static int damon_commit_targets(
+ 				src_target, damon_target_has_pid(src),
+ 				src->min_region_sz);
+ 		if (err) {
++			damon_commit_target_fail(dst, NULL, src);
+ 			damon_destroy_target(new_target, NULL);
+ 			return err;
+ 		}
+
+base-commit: eeac72cb1b86b53f95c1596ec43db17827a8355e
+-- 
+2.47.3
