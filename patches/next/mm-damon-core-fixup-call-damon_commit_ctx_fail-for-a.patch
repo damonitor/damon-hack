@@ -1,0 +1,89 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 3 Jun 2026 22:18:16 -0700
+Subject: [PATCH] mm/damon/core: (fixup) call damon_commit_ctx_fail() for all
+ partial damon_commit_target() success
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 29 ++++++++++++++++++++---------
+ 1 file changed, 20 insertions(+), 9 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 41e4c73c443c5..14bd9d4307c07 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1416,6 +1416,7 @@ static int damon_commit_targets(
+ 		struct damon_ctx *dst, struct damon_ctx *src)
+ {
+ 	struct damon_target *dst_target, *next, *src_target, *new_target;
++	struct damon_target *failed;
+ 	int i = 0, j = 0, err;
+ 
+ 	damon_for_each_target_safe(dst_target, next, dst) {
+@@ -1430,8 +1431,8 @@ static int damon_commit_targets(
+ 					src_target, damon_target_has_pid(src),
+ 					src->min_region_sz);
+ 			if (err) {
+-				damon_commit_target_fail(dst, dst_target, src);
+-				return err;
++				failed = dst_target;
++				goto out;
+ 			}
+ 		} else {
+ 			struct damos *s;
+@@ -1446,26 +1447,34 @@ static int damon_commit_targets(
+ 		}
+ 	}
+ 
++	failed = NULL;
+ 	damon_for_each_target_safe(src_target, next, src) {
+ 		if (j++ < i)
+ 			continue;
+ 		/* target to remove has no matching dst */
+-		if (src_target->obsolete)
+-			return -EINVAL;
++		if (src_target->obsolete) {
++			err = -EINVAL;
++			goto out;
++		}
+ 		new_target = damon_new_target();
+-		if (!new_target)
+-			return -ENOMEM;
++		if (!new_target) {
++			err = -ENOMEM;
++			goto out;
++		}
+ 		err = damon_commit_target(new_target, false,
+ 				src_target, damon_target_has_pid(src),
+ 				src->min_region_sz);
+ 		if (err) {
+-			damon_commit_target_fail(dst, NULL, src);
+ 			damon_destroy_target(new_target, NULL);
+-			return err;
++			goto out;
+ 		}
+ 		damon_add_target(dst, new_target);
+ 	}
+ 	return 0;
++
++out:
++	damon_commit_target_fail(dst, failed, src);
++	return err;
+ }
+ 
+ static void damon_commit_filter(struct damon_filter *dst,
+@@ -1599,8 +1608,10 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 	 */
+ 	if (!damon_attrs_equals(&dst->attrs, &src->attrs)) {
+ 		err = damon_set_attrs(dst, &src->attrs);
+-		if (err)
++		if (err) {
++			damon_commit_target_fail(dst, NULL, src);
+ 			return err;
++		}
+ 	}
+ 	dst->pause = src->pause;
+ 	dst->ops = src->ops;
+-- 
+2.47.3
+
