@@ -284,58 +284,58 @@
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260520012104.93602-4-sj@kernel.org
     - series "mm/damon: minor improvements for code readability and tests". (14 commits)
-      - 0bc1cfa31e5a "mm/damon/core: safely handle no region case in damon_set_regions()" (0/14)
+      - ce71e5aa8dc8 "mm/damon/core: safely handle no region case in damon_set_regions()" (0/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260522154026.80546-2-sj@kernel.org
-      - c6e63e294c8c "mm/damon/core: do not use region out of a loop in damon_set_regions()" (1/14)
+      - b23dbda659b6 "mm/damon/core: do not use region out of a loop in damon_set_regions()" (1/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-3-sj@kernel.org
-      - 14783f40be4e "samples/damon/mtier: replace damon_add_region() with damon_set_regions()" (2/14)
+      - cd036cc8c384 "samples/damon/mtier: replace damon_add_region() with damon_set_regions()" (2/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-4-sj@kernel.org
-      - 0c9b85c1073d "mm/damon/tests/vaddr-kunit: replace damon_add_region() with damon_set_regions()" (3/14)
+      - 9ace949ad8f5 "mm/damon/tests/vaddr-kunit: replace damon_add_region() with damon_set_regions()" (3/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-5-sj@kernel.org
-      - c5ae9135cdac "mm/damon/core: hide damon_add_region()" (4/14)
+      - 9cf7ef2d6665 "mm/damon/core: hide damon_add_region()" (4/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-6-sj@kernel.org
-      - 1cec58abc606 "mm/damon/core: hide damon_insert_region()" (5/14)
+      - 26d6f6960ff9 "mm/damon/core: hide damon_insert_region()" (5/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-7-sj@kernel.org
-      - 05cf6be064e1 "mm/damon/core: hide damon_destroy_region()" (6/14)
+      - 50d2dec8af1a "mm/damon/core: hide damon_destroy_region()" (6/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-8-sj@kernel.org
-      - 93d72cd20015 "mm/damon/core: add kdamond_call() debug_sanity check" (7/14)
+      - 8f793f1ad5bd "mm/damon/core: add kdamond_call() debug_sanity check" (7/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-9-sj@kernel.org
-      - 232baea31e3e "mm/damon/core: remove damon_verify_nr_regions()" (8/14)
+      - b8db646fe9a7 "mm/damon/core: remove damon_verify_nr_regions()" (8/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-10-sj@kernel.org
-      - 7c30e9d04ac9 "mm/damon/tests/core-kunit: add damon_set_regions() test cases" (9/14)
+      - 2ceda82a15c1 "mm/damon/tests/core-kunit: add damon_set_regions() test cases" (9/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-11-sj@kernel.org
-      - 8dc42c0a6593 "selftests/damon/sysfs.py: stop kdamonds before failing" (10/14)
+      - ae819edb9701 "selftests/damon/sysfs.py: stop kdamonds before failing" (10/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-12-sj@kernel.org
-      - a3dff419bd71 "selftests/damon/sysfs.sh: test monitoring intervals goal dir" (11/14)
+      - b6404e44aac2 "selftests/damon/sysfs.sh: test monitoring intervals goal dir" (11/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-13-sj@kernel.org
-      - 1bd28adaa202 "selftests/damon/sysfs.sh: test addr_unit file existence" (12/14)
+      - a8f30ccf23f5 "selftests/damon/sysfs.sh: test addr_unit file existence" (12/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-14-sj@kernel.org
-      - d49e9edd2836 "selftests/damon/sysfs.sh: test pause file existence" (13/14)
+      - 1f9f7e72da1b "selftests/damon/sysfs.sh: test pause file existence" (13/14)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260522154026.80546-15-sj@kernel.org
     - series "mm/damon: fix macro arguments and clarify quota goals doc", v2. (2 commits)
-      - 5944d351cab0 "mm/damon: fix missing parens in macro arguments" (0/2)
+      - d63e9d829e42 "mm/damon: fix missing parens in macro arguments" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260521202020.126500-1-maksym.shcherba@lnu.edu.ua
         - Link: https://lore.kernel.org/20260521202020.126500-2-maksym.shcherba@lnu.edu.ua
-      - 3d751387a672 "Docs/admin-guide/mm/damon/usage: clarify current_value of quota goals" (1/2)
+      - 83b25befc1ab "Docs/admin-guide/mm/damon/usage: clarify current_value of quota goals" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260521202020.126500-3-maksym.shcherba@lnu.edu.ua
-    - 8d40804b037e "mm/damon/core: trace esz at first setup"
+    - 7e6cc35f5283 "mm/damon/core: trace esz at first setup"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260520150311.80925-1-sj@kernel.org
 - mm-unstable: 0 total, 0 (0) series, 0 non-series commits

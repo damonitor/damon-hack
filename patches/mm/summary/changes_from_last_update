@@ -1,21 +1,9 @@
 - baseline: v7.1-rc5-20-gd60ec36cab338 -> v7.1-rc5-20-gd60ec36cab338 (no change)
-- mm-hotfixes-stable: 1 -> 3 commits
-  - series: 0 (0) -> 1 (2)
-    - maintainer, nobody: 1 -> 3 commits
-  - changed commits
-    - series "mm/damon/{reclaim,lru_sort}: handle ctx allocation failures". (2)
-      - 7e2ed8a29427 "mm/damon/reclaim: handle ctx allocation failure (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260529000104.7006-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260419014800.877-1-sj@kernel.org [1]
-      - ab04340b5ae5 "mm/damon/lru_sort: handle ctx allocation failure (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260529000104.7006-3-sj@kernel.org
-- mm-hotfixes-unstable: 2 -> 0 commits
-  - series: 1 (2) -> 0 (0)
-    - maintainer, nobody: 2 -> 0 commits
+- mm-hotfixes-stable: 3 -> 3 commits (no change)
+  - series: 1 (2) -> 1 (2) (no change)
+    - maintainer, nobody: 3 -> 3 commits (no change)
+- mm-hotfixes-unstable: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 94 -> 94 commits (no change)
   - series: 12 (87) -> 12 (87) (no change)
     - no role, maintainer: 15 -> 15 commits (no change)

@@ -1,0 +1,60 @@
+From: Jianlin Shi <shijianlin11@foxmail.com>
+Date: Thu, 4 Jun 2026 12:01:38 +0800
+Subject: [PATCH] mm/page_alloc: only update NUMA min ratios on sysctl write
+
+The sysctl handlers for min_unmapped_ratio and min_slab_ratio invoke
+setup_min_unmapped_ratio() and setup_min_slab_ratio() unconditionally
+after proc_dointvec_minmax(), even for read operations.
+
+These setup functions first zero all per-NUMA node thresholds
+(min_unmapped_pages and min_slab_pages) before recalculating them.
+Reading /proc sysctl entries therefore temporarily resets node reclaim
+thresholds to zero, which may disturb the behavior of __node_reclaim() and
+node_reclaim() during the recomputation.
+
+Fix this by only calling the setup functions when the sysctl is actually
+written (write == 1), matching the behavior of existing sysctl handlers
+like min_free_kbytes and watermark_scale_factor.
+
+This only affects systems with CONFIG_NUMA.
+
+Link: https://lore.kernel.org/tencent_5891052AF9A4C2D490A62F478D446F74AB09@qq.com
+Signed-off-by: Jianlin Shi <shijianlin11@foxmail.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 81a9d4d1e6c0a..ee902a468c2f5 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -6653,7 +6653,8 @@ static int sysctl_min_unmapped_ratio_sysctl_handler(const struct ctl_table *tabl
+ 	if (rc)
+ 		return rc;
+ 
+-	setup_min_unmapped_ratio();
++	if (write)
++		setup_min_unmapped_ratio();
+ 
+ 	return 0;
+ }
+@@ -6680,7 +6681,8 @@ static int sysctl_min_slab_ratio_sysctl_handler(const struct ctl_table *table, i
+ 	if (rc)
+ 		return rc;
+ 
+-	setup_min_slab_ratio();
++	if (write)
++		setup_min_slab_ratio();
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

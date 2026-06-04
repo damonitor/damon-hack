@@ -1,43 +1,68 @@
-From: "JP Kobryn (Meta)" <jp.kobryn@linux.dev>
-Date: Tue, 19 May 2026 13:08:51 -0700
+From: JP Kobryn <jp.kobryn@linux.dev>
+Date: Wed, 3 Jun 2026 23:17:25 -0700
 Subject: [PATCH] mm/compaction: cap compact_gap() at COMPACT_CLUSTER_MAX
 
 compact_gap() returns 2 << order, which is used as watermark headroom in
-__compaction_suitable() and as a reclaim target in kswapd.  The computed
-value scales exponentially by order.  For order-9 THP allocations this
-evaluates to 1024 pages, but the compaction free scanner's working set is
-bounded by COMPACT_CLUSTER_MAX (32 pages).  The scanner stops isolating
-free pages once it matches the migration batch.  The current gap
-over-reserves by 32x.
+__compaction_suitable() and as a threshold in kswapd reclaim decisions.
+The computed value scales exponentially by order.  For order-9 THP
+allocations this evaluates to 1024 pages, but the compaction free
+scanner's working set is bounded by COMPACT_CLUSTER_MAX (32 pages).  The
+scanner stops isolating free pages once it matches the migration batch.
+The current gap over-reserves by 32x.
 
-On fragmented production hosts, kswapd will try and reclaim up to the gap,
-but it only reaches that threshold 18% of the time, causing reclaim to
-continue a majority of the time.  The over-sized gap also causes 46% of
-order-9 compaction suitability checks to fail unnecessarily - the zone has
+On fragmented production hosts, kswapd will try to reclaim up to the gap,
+but it only reaches that threshold in 18% of attempts.  As a result,
+reclaim continues in the majority of cases despite many lower-order free
+pages being available.  The over-sized gap also causes 46% of order-9
+compaction suitability checks to fail unnecessarily: the zone has
 sufficient free pages for the scanner to operate, but not enough to clear
 the inflated threshold.
 
-Cap compact_gap() at COMPACT_CLUSTER_MAX to align the watermark headroom
-with the scanner's actual capacity.  Orders 0-4 are unaffected since their
-gap is <= 32.
+Cap compact_gap() at COMPACT_CLUSTER_MAX so the watermark headroom
+reflects the scanner's actual capacity.  This function is used by two key
+heuristics.  The first is when kswapd can stop high-order reclaim and
+downgrade to order-0 balancing, allowing kcompactd to be woken for the
+original higher allocation order.  The second is zone suitability
+checking, where the smaller gap allows compaction to start sooner.
 
-A/B test on ~100 instagram production hosts (64GB, 60s measurement):
+Note that orders 0-4 are unaffected since their gap is already less than
+or equal to COMPACT_CLUSTER_MAX.
+
+A/B test on v6.13-based instagram production hosts (64GB, 60s
+measurement):
 
 Unpatched (43 hosts)
 pgscan_kswapd (mean/host): ~1.6M
 reclaim efficiency (steal/scan): 83.8%
-compaction success (success/stall): 2.1%
+per-compaction success (success/stall): 2.1%
 THP success (alloc/alloc+fallback): 4.9%
 forced lru_add_drain (mean/host): ~107K
 
 Patched (59 hosts)
 pgscan_kswapd (mean/host): ~449K
 reclaim efficiency (steal/scan): 91.0%
-compaction success (success/stall): 28.3%
+per-compaction success (success/stall): 28.3%
 THP success (alloc/alloc+fallback): 17.2%
 forced lru_add_drain (mean/host): ~64K
 
-Link: https://lore.kernel.org/20260519200851.141955-1-jp.kobryn@linux.dev
+Additional tests were also performed using a workload of similar shape and
+based on mm-new at the time of testing.  Across three 60s runs, the patch
+showed improvements consistent with the previous test: reduced kswapd
+reclaim and fewer THP fault fallbacks.
+
+Unpatched
+kswapd_shrink_node downgrade to order-0 (mean): 0
+thp_fault_fallback (mean): 1217
+pgscan_kswapd (mean): 6328
+pgsteal_kswapd (mean): 5657
+
+Patched
+kswapd_shrink_node downgrade to order-0 (mean): 28
+thp_fault_fallback (mean): 738
+pgscan_kswapd (mean): 3773
+pgsteal_kswapd (mean): 3243
+
+Link: https://lore.kernel.org/20260604061725.13800-1-jp.kobryn@linux.dev
 Signed-off-by: JP Kobryn (Meta) <jp.kobryn@linux.dev>
 Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
@@ -48,7 +73,8 @@ Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/compaction.h | 8 ++++----
- 1 file changed, 4 insertions(+), 4 deletions(-)
+ mm/vmscan.c                | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/include/linux/compaction.h b/include/linux/compaction.h
 index c829c48d1c717..f29ef0653546e 100644
@@ -77,6 +103,19 @@ index c829c48d1c717..f29ef0653546e 100644
  }
  
  static inline int current_is_kcompactd(void)
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index e8a90911bf88f..3f3ff25e561ac 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7014,7 +7014,7 @@ static bool kswapd_shrink_node(pg_data_t *pgdat,
+ 
+ 	/*
+ 	 * Fragmentation may mean that the system cannot be rebalanced for
+-	 * high-order allocations. If twice the allocation size has been
++	 * high-order allocations. If at least the compaction gap has been
+ 	 * reclaimed then recheck watermarks only at order-0 to prevent
+ 	 * excessive reclaim. Assume that a process requested a high-order
+ 	 * can direct reclaim/compact.
 -- 
 2.47.3
 
