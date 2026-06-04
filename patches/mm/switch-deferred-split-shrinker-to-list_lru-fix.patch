@@ -1,0 +1,68 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Tue, 2 Jun 2026 17:11:46 -0400
+Subject: [PATCH] switch deferred split shrinker to list_lru fix
+
+Lance Yang points out a weirdness in the list_lru code with
+cgroup.memory=nokmem: in this mode, list_lru collapses to a shared
+per-node list that holds the folios, but __list_lru_add() still sets the
+shrinker bit on the owning memcg.
+
+Usually this is fine, because the generic shrinker code ignores these
+random bits when !memcg_kmem_online().  But the THP shrinker still has the
+SHRINKER_NONSLAB flag set, which specifically declares an independence
+from kmem.  As a result, the shrinker fires twice per reclaim cycle: one
+during the regular root cgroup scan, and then one more time triggered from
+whichever memcg got the shrinker bit.
+
+Drop the flag, since it's no longer true.  The deferred_split shrinker
+then behaves like every other list_lru-backed shrinker under nokmem,
+including the non-kmem ones (zswap, workingset shadow_nodes): skipped from
+memcg-internal reclaim, driven by global reclaim only.
+
+This needs proper cleaning up on the shrinker and list_lru side, but
+that's scope for a follow-up series.  Just make it consistent now.
+
+Link: https://lore.kernel.org/ah9PGv12mqai84ES@cmpxchg.org
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Reported-by: Lance Yang <lance.yang@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (Oracle) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mikhail Zaslonko <zaslonko@linux.ibm.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index a9106cd16da4c..cc17f6ae2d92f 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -945,8 +945,7 @@ int folio_memcg_alloc_deferred(struct folio *folio)
+ static int __init thp_shrinker_init(void)
+ {
+ 	deferred_split_shrinker = shrinker_alloc(SHRINKER_NUMA_AWARE |
+-						 SHRINKER_MEMCG_AWARE |
+-						 SHRINKER_NONSLAB,
++						 SHRINKER_MEMCG_AWARE,
+ 						 "thp-deferred_split");
+ 	if (!deferred_split_shrinker)
+ 		return -ENOMEM;
+-- 
+2.47.3
+

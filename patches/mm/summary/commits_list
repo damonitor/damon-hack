@@ -1,24 +1,21 @@
 - baseline: v7.1-rc5-20-gd60ec36cab338
-- mm-hotfixes-stable: 1 total, 0 (0) series, 1 non-series commits
+- mm-hotfixes-stable: 3 total, 1 (2) series, 1 non-series commits
   - author/reviewer role stat
-    - maintainer, nobody: 1 commits
+    - maintainer, nobody: 3 commits
   - full commits list
     - d6b8b02a27b3 "mm/damon/ops-common: call folio_test_lru() after folio_get()"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260525162256.8317-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260517234112.89245-1-sj@kernel.org [1]
-- mm-hotfixes-unstable: 2 total, 1 (2) series, 0 non-series commits
-  - author/reviewer role stat
-    - maintainer, nobody: 2 commits
-  - full commits list
     - series "mm/damon/{reclaim,lru_sort}: handle ctx allocation failures". (2 commits)
-      - 5b761e703664 "mm/damon/reclaim: handle ctx allocation failure" (0/2)
+      - 7e2ed8a29427 "mm/damon/reclaim: handle ctx allocation failure" (0/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260529000104.7006-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260419014800.877-1-sj@kernel.org [1]
-      - 5e5be0ad6163 "mm/damon/lru_sort: handle ctx allocation failure" (1/2)
+      - ab04340b5ae5 "mm/damon/lru_sort: handle ctx allocation failure" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260529000104.7006-3-sj@kernel.org
+- mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 94 total, 12 (87) series, 7 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 15 commits
