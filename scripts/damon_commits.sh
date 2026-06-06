@@ -10,6 +10,7 @@ pr_usage()
 	echo "  --cherry-pick	Cherry-pick the commits"
 	echo "  --hash-only	Print hash only"
 	echo "  --title-only	Print title only"
+	echo "  --no-merges	Skip merge commits"
 	echo "  -h, --help	Show this usage"
 }
 
@@ -32,6 +33,7 @@ stable="false"
 cherry_pick="false"
 hash_only="false"
 title_only="false"
+no_merges="false"
 
 while [ $# -ne 0 ]
 do
@@ -58,6 +60,11 @@ do
 		;;
 	"--title-only")
 		title_only="true"
+		shift 1
+		continue
+		;;
+	"--no-merges")
+		no_merges="true"
 		shift 1
 		continue
 		;;
@@ -107,10 +114,16 @@ then
 	reverse_option=" --reverse"
 fi
 
+no_merges_option=""
+if [ "$no_merges" = "true" ]
+then
+	no_merges_option=" --no-merges"
+fi
+
 if [ "$stable" = "true" ]
 then
-	for commit in $(git log --pretty=%H $reverse_option $revision_range \
-		-- $damon_files)
+	for commit in $(git log --pretty=%H $reverse_option $no_merges_option \
+		$revision_range -- $damon_files)
 	do
 		if git show $commit --pretty=%b | grep "^Cc: " | \
 			grep --quiet "stable"
@@ -122,6 +135,7 @@ then
 fi
 
 log_command="git log $revision_range $pretty_option $reverse_option"
+log_command+=" $no_merges_option"
 log_command+=" -- $damon_files"
 
 eval $log_command
