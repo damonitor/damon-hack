@@ -339,6 +339,14 @@
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260520150311.80925-1-sj@kernel.org
 - mm-unstable: 0 total, 0 (0) series, 0 non-series commits
-- mm-new: 0 total, 0 (0) series, 0 non-series commits
+- mm-new: 1 total, 0 (0) series, 1 non-series commits
+  - author/reviewer role stat
+    - maintainer, nobody: 1 commits
+  - full commits list
+    - 81a2720de2da "mm/damon/core: always put unsuccessfully committed target pids"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260605013849.83750-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
+      - Link: https://lore.kernel.org/20260320020056.835-1-sj@kernel.org [2]
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

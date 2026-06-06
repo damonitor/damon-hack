@@ -1,5 +1,5 @@
 From: Nico Pache <npache@redhat.com>
-Date: Fri, 22 May 2026 08:59:58 -0600
+Date: Fri, 5 Jun 2026 10:14:10 -0600
 Subject: [PATCH] mm/khugepaged: rework max_ptes_* handling with helper
  functions
 MIME-Version: 1.0
@@ -19,13 +19,14 @@ No functional change is intended; however, we are now only reading the
 sysfs variables once per scan, whereas before these variables were being
 read on each loop iteration.
 
-Link: https://lore.kernel.org/20260522150009.121603-4-npache@redhat.com
+Link: https://lore.kernel.org/20260605161422.213817-4-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Suggested-by: David Hildenbrand <david@kernel.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Usama Arif <usama.arif@linux.dev>
-Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
@@ -72,14 +73,13 @@ Cc: Wei Yang <richard.weiyang@gmail.com>
 Cc: Will Deacon <will@kernel.org>
 Cc: Yang Shi <yang@os.amperecomputing.com>
 Cc: Zach O'Keefe <zokeefe@google.com>
-Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  mm/khugepaged.c | 120 +++++++++++++++++++++++++++++++++---------------
  1 file changed, 84 insertions(+), 36 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index c664857449767..dd7d4fc2ca5e4 100644
+index 454ca90e3696f..69d34305b2173 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -348,6 +348,64 @@ static bool pte_none_or_zero(pte_t pte)
@@ -186,7 +186,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  				result = SCAN_EXCEED_SHARED_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
  				goto out;
-@@ -1270,6 +1324,9 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1276,6 +1330,9 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		struct vm_area_struct *vma, unsigned long start_addr,
  		bool *lock_dropped, struct collapse_control *cc)
  {
@@ -196,7 +196,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  	pmd_t *pmd;
  	pte_t *pte, *_pte;
  	int none_or_zero = 0, shared = 0, referenced = 0;
-@@ -1303,36 +1360,29 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1309,36 +1366,29 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  
  		pte_t pteval = ptep_get(_pte);
  		if (pte_none_or_zero(pteval)) {
@@ -246,7 +246,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  		}
  		if (pte_uffd_wp(pteval)) {
  			/*
-@@ -1375,9 +1425,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1381,9 +1431,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		 * is shared.
  		 */
  		if (folio_maybe_mapped_shared(folio)) {
@@ -257,7 +257,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  				result = SCAN_EXCEED_SHARED_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SHARED_PTE);
  				goto out_unmap;
-@@ -2332,6 +2380,8 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2338,6 +2386,8 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  		unsigned long addr, struct file *file, pgoff_t start,
  		struct collapse_control *cc)
  {
@@ -266,7 +266,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  	struct folio *folio = NULL;
  	struct address_space *mapping = file->f_mapping;
  	XA_STATE(xas, &mapping->i_pages, start);
-@@ -2350,8 +2400,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2356,8 +2406,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  
  		if (xa_is_value(folio)) {
  			swap += 1 << xas_get_order(&xas);
@@ -276,7 +276,7 @@ index c664857449767..dd7d4fc2ca5e4 100644
  				result = SCAN_EXCEED_SWAP_PTE;
  				count_vm_event(THP_SCAN_EXCEED_SWAP_PTE);
  				break;
-@@ -2422,8 +2471,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2428,8 +2477,7 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  		cc->progress += HPAGE_PMD_NR;
  
  	if (result == SCAN_SUCCEED) {

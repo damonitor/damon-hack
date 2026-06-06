@@ -1,5 +1,5 @@
 From: Nico Pache <npache@redhat.com>
-Date: Fri, 22 May 2026 09:00:07 -0600
+Date: Fri, 5 Jun 2026 10:14:19 -0600
 Subject: [PATCH] mm/khugepaged: avoid unnecessary mTHP collapse attempts
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -9,7 +9,7 @@ There are cases where, if an attempted collapse fails, all subsequent
 orders are guaranteed to also fail.  Avoid these collapse attempts by
 bailing out early.
 
-Link: https://lore.kernel.org/20260522150009.121603-13-npache@redhat.com
+Link: https://lore.kernel.org/20260605161422.213817-13-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
 Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
 Acked-by: Usama Arif <usama.arif@linux.dev>
@@ -64,27 +64,26 @@ Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 24 +++++++++++++++++++++++-
- 1 file changed, 23 insertions(+), 1 deletion(-)
+ mm/khugepaged.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 2b1f47f3a3ca7..2d129aff576b4 100644
+index e57289f4d3c66..5a2adbdbd0557 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -1549,9 +1549,31 @@ static int mthp_collapse(struct mm_struct *mm, unsigned long address,
+@@ -1504,6 +1504,7 @@ static enum scan_result mthp_collapse(struct mm_struct *mm,
  			collapse_address = address + offset * PAGE_SIZE;
  			ret = collapse_huge_page(mm, collapse_address, referenced,
  						 unmapped, cc, order);
--			if (ret == SCAN_SUCCEED) {
 +
-+			switch (ret) {
-+			/* Cases where we continue to next collapse candidate */
-+			case SCAN_SUCCEED:
- 				collapsed += nr_ptes;
+ 			switch (ret) {
+ 			/* Cases where we continue to next collapse candidate */
+ 			case SCAN_SUCCEED:
+@@ -1514,6 +1515,18 @@ static enum scan_result mthp_collapse(struct mm_struct *mm,
+ 			/* Cases where lower orders might still succeed */
+ 			case SCAN_ALLOC_HUGE_PAGE_FAIL:
+ 				alloc_failed = true;
 +				fallthrough;
-+			case SCAN_PTE_MAPPED_HUGEPAGE:
- 				continue;
-+			/* Cases where lower orders might still succeed */
 +			case SCAN_LACK_REFERENCED_PAGE:
 +			case SCAN_EXCEED_NONE_PTE:
 +			case SCAN_EXCEED_SWAP_PTE:
@@ -95,15 +94,10 @@ index 2b1f47f3a3ca7..2d129aff576b4 100644
 +			case SCAN_DEL_PAGE_LRU:
 +			case SCAN_PTE_NON_PRESENT:
 +			case SCAN_PTE_UFFD_WP:
-+			case SCAN_ALLOC_HUGE_PAGE_FAIL:
 +			case SCAN_PAGE_LAZYFREE:
-+				goto next_order;
-+			/* Cases where no further collapse is possible */
-+			default:
-+				return collapsed;
- 			}
- 		}
- 
+ 				last_result = ret;
+ 				goto next_order;
+ 			/* Cases where no further collapse is possible */
 -- 
 2.47.3
 

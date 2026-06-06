@@ -1,27 +1,29 @@
 From: Nico Pache <npache@redhat.com>
-Date: Fri, 22 May 2026 09:00:05 -0600
-Subject: [PATCH] mm/khugepaged: introduce collapse_allowable_orders helper
- function
+Date: Fri, 5 Jun 2026 10:14:17 -0600
+Subject: [PATCH] mm/khugepaged: introduce collapse_possible_orders helper
+ functions
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Add collapse_allowable_orders() to generalize THP order eligibility.  The
+Add collapse_possible_orders() to generalize THP order eligibility.  The
 function determines which THP orders are permitted based on collapse
-context (khugepaged vs madv_collapse).
+context (khugepaged vs madv_collapse).  We also add collapse_possible() as
+a thin wrapper around collapse_possible_orders() that returns a bool
+rather than the whole bitmap.
 
 This consolidates collapse configuration logic and provides a clean
 interface for future mTHP collapse support where the orders may be
 different.
 
-Link: https://lore.kernel.org/20260522150009.121603-11-npache@redhat.com
+Link: https://lore.kernel.org/20260605161422.213817-11-npache@redhat.com
 Signed-off-by: Nico Pache <npache@redhat.com>
-Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Alistair Popple <apopple@nvidia.com>
 Cc: Andrea Arcangeli <aarcange@redhat.com>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
-Cc: Bagas Sanjaya <bagasdotme@gmail.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Byungchul Park <byungchul@sk.com>
@@ -39,7 +41,6 @@ Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
 Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
 Cc: Lance Yang <lance.yang@linux.dev>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
 Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
 Cc: Matthew Brost <matthew.brost@intel.com>
@@ -59,7 +60,6 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
 Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
 Cc: Usama Arif <usamaarif642@gmail.com>
-Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vishal Moola (Oracle) <vishal.moola@gmail.com>
 Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: Wei Yang <richard.weiyang@gmail.com>
@@ -67,26 +67,37 @@ Cc: Will Deacon <will@kernel.org>
 Cc: Yang Shi <yang@os.amperecomputing.com>
 Cc: Zach O'Keefe <zokeefe@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
+Cc: Bagas Sanjaya <bagasdotme@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 15 ++++++++++++---
- 1 file changed, 12 insertions(+), 3 deletions(-)
+ mm/khugepaged.c | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index a1d05c52eedfd..bace3c7d9d0ed 100644
+index e4872fdd3e8d6..a763d46914bbb 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -554,12 +554,21 @@ void __khugepaged_enter(struct mm_struct *mm)
+@@ -554,12 +554,30 @@ void __khugepaged_enter(struct mm_struct *mm)
  		wake_up_interruptible(&khugepaged_wait);
  }
  
-+/* Check what orders are allowed based on the vma and collapse type */
-+static unsigned long collapse_allowable_orders(struct vm_area_struct *vma,
++/*
++ * Check what orders are possible based on the vma and collapse type.
++ * This is used to determine if mTHP collapse is a viable option.
++ */
++static unsigned long collapse_possible_orders(struct vm_area_struct *vma,
 +		vm_flags_t vm_flags, enum tva_type tva_flags)
 +{
-+	unsigned long orders = BIT(HPAGE_PMD_ORDER);
++	const unsigned long orders = BIT(HPAGE_PMD_ORDER);
 +
 +	return thp_vma_allowable_orders(vma, vm_flags, tva_flags, orders);
++}
++
++static bool collapse_possible(struct vm_area_struct *vma,
++		vm_flags_t vm_flags, enum tva_type tva_flags)
++{
++	return collapse_possible_orders(vma, vm_flags, tva_flags);
 +}
 +
  void khugepaged_enter_vma(struct vm_area_struct *vma,
@@ -95,25 +106,25 @@ index a1d05c52eedfd..bace3c7d9d0ed 100644
  	if (!mm_flags_test(MMF_VM_HUGEPAGE, vma->vm_mm) &&
  	    hugepage_pmd_enabled()) {
 -		if (thp_vma_allowable_order(vma, vm_flags, TVA_KHUGEPAGED, PMD_ORDER))
-+		if (collapse_allowable_orders(vma, vm_flags, TVA_KHUGEPAGED))
++		if (collapse_possible(vma, vm_flags, TVA_KHUGEPAGED))
  			__khugepaged_enter(vma->vm_mm);
  	}
  }
-@@ -2694,7 +2703,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+@@ -2705,7 +2723,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  			cc->progress++;
  			break;
  		}
 -		if (!thp_vma_allowable_order(vma, vma->vm_flags, TVA_KHUGEPAGED, PMD_ORDER)) {
-+		if (!collapse_allowable_orders(vma, vma->vm_flags, TVA_KHUGEPAGED)) {
++		if (!collapse_possible(vma, vma->vm_flags, TVA_KHUGEPAGED)) {
  			cc->progress++;
  			continue;
  		}
-@@ -3004,7 +3013,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3015,7 +3033,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  	BUG_ON(vma->vm_start > start);
  	BUG_ON(vma->vm_end < end);
  
 -	if (!thp_vma_allowable_order(vma, vma->vm_flags, TVA_FORCED_COLLAPSE, PMD_ORDER))
-+	if (!collapse_allowable_orders(vma, vma->vm_flags, TVA_FORCED_COLLAPSE))
++	if (!collapse_possible(vma, vma->vm_flags, TVA_FORCED_COLLAPSE))
  		return -EINVAL;
  
  	cc = kmalloc_obj(*cc);
