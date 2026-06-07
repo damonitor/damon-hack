@@ -1,0 +1,57 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 7 Jun 2026 15:16:12 -0700
+Subject: [PATCH] mm/damon: introduce damon_nr_accesses_mvsum()
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 20 ++++++++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index c45556f81658a..589dd93c8388f 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1166,6 +1166,8 @@ struct damon_probe *damon_new_probe(void);
+ void damon_add_probe(struct damon_ctx *ctx, struct damon_probe *probe);
+ 
+ struct damon_region *damon_new_region(unsigned long start, unsigned long end);
++unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
++		struct damon_ctx *ctx);
+ 
+ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 		unsigned int nr_ranges, unsigned long min_region_sz);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 587867a818688..1eecef5e5227c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -217,6 +217,26 @@ static struct damon_probe *damon_nth_probe(int n, struct damon_ctx *ctx)
+ 	return NULL;
+ }
+ 
++static unsigned long damon_moving_sum_nr(unsigned long current_nr,
++		unsigned long last_nr, unsigned long left_window_bp)
++{
++	return current_nr + mult_frac(last_nr, left_window_bp, 10000);
++}
++
++unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
++		struct damon_ctx *ctx)
++{
++	unsigned long sample_interval, window_len, left_window, left_window_bp;
++
++	sample_interval = ctx->attrs.sample_interval ? : 1;
++	window_len = ctx->attrs.aggr_interval / sample_interval;
++	left_window = ctx->next_aggregation_sis - ctx->passed_sample_intervals;
++	left_window_bp = mult_frac(left_window, 10000, window_len);
++
++	return damon_moving_sum_nr(r->nr_accesses, r->last_nr_accesses,
++			left_window_bp);
++}
++
+ #ifdef CONFIG_DAMON_DEBUG_SANITY
+ static void damon_verify_new_region(unsigned long start, unsigned long end)
+ {
+-- 
+2.47.3
+
