@@ -1,0 +1,60 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 6.16.x
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 8 Jun 2026 20:29:29 -0700
+Subject: [RFC PATCH v2 2/2] samples/damon/mtier: handle damon_stop() failure
+
+damon_sample_mtier_stop() assumes its damon_stop() call will always
+successfully stops the two DAMON contexts.  Hence it deallocates the two
+DAMON contexts after the damon_stop() call.  However, if a given context
+is already stopped, damon_stop() fails and returns an error while
+letting the DAMON contexts that have not yet stopped keep running.  This
+kind of unexpected early DAMON context stops could happen due to memory
+allocation failures in kdamond_fn().  Because damon_sample_mtier_stop()
+just deallocates all DAMON contexts with damon_target and damon_region
+objects that are linked to the contexts, the execution of the unstopped
+DAMON context (kdamond) ends up using the memory that freed
+(use-after-free).  Fix the issue by separating the damon_stop() to be
+invoked per context.
+
+Note that DAMON_SYSFS also allows multiple DAMON contexts execution.
+But, it calls damon_stop() for each context one by one.  Hence this
+issue is only in mtier.
+
+For the long term, it would be better to refactor damon_stop() to always
+ensure stopping all contexts regardless of the failures in the middle.
+Make this fix in the current way, though, to keep it simple and easy to
+backport.  I will do the refactoring later.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260609014219.3013-1-sj@kernel.org
+
+Fixes: 82a08bde3cf7 ("samples/damon: implement a DAMON module for memory tiering")
+Cc: <stable@vger.kernel.org> # 6.16.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ samples/damon/mtier.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/samples/damon/mtier.c b/samples/damon/mtier.c
+index 66b591f2180fa..faaaaa12e6206 100644
+--- a/samples/damon/mtier.c
++++ b/samples/damon/mtier.c
+@@ -199,7 +199,8 @@ static int damon_sample_mtier_start(void)
+ 
+ static void damon_sample_mtier_stop(void)
+ {
+-	damon_stop(ctxs, 2);
++	damon_stop(ctxs, 1);
++	damon_stop(&ctxs[1], 1);
+ 	damon_destroy_ctx(ctxs[0]);
+ 	damon_destroy_ctx(ctxs[1]);
+ }
+-- 
+2.47.3
