@@ -1,0 +1,64 @@
+From: Yunhui Cui <cuiyunhui@bytedance.com>
+Date: Mon, 8 Jun 2026 10:50:42 +0800
+Subject: [PATCH] mm/gup_test: fix race with PIN_LONGTERM_TEST ioctls
+
+The PIN_LONGTERM_TEST helpers keep their state in global variables that
+are protected by pin_longterm_test_mutex when accessed from ioctl().
+However, gup_test_release() calls pin_longterm_test_stop() without holding
+that mutex.
+
+This can race with PIN_LONGTERM_TEST_STOP and let two callers operate on
+the same pages array concurrently, corrupting the test state and possibly
+freeing it twice:
+
+ CPU 0                              CPU 1
+ -----                              -----
+ ioctl(PIN_LONGTERM_TEST_STOP)
+   mutex_lock(&pin_longterm_test_mutex)
+   pin_longterm_test_stop()
+     if (pin_longterm_test_pages)
+       kvfree(pin_longterm_test_pages)
+
+                                    close()
+                                      gup_test_release()
+                                        pin_longterm_test_stop()
+                                          if (pin_longterm_test_pages)
+                                            kvfree(pin_longterm_test_pages)
+
+     pin_longterm_test_pages = NULL
+   mutex_unlock(&pin_longterm_test_mutex)
+
+Protect the release path with the same mutex so that stop and release
+cannot run pin_longterm_test_stop() concurrently.
+
+Link: https://lore.kernel.org/20260608025043.88087-1-cuiyunhui@bytedance.com
+Fixes: c77369b437f9 ("mm/gup_test: start/stop/read functionality for PIN LONGTERM test")
+Signed-off-by: Yunhui Cui <cuiyunhui@bytedance.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Yang Li <yang.lee@linux.alibaba.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/gup_test.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/gup_test.c b/mm/gup_test.c
+index eb4c9cda16ed8..bc45a6780ed29 100644
+--- a/mm/gup_test.c
++++ b/mm/gup_test.c
+@@ -377,7 +377,9 @@ static long gup_test_ioctl(struct file *filep, unsigned int cmd,
+ 
+ static int gup_test_release(struct inode *inode, struct file *file)
+ {
++	mutex_lock(&pin_longterm_test_mutex);
+ 	pin_longterm_test_stop();
++	mutex_unlock(&pin_longterm_test_mutex);
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

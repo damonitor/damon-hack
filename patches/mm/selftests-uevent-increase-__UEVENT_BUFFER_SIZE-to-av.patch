@@ -1,0 +1,49 @@
+From: Guixin Liu <kanie@linux.alibaba.com>
+Date: Mon, 8 Jun 2026 13:39:34 +0800
+Subject: [PATCH] selftests/uevent: increase __UEVENT_BUFFER_SIZE to avoid
+ ENOBUFS on busy systems
+
+The kselftests case uevent.uevent_filtering fails reproducibly on busy
+systems (e.g.  Intel EMR / AMD servers) with:
+
+  No buffer space available - Failed to receive uevent
+
+The listener binds the NETLINK_KOBJECT_UEVENT socket to all 32 multicast
+groups (nl_groups = -1) but only sets SO_RCVBUF to 4 KiB
+(__UEVENT_BUFFER_SIZE = 2048 * 2).  On hosts with many devices, the kernel
+and userspace daemons (udev/systemd) constantly emit uevents on multiple
+groups, plus the test itself triggers 10 add events in a row.  The 4 KiB
+receive buffer overflows before the listener can drain it, recvmsg()
+returns -ENOBUFS, and the test bails out as failure.
+
+Increase __UEVENT_BUFFER_SIZE to 1 MiB so the receive buffer is large
+enough to absorb the burst of uevents on busy systems.  After this change
+the test passes consistently across dozens of runs on Intel EMR and AMD
+platforms.
+
+Link: https://lore.kernel.org/20260608053934.4059533-1-kanie@linux.alibaba.com
+Signed-off-by: Guixin Liu <kanie@linux.alibaba.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/uevent/uevent_filtering.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/uevent/uevent_filtering.c b/tools/testing/selftests/uevent/uevent_filtering.c
+index 974b076f92356..33a09f66d7e22 100644
+--- a/tools/testing/selftests/uevent/uevent_filtering.c
++++ b/tools/testing/selftests/uevent/uevent_filtering.c
+@@ -22,7 +22,7 @@
+ #include "kselftest_harness.h"
+ 
+ #define __DEV_FULL "/sys/devices/virtual/mem/full/uevent"
+-#define __UEVENT_BUFFER_SIZE (2048 * 2)
++#define __UEVENT_BUFFER_SIZE (1024 * 1024)
+ #define __UEVENT_HEADER "add@/devices/virtual/mem/full"
+ #define __UEVENT_HEADER_LEN sizeof("add@/devices/virtual/mem/full")
+ #define __UEVENT_LISTEN_ALL -1
+-- 
+2.47.3
+
