@@ -343,7 +343,7 @@
   - author/reviewer role stat
     - maintainer, nobody: 1 commits
   - full commits list
-    - 3dfa48063c41 "mm/damon/core: always put unsuccessfully committed target pids"
+    - eb90667d4f81 "mm/damon/core: always put unsuccessfully committed target pids"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260605013849.83750-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
