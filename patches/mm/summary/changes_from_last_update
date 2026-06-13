@@ -8,19 +8,11 @@
   - series: 12 (87) -> 12 (87) (no change)
     - no role, maintainer: 15 -> 15 commits (no change)
     - maintainer, nobody: 79 -> 79 commits (no change)
-- mm-unstable: 0 -> 1 commits
+- mm-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - changed commits
-    - 938598913a1a "mm/damon/core: always put unsuccessfully committed target pids"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260605013849.83750-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
-      - Link: https://lore.kernel.org/20260320020056.835-1-sj@kernel.org [2]
-- mm-new: 1 -> 0 commits
+    - maintainer, nobody: 1 -> 1 commits (no change)
+- mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
