@@ -8,19 +8,20 @@ DAMON sysfs interface allows users to create and remove arbitrary number
 of directories on sysfs, using a few files having 'nr_' prefix.  For
 example, 'nr_kdamonds'.  When the user writes a number 'N' to the files,
 directories having name starting from '0' to 'N - 1' are created in the
-same directory.  The pre-existing number-named directories are all
-removed before creating the new directories.
+same directory.  The pre-existing number-named directories are removed
+before creating the new directories.
 
-DAMON sysfs interface use only kobject_put() for this.  Because there is
-no kernel component that references the directories, this is no problem
-in normal situations.  However, if CONFIG_DEBUG_KOBJECT_RELEASE is
-enabled, and the user writes a non-zero number to such 'nr_*' files
-while there are pre-existing number-named directories, this becomes a
-problem.  In this scenario, DAMON sysfs interface decreases the
-reference counts of the existing directories and immediately creates new
-directories.  Because CONFIG_DEBUG_KOBJECT_RELEASE delays removal of the
-sysfs directories, the new directory creation fails due to name
-conflicts.
+For the removal of the existing directories, DAMON sysfs interface use
+only kobject_put().  Because DAMON sysfs interface is the only kernel
+component that manages the directories, there is no problem in normal
+situations.  However, if CONFIG_DEBUG_KOBJECT_RELEASE is enabled, the
+removal of dirs are delayed.  Let's suppose a user writes a non-zero
+number to the 'nr_*' files while there are pre-existing number-named
+directories, on the config enabled kernel.  DAMON sysfs interface
+decreases the reference counts of the existing directories and
+immediately creates new directories.  Because the removal of the sysfs
+directories is delayed, it shows some pre-existing directories of the
+same names when it tries to create the new directories, and fails.
 
 For example, the issue can be triggered like below:
 
@@ -36,19 +37,20 @@ For example, the issue can be triggered like below:
     [  300.880458] kobject: kobject_add_internal failed for 0 with -EEXIST, don't try to register things with the same name in the same directory.
     [...]
 
-This doesn't cause catastrophic issues like kernel panic or memory
-corruption.  Users can work around by removing all directories first
+This doesn't cause catastrophic issues like kernel panics or memory
+corruptions.  Users can work around by removing all directories first
 (write 0 to the nr_* files) and then create new directories after
-confirming the old directories are gone.  But, this makes a bad user
-experience.  Kernel logs can also be flooded from name conflict error
-messages.
+confirming the old directories are gone.  But, this is definitely a bug
+that causes a bad user experience.
 
 Fix the issues by calling kobject_del() before creating new directories.
 
-The issue was discovered [1] by Sashiko, though the finding was not
-completely correct and captured only one instance of the class.
+Patches Sequence
+================
 
-[1] https://lore.kernel.org/20260517205828.6204-1-sj@kernel.org
+There are eleven kobject_del() lacking nr_* files that are introduced by
+nine different commits.  Fix each of the commits in the introduced
+order.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
