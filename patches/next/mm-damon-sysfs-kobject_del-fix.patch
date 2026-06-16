@@ -2,6 +2,41 @@ From: SeongJae Park <sj@kernel.org>
 Date: Wed, 27 May 2026 17:29:20 -0700
 Subject: [PATCH] ==== mm/damon/sysfs: kobject_del() fix =====
 
+mm/damon/sysfs: kobject_del() directories that users can create/remove
+
+DAMON sysfs interface allows users to create and remove arbitrary number
+of directories on sysfs, using a few files having 'nr_' prefix.  For
+example, 'nr_kdamonds'.  When the user writes a number 'N' to the files,
+directories having name starting from '0' to 'N - 1' are created in the
+same directory.  The pre-existing number-named directories are all
+removed before creating the new directories.
+
+DAMON sysfs interface use only kobject_put() for this.  Because there is
+no kernel component that references the directories, this is no problem
+in normal situations.  However, if CONFIG_DEBUG_KOBJECT_RELEASE is
+enabled, and the user writes a non-zero number to such 'nr_*' files
+while there are pre-existing number-named directories, this becomes a
+problem.  In this scenario, DAMON sysfs interface decreases the
+reference counts of the existing directories and immediately creates new
+directories.  Because CONFIG_DEBUG_KOBJECT_RELEASE delays removal of the
+sysfs directories, the new directory creation fails due to name
+conflicts.
+
+This doesn't cause catastrophic issues like kernel panic or memory
+corruption.  Users can work around by removing all directories first
+(write 0 to the nr_* files) and then create new directories after
+confirming the old directories are gone.  But, still the user experience
+is quite bad.  Kernel logs can also be flooded from name conflict error
+messages. DAMON selftest for basic sysfs operations (sysfs.sh) also
+fails.
+
+Fix the issues by calling kobject_del() first.
+
+The issue was discovered [1] by Sashiko, though the finding was not
+completely correct and captured only one instance of the class.
+
+[1] https://lore.kernel.org/20260517205828.6204-1-sj@kernel.org
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  hkml_cv_bogus/hkml_cv_bogus_338xen9d | 0
