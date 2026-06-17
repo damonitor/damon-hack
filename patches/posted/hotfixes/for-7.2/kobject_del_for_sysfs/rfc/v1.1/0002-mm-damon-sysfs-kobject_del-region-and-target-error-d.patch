@@ -1,0 +1,59 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 5.18.x
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 27 May 2026 07:53:53 -0700
+Subject: [RFC PATCH v1.1 02/11] mm/damon/sysfs: kobject_del() region and target
+         (error) dirs
+
+On CONFIG_DEBUG_KOBJECT_RELEASE enabled kernel, lack of kobject_del()
+could cause directories creation failures due to the name conflicts. Fix
+those issues for the normal creation path of region directories and the
+error path of target directories, by adding kobject_del() calls.
+
+Fixes: 2031b14ea757 ("mm/damon/sysfs: support the physical address space monitoring")
+Cc: <stable@vger.kernel.org> # 5.18.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index dba1c67fc188f..3c349f0fe80f0 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -107,8 +107,10 @@ static void damon_sysfs_regions_rm_dirs(struct damon_sysfs_regions *regions)
+ 	struct damon_sysfs_region **regions_arr = regions->regions_arr;
+ 	int i;
+ 
+-	for (i = 0; i < regions->nr; i++)
++	for (i = 0; i < regions->nr; i++) {
++		kobject_del(&regions_arr[i]->kobj);
+ 		kobject_put(&regions_arr[i]->kobj);
++	}
+ 	regions->nr = 0;
+ 	kfree(regions_arr);
+ 	regions->regions_arr = NULL;
+@@ -372,13 +374,15 @@ static int damon_sysfs_targets_add_dirs(struct damon_sysfs_targets *targets,
+ 
+ 		err = damon_sysfs_target_add_dirs(target);
+ 		if (err)
+-			goto out;
++			goto del_out;
+ 
+ 		targets_arr[i] = target;
+ 		targets->nr++;
+ 	}
+ 	return 0;
+ 
++del_out:
++	kobject_del(&target->kobj);
+ out:
+ 	damon_sysfs_targets_rm_dirs(targets);
+ 	kobject_put(&target->kobj);
+-- 
+2.47.3
