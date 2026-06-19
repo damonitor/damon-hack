@@ -2,6 +2,79 @@ From: SeongJae Park <sj@kernel.org>
 Date: Mon, 8 Jun 2026 22:41:01 -0700
 Subject: [PATCH] ==== optimize nr_accesses_bp ====
 
+mm/damon: optimize out nr_accesses_bp
+
+TLDR: Replace damon_region->nr_accesses_bp, which is easy to be wrong,
+with a simpler on-demand moving sum function, damon_nr_accesses_mvsum().
+
+Background
+==========
+
+DAMON's monitoring output (access pattern snapshot, or more technically
+speaking, damon_region->nr_accesses) is completed once per aggregation
+interval, which 100 ms by default.  The interval can arbitrarily
+increased for demands, and usually it does.  Under the suggested
+intervals auto-tuning setup, it can span up to 200 seconds.  If the
+aggregation interval is too long, the snapshot users cannot use it in
+reasonable time.  To mitigate this, we introduced a new field of
+damon_region, namely nr_accesses_bp.  It contains a pseudo moving sum of
+nr_accesses in bp units and is updated for each sampling interval.
+
+It turned out keeping it correctly updated every sampling interval is
+not that easy.  From online parameter update feature development and
+more experimental hacks, we found it is easy to be corrupted.  Once it
+is corrupted, DAMON's monitoring outputs become quite insane.  Hence we
+added a few validation checks.  It is easy  to be corrupted because it
+requires every update per sampling interval to be correct.
+
+Solution
+========
+
+There is no real reason to keep it updated every sampling interval.  Due
+to the simple pseudo-moving sum mechanism and existing helper field
+(last_nr_accesses), we can also calculate the pseudo moving sum on
+demand in a much simpler way.
+
+Implement a function for getting the pseudo moving sum on demand, and
+replace nr_accessses_bp uses with the new function.  Also remove no more
+needed tests for nr_accesses_bp and the per-sampling interval update
+functions.  Finally, remove the nr_accesses_bp.  The new function is
+quite simple.
+
+Discussion
+==========
+
+Depending on the use case, multiple nr_accesses readers could be
+executed in the same kdamond_fn() main loop iteration, which is executed
+once per sampling interval.  Such readers include DAMON region exporting
+tracepoints (damon_[region_]aggregated and damos_before_apply), DAMOS,
+and DAMON sysfs interface logic for update_schemes_tried_regions
+command.  In this case, the new function will be called multiple times
+and this could be overhead compared to the old logic, which simply reads
+the field without any additional work.  Nonetheless, the new function is
+quite simple.  And the new approach does nothing while there is no need
+to read.  The old approach had to execute its update function for each
+region for every sampling interval.  Hence the new approach is believed
+to be even more lightweight in common case, and the overhead is anyway
+negligible.
+
+One more advantage of this change is that one field from the
+damon_region struct is removed.  On setups that uses a high number of
+DAMON regions, this could be a potential memory space benefit.
+
+Patches Sequence
+================
+
+Patch 1 introduces the new function for getting the pseudo moving sum of
+nr_accesses on demands.  Patch 2 implements a unit test for the new
+function's internal logic.  Patches 3-5 replace uses of nr_accesses_bp
+in DAMOS, tracepoints and DAMON sysfs interface with the new function,
+respectively.  Patches 6-8 removes nr_accesses_bp validation functions
+in DAMON core, one by one.  Patches 9 and 10 further remove tests and
+test helper for nr_accesses_bp, respectively. Patches 11 and 12 remove
+setup of nr_accesses_bp and the field itself. Finally, patch 13 removes
+the nr_accesses_bp update function and its unit test.
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  hkml_cv_bogus/hkml_cv_bogus_uv467cjk | 0
