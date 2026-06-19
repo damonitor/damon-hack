@@ -13,8 +13,8 @@ of nr_accesses_bp.
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  2 ++
- mm/damon/core.c       | 20 ++++++++++++++++++++
- 2 files changed, 22 insertions(+)
+ mm/damon/core.c       | 55 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 57 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 64d75c78f4df4..16e3e0910526b 100644
@@ -30,19 +30,54 @@ index 64d75c78f4df4..16e3e0910526b 100644
  int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
  		unsigned int nr_ranges, unsigned long min_region_sz);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 5b84b3ce3fcff..dac3cb9224aba 100644
+index 5b84b3ce3fcff..c3d1d82280687 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -210,6 +210,26 @@ static struct damon_probe *damon_nth_probe(int n, struct damon_ctx *ctx)
+@@ -210,6 +210,61 @@ static struct damon_probe *damon_nth_probe(int n, struct damon_ctx *ctx)
  	return NULL;
  }
  
++/*
++ * damon_mvsum() - Returns pseudo moving sum value for a time window.
++ * @current_nr:		The value of the current aggregaation window.
++ * @last_nr:		The value of the last aggregation window.
++ * @left_window_bp:	Left time of the current aggregation window.
++ *
++ * This function calculates a pseudo moving sum value of a counter that is
++ * aggregated for each time window.  @current_nr is the value of the counter
++ * that aggregated so far (maybe not yet complete), from the beginning of the
++ * current aggregation time window.  @last_nr is the value of the coutner that
++ * has completely aggregated in the last aggregation time window.
++ * @left_window_bp represents how many time is left for the current aggregation
++ * time window in bp (1/10,000).  For example, the aggregation time window is
++ * for every 10 seconds and 7 seconds has passed since the beginning of the
++ * current window, this parameter will be 3000 ((10 - 7) / 10 * 10000).
++ *
++ * The logic assumes the aggregtion in the last phase was made in a single
++ * speed.  Based on the assumption, the value from the last window that need to
++ * be added to the current value is calculated as a portion of the last value
++ * based on the remaining time window.
++ */
 +static unsigned long damon_mvsum(unsigned long current_nr,
 +		unsigned long last_nr, unsigned long left_window_bp)
 +{
 +	return current_nr + mult_frac(last_nr, left_window_bp, 10000);
 +}
 +
++/**
++ * damon_nr_accesses_mvsum() - Returns moving sum access frequency score.
++ * @r:		Region to get the access frequency of.
++ * @ctx:	DAMON context of @r.
++ *
++ * This function returns for how many sampling iteration in the last
++ * aggregation interval (&damon_attrs->aggr_interval) the region was found to
++ * be accessed.  Hence the value can be interpreted as the relative access
++ * frequency score of the region (@r).  The value is calculated as a pseudo
++ * moving sum, and hence it is not an exact value but just a best-effort
++ * reasonable estimation.
++ *
++ * Return: the pseudo moving sum access frequency score.
++ */
 +unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
 +		struct damon_ctx *ctx)
 +{
