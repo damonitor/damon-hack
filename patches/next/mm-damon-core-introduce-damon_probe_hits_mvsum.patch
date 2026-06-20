@@ -2,11 +2,15 @@ From: SeongJae Park <sj@kernel.org>
 Date: Mon, 8 Jun 2026 22:22:06 -0700
 Subject: [PATCH] mm/damon/core: introduce damon_probe_hits_mvsum()
 
+Implement a function for getting a reasonable best effort quality pseudo
+moving sums of probe_hits on demands.  It reuses the internal function
+for the pseudo moving sum for data access frequency (nr_accesses).
+
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
  include/linux/damon.h |  2 ++
- mm/damon/core.c       | 14 ++++++++++++++
- 2 files changed, 16 insertions(+)
+ mm/damon/core.c       | 21 +++++++++++++++++++++
+ 2 files changed, 23 insertions(+)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index f0dd45ca788f5..46394171cd2d0 100644
@@ -22,21 +26,28 @@ index f0dd45ca788f5..46394171cd2d0 100644
  int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
  		unsigned int nr_ranges, unsigned long min_region_sz);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index a8fd69a76cf35..4561e0a2e6706 100644
+index a8fd69a76cf35..3d8c2f2e7d93c 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -272,6 +272,20 @@ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
+@@ -272,6 +272,27 @@ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
  			left_window_bp);
  }
  
 +unsigned char damon_probe_hits_mvsum(int probe_idx, struct damon_region *r,
 +		struct damon_ctx *ctx)
 +{
-+	unsigned long sample_interval, window_len, left_window, left_window_bp;
++	unsigned long sample_interval, aaggr_interval;
++	unsigned long window_len, left_window, left_window_bp;
 +
 +	sample_interval = ctx->attrs.sample_interval ? : 1;
-+	window_len = ctx->attrs.aggr_interval / sample_interval;
-+	left_window = ctx->next_aggregation_sis - ctx->passed_sample_intervals;
++	aggr_interval =  ctx->attrs.aggr_interval ? : 1;
++	window_len = aggr_interval / sample_interval;
++	if (time_after_eq(ctx->passed_sample_intervals,
++				ctx->next_aggregation_sis))
++		left_window = 0;
++	else
++		left_window = ctx->next_aggregation_sis -
++			ctx->passed_sample_intervals;
 +	left_window_bp = mult_frac(left_window, 10000, window_len);
 +
 +	return damon_mvsum(r->probe_hits[probe_idx],
