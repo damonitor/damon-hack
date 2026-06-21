@@ -1,0 +1,44 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Sun, 21 Jun 2026 13:47:16 -0700
+Subject: [PATCH] mm/damon/core: handle unreset nr_accesses in
+ damon_nr_accesses_mvsum()
+
+damon_set_attrs() works like reverting aggregations that were made so
+far for this aggregation window.  If this is the end of the aggregation,
+however, kdamond_fn() will do the operations at the end of the
+aggregation interval, using cached timestamps.  For such operations that
+rely on damon_region->nr_accesses, damon_update_monitoring_results()
+doesn't reset the nr_accesses if it is called at the end of the
+aggregation window.
+
+damon_nr_accesses_mvsum() works with fresh timestamps, though.  The
+nr_accesses that are not reset in this case can make the logic to
+unnecessarily count nr_accesses, resulting in returning
+higher-than-expected pseudo moving sum nr_accesses.  No code is using
+damon_nr_accesses_mvsum() yet, so this is not causing a real problem.
+Following commits will add usage of the function, though.  For safe
+usages, calculate the pseudo moving sum without nr_accesses if the
+remaining window is full.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 191533685cf2f..9d501ad34f44c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -268,6 +268,9 @@ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
+ 			ctx->passed_sample_intervals;
+ 	left_window_bp = mult_frac(left_window, 10000, window_len);
+ 
++	if (left_window_bp == 10000)
++		return r->last_nr_accesses;
++
+ 	return damon_mvsum(r->nr_accesses, r->last_nr_accesses,
+ 			left_window_bp);
+ }
+-- 
+2.47.3
+
