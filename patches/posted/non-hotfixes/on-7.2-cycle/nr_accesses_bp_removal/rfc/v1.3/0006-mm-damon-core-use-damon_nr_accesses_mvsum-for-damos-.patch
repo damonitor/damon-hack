@@ -1,0 +1,87 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Cc: linux-trace-kernel@vger.kernel.org
+Date: Sun, 7 Jun 2026 15:20:12 -0700
+Subject: [RFC PATCH v1.3 06/18] mm/damon/core: use damon_nr_accesses_mvsum() for
+         damos region tracing
+
+damon_nr_accesses_mvsum() returns a value same to nr_accesses_bp.  Also
+the function is more simple and therefore more tolerant to errors.
+Execution of the function would be more expensive than the simple read
+of the field, but because the function is quite simple, the overhead
+should be negligible.  Use it in the DAMON region exporting trace points
+instead of the nr_accesses_bp.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/trace/events/damon.h | 8 +++++---
+ mm/damon/core.c              | 5 +++--
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/include/trace/events/damon.h b/include/trace/events/damon.h
+index 78388538acf44..8851727ae1627 100644
+--- a/include/trace/events/damon.h
++++ b/include/trace/events/damon.h
+@@ -78,9 +78,11 @@ TRACE_EVENT_CONDITION(damos_before_apply,
+ 
+ 	TP_PROTO(unsigned int context_idx, unsigned int scheme_idx,
+ 		unsigned int target_idx, struct damon_region *r,
+-		unsigned int nr_regions, bool do_trace),
++		unsigned int nr_accesses, unsigned int nr_regions,
++		bool do_trace),
+ 
+-	TP_ARGS(context_idx, scheme_idx, target_idx, r, nr_regions, do_trace),
++	TP_ARGS(context_idx, scheme_idx, target_idx, r, nr_accesses,
++		nr_regions, do_trace),
+ 
+ 	TP_CONDITION(do_trace),
+ 
+@@ -101,7 +103,7 @@ TRACE_EVENT_CONDITION(damos_before_apply,
+ 		__entry->target_idx = target_idx;
+ 		__entry->start = r->ar.start;
+ 		__entry->end = r->ar.end;
+-		__entry->nr_accesses = r->nr_accesses_bp / 10000;
++		__entry->nr_accesses = nr_accesses;
+ 		__entry->age = r->age;
+ 		__entry->nr_regions = nr_regions;
+ 	),
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index d6cc538172b40..ca68c4835c391 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2442,7 +2442,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 	struct damos *siter;		/* schemes iterator */
+ 	unsigned int sidx = 0;
+ 	struct damon_target *titer;	/* targets iterator */
+-	unsigned int tidx = 0;
++	unsigned int tidx = 0, nr_accesses = 0;
+ 	bool do_trace = false;
+ 
+ 	/* get indices for trace_damos_before_apply() */
+@@ -2457,6 +2457,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 				break;
+ 			tidx++;
+ 		}
++		nr_accesses = damon_nr_accesses_mvsum(r, c);
+ 		do_trace = true;
+ 	}
+ 
+@@ -2472,7 +2473,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 		if (damos_core_filter_out(c, t, r, s))
+ 			return;
+ 		ktime_get_coarse_ts64(&begin);
+-		trace_damos_before_apply(cidx, sidx, tidx, r,
++		trace_damos_before_apply(cidx, sidx, tidx, r, nr_accesses,
+ 				damon_nr_regions(t), do_trace);
+ 		sz_applied = c->ops.apply_scheme(c, t, r, s,
+ 				&sz_ops_filter_passed);
+-- 
+2.47.3
