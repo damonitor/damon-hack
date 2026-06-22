@@ -1,0 +1,56 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 5.16.x
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 19 Jun 2026 13:29:00 -0700
+Subject: [RFC PATCH v1.2 1/2] mm/damon/core: handle zero intervals in
+         damon_max_nr_accesses()
+
+damon_max_nr_accesses() causes a divide-by-zero if the sampling interval
+is set to zero by the user.  If the aggregation interval is set to zero,
+the function returns zero.  It is wrong, since the real maximum
+nr_acceses in the setup should be one.  Worse yet, it can cause another
+divide-by-zero from its caller, damon_hot_score(), since it uses
+damon_max_nr_accesses() return value as a denominator.
+
+Fix the problem by setting the denominator in the function as 1 when the
+sampling interval is zero.  Also ensure the return value is always 1 or
+greater.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260619202459.145010-1-sj@kernel.org
+
+Fixes: 198f0f4c58b9 ("mm/damon/vaddr,paddr: support pageout prioritization")
+Cc: <stable@vger.kernel.org> # 5.16.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 64d75c78f4df4..02ac34537df9a 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1066,9 +1066,13 @@ static inline bool damon_target_has_pid(const struct damon_ctx *ctx)
+ 
+ static inline unsigned int damon_max_nr_accesses(const struct damon_attrs *attrs)
+ {
+-	/* {aggr,sample}_interval are unsigned long, hence could overflow */
+-	return min(attrs->aggr_interval / attrs->sample_interval,
++	unsigned long sample_interval;
++	unsigned long max_nr_accesses;
++
++	sample_interval = attrs->sample_interval ? : 1;
++	max_nr_accesses = min(attrs->aggr_interval / sample_interval,
+ 			(unsigned long)UINT_MAX);
++	return max_nr_accesses ? : 1;
+ }
+ 
+ 
+-- 
+2.47.3
