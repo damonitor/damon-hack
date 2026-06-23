@@ -15,11 +15,23 @@
       - ab04340b5ae5 "mm/damon/lru_sort: handle ctx allocation failure" (1/2)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260529000104.7006-3-sj@kernel.org
-- mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
-- mm-stable: 94 total, 12 (87) series, 7 non-series commits
+- mm-hotfixes-unstable: 2 total, 1 (2) series, 0 non-series commits
+  - author/reviewer role stat
+    - maintainer, nobody: 2 commits
+  - full commits list
+    - series "mm/damon/sysfs-schemes: fix wrong directories put orders in error paths". (2 commits)
+      - 94e4f0681c30 "mm/damon/sysfs-schemes: fix dir put orders in access_pattern_add_dirs()" (0/2)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260618005650.83868-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260617060005.86852-1-sj@kernel.org [1]
+      - 046968d607bf "mm/damon/sysfs-schemes: put stats for scheme_add_dirs() internal error" (1/2)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260618005650.83868-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260617005223.96813-1-sj@kernel.org [1]
+- mm-stable: 95 total, 12 (87) series, 8 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 15 commits
-    - maintainer, nobody: 79 commits
+    - maintainer, nobody: 80 commits
   - full commits list
     - 5a2d162e22bf "mm/damon/core: make charge_addr_from aware of end-address exclusivity"
       - Authored by a maintainer, reviewed by nobody
@@ -338,15 +350,12 @@
     - 7e6cc35f5283 "mm/damon/core: trace esz at first setup"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260520150311.80925-1-sj@kernel.org
-- mm-unstable: 1 total, 0 (0) series, 1 non-series commits
-  - author/reviewer role stat
-    - maintainer, nobody: 1 commits
-  - full commits list
-    - 90fd60e1f3f1 "mm/damon/core: always put unsuccessfully committed target pids"
+    - 6a66c557a2ab "mm/damon/core: always put unsuccessfully committed target pids"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260605013849.83750-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
       - Link: https://lore.kernel.org/20260320020056.835-1-sj@kernel.org [2]
+- mm-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

@@ -2,15 +2,33 @@
 - mm-hotfixes-stable: 3 -> 3 commits (no change)
   - series: 1 (2) -> 1 (2) (no change)
     - maintainer, nobody: 3 -> 3 commits (no change)
-- mm-hotfixes-unstable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-- mm-stable: 94 -> 94 commits (no change)
+- mm-hotfixes-unstable: 0 -> 2 commits
+  - series: 0 (0) -> 1 (2)
+    - maintainer, nobody: 0 -> 2 commits
+  - new commits
+    - series "mm/damon/sysfs-schemes: fix wrong directories put orders in error paths". (2)
+      - 94e4f0681c30 "mm/damon/sysfs-schemes: fix dir put orders in access_pattern_add_dirs() (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260618005650.83868-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260617060005.86852-1-sj@kernel.org [1]
+      - 046968d607bf "mm/damon/sysfs-schemes: put stats for scheme_add_dirs() internal error (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260618005650.83868-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260617005223.96813-1-sj@kernel.org [1]
+- mm-stable: 94 -> 95 commits
   - series: 12 (87) -> 12 (87) (no change)
     - no role, maintainer: 15 -> 15 commits (no change)
-    - maintainer, nobody: 79 -> 79 commits (no change)
-- mm-unstable: 1 -> 1 commits (no change)
+    - maintainer, nobody: 79 -> 80 commits
+  - changed commits
+    - 6a66c557a2ab "mm/damon/core: always put unsuccessfully committed target pids"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260605013849.83750-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
+      - Link: https://lore.kernel.org/20260320020056.835-1-sj@kernel.org [2]
+- mm-unstable: 1 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 1 commits (no change)
+    - maintainer, nobody: 1 -> 0 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
