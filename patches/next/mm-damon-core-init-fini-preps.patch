@@ -1,0 +1,115 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 23 Jun 2026 21:17:28 -0700
+Subject: [PATCH] mm/damon/core: init/fini preps
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  9 +++++---
+ mm/damon/core.c       | 49 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 1175bd6cc0c04..fcea2c656f161 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1115,15 +1115,18 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 	return r->ar.end - r->ar.start;
+ }
+ 
++#define damon_for_each_prep(p, prep) \
++	list_for_each_entry(p, &(prep)->preps, list)
++
++#define damon_for_each_prep_safe(p, next, prep) \
++	list_for_each_entry_safe(p, next, &(prep)->preps, list)
++
+ #define damon_for_each_filter(f, p) \
+ 	list_for_each_entry(f, &(p)->filters, list)
+ 
+ #define damon_for_each_filter_safe(f, next, p) \
+ 	list_for_each_entry_safe(f, next, &(p)->filters, list)
+ 
+-#define damon_for_each_prep(p, prep) \
+-	list_for_each_entry(p, &(prep)->preps, list)
+-
+ #define damon_for_each_probe(p, ctx) \
+ 	list_for_each_entry(p, &(ctx)->probes, list)
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 36056b142ccca..4ce873d214ea9 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -120,6 +120,51 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
+ 	return err;
+ }
+ 
++static struct damon_prep *damon_new_prep(enum damon_prep_action action)
++{
++	struct damon_prep *prep;
++
++	prep = kmalloc_obj(*prep);
++	if (!prep)
++		return NULL;
++	prep->action = action;
++	INIT_LIST_HEAD(&prep->list);
++	return prep;
++}
++
++static void damon_add_prep(struct damon_probe *p, struct damon_prep *prep)
++{
++	list_add_tail(&prep->list, &p->preps);
++}
++
++static void damon_del_prep(struct damon_prep *p)
++{
++	list_del(&p->list);
++}
++
++static void damon_free_prep(struct damon_prep *p)
++{
++	kfree(p);
++}
++
++static void damon_destroy_prep(struct damon_prep *p)
++{
++	damon_del_prep(p);
++	damon_free_prep(p);
++}
++
++static struct damon_prep *damon_nth_prep(int n, struct damon_probe *p)
++{
++	struct damon_prep *prep;
++	int i = 0;
++
++	damon_for_each_prep(prep, p) {
++		if (i++ == n)
++			return prep;
++	}
++	return NULL;
++}
++
+ struct damon_filter *damon_new_filter(enum damon_filter_type type,
+ 		bool matching, bool allow)
+ {
+@@ -175,6 +220,7 @@ struct damon_probe *damon_new_probe(void)
+ 	p = kmalloc_obj(*p);
+ 	if (!p)
+ 		return NULL;
++	INIT_LIST_HEAD(&p->preps);
+ 	INIT_LIST_HEAD(&p->filters);
+ 	INIT_LIST_HEAD(&p->list);
+ 	return p;
+@@ -192,8 +238,11 @@ static void damon_del_probe(struct damon_probe *p)
+ 
+ static void damon_free_probe(struct damon_probe *p)
+ {
++	struct damon_prep *prep, *prep_next;
+ 	struct damon_filter *f, *next;
+ 
++	damon_for_each_prep_safe(prep, prep_next, p)
++		damon_free_prep(prep);
+ 	damon_for_each_filter_safe(f, next, p)
+ 		damon_free_filter(f);
+ 	kfree(p);
+-- 
+2.47.3
+

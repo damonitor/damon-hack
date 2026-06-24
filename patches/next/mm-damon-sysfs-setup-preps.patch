@@ -1,0 +1,94 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 23 Jun 2026 21:51:46 -0700
+Subject: [PATCH] mm/damon/sysfs: setup preps
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ include/linux/damon.h |  3 +++
+ mm/damon/core.c       |  4 ++--
+ mm/damon/sysfs.c      | 25 +++++++++++++++++++++++++
+ 3 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index fcea2c656f161..add632de60370 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1180,6 +1180,9 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 
+ #ifdef CONFIG_DAMON
+ 
++struct damon_prep *damon_new_prep(enum damon_prep_action action);
++void damon_add_prep(struct damon_probe *p, struct damon_prep *prep);
++
+ struct damon_filter *damon_new_filter(enum damon_filter_type type,
+ 		bool matching, bool allow);
+ void damon_add_filter(struct damon_probe *probe, struct damon_filter *f);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index e3267f007f6f6..f4e5f827ddcb7 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -120,7 +120,7 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
+ 	return err;
+ }
+ 
+-static struct damon_prep *damon_new_prep(enum damon_prep_action action)
++struct damon_prep *damon_new_prep(enum damon_prep_action action)
+ {
+ 	struct damon_prep *prep;
+ 
+@@ -132,7 +132,7 @@ static struct damon_prep *damon_new_prep(enum damon_prep_action action)
+ 	return prep;
+ }
+ 
+-static void damon_add_prep(struct damon_probe *p, struct damon_prep *prep)
++void damon_add_prep(struct damon_probe *p, struct damon_prep *prep)
+ {
+ 	list_add_tail(&prep->list, &p->preps);
+ }
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index a53b06cdd5450..64f9c65926bbb 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -2175,6 +2175,23 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+ 	return damon_set_attrs(ctx, &attrs);
+ }
+ 
++static int damon_sysfs_set_preps(struct damon_probe *probe,
++		struct damon_sysfs_preps *sys_preps)
++{
++	int i;
++
++	for (i = 0; i < sys_preps->nr; i++) {
++		struct damon_sysfs_prep *sys_prep = sys_preps->preps_arr[i];
++		struct damon_prep *prep;
++
++		prep = damon_new_prep(sys_prep->action);
++		if (!prep)
++			return -ENOMEM;
++		damon_add_prep(probe, prep);
++	}
++	return 0;
++}
++
+ static int damon_sysfs_set_filters(struct damon_probe *probe,
+ 		struct damon_sysfs_filters *sys_filters)
+ {
+@@ -2210,7 +2227,15 @@ static int damon_sysfs_set_probe(struct damon_probe *probe,
+ 		struct damon_sysfs_probe *sys_probe)
+ {
+ 	struct damon_sysfs_filters *sys_filters;
++	struct damon_sysfs_preps *sys_preps;
++	int err;
+ 
++	sys_preps = sys_probe->preps;
++	if (sys_preps) {
++		err = damon_sysfs_set_preps(probe, sys_preps);
++		if (err)
++			return err;
++	}
+ 	sys_filters = sys_probe->filters;
+ 	if (!sys_filters)
+ 		return 0;
+-- 
+2.47.3
+

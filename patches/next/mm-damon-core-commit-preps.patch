@@ -1,0 +1,88 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Tue, 23 Jun 2026 21:27:50 -0700
+Subject: [PATCH] mm/damon/core: commit preps
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 44 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 4ce873d214ea9..e3267f007f6f6 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1707,6 +1707,36 @@ static int damon_commit_targets(
+ 	return err;
+ }
+ 
++static void damon_commit_prep(struct damon_prep *dst, struct damon_prep *src)
++{
++	dst->action = src->action;
++}
++
++static int damon_commit_preps(struct damon_probe *dst, struct damon_probe *src)
++{
++	struct damon_prep *dst_prep, *next, *src_prep, *new_prep;
++	int i = 0, j = 0;
++
++	damon_for_each_prep_safe(dst_prep, next, dst) {
++		src_prep = damon_nth_prep(i++, src);
++		if (src_prep)
++			damon_commit_prep(dst_prep, src_prep);
++		else
++			damon_destroy_prep(dst_prep);
++	}
++
++	damon_for_each_prep_safe(src_prep, next, src) {
++		if (j++ < i)
++			continue;
++
++		new_prep = damon_new_prep(src_prep->action);
++		if (!new_prep)
++			return -ENOMEM;
++		damon_add_prep(dst, new_prep);
++	}
++	return 0;
++}
++
+ static void damon_commit_filter(struct damon_filter *dst,
+ 		struct damon_filter *src)
+ {
+@@ -1756,6 +1786,16 @@ static int damon_commit_filters(struct damon_probe *dst,
+ 	return 0;
+ }
+ 
++static int damon_commit_probe(struct damon_probe *dst, struct damon_probe *src)
++{
++	int err;
++
++	err = damon_commit_preps(dst, src);
++	if (err)
++		return err;
++	return damon_commit_filters(dst, src);
++}
++
+ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ {
+ 	struct damon_probe *dst_probe, *next, *src_probe, *new_probe;
+@@ -1764,7 +1804,7 @@ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ 	damon_for_each_probe_safe(dst_probe, next, dst) {
+ 		src_probe = damon_nth_probe(i++, src);
+ 		if (src_probe) {
+-			err = damon_commit_filters(dst_probe, src_probe);
++			err = damon_commit_probe(dst_probe, src_probe);
+ 			if (err)
+ 				return err;
+ 		} else {
+@@ -1780,7 +1820,7 @@ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ 		if (!new_probe)
+ 			return -ENOMEM;
+ 		damon_add_probe(dst, new_probe);
+-		err = damon_commit_filters(new_probe, src_probe);
++		err = damon_commit_probe(new_probe, src_probe);
+ 		if (err)
+ 			return err;
+ 	}
+-- 
+2.47.3
+
