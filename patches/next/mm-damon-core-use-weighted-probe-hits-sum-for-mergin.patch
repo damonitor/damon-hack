@@ -1,0 +1,71 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Wed, 24 Jun 2026 20:58:59 -0700
+Subject: [PATCH] mm/damon/core: use weighted probe hits sum for merging
+ regions
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 31 +++++++++++++++++++++----------
+ 1 file changed, 21 insertions(+), 10 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index e3d06cebcce21..acdc2c9c669a3 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3569,24 +3569,35 @@ static unsigned long damon_merge_score(struct damon_region *r, bool last,
+  * sz_limit	size upper limit of each region
+  */
+ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+-				   unsigned long sz_limit)
++		unsigned long sz_limit, struct damon_ctx *ctx)
+ {
+ 	struct damon_region *r, *prev = NULL, *next;
+ 
+ 	damon_for_each_region_safe(r, next, t) {
+-		if (abs(r->nr_accesses - r->last_nr_accesses) > thres)
++		unsigned long score, last_score;
++
++		score = damon_merge_score(r, false, ctx);
++		last_score = damon_merge_score(r, true, ctx);
++
++		if (abs(score - last_score) > thres)
+ 			r->age = 0;
+-		else if ((r->nr_accesses == 0) != (r->last_nr_accesses == 0))
++		else if ((score == 0) != (last_score == 0))
+ 			r->age = 0;
+ 		else
+ 			r->age++;
+ 
+-		if (prev && prev->ar.end == r->ar.start &&
+-		    abs(prev->nr_accesses - r->nr_accesses) <= thres &&
+-		    damon_sz_region(prev) + damon_sz_region(r) <= sz_limit)
+-			damon_merge_two_regions(t, prev, r);
+-		else
+-			prev = r;
++		if (!prev)
++			goto set_prev_continue;
++		if (prev->ar.end != r->ar.start)
++			goto set_prev_continue;
++		if (abs(damon_merge_score(prev, false, ctx) - score) > thres)
++			goto set_prev_continue;
++		if (damon_sz_region(prev) + damon_sz_region(r) > sz_limit)
++			goto set_prev_continue;
++		damon_merge_two_regions(t, prev, r);
++		continue;
++set_prev_continue:
++		prev = r;
+ 	}
+ }
+ 
+@@ -3619,7 +3630,7 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 	do {
+ 		nr_regions = 0;
+ 		damon_for_each_target(t, c) {
+-			damon_merge_regions_of(t, threshold, sz_limit);
++			damon_merge_regions_of(t, threshold, sz_limit, c);
+ 			nr_regions += damon_nr_regions(t);
+ 		}
+ 		threshold = max(1, threshold * 2);
+-- 
+2.47.3
+
