@@ -1,0 +1,119 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SeongJae Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 23 Jun 2026 21:43:24 -0700
+Subject: [RFC PATCH v1.2 09/11] mm/damon/sysfs: split probe setup function out
+
+damon_sysfs_set_probes() function is relatively long.  It has two nested
+loop for setting two nested entities, namely probe and filter.  Split
+out the probe level setup for readability.
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 80 ++++++++++++++++++++++++++++--------------------
+ 1 file changed, 46 insertions(+), 34 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index 2e95e3bac774d..982d824f63c21 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -1899,47 +1899,59 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
+ 	return damon_set_attrs(ctx, &attrs);
+ }
+ 
+-static int damon_sysfs_set_probes(struct damon_ctx *ctx,
+-		struct damon_sysfs_probes *sys_probes)
++static int damon_sysfs_set_probe(struct damon_probe *probe,
++		struct damon_sysfs_probe *sys_probe)
+ {
++	struct damon_sysfs_filters *sys_filters;
+ 	int i;
+ 
+-	for (i = 0; i < sys_probes->nr; i++) {
+-		struct damon_sysfs_filters *sys_filters =
+-			sys_probes->probes_arr[i]->filters;
+-		struct damon_probe *c;
+-		int j;
++	sys_filters = sys_probe->filters;
++	if (!sys_filters)
++		return 0;
+ 
+-		if (!sys_filters)
+-			continue;
+-		c = damon_new_probe();
+-		if (!c)
++	for (i = 0; i < sys_filters->nr; i++) {
++		struct damon_sysfs_filter *sys_filter =
++			sys_filters->filters_arr[i];
++		struct damon_filter *filter;
++
++		filter = damon_new_filter(sys_filter->type,
++				sys_filter->matching,
++				sys_filter->allow);
++		if (!filter)
+ 			return -ENOMEM;
+-		damon_add_probe(ctx, c);
+-
+-		for (j = 0; j < sys_filters->nr; j++) {
+-			struct damon_sysfs_filter *sys_filter =
+-				sys_filters->filters_arr[j];
+-			struct damon_filter *filter;
+-
+-			filter = damon_new_filter(sys_filter->type,
+-					sys_filter->matching,
+-					sys_filter->allow);
+-			if (!filter)
+-				return -ENOMEM;
+-			if (filter->type == DAMON_FILTER_TYPE_MEMCG) {
+-				int err;
+-
+-				err = damon_sysfs_memcg_path_to_id(
+-						sys_filter->path,
+-						&filter->memcg_id);
+-				if (err) {
+-					damon_destroy_filter(filter);
+-					return err;
+-				}
++		if (filter->type == DAMON_FILTER_TYPE_MEMCG) {
++			int err;
++
++			err = damon_sysfs_memcg_path_to_id(
++					sys_filter->path,
++					&filter->memcg_id);
++			if (err) {
++				damon_destroy_filter(filter);
++				return err;
+ 			}
+-			damon_add_filter(c, filter);
+ 		}
++		damon_add_filter(probe, filter);
++	}
++	return 0;
++}
++
++static int damon_sysfs_set_probes(struct damon_ctx *ctx,
++		struct damon_sysfs_probes *sys_probes)
++{
++	int i, err;
++
++	for (i = 0; i < sys_probes->nr; i++) {
++		struct damon_sysfs_probe *sys_probe;
++		struct damon_probe *p;
++
++		p = damon_new_probe();
++		if (!p)
++			return -ENOMEM;
++		damon_add_probe(ctx, p);
++		sys_probe = sys_probes->probes_arr[i];
++		err = damon_sysfs_set_probe(p, sys_probe);
++		if (err)
++			return err;
+ 	}
+ 	return 0;
+ }
+-- 
+2.47.3
