@@ -1,0 +1,69 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Thu, 25 Jun 2026 17:51:48 -0700
+Subject: [PATCH] mm/damon/paddr: drop last same folio access check reuse
+ optimization
+
+It can race when multiple kdamonds are being used.  The problem from the
+race is doubtful, but the gain from the optimization is also doubtful.
+Simply drop the optimization in favor of code simplicity.
+
+The race was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 20 ++++----------------
+ 1 file changed, 4 insertions(+), 16 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 85cd64a55fff3..efebc20a49cec 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -132,7 +132,7 @@ static void damon_pa_prepare_access_checks(struct damon_ctx *ctx)
+ 		damon_pa_prepare_access_checks_faults(ctx);
+ }
+ 
+-static bool damon_pa_young(phys_addr_t paddr, unsigned long *folio_sz)
++static bool damon_pa_young(phys_addr_t paddr)
+ {
+ 	struct folio *folio = damon_get_folio(PHYS_PFN(paddr));
+ 	bool accessed;
+@@ -141,7 +141,6 @@ static bool damon_pa_young(phys_addr_t paddr, unsigned long *folio_sz)
+ 		return false;
+ 
+ 	accessed = damon_folio_young(folio);
+-	*folio_sz = folio_size(folio);
+ 	folio_put(folio);
+ 	return accessed;
+ }
+@@ -149,23 +148,12 @@ static bool damon_pa_young(phys_addr_t paddr, unsigned long *folio_sz)
+ static void __damon_pa_check_access(struct damon_region *r,
+ 		unsigned long addr_unit)
+ {
+-	static phys_addr_t last_addr;
+-	static unsigned long last_folio_sz = PAGE_SIZE;
+-	static bool last_accessed;
++	bool accessed;
+ 	phys_addr_t sampling_addr = damon_pa_phys_addr(
+ 			r->sampling_addr, addr_unit);
+ 
+-	/* If the region is in the last checked page, reuse the result */
+-	if (ALIGN_DOWN(last_addr, last_folio_sz) ==
+-				ALIGN_DOWN(sampling_addr, last_folio_sz)) {
+-		damon_update_region_access_rate(r, last_accessed);
+-		return;
+-	}
+-
+-	last_accessed = damon_pa_young(sampling_addr, &last_folio_sz);
+-	damon_update_region_access_rate(r, last_accessed);
+-
+-	last_addr = sampling_addr;
++	accessed = damon_pa_young(sampling_addr);
++	damon_update_region_access_rate(r, accessed);
+ }
+ 
+ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+-- 
+2.47.3
+
