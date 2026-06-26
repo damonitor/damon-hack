@@ -1,0 +1,78 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 26 Jun 2026 07:55:18 -0700
+Subject: [PATCH] ==== [PATCH v2 0/2] mm/damon/core: detect internal variation
+ above max_nr_regions/2 ====
+
+[PATCH v2 0/2] mm/damon/core: detect internal variation above max_nr_regions/2
+
+Sorry for the late.
+
+kdamond_split_regions() bails out early when nr_regions is already
+above max_nr_regions / 2.  A large region that picks up new internal
+variation after that point never gets split, so we lose visibility
+into its hot/cold structure.
+
+We hit this with damon-paddr on hugepage workloads and damon-vaddr
+on processes that mmap a large anonymous range.
+
+Example with max_nr_regions == 1500.  A target ends up with 799
+small hot/cold regions plus one big region (an earlier merge
+collapsed a uniformly-accessed range into a single piece):
+
+H:hot
+C:cold
+
+      r1     r2     r3                 r800
+    HHHHHH|CCCCCC|HHHHHH|...|HHHHHH..........................|
+
+    nr_regions = 800  >  max_nr_regions / 2 = 750
+
+Now a cold subarea shows up inside r800:
+
+      r1     r2     r3                 r800
+    HHHHHH|CCCCCC|HHHHHH|...|HHHHHH........CCCCCC.............|
+
+The small regions can't merge with each other (their access counts
+differ), so budget never frees up.  r800 can't be split because
+nr_regions > max_nr_regions / 2 returns early.  The cold subarea
+stays invisible.
+
+Patch 1 keeps refining on this path: when nr_regions is above
+max_nr_regions / 2 but still under the maximum, it splits a fraction
+of the regions instead of returning.  The fraction shrinks as the
+remaining budget shrinks, so the count approaches max_nr_regions
+smoothly.  A useless split is undone by the next merge cycle.
+
+Patch 2 adds a KUnit test for the case where nr_regions is already
+above max_nr_regions / 2.
+
+Thanks to SeongJae for the suggestion to drive the split fraction
+from the remaining budget rather than an age-based filter.
+
+v1 -> v2: Some feedback from SJ.
+v1: https://lore.kernel.org/damon/20260521045236.115749-1-jiayuan.chen@linux.dev/
+
+Jiayuan Chen (2):
+  mm/damon/core: split a fraction of regions when nr_regions exceeds
+    max/2
+  mm/damon/tests/core-kunit: test split above max_nr_regions/2
+
+ mm/damon/core.c             | 49 +++++++++++++++++++++++++---
+ mm/damon/tests/core-kunit.h | 64 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 108 insertions(+), 5 deletions(-)
+
+--
+2.43.0
+
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ hkml_cv_bogus/hkml_cv_bogus_4d014zgo | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 hkml_cv_bogus/hkml_cv_bogus_4d014zgo
+
+diff --git a/hkml_cv_bogus/hkml_cv_bogus_4d014zgo b/hkml_cv_bogus/hkml_cv_bogus_4d014zgo
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+-- 
+2.47.3
+
