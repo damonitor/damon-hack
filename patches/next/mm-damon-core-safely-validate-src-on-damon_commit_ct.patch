@@ -1,14 +1,26 @@
 From: SeongJae Park <sj@kernel.org>
 Date: Sat, 23 May 2026 13:55:42 -0700
-Subject: [PATCH] mm/damon/core: make a wrapper damon_commit_ctx()
+Subject: [PATCH] mm/damon/core: safely validate src on damon_commit_ctx()
+
+Passing incorrect DAMON parameters to damon_commit_ctx() could result in
+making the running context stops.  Do the validation in a safe manner.
+Split out its core logic, and run it against a test-purpose built
+context, to run the full parameters validation in a level same to the
+original damon_commit_ctx().  If the test purpose call is failed,
+failure is returned without any effect to the running context.
+
+Note that damon_commit_ctx() can still cause unexpected stop of the
+running context, if internal memory allocation fails.  It is arguably
+unlikely since those internal allocations are too small to fail, but
+thoretically possible.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
- mm/damon/core.c | 33 +++++++++++++++++++--------------
- 1 file changed, 19 insertions(+), 14 deletions(-)
+ mm/damon/core.c | 61 +++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 47 insertions(+), 14 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index cca40d5fc98b9..9b8e881401444 100644
+index cca40d5fc98b9..d21a5c72f43bf 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1827,20 +1827,7 @@ static int damon_commit_sample_control(
@@ -33,10 +45,26 @@ index cca40d5fc98b9..9b8e881401444 100644
  {
  	int err;
  	struct damos *scheme;
-@@ -1899,6 +1886,24 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+@@ -1899,6 +1886,52 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
  	return 0;
  }
  
++static struct damon_ctx *damon_new_test_ctx(struct damon_ctx *dst)
++{
++	struct damon_ctx *test_ctx;
++	int err;
++
++	test_ctx = damon_new_ctx();
++	if (!test_ctx)
++		return NULL;
++	err = __damon_commit_ctx(test_ctx, dst);
++	if (err) {
++		damon_destroy_ctx(test_ctx);
++		return NULL;
++	}
++	return test_ctx;
++}
++
 +/**
 + * damon_commit_ctx() - Commit parameters of a DAMON context to another.
 + * @dst:	The commit destination DAMON context.
@@ -52,7 +80,19 @@ index cca40d5fc98b9..9b8e881401444 100644
 + */
 +int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
 +{
-+	return __damon_commit_ctx(dst, src);
++	struct damon_ctx *test_ctx;
++	int err;
++
++	test_ctx = damon_new_test_ctx(dst);
++	if (!test_ctx)
++		return -ENOMEM;
++	err = __damon_commit_ctx(test_ctx, dst);
++	if (err)
++		goto out;
++	err = __damon_commit_ctx(dst, src);
++out:
++	damon_destroy_ctx(test_ctx);
++	return err;
 +}
 +
  /**
