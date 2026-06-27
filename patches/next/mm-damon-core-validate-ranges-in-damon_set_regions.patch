@@ -1,0 +1,54 @@
+From: SeongJae Park <sj@kernel.org>
+Date: Fri, 26 Jun 2026 18:46:20 -0700
+Subject: [PATCH] mm/damon/core: validate ranges in damon_set_regions()
+
+DAMON core logic assumes zero length regions don't exist.  However, a
+few DAMON API callers including DAMON_SYSFS, DAMON_RECLAIM and
+DAMON_LRU_SORT allow users to set empty monitoring target regions.  This
+could result in WARN_ONCE() on CONFIG_DAMON_DEBUG_SANITY enabled kernel,
+and divide-by-zero from damon_merge_two_regions().
+
+For example, the WANR_ONCE() can be triggered like below.
+
+    # grep DAMON_DEBUG_SANITY /boot/config-$(uname -r)
+    # CONFIG_DAMON_DEBUG_SANITY=y
+    # damo start
+    # cd /sys/kernel/mm/damon/admin/kdamonds/0
+    # echo 0 > contexts/0/targets/0/regions/0/start
+    # echo 0 > contexts/0/targets/0/regions/0/end
+    # echo commit > state
+    # dmesg
+    [....]
+    [   73.705780] ------------[ cut here ]------------
+    [   73.707552] start 0 >= end 0
+    [   73.708452] WARNING: mm/damon/core.c:359 at damon_new_region+0x6e/0x80, CPU#1: kdamond.0/758
+    [...]
+
+Disallow empty region user inputs by updating the validation logic.
+
+Fixes: 43b0536cb471 ("mm/damon: introduce DAMON-based Reclamation (DAMON_RECLAIM)")
+Cc: <stable@vger.kernel.org> # 5.16.x
+Signed-off-by: SeongJae Park <sj@kernel.org>
+---
+ mm/damon/core.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 7e4b9affc5b06..b3100d7fa5596 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -358,6 +358,11 @@ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 	unsigned int i;
+ 	int err;
+ 
++	for (i = 0; i < nr_ranges; i++) {
++		if (ranges[i].start >= ranges[i].end)
++			return -EINVAL;
++	}
++
+ 	/* Remove regions which are not in the new ranges */
+ 	damon_for_each_region_safe(r, next, t) {
+ 		for (i = 0; i < nr_ranges; i++) {
+-- 
+2.47.3
+
