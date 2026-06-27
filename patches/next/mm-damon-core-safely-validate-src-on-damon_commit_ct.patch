@@ -2,17 +2,36 @@ From: SeongJae Park <sj@kernel.org>
 Date: Sat, 23 May 2026 13:55:42 -0700
 Subject: [PATCH] mm/damon/core: safely validate src on damon_commit_ctx()
 
-Passing incorrect DAMON parameters to damon_commit_ctx() could result in
-making the running context stops.  Do the validation in a safe manner.
-Split out its core logic, and run it against a test-purpose built
-context, to run the full parameters validation in a level same to the
-original damon_commit_ctx().  If the test purpose call is failed,
-failure is returned without any effect to the running context.
+damon_commit_ctx() does its holistic parameter set validation while
+applying the new parameter in the set one by one.  If it finds a
+parameter is invalid, because some invalid parameters may already be
+committed (it is called "commit" but not atomic and irreversable), it
+stops the running DAMON context.
 
-Note that damon_commit_ctx() can still cause unexpected stop of the
+The callers of the function therefore have to validate the parameters
+before calling it.  Because the function already embeds holistic
+validation, DAMON_SYSFS reuses it in a safe way.  It creates a
+test-purpose context that is not running but mimics the running one, and
+call damon_commit_ctx() against the test purpose context.  If it
+succeeds, the parameters are considered valid, and a real
+damon_commit_ctx() call against the running context is made with those.
+
+Other callers such as DAMON_RECLAIM and DAMON_LRU_SORT do not expose
+full parameters to users.  For efficiency, they validate only the known
+set of parameters.  The efficiency gain is arguably small and doubtful,
+though.  Meanwhile the maintenance overhead of the multiple different
+validations is clearly high.  We actually found and fixed a few bugs in
+the class.
+
+Update damon_commit_ctx() to embed DAMON_SYSFS' safe and holistic
+validation approach.  Callers can simply call damon_commit_ctx() without
+worrying if their parameters are invalid.
+
+Note that damon_commit_ctx() can still cause an unexpected stop of the
 running context, if internal memory allocation fails.  It is arguably
 unlikely since those internal allocations are too small to fail, but
-thoretically possible.
+theoretically possible.  It should also be better addressed, but not
+necessarily a blocker of this small and incremental improvement effort.
 
 Signed-off-by: SeongJae Park <sj@kernel.org>
 ---
@@ -20,7 +39,7 @@ Signed-off-by: SeongJae Park <sj@kernel.org>
  1 file changed, 47 insertions(+), 14 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index e75aee498b4ca..3cfb29f8129a7 100644
+index 0ea6ac7566bb9..a8782676fbd7f 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1833,20 +1833,7 @@ static int damon_commit_sample_control(
