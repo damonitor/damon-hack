@@ -1,0 +1,96 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org> # 5.18.x
+Cc: Jiapeng Chong <jiapeng.chong@linux.alibaba.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 27 May 2026 07:55:00 -0700
+Subject: [PATCH 01/11] mm/damon/sysfs: kobject_del() target (normal), context
+         and kdamond dirs
+
+On CONFIG_DEBUG_KOBJECT_RELEASE enabled kernel, lack of kobject_del()
+could cause directories creation failures due to the name conflicts. Fix
+those issues for normal creation paths of target, context and kdamond
+directories, and error paths of context and kdamond directories by
+adding kobject_del() calls.
+
+Note that this fix for target directories is not complete since it has a
+similar issue in the damon_sysfs_targets_add_dirs() error path.  Because
+the normal path issue and the error path issue are introduced by
+different commits, this commit is fixing only the normal path issue.  A
+commit for the error path will be added next.
+
+Fixes: c951cd3b8901 ("mm/damon: implement a minimal stub for sysfs-based DAMON interface")
+Cc: <stable@vger.kernel.org> # 5.18.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index a9e187158067d..38f3b02481f0a 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -331,6 +331,7 @@ static void damon_sysfs_targets_rm_dirs(struct damon_sysfs_targets *targets)
+ 
+ 	for (i = 0; i < targets->nr; i++) {
+ 		damon_sysfs_target_rm_dirs(targets_arr[i]);
++		kobject_del(&targets_arr[i]->kobj);
+ 		kobject_put(&targets_arr[i]->kobj);
+ 	}
+ 	targets->nr = 0;
+@@ -1640,6 +1641,7 @@ static void damon_sysfs_contexts_rm_dirs(struct damon_sysfs_contexts *contexts)
+ 
+ 	for (i = 0; i < contexts->nr; i++) {
+ 		damon_sysfs_context_rm_dirs(contexts_arr[i]);
++		kobject_del(&contexts_arr[i]->kobj);
+ 		kobject_put(&contexts_arr[i]->kobj);
+ 	}
+ 	contexts->nr = 0;
+@@ -1678,13 +1680,15 @@ static int damon_sysfs_contexts_add_dirs(struct damon_sysfs_contexts *contexts,
+ 
+ 		err = damon_sysfs_context_add_dirs(context);
+ 		if (err)
+-			goto out;
++			goto del_out;
+ 
+ 		contexts_arr[i] = context;
+ 		contexts->nr++;
+ 	}
+ 	return 0;
+ 
++del_out:
++	kobject_del(&context->kobj);
+ out:
+ 	damon_sysfs_contexts_rm_dirs(contexts);
+ 	kobject_put(&context->kobj);
+@@ -2499,6 +2503,7 @@ static void damon_sysfs_kdamonds_rm_dirs(struct damon_sysfs_kdamonds *kdamonds)
+ 
+ 	for (i = 0; i < kdamonds->nr; i++) {
+ 		damon_sysfs_kdamond_rm_dirs(kdamonds_arr[i]);
++		kobject_del(&kdamonds_arr[i]->kobj);
+ 		kobject_put(&kdamonds_arr[i]->kobj);
+ 	}
+ 	kdamonds->nr = 0;
+@@ -2553,13 +2558,15 @@ static int damon_sysfs_kdamonds_add_dirs(struct damon_sysfs_kdamonds *kdamonds,
+ 
+ 		err = damon_sysfs_kdamond_add_dirs(kdamond);
+ 		if (err)
+-			goto out;
++			goto del_out;
+ 
+ 		kdamonds_arr[i] = kdamond;
+ 		kdamonds->nr++;
+ 	}
+ 	return 0;
+ 
++del_out:
++	kobject_del(&kdamond->kobj);
+ out:
+ 	damon_sysfs_kdamonds_rm_dirs(kdamonds);
+ 	kobject_put(&kdamond->kobj);
+-- 
+2.47.3
