@@ -46,7 +46,9 @@ mkdir -p "$summary_dir"
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter reject not subsystem DAMON \
 	--filter reject author "SeongJae Park <sj@kernel.org>" \
-	--filter allow not reviewer "SeongJae Park <sj@kernel.org>" \
+	--filter reject author "SJ Park <sj@kernel.org>" \
+	--filter reject reviewer "SeongJae Park <sj@kernel.org>" \
+	--filter reject reviewer "SJ Park <sj@kernel.org>" \
 	--full_commits_list > "${summary_dir}/sj_to_review"
 
 # save diff of the patches.
