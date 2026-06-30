@@ -1,0 +1,197 @@
+From: Sourav Panda <souravpanda@google.com>
+Date: Sun, 28 Jun 2026 19:01:55 +0000
+Subject: [PATCH] mm/hugetlb_cma: support percentage-based hugetlb_cma
+ reservation
+
+Currently, hugetlb_cma reservation only supports absolute sizes (e.g.,
+hugetlb_cma=2G or hugetlb_cma=0:1G,1:1G). This can be restrictive in
+heterogeneous environments or when deploying common kernel command lines
+across machines with different memory capacities.
+
+Add support for percentage-based hugetlb_cma reservation (e.g.,
+hugetlb_cma=20% or hugetlb_cma=0:20%,1:10%).
+
+The percentage is calculated against the total memory (for global
+settings) or against the node-specific memory (for node-specific
+settings) using memblock APIs during early boot.
+
+Link: https://lore.kernel.org/20260628190155.3655895-1-souravpanda@google.com
+Signed-off-by: Sourav Panda <souravpanda@google.com>
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202606262023.IKUrn01I-lkp@intel.com/
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Greg Thelen <gthelen@google.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../admin-guide/kernel-parameters.txt         |  7 +-
+ mm/hugetlb_cma.c                              | 96 ++++++++++++++++++-
+ 2 files changed, 97 insertions(+), 6 deletions(-)
+
+diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
+index b5493a7f8f228..53f08950a6309 100644
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -2064,8 +2064,11 @@ Kernel parameters
+ 	hugetlb_cma=	[HW,CMA,EARLY] The size of a CMA area used for allocation
+ 			of gigantic hugepages. Or using node format, the size
+ 			of a CMA area per node can be specified.
+-			Format: nn[KMGTPE] or (node format)
+-				<node>:nn[KMGTPE][,<node>:nn[KMGTPE]]
++			The size can be an absolute value (e.g., 2G) or a
++			percentage of the total memory or node memory (e.g., 20%).
++			Format: nn[KMGTPE] or nn% or (node format)
++				<node>:nn[KMGTPE][,<node>:nn[KMGTPE]] or
++				<node>:nn%[,<node>:nn%]
+ 
+ 			The size must be a multiple of the gigantic page size.
+ 			When using node format, this applies to each per-node size.
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index 4dfce68b354a9..e90076ad10c6c 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -9,6 +9,9 @@
+ #include <asm/setup.h>
+ 
+ #include <linux/hugetlb.h>
++#include <linux/memblock.h>
++#include <linux/math.h>
++#include <linux/math64.h>
+ #include "internal.h"
+ #include "hugetlb_cma.h"
+ 
+@@ -18,6 +21,28 @@ static unsigned long hugetlb_cma_size_in_node[MAX_NUMNODES] __initdata;
+ static bool hugetlb_cma_only __ro_after_init;
+ static unsigned long hugetlb_cma_size __ro_after_init;
+ 
++static unsigned int hugetlb_cma_percent __initdata;
++static unsigned int hugetlb_cma_percent_in_node[MAX_NUMNODES] __initdata;
++
++#ifdef CONFIG_NUMA
++static phys_addr_t __init memblock_node_memory_size(int nid)
++{
++	struct memblock_region *reg;
++	phys_addr_t size = 0;
++
++	for_each_mem_region(reg) {
++		if (reg->nid == nid)
++			size += reg->size;
++	}
++	return size;
++}
++#else
++static phys_addr_t __init memblock_node_memory_size(int nid)
++{
++	return memblock_phys_mem_size();
++}
++#endif
++
+ void hugetlb_cma_free_frozen_folio(struct folio *folio)
+ {
+ 	WARN_ON_ONCE(!cma_release_frozen(hugetlb_cma[folio_nid(folio)],
+@@ -90,14 +115,28 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
+ 			break;
+ 
+ 		if (s[count] == ':') {
++			char *next;
++
+ 			if (tmp >= MAX_NUMNODES)
+ 				break;
+ 			nid = array_index_nospec(tmp, MAX_NUMNODES);
+ 
+ 			s += count + 1;
+-			tmp = memparse(s, &s);
+-			hugetlb_cma_size_in_node[nid] = tmp;
+-			hugetlb_cma_size += tmp;
++			tmp = memparse(s, &next);
++			if (*next == '%') {
++				if (tmp > 100) {
++					pr_warn("hugetlb_cma: invalid percentage %lu for node %d\n",
++						tmp, nid);
++					break;
++				}
++				hugetlb_cma_percent_in_node[nid] = tmp;
++				hugetlb_cma_size_in_node[nid] = 0;
++				s = next + 1;
++			} else {
++				hugetlb_cma_size_in_node[nid] = tmp;
++				hugetlb_cma_percent_in_node[nid] = 0;
++				s = next;
++			}
+ 
+ 			/*
+ 			 * Skip the separator if have one, otherwise
+@@ -108,7 +147,28 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
+ 			else
+ 				break;
+ 		} else {
+-			hugetlb_cma_size = memparse(p, &p);
++			char *next;
++
++			tmp = memparse(p, &next);
++			if (*next == '%') {
++				if (tmp > 100) {
++					pr_warn("hugetlb_cma: invalid percentage %lu\n", tmp);
++				} else {
++					hugetlb_cma_percent = tmp;
++					hugetlb_cma_size = 0;
++					for (nid = 0; nid < MAX_NUMNODES; nid++) {
++						hugetlb_cma_size_in_node[nid] = 0;
++						hugetlb_cma_percent_in_node[nid] = 0;
++					}
++				}
++			} else {
++				hugetlb_cma_size = tmp;
++				hugetlb_cma_percent = 0;
++				for (nid = 0; nid < MAX_NUMNODES; nid++) {
++					hugetlb_cma_size_in_node[nid] = 0;
++					hugetlb_cma_percent_in_node[nid] = 0;
++				}
++			}
+ 			break;
+ 		}
+ 	}
+@@ -134,8 +194,36 @@ void __init hugetlb_cma_reserve(void)
+ {
+ 	unsigned long size, reserved, per_node, order, gigantic_page_size;
+ 	bool node_specific_cma_alloc = false;
++	bool has_node_specific_param = false;
+ 	int nid;
+ 
++	for (nid = 0; nid < MAX_NUMNODES; nid++) {
++		if (hugetlb_cma_size_in_node[nid] || hugetlb_cma_percent_in_node[nid]) {
++			has_node_specific_param = true;
++			break;
++		}
++	}
++
++	if (has_node_specific_param) {
++		hugetlb_cma_size = 0;
++		for (nid = 0; nid < MAX_NUMNODES; nid++) {
++			if (hugetlb_cma_percent_in_node[nid]) {
++				phys_addr_t node_gfp_mem = memblock_node_memory_size(nid);
++				u64 s;
++
++				s = mul_u64_u32_div((u64)node_gfp_mem,
++						    hugetlb_cma_percent_in_node[nid],
++						    100);
++
++				hugetlb_cma_size_in_node[nid] = s;
++			}
++			hugetlb_cma_size += hugetlb_cma_size_in_node[nid];
++		}
++	} else if (hugetlb_cma_percent) {
++		hugetlb_cma_size = mul_u64_u32_div((u64)memblock_phys_mem_size(),
++						   hugetlb_cma_percent, 100);
++	}
++
+ 	if (!hugetlb_cma_size)
+ 		return;
+ 
+-- 
+2.47.3
+

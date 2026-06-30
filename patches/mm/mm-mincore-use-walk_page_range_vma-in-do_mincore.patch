@@ -1,0 +1,80 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Thu, 18 Jun 2026 17:28:42 +0800
+Subject: [PATCH] mm: mincore: use walk_page_range_vma() in do_mincore()
+
+Patch series "mm: convert to walk_page_range_vma() to eliminate
+find_vma()", v2.
+
+walk_page_range() performs a find_vma() lookup on each page table walk.
+For callers that already hold a valid VMA and operate on a known
+single-VMA range, this lookup is redundant.  Replace walk_page_range()
+with walk_page_range_vma() where the caller guarantees single-VMA
+semantics.
+
+
+This patch (of 4):
+
+do_mincore() uses walk_page_range() to walk the page table.  Fortunately,
+the caller always passes start/end that falls within a single VMA, so it's
+safe to use the walk_page_range_vma() in do_mincore() to eliminate an
+unnecessary find_vma() lookup.
+
+Unlike walk_page_range(), walk_page_range_vma() does not call
+walk_page_test(), which handles VM_PFNMAP by invoking ->pte_hole() to skip
+the page table walk.  Without this check, PFNMAP PTEs would be treated as
+present by mincore_pte_range(), changing the returned residency status.
+Handle VM_PFNMAP explicitly in do_mincore() to preserve the original
+behavior.
+
+Link: https://lore.kernel.org/20260618092845.3905740-1-wangkefeng.wang@huawei.com
+Link: https://lore.kernel.org/20260618092845.3905740-2-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mincore.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/mm/mincore.c b/mm/mincore.c
+index 296f2e3922b5f..0c6731ae6c4d0 100644
+--- a/mm/mincore.c
++++ b/mm/mincore.c
+@@ -259,7 +259,21 @@ static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *v
+ 		memset(vec, 1, pages);
+ 		return pages;
+ 	}
+-	err = walk_page_range(vma->vm_mm, addr, end, &mincore_walk_ops, vec);
++
++	/*
++	 * walk_page_range_vma() does not call walk_page_test(), which
++	 * handles VM_PFNMAP VMA by invoking ->pte_hole() to skip the
++	 * page table walk. Without this check, PFNMAP PTEs would be
++	 * treated as present by mincore_pte_range(), changing the returned
++	 * residency status from the historical "not resident" to "resident".
++	 * Handle VM_PFNMAP explicitly to preserve the original behavior.
++	 */
++	if (vma->vm_flags & VM_PFNMAP) {
++		__mincore_unmapped_range(addr, end, vma, vec);
++		return (end - addr) >> PAGE_SHIFT;
++	}
++
++	err = walk_page_range_vma(vma, addr, end, &mincore_walk_ops, vec);
+ 	if (err < 0)
+ 		return err;
+ 	return (end - addr) >> PAGE_SHIFT;
+-- 
+2.47.3
+

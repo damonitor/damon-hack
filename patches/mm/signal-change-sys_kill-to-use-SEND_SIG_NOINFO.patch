@@ -1,0 +1,64 @@
+From: Oleg Nesterov <oleg@redhat.com>
+Date: Fri, 26 Jun 2026 17:33:08 +0200
+Subject: [PATCH] signal: change sys_kill() to use SEND_SIG_NOINFO
+
+prepare_kill_siginfo(PIDTYPE_TGID) fills si_code = SI_USER and sets
+si_pid/si_uid in the sender's namespace.  Then send_signal_locked()
+translates si_pid/si_uid to the target's namespace.
+
+SEND_SIG_NOINFO exists precisely for the case when si_code == SI_USER
+and si_pid/si_uid are the sender's ids; this is exactly what sys_kill()
+does via prepare_kill_siginfo(PIDTYPE_TGID).  Change sys_kill() to use
+it directly.
+
+SEND_SIG_NOINFO produces the same result: si_code = SI_USER, and
+__send_signal_locked() computes si_pid/si_uid directly in the target's
+namespace.  The force computation is also the same: both check if the
+sender is visible in the target's pid namespace.
+
+This is just a cleanup and microoptimization (especially with [1]),
+this skips the has_si_pid_and_uid() block in send_signal_locked() and
+offloads the namespace translation logic to
+__send_signal_locked(SEND_SIG_NOINFO) which uses the simpler
+computations.
+
+NOTE: As a "side effect" this also fixes the kill(pid < 0, sig) case
+where send_signal_locked() rewrites si_pid/si_uid in the shared
+siginfo, corrupting it for subsequent recipients.  But for other group
+senders like __kill_pgrp_info() we still need the fix from Bradley
+Morgan [1] who found this problem.
+
+TODO: kill prepare_kill_siginfo() and change other users to use
+SEND_SIG_NOINFO too.  This needs trivial changes in
+__send_signal_locked() and TP_STORE_SIGINFO().
+
+Link: https://lore.kernel.org/aj6btAZqYuv59a8w@redhat.com
+Link: https://lore.kernel.org/all/20260622164029.11474-1-include@grrlz.net/ [1]
+Signed-off-by: Oleg Nesterov <oleg@redhat.com>
+Reviewed-by: Bradley Morgan <include@grrlz.net>
+Cc: Eric Biederman <ebiederm@xmission.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/signal.c | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/kernel/signal.c b/kernel/signal.c
+index 9de9a3343f663..4ab7d91901d02 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -3954,11 +3954,7 @@ static void prepare_kill_siginfo(int sig, struct kernel_siginfo *info,
+  */
+ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
+ {
+-	struct kernel_siginfo info;
+-
+-	prepare_kill_siginfo(sig, &info, PIDTYPE_TGID);
+-
+-	return kill_something_info(sig, &info, pid);
++	return kill_something_info(sig, SEND_SIG_NOINFO, pid);
+ }
+ 
+ /*
+-- 
+2.47.3
+

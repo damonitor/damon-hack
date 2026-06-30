@@ -1,0 +1,94 @@
+From: Ye Liu <ye.liu@linux.dev>
+Date: Thu, 25 Jun 2026 09:47:04 +0800
+Subject: [PATCH] mm/page_owner: clamp skip_buddy_pages() PFN advance at
+ MAX_ORDER_NR_PAGES boundary
+
+Patch series "mm/page_owner: fix TOCTOU races in lockless page state
+reading".
+
+Fix two TOCTOU races found during review of [1].
+
+page_owner reads page state locklessly by design.  In two places the code
+reads the same metadata twice once as a guard, then again as a use and the
+page can be concurrently reallocated between the two:
+
+Patch 1: buddy_order_unsafe() in skip_buddy_pages() can return garbage if
+the page is allocated between PageBuddy() and the private read, causing
+the PFN to skip past a pfn_valid() boundary.  Clamp the advance at
+MAX_ORDER_NR_PAGES.
+
+Patch 2: PageMemcgKmem() in print_page_owner_memcg() re-reads
+folio->memcg_data and triggers VM_BUG_ON assertions if the page became a
+tail page or slab page.  Use the snapshot taken at entry.
+
+
+This patch (of 2):
+
+The lockless buddy_order_unsafe() read can return a garbage order value if
+the page is concurrently allocated between the PageBuddy check and the
+private read.  If this bogus order is <= MAX_PAGE_ORDER,
+skip_buddy_pages() would arbitrarily advance the PFN, potentially jumping
+past a MAX_ORDER_NR_PAGES boundary whose pfn_valid() check would have
+caught an offline memory section.
+
+In read_page_owner(), which relies solely on boundary-aligned pfn_valid()
+to guard pfn_to_page(), skipping the boundary could cause pfn_to_page() to
+access an unmapped mem_section.
+
+Clamp the advance so it never crosses the next MAX_ORDER_NR_PAGES
+boundary.  This is safe for all three callers: the pageblock-iterating
+ones already handle boundary transitions in their outer loops, and for
+read_page_owner() the worst case is one extra PageBuddy check per 1024
+pages for a huge buddy block straddling the boundary.
+
+Link: https://lore.kernel.org/20260625014708.87386-1-ye.liu@linux.dev
+Link: https://lore.kernel.org/20260625014708.87386-2-ye.liu@linux.dev
+Link: https://lore.kernel.org/all/20260623065234.31866-2-ye.liu@linux.dev/ [1]
+Link: https://sashiko.dev/#/patchset/20260623065234.31866-2-ye.liu@linux.dev
+Signed-off-by: Ye Liu <ye.liu@linux.dev>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_owner.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/mm/page_owner.c b/mm/page_owner.c
+index ec96000251275..5c403bce35ce7 100644
+--- a/mm/page_owner.c
++++ b/mm/page_owner.c
+@@ -435,6 +435,12 @@ void __folio_copy_owner(struct folio *newfolio, struct folio *old)
+  * to skip less than the full buddy block, but that is acceptable for page owner
+  * iteration purposes.
+  *
++ * The lockless read of buddy_order_unsafe() can also return a garbage order if
++ * the page is concurrently allocated and PageBuddy is cleared between the check
++ * and the read. Clamp the advance at the next MAX_ORDER_NR_PAGES boundary so
++ * that a bogus order cannot carry @pfn into an unvalidated memory section,
++ * which would break callers that rely on boundary-aligned pfn_valid() checks.
++ *
+  * Return: true if the page was skipped (caller should continue its loop),
+  *         false if the page is not a buddy page and should be processed normally.
+  */
+@@ -446,8 +452,12 @@ static inline bool skip_buddy_pages(unsigned long *pfn, struct page *page)
+ 		return false;
+ 
+ 	order = buddy_order_unsafe(page);
+-	if (order <= MAX_PAGE_ORDER)
+-		*pfn += (1UL << order) - 1;
++	if (order <= MAX_PAGE_ORDER) {
++		unsigned long new_pfn = *pfn + (1UL << order);
++		unsigned long boundary = ALIGN(*pfn + 1, MAX_ORDER_NR_PAGES);
++
++		*pfn = min(new_pfn, boundary) - 1;
++	}
+ 
+ 	return true;
+ }
+-- 
+2.47.3
+

@@ -1,0 +1,59 @@
+From: Xuewen Wang <wangxuewen@kylinos.cn>
+Date: Fri, 26 Jun 2026 13:37:00 +0800
+Subject: [PATCH] mm: annotate data-race in cpu_needs_drain()
+
+KCSAN reports a data-race when cpu_needs_drain() reads another CPU's
+per-cpu folio_batch->nr without locking, while the owning CPU writes to it
+via folio_batch_add().
+
+Reading a slightly stale value is harmless -- cpu_needs_drain() only
+decides whether to schedule a drain, and the next iteration of
+__lru_add_drain_all() will re-check.  Use data_race() to annotate the
+intentional race.
+
+Link: https://lore.kernel.org/20260626053700.2036899-1-wangxuewen@kylinos.cn
+Signed-off-by: Xuewen Wang <wangxuewen@kylinos.cn>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/swap.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/swap.c b/mm/swap.c
+index 460e56370b3cc..0132ed0fb76b6 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -831,13 +831,13 @@ static bool cpu_needs_drain(unsigned int cpu)
+ 	struct cpu_fbatches *fbatches = &per_cpu(cpu_fbatches, cpu);
+ 
+ 	/* Check these in order of likelihood that they're not zero */
+-	return folio_batch_count(&fbatches->lru_add) ||
++	return data_race(folio_batch_count(&fbatches->lru_add) ||
+ 		folio_batch_count(&fbatches->lru_move_tail) ||
+ 		folio_batch_count(&fbatches->lru_deactivate_file) ||
+ 		folio_batch_count(&fbatches->lru_deactivate) ||
+ 		folio_batch_count(&fbatches->lru_lazyfree) ||
+ 		folio_batch_count(&fbatches->lru_activate) ||
+-		need_mlock_drain(cpu) ||
++		need_mlock_drain(cpu)) ||
+ 		has_bh_in_lru(cpu, NULL);
+ }
+ 
+-- 
+2.47.3
+

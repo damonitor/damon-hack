@@ -1,0 +1,272 @@
+From: Zhen Ni <zhen.ni@easystack.cn>
+Date: Thu, 25 Jun 2026 12:30:58 +0800
+Subject: [PATCH] mm/page_owner: add print_mode filter
+
+Patch series "mm/page_owner: add per-fd filter infrastructure for
+print_mode and NUMA filtering", v11.
+
+This patch series introduces per-file-descriptor filtering capabilities to the
+page_owner feature.
+
+
+This patch (of 4):
+
+Add a print_mode filter to page_owner that allows users to choose between
+printing stack traces, stack handles, or both, providing flexibility for
+different debugging and analysis scenarios.
+
+The filter provides three modes via page_owner:
+- Writing "mode=stack" prints stack traces for each page (default)
+- Writing "mode=handle" prints only the handle number
+- Writing "mode=stack_handle" prints both stack traces and handles
+
+The default stack mode maintains backward compatibility with existing
+usage, displaying complete stack traces for each page allocation.
+
+The handle mode dramatically reduces log size and improves performance by
+showing only the handle number instead of the full stack trace.  Testing
+shows handle mode reduces output size by ~66% (84MB vs 244MB) and improves
+read performance by ~4.4x compared to full stack output.  The mapping from
+handles to actual stack traces can be obtained via the show_stacks_handles
+interface.
+
+The stack_handle mode prints both stack traces and handles, making it
+easier to identify pages with the same allocation pattern by comparing
+handle numbers instead of comparing large stack traces.
+
+Example usage:
+  # Using the page_owner_filter tool (recommended)
+  ./page_owner_filter -m stack          # Print only stack traces (default)
+  ./page_owner_filter -m handle         # Print only handles
+  ./page_owner_filter -m stack_handle   # Print both stack and handles
+
+Sample output (handle mode):
+  Page allocated via order 0, migratetype Unmovable, gfp_mask 0x1100ca,
+  pid 1, tgid 1 (systemd), ts 123456789 ns
+  PFN 0x1000 type Unmovable Block 1 type Unmovable
+  Flags 0x3fffe800000084(referenced|lru|active|private|node=0|zone=1)
+  handle: 17432583
+  ...
+
+This implementation uses per-file-descriptor filter state stored in
+file->private_data, allowing each opener to have independent filter
+configuration.
+
+Link: https://lore.kernel.org/20260625043101.338794-1-zhen.ni@easystack.cn
+Link: https://lore.kernel.org/20260625043101.338794-2-zhen.ni@easystack.cn
+Signed-off-by: Zhen Ni <zhen.ni@easystack.cn>
+Tested-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Yichong Chen <chenyichong@uniontech.com>
+Cc: Ye Liu <ye.liu@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_owner.c | 129 +++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 123 insertions(+), 6 deletions(-)
+
+diff --git a/mm/page_owner.c b/mm/page_owner.c
+index b3252ebc03077..606af8709bdd1 100644
+--- a/mm/page_owner.c
++++ b/mm/page_owner.c
+@@ -61,6 +61,23 @@ struct stack_print_ctx {
+ 	u8 flags;
+ };
+ 
++enum page_owner_print_mode {
++	PAGE_OWNER_PRINT_STACK,
++	PAGE_OWNER_PRINT_HANDLE,
++	PAGE_OWNER_PRINT_STACK_HANDLE,
++};
++
++static const char * const page_owner_print_mode_strings[] = {
++	[PAGE_OWNER_PRINT_STACK]	= "stack",
++	[PAGE_OWNER_PRINT_HANDLE]	= "handle",
++	[PAGE_OWNER_PRINT_STACK_HANDLE]	= "stack_handle",
++};
++
++struct page_owner_filter_state {
++	enum page_owner_print_mode print_mode;
++	spinlock_t lock;
++};
++
+ static bool page_owner_enabled __initdata;
+ DEFINE_STATIC_KEY_FALSE(page_owner_inited);
+ 
+@@ -587,16 +604,23 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
+ static ssize_t
+ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
+ 		struct page *page, struct page_owner *page_owner,
+-		depot_stack_handle_t handle)
++		depot_stack_handle_t handle,
++		struct page_owner_filter_state *state)
+ {
+ 	int ret, pageblock_mt, page_mt;
+ 	char *kbuf;
++	enum page_owner_print_mode print_mode;
++	unsigned long flags;
+ 
+ 	count = min_t(size_t, count, PAGE_SIZE);
+ 	kbuf = kmalloc(count, GFP_KERNEL);
+ 	if (!kbuf)
+ 		return -ENOMEM;
+ 
++	spin_lock_irqsave(&state->lock, flags);
++	print_mode = state->print_mode;
++	spin_unlock_irqrestore(&state->lock, flags);
++
+ 	ret = scnprintf(kbuf, count,
+ 			"Page allocated via order %u, mask %#x(%pGg), pid %d, tgid %d (%s), ts %llu ns\n",
+ 			page_owner->order, page_owner->gfp_mask,
+@@ -615,9 +639,18 @@ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
+ 			migratetype_names[pageblock_mt],
+ 			&page->flags.f);
+ 
+-	ret += stack_depot_snprint(handle, kbuf + ret, count - ret, 0);
+-	if (ret >= count)
+-		goto err;
++	if (print_mode != PAGE_OWNER_PRINT_HANDLE) {
++		ret += stack_depot_snprint(handle, kbuf + ret, count - ret, 0);
++		if (ret >= count)
++			goto err;
++	}
++
++	if (print_mode != PAGE_OWNER_PRINT_STACK) {
++		ret += scnprintf(kbuf + ret, count - ret, "handle: %u\n",
++				 handle);
++		if (ret >= count)
++			goto err;
++	}
+ 
+ 	if (page_owner->last_migrate_reason != MIGRATE_REASON_NONE) {
+ 		ret += scnprintf(kbuf + ret, count - ret,
+@@ -705,6 +738,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 	struct page_ext *page_ext;
+ 	struct page_owner *page_owner;
+ 	depot_stack_handle_t handle;
++	struct page_owner_filter_state *state = file->private_data;
+ 
+ 	if (!static_branch_unlikely(&page_owner_inited))
+ 		return -EINVAL;
+@@ -782,7 +816,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 		page_owner_tmp = *page_owner;
+ 		page_ext_put(page_ext);
+ 		return print_page_owner(buf, count, pfn, page,
+-				&page_owner_tmp, handle);
++				&page_owner_tmp, handle, state);
+ ext_put_continue:
+ 		page_ext_put(page_ext);
+ 	}
+@@ -871,7 +905,90 @@ static void init_early_allocated_pages(void)
+ 		init_pages_in_zone(zone);
+ }
+ 
++static int page_owner_open(struct inode *inode, struct file *file)
++{
++	struct page_owner_filter_state *state;
++
++	state = kzalloc_obj(*state);
++	if (!state)
++		return -ENOMEM;
++
++	spin_lock_init(&state->lock);
++	state->print_mode = PAGE_OWNER_PRINT_STACK;
++	file->private_data = state;
++	return 0;
++}
++
++static int page_owner_release(struct inode *inode, struct file *file)
++{
++	kfree(file->private_data);
++	return 0;
++}
++
++static ssize_t page_owner_write(struct file *file,
++				 const char __user *buf,
++				 size_t count, loff_t *ppos)
++{
++	char *kbuf;
++	char *orig;
++	char *token;
++	int ret;
++	size_t max_input_len;
++	struct page_owner_filter_state *state = file->private_data;
++	enum page_owner_print_mode new_print_mode;
++	unsigned long flags;
++
++	/*
++	 * Maximum input length for filter commands:
++	 * 32: print_mode command max length is 17 ("mode=stack_handle").
++	 */
++	max_input_len = 32;
++
++	if (count > max_input_len)
++		return -EINVAL;
++
++	kbuf = memdup_user_nul(buf, count);
++	if (IS_ERR(kbuf))
++		return PTR_ERR(kbuf);
++
++	orig = kbuf;
++
++	spin_lock_irqsave(&state->lock, flags);
++	new_print_mode = state->print_mode;
++	spin_unlock_irqrestore(&state->lock, flags);
++
++	while ((token = strsep(&kbuf, " \t\n")) != NULL) {
++		if (*token == '\0')
++			continue;
++
++		if (!strncmp(token, "mode=", 5)) {
++			ret = sysfs_match_string(page_owner_print_mode_strings,
++						token + 5);
++			if (ret < 0)
++				goto out_free;
++			new_print_mode = ret;
++		} else {
++			ret = -EINVAL;
++			goto out_free;
++		}
++	}
++
++	spin_lock_irqsave(&state->lock, flags);
++	state->print_mode = new_print_mode;
++	spin_unlock_irqrestore(&state->lock, flags);
++
++	ret = count;
++
++out_free:
++	kfree(orig);
++	return ret;
++}
++
+ static const struct file_operations page_owner_fops = {
++	.owner		= THIS_MODULE,
++	.open		= page_owner_open,
++	.release	= page_owner_release,
++	.write		= page_owner_write,
+ 	.read		= read_page_owner,
+ 	.llseek		= lseek_page_owner,
+ };
+@@ -1003,7 +1120,7 @@ static int __init pageowner_init(void)
+ 		return 0;
+ 	}
+ 
+-	debugfs_create_file("page_owner", 0400, NULL, NULL, &page_owner_fops);
++	debugfs_create_file("page_owner", 0600, NULL, NULL, &page_owner_fops);
+ 	dir = debugfs_create_dir("page_owner_stacks", NULL);
+ 	debugfs_create_file("show_stacks", 0400, dir,
+ 			    (void *)(STACK_PRINT_FLAG_STACK |
+-- 
+2.47.3
+

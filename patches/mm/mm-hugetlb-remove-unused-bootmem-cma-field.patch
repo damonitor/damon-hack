@@ -1,0 +1,120 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 12 Jun 2026 11:59:02 +0800
+Subject: [PATCH] mm/hugetlb: remove unused bootmem cma field
+
+struct huge_bootmem_page no longer needs to keep the CMA pointer.  The
+bootmem path only needs to remember whether a huge page came from CMA,
+which is already encoded in the flags field.
+
+Set HUGE_BOOTMEM_CMA when the page is allocated, drop the unused cma field
+together with the redundant assignments, and simplify the early CMA
+bootmem allocation fallback path now that the cma pointer no longer has to
+be stored in struct huge_bootmem_page.
+
+Link: https://lore.kernel.org/20260612035903.2468601-19-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c     |  5 +----
+ mm/hugetlb_cma.c | 29 +++++++++++------------------
+ mm/internal.h    |  2 --
+ 3 files changed, 12 insertions(+), 24 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 47c3d6d11c58e..fb7ad2a4a26b4 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3076,10 +3076,7 @@ static bool __init alloc_bootmem_huge_page(struct hstate *h, int nid)
+ 	 */
+ 	INIT_LIST_HEAD(&m->list);
+ 	m->hstate = h;
+-	if (!hugetlb_early_cma(h)) {
+-		m->cma = NULL;
+-		m->flags = 0;
+-	}
++	m->flags = hugetlb_early_cma(h) ? HUGE_BOOTMEM_CMA : 0;
+ 
+ 	/* CMA pages: zone-crossing is validated in hugetlb_cma_reserve(). */
+ 	if (!hugetlb_early_cma(h) &&
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index e487d0ffffc01..4dfce68b354a9 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -59,31 +59,24 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ void * __init hugetlb_cma_alloc_bootmem(struct hstate *h, int nid, bool node_exact)
+ {
+ 	struct cma *cma;
+-	struct huge_bootmem_page *m;
++	void *m;
+ 	int node;
+ 
+ 	cma = hugetlb_cma[nid];
+ 	m = cma_reserve_early(cma, huge_page_size(h));
+-	if (!m) {
+-		if (node_exact)
+-			return NULL;
++	if (m || node_exact)
++		return m;
+ 
+-		for_each_node_mask(node, hugetlb_bootmem_nodes) {
+-			cma = hugetlb_cma[node];
+-			if (!cma || node == nid)
+-				continue;
+-			m = cma_reserve_early(cma, huge_page_size(h));
+-			if (m)
+-				break;
+-		}
+-	}
+-
+-	if (m) {
+-		m->flags = HUGE_BOOTMEM_CMA;
+-		m->cma = cma;
++	for_each_node_mask(node, hugetlb_bootmem_nodes) {
++		cma = hugetlb_cma[node];
++		if (!cma || node == nid)
++			continue;
++		m = cma_reserve_early(cma, huge_page_size(h));
++		if (m)
++			return m;
+ 	}
+ 
+-	return m;
++	return NULL;
+ }
+ 
+ static int __init cmdline_parse_hugetlb_cma(char *p)
+diff --git a/mm/internal.h b/mm/internal.h
+index 3401759924d93..39c9564fba0ed 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -24,13 +24,11 @@
+ 
+ struct folio_batch;
+ struct hstate;
+-struct cma;
+ 
+ struct huge_bootmem_page {
+ 	struct list_head list;
+ 	struct hstate *hstate;
+ 	unsigned long flags;
+-	struct cma *cma;
+ };
+ 
+ /*
+-- 
+2.47.3
+

@@ -1,0 +1,89 @@
+From: Wei Yang <richard.weiyang@gmail.com>
+Date: Wed, 24 Jun 2026 06:53:53 +0000
+Subject: [PATCH] mm/page_vma_mapped: fix device-private PMD handling
+
+Commit 65edfda6f3f2 ("mm/rmap: extend rmap and migration support
+device-private entries") introduced the concept of device-private PMD
+entries, but did not correctly update the rmap walk code to account for
+them.
+
+As a result, when page_vma_mapped_walk() encounters device-private PMD
+entries, it takes no action other than to acquire the PMD lock and exit.
+
+However this is highly problematic for two reasons - firstly, device
+private entries possess a PFN so check_pmd() needs to be called to ensure
+an overlapping PFN range.
+
+Secondly, and more importantly, if PVMW_MIGRATION is set the caller
+assumes the returned entry is a migration entry, resulting in memory
+corruption when the caller tries to interpret the device private entry as
+such.
+
+In addition, commit 146287290023 ("mm/huge_memory: implement
+device-private THP splitting") allowed device private PMDs to be split
+like THP mappings, but again did not update this code path.
+
+As a result, we might race a PMD split prior to acquiring the PMD lock.
+
+This patch addresses all of these issues by invoking check_pmd(), ensuring
+PVMW_MIGRATION is not set and checks whether a split raced as we do for
+PMD THP and migration entries.
+
+Link: https://lore.kernel.org/20260624065353.1622-1-richard.weiyang@gmail.com
+Fixes: 65edfda6f3f2 ("mm/rmap: extend rmap and migration support device-private entries")
+Signed-off-by: Wei Yang <richard.weiyang@gmail.com>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Suggested-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_vma_mapped.c | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/mm/page_vma_mapped.c b/mm/page_vma_mapped.c
+index 2ccbabfb2cc17..17dff8aab9f9e 100644
+--- a/mm/page_vma_mapped.c
++++ b/mm/page_vma_mapped.c
+@@ -269,14 +269,24 @@ bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw)
+ 			/* THP pmd was split under us: handle on pte level */
+ 			spin_unlock(pvmw->ptl);
+ 			pvmw->ptl = NULL;
+-		} else if (!pmd_present(pmde)) {
+-			const softleaf_t entry = softleaf_from_pmd(pmde);
++		} else if (pmd_is_device_private_entry(pmde)) {
++			softleaf_t entry;
++
++			pvmw->ptl = pmd_lock(mm, pvmw->pmd);
++			pmde = *pvmw->pmd;
++			entry = softleaf_from_pmd(pmde);
+ 
+-			if (softleaf_is_device_private(entry)) {
+-				pvmw->ptl = pmd_lock(mm, pvmw->pmd);
++			if (likely(softleaf_is_device_private(entry))) {
++				if (pvmw->flags & PVMW_MIGRATION)
++					return not_found(pvmw);
++				if (!check_pmd(softleaf_to_pfn(entry), pvmw))
++					return not_found(pvmw);
+ 				return true;
+ 			}
+-
++			/* device-private pmd was split under us: handle on pte level */
++			spin_unlock(pvmw->ptl);
++			pvmw->ptl = NULL;
++		} else if (!pmd_present(pmde)) {
+ 			if ((pvmw->flags & PVMW_SYNC) &&
+ 			    thp_vma_suitable_order(vma, pvmw->address,
+ 						   PMD_ORDER) &&
+-- 
+2.47.3
+

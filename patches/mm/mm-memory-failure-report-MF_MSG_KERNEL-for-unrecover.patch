@@ -1,0 +1,84 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Fri, 26 Jun 2026 08:33:17 -0700
+Subject: [PATCH] mm/memory-failure: report MF_MSG_KERNEL for unrecoverable
+ kernel pages
+
+The previous patch teaches get_any_page() to return -ENOTRECOVERABLE for
+stable unhandlable kernel pages (PG_reserved, slab, page tables,
+large-kmalloc).  memory_failure() still folds every negative return into
+MF_MSG_GET_HWPOISON, so callers that want to react to the unrecoverable
+cases (a panic option, smarter logging) cannot tell them apart from
+transient page-allocator races.
+
+Turn the post-call branch into a switch over the get_hwpoison_page()
+return code: map -ENOTRECOVERABLE to MF_MSG_KERNEL and any other negative
+return to MF_MSG_GET_HWPOISON.  case 0 keeps the existing free-buddy /
+kernel-high-order handling and case 1 falls through to the rest of
+memory_failure() unchanged.
+
+The MF_MSG_KERNEL label and tracepoint string are kept as "reserved kernel
+page" to avoid breaking userspace tools that match on those literals; the
+enum value still adequately tags the failure even though it now also
+covers slab, page tables and large-kmalloc pages.
+
+Link: https://lore.kernel.org/20260626-ecc_panic-v10-3-6dacb8ad024d@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory-failure.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 020dfbc91c7d7..ec86ed7cf661f 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -2434,7 +2434,8 @@ int memory_failure(unsigned long pfn, int flags)
+ 	 * that may make page_ref_freeze()/page_ref_unfreeze() mismatch.
+ 	 */
+ 	res = get_hwpoison_page(p, flags);
+-	if (!res) {
++	switch (res) {
++	case 0:
+ 		if (is_free_buddy_page(p)) {
+ 			if (take_page_off_buddy(p)) {
+ 				page_ref_inc(p);
+@@ -2453,7 +2454,19 @@ int memory_failure(unsigned long pfn, int flags)
+ 			res = action_result(pfn, MF_MSG_KERNEL_HIGH_ORDER, MF_IGNORED);
+ 		}
+ 		goto unlock_mutex;
+-	} else if (res < 0) {
++	case 1:
++		/* Got a refcount on a handlable page. */
++		break;
++	case -ENOTRECOVERABLE:
++		/*
++		 * Stable unhandlable kernel-owned page (PG_reserved,
++		 * slab, page tables, large-kmalloc).
++		 * No recovery possible.
++		 */
++		res = action_result(pfn, MF_MSG_KERNEL, MF_IGNORED);
++		goto unlock_mutex;
++	default:
++		/* Transient lifecycle race with the page allocator. */
+ 		res = action_result(pfn, MF_MSG_GET_HWPOISON, MF_IGNORED);
+ 		goto unlock_mutex;
+ 	}
+-- 
+2.47.3
+

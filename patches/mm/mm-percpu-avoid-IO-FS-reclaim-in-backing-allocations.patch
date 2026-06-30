@@ -1,0 +1,81 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Thu, 18 Jun 2026 21:04:14 +0800
+Subject: [PATCH] mm/percpu: avoid IO/FS reclaim in backing allocations
+
+Commit 9a5b183941b5 ("mm, percpu: do not consider sleepable allocations
+atomic") allows sleepable GFP_NOIO and GFP_NOFS percpu allocations to take
+pcpu_alloc_mutex.  This avoids premature allocation failures, but it also
+makes the mutex visible to callers from constrained IO/FS contexts.
+
+Thread A calls pcpu_alloc_noprof() with GFP_KERNEL and takes
+pcpu_alloc_mutex.  Since the internal allocation is not constrained by
+NOFS, it may enter FS reclaim while still holding pcpu_alloc_mutex,
+creating a dependency like: pcpu_alloc_mutex -> fs_reclaim -> FS lock
+
+At the same time, Thread B may already hold an FS lock and then call
+pcpu_alloc_noprof() with GFP_NOFS.  It will try to acquire
+pcpu_alloc_mutex and block, creating the reverse dependency: FS lock ->
+pcpu_alloc_mutex
+
+This can still form a potential deadlock cycle.
+
+Avoid the dependency by restricting percpu backing allocations to
+GFP_NOIO.  The public allocation still uses the caller's GFP context to
+decide whether it may block, but the internal memory allocations performed
+while pcpu_alloc_mutex is held cannot recurse into IO or FS reclaim.
+
+Link: https://lore.kernel.org/20260618130414.96383-5-kaitao.cheng@linux.dev
+Fixes: 9a5b183941b5 ("mm, percpu: do not consider sleepable allocations atomic")
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Shivam Kalra <shivamkalra98@zohomail.in>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/percpu.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/mm/percpu.c b/mm/percpu.c
+index 4d89965cba16f..a802d72c116fb 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -1726,9 +1726,8 @@ static void pcpu_alloc_tag_free_hook(struct pcpu_chunk *chunk, int off, size_t s
+  * @gfp: allocation flags
+  *
+  * Allocate percpu area of @size bytes aligned at @align.  If @gfp doesn't
+- * contain %GFP_KERNEL, the allocation is atomic. If @gfp has __GFP_NOWARN
+- * then no warning will be triggered on invalid or failed allocation
+- * requests.
++ * allow blocking, the allocation is atomic. If @gfp has __GFP_NOWARN then no
++ * warning will be triggered on invalid or failed allocation requests.
+  *
+  * RETURNS:
+  * Percpu pointer to the allocated area on success, NULL on failure.
+@@ -1749,8 +1748,17 @@ void __percpu *pcpu_alloc_noprof(size_t size, size_t align, bool reserved,
+ 	size_t bits, bit_align;
+ 
+ 	gfp = current_gfp_context(gfp);
+-	/* whitelisted flags that can be passed to the backing allocators */
+-	pcpu_gfp = gfp & (GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN);
++	/*
++	 * Allowlisted flags that can be passed to the backing allocators.
++	 * Backing allocations under pcpu_alloc_mutex must not recurse into
++	 * IO/FS reclaim.  Otherwise a GFP_KERNEL caller holding the mutex can
++	 * block on reclaim while a GFP_NOIO/NOFS caller holding an IO/FS lock
++	 * waits for the same mutex.
++	 *
++	 * Do not pass __GFP_NOFAIL.  A small percpu allocation may need many
++	 * backing pages, making nofail reclaim too costly under NOIO/NOFS.
++	 */
++	pcpu_gfp = gfp & (GFP_NOIO | __GFP_NORETRY | __GFP_NOWARN);
+ 	is_atomic = !gfpflags_allow_blocking(gfp);
+ 	do_warn = !(gfp & __GFP_NOWARN);
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,103 @@
+From: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Date: Fri, 26 Jun 2026 09:50:02 +0800
+Subject: [PATCH] mm/zsmalloc: drop class lock before freeing zspage
+
+Currently in zs_free(), the class->lock is held until the zspage is
+completely freed and the counters are updated.  However, freeing pages
+back to the buddy allocator requires acquiring the zone lock.
+
+Under heavy memory pressure, zone lock contention can be severe.  When
+this happens, the CPU holding the class->lock will stall waiting for the
+zone lock, thereby blocking all other CPUs attempting to acquire the same
+class->lock.
+
+This patch shrinks the critical section of the class->lock to reduce lock
+contention.  By moving the actual page freeing process outside the
+class->lock, we can improve the concurrency performance of zs_free().
+
+Testing on the RADXA O6 platform shows that with 12 CPUs concurrently
+performing zs_free() operations, the execution time is reduced by 20%.
+
+Link: https://lore.kernel.org/20260626015003.2965881-4-haowenchao22@gmail.com
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Signed-off-by: Wenchao Hao <haowenchao@xiaomi.com>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Joshua Hahn <joshua.hahnjy@gmail.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 29 +++++++++++++++++++++++------
+ 1 file changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 9fd25b60c5562..8e654fe61f425 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -883,13 +883,10 @@ static int trylock_zspage(struct zspage *zspage)
+ 	return 0;
+ }
+ 
+-static void __free_zspage(struct zs_pool *pool, struct size_class *class,
+-				struct zspage *zspage)
++static inline void __free_zspage_lockless(struct zspage *zspage)
+ {
+ 	struct zpdesc *zpdesc, *next;
+ 
+-	assert_spin_locked(&class->lock);
+-
+ 	VM_BUG_ON(get_zspage_inuse(zspage));
+ 	VM_BUG_ON(zspage->fullness != ZS_INUSE_RATIO_0);
+ 
+@@ -905,7 +902,13 @@ static void __free_zspage(struct zs_pool *pool, struct size_class *class,
+ 	} while (zpdesc != NULL);
+ 
+ 	cache_free_zspage(zspage);
++}
+ 
++static void __free_zspage(struct zs_pool *pool, struct size_class *class,
++			  struct zspage *zspage)
++{
++	assert_spin_locked(&class->lock);
++	__free_zspage_lockless(zspage);
+ 	class_stat_sub(class, ZS_OBJS_ALLOCATED, class->objs_per_zspage);
+ 	atomic_long_sub(class->pages_per_zspage, &pool->pages_allocated);
+ }
+@@ -1518,6 +1521,7 @@ void zs_free(struct zs_pool *pool, unsigned long handle)
+ 	unsigned long obj;
+ 	struct size_class *class;
+ 	int fullness;
++	struct zspage *zspage_to_free = NULL;
+ 
+ 	if (IS_ERR_OR_NULL((void *)handle))
+ 		return;
+@@ -1528,10 +1532,23 @@ void zs_free(struct zs_pool *pool, unsigned long handle)
+ 	obj_free(class->size, obj);
+ 
+ 	fullness = fix_fullness_group(class, zspage);
+-	if (fullness == ZS_INUSE_RATIO_0)
+-		free_zspage(pool, class, zspage);
++	if (fullness == ZS_INUSE_RATIO_0) {
++		if (trylock_zspage(zspage)) {
++			remove_zspage(class, zspage);
++			class_stat_sub(class, ZS_OBJS_ALLOCATED,
++				       class->objs_per_zspage);
++			zspage_to_free = zspage;
++		} else {
++			kick_deferred_free(pool);
++		}
++	}
+ 
+ 	spin_unlock(&class->lock);
++
++	if (zspage_to_free) {
++		__free_zspage_lockless(zspage_to_free);
++		atomic_long_sub(class->pages_per_zspage, &pool->pages_allocated);
++	}
+ 	cache_free_handle(handle);
+ }
+ EXPORT_SYMBOL_GPL(zs_free);
+-- 
+2.47.3
+

@@ -1,0 +1,94 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Mon, 15 Jun 2026 10:49:08 -0700
+Subject: [PATCH] mm/kmemleak: stop the per-cpu and struct page scans early too
+
+The per-cpu and struct page scan loops have no reschedule-stop check of
+their own: once a scan is interrupted they keep calling scan_block() for
+every remaining block, which scans nothing useful.
+
+Propagate scan_block()'s interrupted status through scan_large_block() and
+break both loops as soon as it is set.
+
+Link: https://lore.kernel.org/20260615-kmemleak-stack-resched-v3-3-acecd7d7fd92@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Suggested-by: Catalin Marinas <catalin.marinas@arm.com>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Reviewed-by: Oleg Nesterov <oleg@redhat.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Qian Cai <cai@lca.pw>
+Cc: SeongJae Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kmemleak.c | 23 +++++++++++++++++------
+ 1 file changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index 916af7cecb3b4..7fa7124727e36 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -1558,18 +1558,22 @@ static int scan_block(void *_start, void *_end,
+ 
+ /*
+  * Scan a large memory block in MAX_SCAN_SIZE chunks to reduce the latency.
++ * Return non-zero if the scan was interrupted.
+  */
+ #ifdef CONFIG_SMP
+-static void scan_large_block(void *start, void *end)
++static int scan_large_block(void *start, void *end)
+ {
+ 	void *next;
+ 
+ 	while (start < end) {
+ 		next = min(start + MAX_SCAN_SIZE, end);
+-		scan_block(start, next, NULL);
++		if (scan_block(start, next, NULL))
++			return 1;
+ 		start = next;
+ 		cond_resched();
+ 	}
++
++	return 0;
+ }
+ #endif
+ 
+@@ -1889,9 +1893,11 @@ static void kmemleak_scan(void)
+ 
+ #ifdef CONFIG_SMP
+ 	/* per-cpu sections scanning */
+-	for_each_possible_cpu(i)
+-		scan_large_block(__per_cpu_start + per_cpu_offset(i),
+-				 __per_cpu_end + per_cpu_offset(i));
++	for_each_possible_cpu(i) {
++		if (scan_large_block(__per_cpu_start + per_cpu_offset(i),
++				     __per_cpu_end + per_cpu_offset(i)))
++			break;
++	}
+ #endif
+ 
+ 	/*
+@@ -1902,6 +1908,7 @@ static void kmemleak_scan(void)
+ 		unsigned long start_pfn = zone->zone_start_pfn;
+ 		unsigned long end_pfn = zone_end_pfn(zone);
+ 		unsigned long pfn;
++		int stop = 0;
+ 
+ 		for (pfn = start_pfn; pfn < end_pfn; pfn++) {
+ 			struct page *page = pfn_to_online_page(pfn);
+@@ -1918,8 +1925,12 @@ static void kmemleak_scan(void)
+ 			/* only scan if page is in use */
+ 			if (page_count(page) == 0)
+ 				continue;
+-			scan_block(page, page + 1, NULL);
++			stop = scan_block(page, page + 1, NULL);
++			if (stop)
++				break;
+ 		}
++		if (stop)
++			break;
+ 	}
+ 	put_online_mems();
+ 
+-- 
+2.47.3
+

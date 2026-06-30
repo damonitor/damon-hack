@@ -1,0 +1,42 @@
+From: Yousef Alhouseen <alhouseenyousef@gmail.com>
+Date: Sun, 28 Jun 2026 02:43:14 +0200
+Subject: [PATCH] tmpfs: zero unused folio tail for long symlinks
+
+shmem_symlink() marks the entire folio uptodate after copying only the
+NUL-terminated link target.  The remainder of the freshly allocated folio
+is left uninitialized.
+
+Reclaim may pass the whole folio to a swap compressor.  KMSAN observed
+sw842_compress() computing a checksum over the uninitialized tail.  If the
+folio is written to a swap device, those bytes can also leave the kernel.
+
+Zero the remainder of the folio before marking it uptodate and dirty.
+
+Link: https://lore.kernel.org/20260628004314.27370-1-alhouseenyousef@gmail.com
+Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+Reported-by: syzbot+bf5586280a66e9ccdfa9@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=bf5586280a66e9ccdfa9
+Signed-off-by: Yousef Alhouseen <alhouseenyousef@gmail.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index b51f83c970bb3..b06c1ae2f50c3 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -4057,6 +4057,7 @@ static int shmem_symlink(struct mnt_idmap *idmap, struct inode *dir,
+ 			goto out_remove_offset;
+ 		inode->i_op = &shmem_symlink_inode_operations;
+ 		memcpy(folio_address(folio), symname, len);
++		folio_zero_range(folio, len, folio_size(folio) - len);
+ 		folio_mark_uptodate(folio);
+ 		folio_mark_dirty(folio);
+ 		folio_unlock(folio);
+-- 
+2.47.3
+

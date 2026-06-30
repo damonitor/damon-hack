@@ -1,0 +1,79 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 12 Jun 2026 11:58:56 +0800
+Subject: [PATCH] mm/hugetlb_cma: validate hugetlb CMA range by zone at reserve
+ time
+
+Hugetlb CMA allocation currently has to cope with CMA areas that span
+multiple zones.
+
+Validate the reserved CMA range up front in hugetlb_cma_reserve() so later
+hugetlb CMA allocations can assume a zone-consistent area.
+
+Also drop the pfn_valid() check from cma_validate_zones().  mem_section is
+not fully initialized at this point, so the check can trigger false
+warnings.  Keep the sanity check in cma_activate_area() instead.
+
+Link: https://lore.kernel.org/20260612035903.2468601-13-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Oscar Salvador (SUSE) <osalvador@suse.de>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/cma.c         | 3 ++-
+ mm/hugetlb_cma.c | 6 ++++--
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/mm/cma.c b/mm/cma.c
+index a13ce4999b39f..31073738f2aca 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -126,7 +126,6 @@ bool cma_validate_zones(struct cma *cma)
+ 		 * to be in the same zone. Simplify by forcing the entire
+ 		 * CMA resv range to be in the same zone.
+ 		 */
+-		WARN_ON_ONCE(!pfn_valid(base_pfn));
+ 		if (pfn_range_intersects_zones(cma->nid, base_pfn, cmr->count)) {
+ 			set_bit(CMA_ZONES_INVALID, &cma->flags);
+ 			return false;
+@@ -165,6 +164,8 @@ static void __init cma_activate_area(struct cma *cma)
+ 			bitmap_set(cmr->bitmap, 0, bitmap_count);
+ 		}
+ 
++		WARN_ON_ONCE(!pfn_valid(cmr->base_pfn));
++
+ 		for (pfn = early_pfn[r]; pfn < cmr->base_pfn + cmr->count;
+ 		     pfn += pageblock_nr_pages)
+ 			init_cma_reserved_pageblock(pfn_to_page(pfn));
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index 39344d6c78d84..ce999391cc148 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -231,9 +231,11 @@ void __init hugetlb_cma_reserve(void)
+ 		res = cma_declare_contiguous_multi(size, gigantic_page_size,
+ 					HUGETLB_PAGE_ORDER, name,
+ 					&hugetlb_cma[nid], nid);
+-		if (res) {
+-			pr_warn("hugetlb_cma: reservation failed: err %d, node %d",
++		if (res || !cma_validate_zones(hugetlb_cma[nid])) {
++			pr_warn("hugetlb_cma: %s: err %d, node %d\n",
++				res ? "reservation failed" : "reserved area spans zones",
+ 				res, nid);
++			hugetlb_cma[nid] = NULL;
+ 			continue;
+ 		}
+ 
+-- 
+2.47.3
+

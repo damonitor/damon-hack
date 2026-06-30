@@ -1,0 +1,111 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 12 Jun 2026 11:59:03 +0800
+Subject: [PATCH] mm/mm_init: fold __init_page_from_nid() into
+ __init_deferred_page()
+
+__init_page_from_nid() no longer has external users and is only used
+locally in mm/mm_init.c under CONFIG_DEFERRED_STRUCT_PAGE_INIT.
+
+Fold it into its sole caller __init_deferred_page() and remove the
+separate helper declaration.
+
+Link: https://lore.kernel.org/20260612035903.2468601-20-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h |  1 -
+ mm/mm_init.c  | 42 ++++++++++++++++--------------------------
+ 2 files changed, 16 insertions(+), 27 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 39c9564fba0ed..dc10291f14bb9 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1760,7 +1760,6 @@ static inline bool pte_needs_soft_dirty_wp(struct vm_area_struct *vma, pte_t pte
+ 
+ void __meminit __init_single_page(struct page *page, unsigned long pfn,
+ 				unsigned long zone, int nid);
+-void __meminit __init_page_from_nid(unsigned long pfn, int nid);
+ 
+ /* shrinker related functions */
+ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg,
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index c76498b7abd1f..4026b084bd4bf 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -688,31 +688,6 @@ static __meminit void pageblock_migratetype_init_range(unsigned long pfn,
+ }
+ #endif
+ 
+-/*
+- * Initialize a reserved page unconditionally, finding its zone first.
+- */
+-void __meminit __init_page_from_nid(unsigned long pfn, int nid)
+-{
+-	pg_data_t *pgdat;
+-	int zid;
+-
+-	pgdat = NODE_DATA(nid);
+-
+-	for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+-		struct zone *zone = &pgdat->node_zones[zid];
+-
+-		if (zone_spans_pfn(zone, pfn))
+-			break;
+-	}
+-	__init_single_page(pfn_to_page(pfn), pfn, zid, nid);
+-
+-	if (pageblock_aligned(pfn)) {
+-		enum migratetype mt =
+-			kho_scratch_migratetype(pfn, MIGRATE_MOVABLE);
+-		init_pageblock_migratetype(pfn_to_page(pfn), mt, false);
+-	}
+-}
+-
+ #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
+ static inline void pgdat_set_deferred_range(pg_data_t *pgdat)
+ {
+@@ -771,10 +746,25 @@ defer_init(int nid, unsigned long pfn, unsigned long end_pfn)
+ 
+ static void __meminit __init_deferred_page(unsigned long pfn, int nid)
+ {
++	pg_data_t *pgdat = NODE_DATA(nid);
++	int zid;
++
+ 	if (early_page_initialised(pfn, nid))
+ 		return;
+ 
+-	__init_page_from_nid(pfn, nid);
++	for (zid = 0; zid < MAX_NR_ZONES; zid++) {
++		struct zone *zone = &pgdat->node_zones[zid];
++
++		if (zone_spans_pfn(zone, pfn))
++			break;
++	}
++	__init_single_page(pfn_to_page(pfn), pfn, zid, nid);
++
++	if (pageblock_aligned(pfn)) {
++		enum migratetype mt =
++			kho_scratch_migratetype(pfn, MIGRATE_MOVABLE);
++		init_pageblock_migratetype(pfn_to_page(pfn), mt, false);
++	}
+ }
+ #else
+ static inline void pgdat_set_deferred_range(pg_data_t *pgdat) {}
+-- 
+2.47.3
+

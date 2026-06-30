@@ -1,0 +1,174 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Thu, 25 Jun 2026 11:48:57 -0700
+Subject: [PATCH] mm: move alloc tag to mm
+
+The alloc tagging work is really mm-specific, so move alloc_tag.c to mm/
+and additionally update the MAINTAINERS entry to place it within memory
+management and port over the Kconfig and Makefile code to mm.
+
+Link: https://lore.kernel.org/20260625184857.2193482-3-surenb@google.com
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Tested-by: Hao Ge <hao.ge@linux.dev>
+Acked-by: Hao Ge <hao.ge@linux.dev>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Harry Yoo (Oracle) <harry@kernel.org>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ MAINTAINERS             | 20 ++++++++++----------
+ lib/Kconfig.debug       | 28 ----------------------------
+ lib/Makefile            |  1 -
+ mm/Kconfig.debug        | 28 ++++++++++++++++++++++++++++
+ mm/Makefile             |  1 +
+ {lib => mm}/alloc_tag.c |  0
+ 6 files changed, 39 insertions(+), 39 deletions(-)
+ rename {lib => mm}/alloc_tag.c (100%)
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index a055c9063826a..f55cc75801f4c 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -16885,16 +16885,6 @@ F:	mm/mm_init.c
+ F:	mm/rodata_test.c
+ F:	tools/testing/memblock/
+ 
+-MEMORY ALLOCATION PROFILING
+-M:	Suren Baghdasaryan <surenb@google.com>
+-R:	Hao Ge <hao.ge@linux.dev>
+-L:	linux-mm@kvack.org
+-S:	Maintained
+-F:	Documentation/mm/allocation-profiling.rst
+-F:	include/linux/alloc_tag.h
+-F:	include/linux/pgalloc_tag.h
+-F:	lib/alloc_tag.c
+-
+ MEMORY CONTROLLER DRIVERS
+ M:	Krzysztof Kozlowski <krzk@kernel.org>
+ L:	linux-kernel@vger.kernel.org
+@@ -16939,6 +16929,16 @@ T:	quilt git://git.kernel.org/pub/scm/linux/kernel/git/akpm/25-new
+ F:	mm/
+ F:	tools/mm/
+ 
++MEMORY MANAGEMENT - ALLOCATION PROFILING (ALLOC TAG)
++M:	Suren Baghdasaryan <surenb@google.com>
++R:	Hao Ge <hao.ge@linux.dev>
++L:	linux-mm@kvack.org
++S:	Maintained
++F:	Documentation/mm/allocation-profiling.rst
++F:	include/linux/alloc_tag.h
++F:	include/linux/pgalloc_tag.h
++F:	mm/alloc_tag.c
++
+ MEMORY MANAGEMENT - BALLOON
+ M:	Andrew Morton <akpm@linux-foundation.org>
+ M:	David Hildenbrand <david@kernel.org>
+diff --git a/lib/Kconfig.debug b/lib/Kconfig.debug
+index 1244dcac2294a..b82515cde538c 100644
+--- a/lib/Kconfig.debug
++++ b/lib/Kconfig.debug
+@@ -1048,34 +1048,6 @@ config CODE_TAGGING
+ 	bool
+ 	select KALLSYMS
+ 
+-config MEM_ALLOC_PROFILING
+-	bool "Enable memory allocation profiling"
+-	default n
+-	depends on MMU
+-	depends on PROC_FS
+-	depends on !DEBUG_FORCE_WEAK_PER_CPU
+-	select CODE_TAGGING
+-	select PAGE_EXTENSION
+-	select SLAB_OBJ_EXT
+-	help
+-	  Track allocation source code and record total allocation size
+-	  initiated at that code location. The mechanism can be used to track
+-	  memory leaks with a low performance and memory impact.
+-
+-config MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT
+-	bool "Enable memory allocation profiling by default"
+-	default y
+-	depends on MEM_ALLOC_PROFILING
+-
+-config MEM_ALLOC_PROFILING_DEBUG
+-	bool "Memory allocation profiler debugging"
+-	default n
+-	depends on MEM_ALLOC_PROFILING
+-	select MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT
+-	help
+-	  Adds warnings with helpful error messages for memory allocation
+-	  profiling.
+-
+ source "lib/Kconfig.kasan"
+ source "lib/Kconfig.kfence"
+ source "lib/Kconfig.kmsan"
+diff --git a/lib/Makefile b/lib/Makefile
+index 7f75cc6edf94a..531a0be880624 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -196,7 +196,6 @@ obj-$(CONFIG_OF_RECONFIG_NOTIFIER_ERROR_INJECT) += \
+ obj-$(CONFIG_FUNCTION_ERROR_INJECTION) += error-inject.o
+ 
+ obj-$(CONFIG_CODE_TAGGING) += codetag.o
+-obj-$(CONFIG_MEM_ALLOC_PROFILING) += alloc_tag.o
+ 
+ lib-$(CONFIG_GENERIC_BUG) += bug.o
+ 
+diff --git a/mm/Kconfig.debug b/mm/Kconfig.debug
+index 91b3e027b7535..5737a504efbbe 100644
+--- a/mm/Kconfig.debug
++++ b/mm/Kconfig.debug
+@@ -320,3 +320,31 @@ config PER_VMA_LOCK_STATS
+ 	  overhead in the page fault path.
+ 
+ 	  If in doubt, say N.
++
++config MEM_ALLOC_PROFILING
++	bool "Enable memory allocation profiling"
++	default n
++	depends on MMU
++	depends on PROC_FS
++	depends on !DEBUG_FORCE_WEAK_PER_CPU
++	select CODE_TAGGING
++	select PAGE_EXTENSION
++	select SLAB_OBJ_EXT
++	help
++	  Track allocation source code and record total allocation size
++	  initiated at that code location. The mechanism can be used to track
++	  memory leaks with a low performance and memory impact.
++
++config MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT
++	bool "Enable memory allocation profiling by default"
++	default y
++	depends on MEM_ALLOC_PROFILING
++
++config MEM_ALLOC_PROFILING_DEBUG
++	bool "Memory allocation profiler debugging"
++	default n
++	depends on MEM_ALLOC_PROFILING
++	select MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT
++	help
++	  Adds warnings with helpful error messages for memory allocation
++	  profiling.
+diff --git a/mm/Makefile b/mm/Makefile
+index eff9f9e7e061c..4fc713867b9bd 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -147,3 +147,4 @@ obj-$(CONFIG_SHRINKER_DEBUG) += shrinker_debug.o
+ obj-$(CONFIG_EXECMEM) += execmem.o
+ obj-$(CONFIG_TMPFS_QUOTA) += shmem_quota.o
+ obj-$(CONFIG_LAZY_MMU_MODE_KUNIT_TEST) += tests/lazy_mmu_mode_kunit.o
++obj-$(CONFIG_MEM_ALLOC_PROFILING) += alloc_tag.o
+diff --git a/lib/alloc_tag.c b/mm/alloc_tag.c
+similarity index 100%
+rename from lib/alloc_tag.c
+rename to mm/alloc_tag.c
+-- 
+2.47.3
+

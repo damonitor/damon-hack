@@ -1,0 +1,81 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Mon, 8 Jun 2026 07:32:42 -0700
+Subject: [PATCH] mm/swap_state: remove unnecessary lru_add_drain() from
+ readahead
+
+swap_cluster_readahead() and swap_vma_readahead() end the readahead loop
+with an explicit lru_add_drain() call.  That drain is a leftover from
+2.6.12 era code and serves no functional purpose for the callers:
+
+- do_swap_page() ignores LRU residency for the readahead folios;
+  it only needs the target folio it called swapin_readahead() for,
+  and if the write-fault path needs the target folio on the LRU to count
+  references accurately, it runs its own lru_add_drain() at the
+  wp_can_reuse_anon_folio() and do_swap_page() sites.
+
+- shmem_swapin_cluster() immediately locks the  returned folio, waits
+  for writeback, then operates on it - LRU residency of either the target
+  or the readahead folios is irrelevant.
+
+- try_to_unuse() likewise locks the folio and calls unuse_pte() without
+  depending on LRU presence.
+
+Folios newly added to the swap cache by the readahead loop sit in the
+per-CPU LRU folio_batch and will be drained naturally as the batch fills
+(FOLIO_BATCH_SIZE),by the next reclaim/compaction lru_add_drain_all() and
+so on.  The unconditional drain only synchronously flushes a partial batch
+and forces contention on lruvec_lock.
+
+On a 176-CPU production host running a memory-pressured workload, this
+path was observed to call folio_batch_move_lru() from
+swap_cluster_readahead() ~28K/min, a very large source of LRU lock
+traffic.
+
+This is a direct continuation of the cleanup started in commit
+1aa43598c03b ("mm: remove unnecessary calls to lru_add_drain") which
+removed the equivalent drain from free_pages_and_swap_cache() with the
+same rationale.  A detailed reasoning for this is present in [1].
+
+Remove both drains.
+
+Link: https://lore.kernel.org/20260608143242.2869392-1-usama.arif@linux.dev
+Link: https://lore.kernel.org/all/dca2824e8e88e826c6b260a831d79089b5b9c79d.camel@surriel.com/T/#u [1]
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Kairui Song <kasong@tencent.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Rik van Riel <riel@surriel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/swap_state.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/mm/swap_state.c b/mm/swap_state.c
+index 9c3a5cf997786..6fd6e3415b718 100644
+--- a/mm/swap_state.c
++++ b/mm/swap_state.c
+@@ -836,7 +836,6 @@ struct folio *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
+ 	}
+ 	blk_finish_plug(&plug);
+ 	swap_read_unplug(splug);
+-	lru_add_drain();	/* Push any new pages onto the LRU now */
+ skip:
+ 	/* The page was likely read above, so no need for plugging here */
+ 	return swap_cache_read_folio(entry, gfp_mask, mpol, ilx, NULL, false);
+@@ -951,7 +950,6 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
+ 		pte_unmap(pte);
+ 	blk_finish_plug(&plug);
+ 	swap_read_unplug(splug);
+-	lru_add_drain();
+ skip:
+ 	/* The folio was likely read above, so no need for plugging here */
+ 	folio = swap_cache_read_folio(targ_entry, gfp_mask, mpol, targ_ilx,
+-- 
+2.47.3
+

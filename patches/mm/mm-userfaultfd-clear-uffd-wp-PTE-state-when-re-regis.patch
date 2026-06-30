@@ -1,0 +1,69 @@
+From: Jianhui Zhou <jianhuizzzzz@gmail.com>
+Date: Mon, 1 Jun 2026 16:26:09 +0800
+Subject: [PATCH] mm/userfaultfd: clear uffd-wp PTE state when re-registering
+ without WP
+
+UFFDIO_REGISTER can be issued on a range that is already registered in the
+same userfaultfd context, replacing the VMA's userfaultfd tracking mode.
+For example, a range can be registered with UFFDIO_REGISTER_MODE_WP and
+later re-registered with UFFDIO_REGISTER_MODE_MISSING.
+
+When the second registration removes VM_UFFD_WP, the VMA flags are updated
+but existing uffd-wp state in page-table entries is left behind.  That
+stale state can survive in swap PTEs.  On swapin, do_swap_page() restores
+_PAGE_UFFD_WP from the swap PTE and can then install a writable PTE,
+triggering page_table_check:
+
+  pte_uffd_wp(pte) && pte_write(pte)
+
+Handle removal of WP mode through UFFDIO_REGISTER the same way as
+UFFDIO_UNREGISTER: resolve the per-PTE uffd-wp state before dropping
+VM_UFFD_WP from the VMA.
+
+Also make the same-context fast path require an exact UFFD mode match.
+The old subset check treats MISSING|WP -> MISSING as a no-op, even though
+WP mode is being removed.
+
+Link: https://lore.kernel.org/20260601082609.170076-1-jianhuizzzzz@gmail.com
+Fixes: f45ec5ff16a7 ("userfaultfd: wp: support swap and page migration")
+Signed-off-by: Jianhui Zhou <jianhuizzzzz@gmail.com>
+Reported-by: syzbot+18d274a59b87cf80e86d@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=18d274a59b87cf80e86d
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/userfaultfd.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 246af12bf8014..9467f49012a90 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -2235,13 +2235,21 @@ static int userfaultfd_register_range(struct userfaultfd_ctx *ctx,
+ 		 * userfaultfd and with the right tracking mode too.
+ 		 */
+ 		if (vma->vm_userfaultfd_ctx.ctx == ctx &&
+-		    vma_test_all_mask(vma, vma_flags))
++		    (vma->vm_flags & __VM_UFFD_FLAGS) == vm_flags)
+ 			goto skip;
+ 
+ 		if (vma->vm_start > start)
+ 			start = vma->vm_start;
+ 		vma_end = min(end, vma->vm_end);
+ 
++		/*
++		 * Re-registering into the same userfaultfd can remove WP mode.
++		 * Clear any per-PTE uffd-wp state before dropping VM_UFFD_WP,
++		 * matching the UFFDIO_UNREGISTER cleanup semantics.
++		 */
++		if (userfaultfd_wp(vma) && !(vm_flags & VM_UFFD_WP))
++			uffd_wp_range(vma, start, vma_end - start, false);
++
+ 		new_vma_flags = vma->flags;
+ 		vma_flags_clear_mask(&new_vma_flags, __VMA_UFFD_FLAGS);
+ 		vma_flags_set_mask(&new_vma_flags, vma_flags);
+-- 
+2.47.3
+

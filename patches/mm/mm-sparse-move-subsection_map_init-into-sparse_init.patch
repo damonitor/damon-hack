@@ -1,0 +1,119 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 12 Jun 2026 11:58:51 +0800
+Subject: [PATCH] mm/sparse: move subsection_map_init() into sparse_init()
+
+subsection_map_init() is part of sparse memory initialization, but it is
+currently called from free_area_init().
+
+Move it into sparse_init() so the sparse-specific setup stays together
+instead of being split across the generic free_area_init() path.
+
+Link: https://lore.kernel.org/20260612035903.2468601-8-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h       |  5 ++---
+ mm/mm_init.c        | 10 ++--------
+ mm/sparse-vmemmap.c | 11 ++++++++++-
+ mm/sparse.c         |  1 +
+ 4 files changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 181e79f1d6a20..dccd4727de468 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -994,10 +994,9 @@ static inline void sparse_init(void) {}
+  * mm/sparse-vmemmap.c
+  */
+ #ifdef CONFIG_SPARSEMEM_VMEMMAP
+-void sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages);
++void sparse_init_subsection_map(void);
+ #else
+-static inline void sparse_init_subsection_map(unsigned long pfn,
+-		unsigned long nr_pages)
++static inline void sparse_init_subsection_map(void)
+ {
+ }
+ #endif /* CONFIG_SPARSEMEM_VMEMMAP */
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 5c7359693ba24..dbcd60a38c49b 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1864,18 +1864,12 @@ static void __init free_area_init(void)
+ 			       (u64)zone_movable_pfn[i] << PAGE_SHIFT);
+ 	}
+ 
+-	/*
+-	 * Print out the early node map, and initialize the
+-	 * subsection-map relative to active online memory ranges to
+-	 * enable future "sub-section" extensions of the memory map.
+-	 */
++	/* Print out the early node map. */
+ 	pr_info("Early memory node ranges\n");
+-	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid) {
++	for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid)
+ 		pr_info("  node %3d: [mem %#018Lx-%#018Lx]\n", nid,
+ 			(u64)start_pfn << PAGE_SHIFT,
+ 			((u64)end_pfn << PAGE_SHIFT) - 1);
+-		sparse_init_subsection_map(start_pfn, end_pfn - start_pfn);
+-	}
+ 
+ 	/* Initialise every node */
+ 	mminit_verify_pageflags_layout();
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 6e09000ed3e16..0b4019a93188c 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -601,7 +601,7 @@ static void subsection_mask_set(unsigned long *map, unsigned long pfn,
+ 	bitmap_set(map, idx, end - idx + 1);
+ }
+ 
+-void __init sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages)
++static void __init sparse_init_subsection_map_range(unsigned long pfn, unsigned long nr_pages)
+ {
+ 	int end_sec_nr = pfn_to_section_nr(pfn + nr_pages - 1);
+ 	unsigned long nr, start_sec_nr = pfn_to_section_nr(pfn);
+@@ -624,6 +624,15 @@ void __init sparse_init_subsection_map(unsigned long pfn, unsigned long nr_pages
+ 	}
+ }
+ 
++void __init sparse_init_subsection_map(void)
++{
++	int i, nid;
++	unsigned long start, end;
++
++	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, &nid)
++		sparse_init_subsection_map_range(start, end - start);
++}
++
+ #ifdef CONFIG_MEMORY_HOTPLUG
+ 
+ /* Mark all memory sections within the pfn range as online */
+diff --git a/mm/sparse.c b/mm/sparse.c
+index c92bbc3f3aa37..85557ef387c74 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -361,5 +361,6 @@ void __init sparse_init(void)
+ 	}
+ 	/* cover the last node */
+ 	sparse_init_nid(nid_begin, pnum_begin, pnum_end, map_count);
++	sparse_init_subsection_map();
+ 	vmemmap_populate_print_last();
+ }
+-- 
+2.47.3
+

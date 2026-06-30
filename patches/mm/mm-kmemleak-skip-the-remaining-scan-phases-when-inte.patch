@@ -1,0 +1,71 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Fri, 26 Jun 2026 10:56:23 -0700
+Subject: [PATCH] mm/kmemleak: skip the remaining scan phases when interrupted
+
+kmemleak_scan() scans the per-cpu sections, the struct page ranges and the
+task stacks in sequence.  Each loop now bails out once scan_block()
+reports the scan was interrupted, but the later phases are still entered
+and only bail on their first scan_block() call.
+
+Jump straight to the gray list scan once a phase reports an interrupted
+scan, so the remaining scan phases are not entered at all.  This does not
+change the scan results, it only avoids the pointless re-entry.
+
+Link: https://lore.kernel.org/20260626-kmemleak_improve-v1-1-d40c7616f64f@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Suggested-by: Oleg Nesterov <oleg@redhat.com>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kmemleak.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index 7fa7124727e36..68a0e30eea1e3 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -1850,6 +1850,7 @@ static void kmemleak_scan(void)
+ 	int __maybe_unused i;
+ 	struct xarray dedup;
+ 	int new_leaks = 0;
++	int stop = 0;
+ 
+ 	jiffies_last_scan = jiffies;
+ 
+@@ -1896,7 +1897,7 @@ static void kmemleak_scan(void)
+ 	for_each_possible_cpu(i) {
+ 		if (scan_large_block(__per_cpu_start + per_cpu_offset(i),
+ 				     __per_cpu_end + per_cpu_offset(i)))
+-			break;
++			goto scan_gray;
+ 	}
+ #endif
+ 
+@@ -1908,7 +1909,6 @@ static void kmemleak_scan(void)
+ 		unsigned long start_pfn = zone->zone_start_pfn;
+ 		unsigned long end_pfn = zone_end_pfn(zone);
+ 		unsigned long pfn;
+-		int stop = 0;
+ 
+ 		for (pfn = start_pfn; pfn < end_pfn; pfn++) {
+ 			struct page *page = pfn_to_online_page(pfn);
+@@ -1933,6 +1933,8 @@ static void kmemleak_scan(void)
+ 			break;
+ 	}
+ 	put_online_mems();
++	if (stop)
++		goto scan_gray;
+ 
+ 	/*
+ 	 * Scanning the task stacks (may introduce false negatives).
+@@ -1944,6 +1946,7 @@ static void kmemleak_scan(void)
+ 	 * Scan the objects already referenced from the sections scanned
+ 	 * above.
+ 	 */
++scan_gray:
+ 	scan_gray_list();
+ 
+ 	/*
+-- 
+2.47.3
+

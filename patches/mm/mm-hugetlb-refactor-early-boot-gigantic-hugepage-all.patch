@@ -1,0 +1,346 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 12 Jun 2026 11:58:57 +0800
+Subject: [PATCH] mm/hugetlb: refactor early boot gigantic hugepage allocation
+
+The early boot gigantic hugepage allocation helpers currently mix
+allocation with huge_bootmem_page setup, and leave part of the
+initialization flow in architecture code.
+
+Refactor the interface to return the allocated huge page pointer and move
+the huge_bootmem_page setup into the generic hugetlb code.  This makes the
+architecture-specific paths focus only on finding memory, while the common
+code handles node placement and early page metadata setup in one place.
+
+This also lets powerpc benefit from memblock_reserved_mark_noinit(), which
+it did not enable before.
+
+In addition, upcoming cross-zone validation for boot-time gigantic hugetlb
+reservation is common logic.  With this refactoring, that logic can stay
+in the generic code instead of being duplicated in architecture-specific
+paths.
+
+Link: https://lore.kernel.org/20260612035903.2468601-14-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Oscar Salvador (SUSE) <osalvador@suse.de>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: "Ritesh Harjani (IBM)" <ritesh.list@gmail.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/powerpc/mm/hugetlbpage.c | 13 ++---
+ include/linux/hugetlb.h       | 18 ++-----
+ mm/hugetlb.c                  | 95 ++++++++++++++---------------------
+ mm/hugetlb_cma.c              | 13 ++---
+ mm/hugetlb_cma.h              |  8 ++-
+ mm/internal.h                 |  9 ++++
+ 6 files changed, 64 insertions(+), 92 deletions(-)
+
+diff --git a/arch/powerpc/mm/hugetlbpage.c b/arch/powerpc/mm/hugetlbpage.c
+index 558fafb82b8ac..a298746dc1431 100644
+--- a/arch/powerpc/mm/hugetlbpage.c
++++ b/arch/powerpc/mm/hugetlbpage.c
+@@ -104,17 +104,14 @@ void __init pseries_add_gpage(u64 addr, u64 page_size, unsigned long number_of_p
+ 	}
+ }
+ 
+-static int __init pseries_alloc_bootmem_huge_page(struct hstate *hstate)
++static __init void *pseries_alloc_bootmem_huge_page(struct hstate *hstate)
+ {
+-	struct huge_bootmem_page *m;
++	void *m;
+ 	if (nr_gpages == 0)
+-		return 0;
++		return NULL;
+ 	m = phys_to_virt(gpage_freearray[--nr_gpages]);
+ 	gpage_freearray[nr_gpages] = 0;
+-	list_add(&m->list, &huge_boot_pages[0]);
+-	m->hstate = hstate;
+-	m->flags = 0;
+-	return 1;
++	return m;
+ }
+ 
+ bool __init hugetlb_node_alloc_supported(void)
+@@ -124,7 +121,7 @@ bool __init hugetlb_node_alloc_supported(void)
+ #endif
+ 
+ 
+-int __init alloc_bootmem_huge_page(struct hstate *h, int nid)
++void *__init arch_alloc_bootmem_huge_page(struct hstate *h, int nid)
+ {
+ 
+ #ifdef CONFIG_PPC_BOOK3S_64
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index 3700c0a1f6ff4..09f28dd773b79 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -674,19 +674,11 @@ struct hstate {
+ 	char name[HSTATE_NAME_LEN];
+ };
+ 
+-struct cma;
+-
+-struct huge_bootmem_page {
+-	struct list_head list;
+-	struct hstate *hstate;
+-	unsigned long flags;
+-	struct cma *cma;
+-};
+-
+ #define HUGE_BOOTMEM_HVO		0x0001
+ #define HUGE_BOOTMEM_ZONES_VALID	0x0002
+ #define HUGE_BOOTMEM_CMA		0x0004
+ 
++struct huge_bootmem_page;
+ bool hugetlb_bootmem_page_zones_valid(int nid, struct huge_bootmem_page *m);
+ 
+ int isolate_or_dissolve_huge_folio(struct folio *folio, struct list_head *list);
+@@ -706,8 +698,8 @@ void restore_reserve_on_error(struct hstate *h, struct vm_area_struct *vma,
+ 				unsigned long address, struct folio *folio);
+ 
+ /* arch callback */
+-int __init __alloc_bootmem_huge_page(struct hstate *h, int nid);
+-int __init alloc_bootmem_huge_page(struct hstate *h, int nid);
++void *__init __alloc_bootmem_huge_page(struct hstate *h, int nid);
++void *__init arch_alloc_bootmem_huge_page(struct hstate *h, int nid);
+ bool __init hugetlb_node_alloc_supported(void);
+ 
+ void __init hugetlb_add_hstate(unsigned order);
+@@ -1138,9 +1130,9 @@ alloc_hugetlb_folio_nodemask(struct hstate *h, int preferred_nid,
+ 	return NULL;
+ }
+ 
+-static inline int __alloc_bootmem_huge_page(struct hstate *h)
++static inline void *__alloc_bootmem_huge_page(struct hstate *h, int nid)
+ {
+-	return 0;
++	return NULL;
+ }
+ 
+ static inline struct hstate *hstate_file(struct file *f)
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 2bf9fe16abb9b..5e557c05d80a8 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3027,79 +3027,58 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 
+ static __init void *alloc_bootmem(struct hstate *h, int nid, bool node_exact)
+ {
+-	struct huge_bootmem_page *m;
+-	int listnode = nid;
+-
+ 	if (hugetlb_early_cma(h))
+-		m = hugetlb_cma_alloc_bootmem(h, &listnode, node_exact);
+-	else {
+-		if (node_exact)
+-			m = memblock_alloc_exact_nid_raw(huge_page_size(h),
++		return hugetlb_cma_alloc_bootmem(h, nid, node_exact);
++
++	if (node_exact)
++		return memblock_alloc_exact_nid_raw(huge_page_size(h),
+ 				huge_page_size(h), 0,
+ 				MEMBLOCK_ALLOC_ACCESSIBLE, nid);
+-		else {
+-			m = memblock_alloc_try_nid_raw(huge_page_size(h),
++
++	return memblock_alloc_try_nid_raw(huge_page_size(h),
+ 				huge_page_size(h), 0,
+ 				MEMBLOCK_ALLOC_ACCESSIBLE, nid);
+-			/*
+-			 * For pre-HVO to work correctly, pages need to be on
+-			 * the list for the node they were actually allocated
+-			 * from. That node may be different in the case of
+-			 * fallback by memblock_alloc_try_nid_raw. So,
+-			 * extract the actual node first.
+-			 */
+-			if (m)
+-				listnode = early_pfn_to_nid(PHYS_PFN(__pa(m)));
+-		}
+-
+-		if (m) {
+-			m->flags = 0;
+-			m->cma = NULL;
+-		}
+-	}
+-
+-	if (m) {
+-		/*
+-		 * Use the beginning of the huge page to store the
+-		 * huge_bootmem_page struct (until gather_bootmem
+-		 * puts them into the mem_map).
+-		 *
+-		 * Put them into a private list first because mem_map
+-		 * is not up yet.
+-		 */
+-		INIT_LIST_HEAD(&m->list);
+-		list_add(&m->list, &huge_boot_pages[listnode]);
+-		m->hstate = h;
+-	}
+-
+-	return m;
+ }
+ 
+-int alloc_bootmem_huge_page(struct hstate *h, int nid)
++void *__init arch_alloc_bootmem_huge_page(struct hstate *h, int nid)
+ 	__attribute__ ((weak, alias("__alloc_bootmem_huge_page")));
+-int __alloc_bootmem_huge_page(struct hstate *h, int nid)
++void *__init __alloc_bootmem_huge_page(struct hstate *h, int nid)
+ {
+-	struct huge_bootmem_page *m = NULL; /* initialize for clang */
+ 	int nr_nodes, node = nid;
+ 
+ 	/* do node specific alloc */
+-	if (nid != NUMA_NO_NODE) {
+-		m = alloc_bootmem(h, node, true);
+-		if (!m)
+-			return 0;
+-		goto found;
+-	}
++	if (nid != NUMA_NO_NODE)
++		return alloc_bootmem(h, node, true);
+ 
+ 	/* allocate from next node when distributing huge pages */
+ 	for_each_node_mask_to_alloc(&h->next_nid_to_alloc, nr_nodes, node,
+-				    &hugetlb_bootmem_nodes) {
+-		m = alloc_bootmem(h, node, false);
+-		if (!m)
+-			return 0;
+-		goto found;
+-	}
++				    &hugetlb_bootmem_nodes)
++		return alloc_bootmem(h, node, false);
+ 
+-found:
++	return NULL;
++}
++
++static bool __init alloc_bootmem_huge_page(struct hstate *h, int nid)
++{
++	struct huge_bootmem_page *m = arch_alloc_bootmem_huge_page(h, nid);
++
++	if (!m)
++		return false;
++
++	nid = early_pfn_to_nid(PHYS_PFN(__pa(m)));
++	/*
++	 * Use the beginning of the huge page to store the huge_bootmem_page
++	 * struct (until gather_bootmem puts them into the mem_map).
++	 *
++	 * Put them into a private list first because mem_map is not up yet.
++	 */
++	INIT_LIST_HEAD(&m->list);
++	list_add(&m->list, &huge_boot_pages[nid]);
++	m->hstate = h;
++	if (!hugetlb_early_cma(h)) {
++		m->cma = NULL;
++		m->flags = 0;
++	}
+ 
+ 	/*
+ 	 * Only initialize the head struct page in memmap_init_reserved_pages,
+@@ -3111,7 +3090,7 @@ int __alloc_bootmem_huge_page(struct hstate *h, int nid)
+ 	memblock_reserved_mark_noinit(__pa((void *)m + PAGE_SIZE),
+ 		huge_page_size(h) - PAGE_SIZE);
+ 
+-	return 1;
++	return true;
+ }
+ 
+ /* Initialize [start_page:end_page_number] tail struct pages of a hugepage */
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index ce999391cc148..e487d0ffffc01 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -56,14 +56,13 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 	return folio;
+ }
+ 
+-struct huge_bootmem_page * __init
+-hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid, bool node_exact)
++void * __init hugetlb_cma_alloc_bootmem(struct hstate *h, int nid, bool node_exact)
+ {
+ 	struct cma *cma;
+ 	struct huge_bootmem_page *m;
+-	int node = *nid;
++	int node;
+ 
+-	cma = hugetlb_cma[*nid];
++	cma = hugetlb_cma[nid];
+ 	m = cma_reserve_early(cma, huge_page_size(h));
+ 	if (!m) {
+ 		if (node_exact)
+@@ -71,13 +70,11 @@ hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid, bool node_exact)
+ 
+ 		for_each_node_mask(node, hugetlb_bootmem_nodes) {
+ 			cma = hugetlb_cma[node];
+-			if (!cma || node == *nid)
++			if (!cma || node == nid)
+ 				continue;
+ 			m = cma_reserve_early(cma, huge_page_size(h));
+-			if (m) {
+-				*nid = node;
++			if (m)
+ 				break;
+-			}
+ 		}
+ 	}
+ 
+diff --git a/mm/hugetlb_cma.h b/mm/hugetlb_cma.h
+index c619c394b1ae2..3aa483573d170 100644
+--- a/mm/hugetlb_cma.h
++++ b/mm/hugetlb_cma.h
+@@ -6,8 +6,7 @@
+ void hugetlb_cma_free_frozen_folio(struct folio *folio);
+ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 				      int nid, nodemask_t *nodemask);
+-struct huge_bootmem_page *hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid,
+-						    bool node_exact);
++void *hugetlb_cma_alloc_bootmem(struct hstate *h, int nid, bool node_exact);
+ bool hugetlb_cma_exclusive_alloc(void);
+ unsigned long hugetlb_cma_total_size(void);
+ void hugetlb_cma_validate_params(void);
+@@ -23,9 +22,8 @@ static inline struct folio *hugetlb_cma_alloc_frozen_folio(int order,
+ 	return NULL;
+ }
+ 
+-static inline
+-struct huge_bootmem_page *hugetlb_cma_alloc_bootmem(struct hstate *h, int *nid,
+-						    bool node_exact)
++static inline void *hugetlb_cma_alloc_bootmem(struct hstate *h, int nid,
++					      bool node_exact)
+ {
+ 	return NULL;
+ }
+diff --git a/mm/internal.h b/mm/internal.h
+index 09efb9f4d1266..3401759924d93 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -23,6 +23,15 @@
+ #include "vma.h"
+ 
+ struct folio_batch;
++struct hstate;
++struct cma;
++
++struct huge_bootmem_page {
++	struct list_head list;
++	struct hstate *hstate;
++	unsigned long flags;
++	struct cma *cma;
++};
+ 
+ /*
+  * Maintains state across a page table move. The operation assumes both source
+-- 
+2.47.3
+
