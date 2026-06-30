@@ -1,0 +1,51 @@
+From: Daniel Palmer <daniel@thingy.jp>
+Date: Sat, 23 May 2026 22:04:45 +0900
+Subject: [PATCH] tmpfs/ramfs: let memfd_create() work on nommu
+
+Currently trying to use memfd_create() on nommu returns an error with
+errno set to EFBIG.  The manpage memfd_create() doesn't have EFBIG as a
+possible error value.
+
+Doing some digging this is coming from 0 getting passed as newsize to
+ramfs_nommu_expand_for_mapping() and that getting into get_order() and
+there "The result is undefined if the size is 0".
+
+Whatever comes out of get_order() is then used in the following logic and
+that results in the EFBIG that causes the syscall to fail and the errno in
+userspace.
+
+If newsize is 0 there is nothing to do so just return.
+
+Roughly tested on m68k nommu by creating a process, creating an memfd,
+forking another process, mmap()ing the memfd in the child, writing into
+the mapping, then mmap()ing in the parent and checking that the right data
+is there.
+
+Link: https://lore.kernel.org/20260523130445.1101818-1-daniel@thingy.jp
+Signed-off-by: Daniel Palmer <daniel@thingy.jp>
+Acked-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: "Liam R. Howlett" <liam@infradead.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ramfs/file-nommu.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/fs/ramfs/file-nommu.c b/fs/ramfs/file-nommu.c
+index 2f79bcb89d2e5..fb471bf88ab7a 100644
+--- a/fs/ramfs/file-nommu.c
++++ b/fs/ramfs/file-nommu.c
+@@ -69,6 +69,9 @@ int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
+ 	gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+ 
+ 	/* make various checks */
++	if (!newsize)
++		return 0;
++
+ 	order = get_order(newsize);
+ 	if (unlikely(order > MAX_PAGE_ORDER))
+ 		return -EFBIG;
+-- 
+2.47.3
+

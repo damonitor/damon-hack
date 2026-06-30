@@ -1,0 +1,70 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 29 Jun 2026 15:49:47 +0200
+Subject: [PATCH] sparc/mm: drop custom pte_clear_not_present_full()
+
+Patch series "mm: cleanup clear_not_present_full_ptes()", v2.
+
+While doing some review, I stumbled over clear_not_present_full_ptes() and
+concluded that it needs some love.
+
+Let's remove pte_clear_not_present_full() and cleanup
+clear_not_present_full_ptes(), renaming it to clear_non_present_ptes().
+
+
+This patch (of 3):
+
+On sparc64, pte_clear_not_present_full() nowadays does a simple
+__set_pte_at().  In __set_pte_at() -> maybe_tlb_batch_add(), we check
+pte_accessible() to see whether to call tlb_batch_add().
+
+However, non-present PTEs are surely not accessible, so tlb_batch_add() is
+never called and the "full" parameter is irrelevant.
+
+Let's drop the helper and just let common code do a pte_clear().
+
+pte_clear() on sparc64 maps to set_pte_at()->set_ptes()->__set_pte_at()
+... so it ends up calling the same function, just with "full=0".
+
+Given that "full" is irrelevant, there is no change.
+
+We added pte_clear_not_present_full() for sparc64 in commit 90f08e399d05
+("sparc: mmu_gather rework"), and I suspect that it was already not
+required back then.
+
+Link: https://lore.kernel.org/20260629-clear_not_present_full_ptes-v2-0-96089871a1e7@kernel.org
+Link: https://lore.kernel.org/20260629-clear_not_present_full_ptes-v2-1-96089871a1e7@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/sparc/include/asm/pgtable_64.h | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/arch/sparc/include/asm/pgtable_64.h b/arch/sparc/include/asm/pgtable_64.h
+index 74ede706fb325..0837ebbc5dce6 100644
+--- a/arch/sparc/include/asm/pgtable_64.h
++++ b/arch/sparc/include/asm/pgtable_64.h
+@@ -945,10 +945,6 @@ static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
+ #define pte_clear(mm,addr,ptep)		\
+ 	set_pte_at((mm), (addr), (ptep), __pte(0UL))
+ 
+-#define __HAVE_ARCH_PTE_CLEAR_NOT_PRESENT_FULL
+-#define pte_clear_not_present_full(mm,addr,ptep,fullmm)	\
+-	__set_pte_at((mm), (addr), (ptep), __pte(0UL), (fullmm))
+-
+ #ifdef DCACHE_ALIASING_POSSIBLE
+ #define __HAVE_ARCH_MOVE_PTE
+ #define move_pte(pte, old_addr, new_addr)				\
+-- 
+2.47.3
+

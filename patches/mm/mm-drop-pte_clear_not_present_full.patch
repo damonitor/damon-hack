@@ -1,0 +1,108 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 29 Jun 2026 15:49:48 +0200
+Subject: [PATCH] mm: drop pte_clear_not_present_full()
+
+In general, there is no good reason to do anything special when clearing
+non-present PTEs.
+
+In theory, HW that does have to invalidate TLBs for non-present PTEs could
+benefit from a "full" parameter, but fortunately
+pte_clear_not_present_full() is not wired up anymore ...  and there would
+have to be something very convincing for us to care about that to re-add
+it.
+
+So, let's just use pte_clear() directly now.  To prevent the compiler
+complaining on some configs about "set but not used" addr parameter,
+silence that here.
+
+Link: https://lore.kernel.org/20260629-clear_not_present_full_ptes-v2-2-96089871a1e7@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/pgtable.h | 21 ++++-----------------
+ mm/madvise.c            |  4 ++--
+ 2 files changed, 6 insertions(+), 19 deletions(-)
+
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index dc804296d78f7..0b81e396816a5 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -988,21 +988,6 @@ static inline void update_mmu_tlb(struct vm_area_struct *vma,
+ 	update_mmu_tlb_range(vma, address, ptep, 1);
+ }
+ 
+-/*
+- * Some architectures may be able to avoid expensive synchronization
+- * primitives when modifications are made to PTE's which are already
+- * not present, or in the process of an address space destruction.
+- */
+-#ifndef __HAVE_ARCH_PTE_CLEAR_NOT_PRESENT_FULL
+-static inline void pte_clear_not_present_full(struct mm_struct *mm,
+-					      unsigned long address,
+-					      pte_t *ptep,
+-					      int full)
+-{
+-	pte_clear(mm, address, ptep);
+-}
+-#endif
+-
+ #ifndef clear_not_present_full_ptes
+ /**
+  * clear_not_present_full_ptes - Clear multiple not present PTEs which are
+@@ -1014,7 +999,7 @@ static inline void pte_clear_not_present_full(struct mm_struct *mm,
+  * @full: Whether we are clearing a full mm.
+  *
+  * May be overridden by the architecture; otherwise, implemented as a simple
+- * loop over pte_clear_not_present_full().
++ * loop over pte_clear().
+  *
+  * Context: The caller holds the page table lock.  The PTEs are all not present.
+  * The PTEs are all in the same PMD.
+@@ -1022,8 +1007,10 @@ static inline void pte_clear_not_present_full(struct mm_struct *mm,
+ static inline void clear_not_present_full_ptes(struct mm_struct *mm,
+ 		unsigned long addr, pte_t *ptep, unsigned int nr, int full)
+ {
++	(void)addr;
++
+ 	for (;;) {
+-		pte_clear_not_present_full(mm, addr, ptep, full);
++		pte_clear(mm, addr, ptep);
+ 		if (--nr == 0)
+ 			break;
+ 		ptep++;
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 77552b03d318d..e483b63bdcef0 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -697,7 +697,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
+ 				clear_not_present_full_ptes(mm, addr, pte, nr, tlb->fullmm);
+ 			} else if (softleaf_is_hwpoison(entry) ||
+ 				   softleaf_is_poison_marker(entry)) {
+-				pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
++				pte_clear(mm, addr, pte);
+ 			}
+ 			continue;
+ 		}
+@@ -1233,7 +1233,7 @@ static int guard_remove_pte_entry(pte_t *pte, unsigned long addr,
+ 
+ 	if (is_guard_pte_marker(ptent)) {
+ 		/* Simply clear the PTE marker. */
+-		pte_clear_not_present_full(walk->mm, addr, pte, false);
++		pte_clear(walk->mm, addr, pte);
+ 		update_mmu_cache(walk->vma, addr, pte);
+ 	}
+ 
+-- 
+2.47.3
+

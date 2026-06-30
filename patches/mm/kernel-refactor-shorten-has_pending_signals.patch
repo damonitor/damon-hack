@@ -1,0 +1,64 @@
+From: Andrea Calabrese <andrea.calabrese@amarulasolutions.com>
+Date: Wed, 20 May 2026 08:28:50 +0200
+Subject: [PATCH] kernel: refactor: shorten has_pending_signals
+
+In has_pending_signals there was a switch/case used for optimizations.
+However, today's compilers perform loop unrolling efficiently, thus it is
+not needed anymore.
+
+Put i inside the for declaration so we do not risk its escape from the
+scope.  Moreover, i starts now from 0 and counts up, as it is a more usual
+pattern.
+
+Link: https://lore.kernel.org/20260520062849.183621-2-andrea.calabrese@amarulasolutions.com
+Signed-off-by: Andrea Calabrese <andrea.calabrese@amarulasolutions.com>
+Acked-by: Oleg Nesterov <oleg@redhat.com>
+Cc: Adrian Huang <adrianhuang0701@gmail.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Marco Elver <elver@google.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/signal.c | 26 ++++----------------------
+ 1 file changed, 4 insertions(+), 22 deletions(-)
+
+diff --git a/kernel/signal.c b/kernel/signal.c
+index 4ab7d91901d02..af5af51e0c931 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -130,28 +130,10 @@ static bool sig_ignored(struct task_struct *t, int sig, bool force)
+  */
+ static inline bool has_pending_signals(sigset_t *signal, sigset_t *blocked)
+ {
+-	unsigned long ready;
+-	long i;
+-
+-	switch (_NSIG_WORDS) {
+-	default:
+-		for (i = _NSIG_WORDS, ready = 0; --i >= 0 ;)
+-			ready |= signal->sig[i] &~ blocked->sig[i];
+-		break;
+-
+-	case 4: ready  = signal->sig[3] &~ blocked->sig[3];
+-		ready |= signal->sig[2] &~ blocked->sig[2];
+-		ready |= signal->sig[1] &~ blocked->sig[1];
+-		ready |= signal->sig[0] &~ blocked->sig[0];
+-		break;
+-
+-	case 2: ready  = signal->sig[1] &~ blocked->sig[1];
+-		ready |= signal->sig[0] &~ blocked->sig[0];
+-		break;
+-
+-	case 1: ready  = signal->sig[0] &~ blocked->sig[0];
+-	}
+-	return ready !=	0;
++	unsigned long ready = 0;
++	for (long i = 0; i < _NSIG_WORDS; i++)
++		ready |= signal->sig[i] & ~blocked->sig[i];
++	return ready != 0;
+ }
+ 
+ #define PENDING(p,b) has_pending_signals(&(p)->signal, (b))
+-- 
+2.47.3
+
