@@ -1,0 +1,153 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@davidgow.net>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: damon@lists.linux.dev
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Cc: linux-trace-kernel@vger.kernel.org
+Date: Mon, 29 Jun 2026 21:07:27 -0700
+Subject: [PATCH 00/18] mm/damon: optimize out nr_accesses_bp
+
+TLDR: Replace damon_region->nr_accesses_bp, which is easy to be wrong,
+with a simpler on-demand moving sum function, damon_nr_accesses_mvsum().
+
+Background
+==========
+
+DAMON's monitoring output (access pattern snapshot, or more technically
+speaking, damon_region->nr_accesses) is completed once per aggregation
+interval, which is 100 ms by default.  Users can arbitrarily increase
+the interval for demand.  Under the suggested intervals auto-tuning
+setup, it can span up to 200 seconds.  If the aggregation interval is
+too long, the snapshot users cannot use it in reasonable time.  To
+mitigate this, we introduced a new field of damon_region, namely
+nr_accesses_bp.  It contains a pseudo moving sum of nr_accesses in bp
+units and is updated for each sampling interval.
+
+It turned out keeping it correctly updated every sampling interval is
+not that easy.  From online parameter update feature development and
+more experimental hacks, we found it is easy to be corrupted.  Once it
+is corrupted, DAMON's monitoring outputs become quite insane.  Hence we
+added a few validation checks.  It is easy  to be corrupted because it
+requires every update per sampling interval to be correct.
+
+Solution
+========
+
+There is no real reason to keep it updated every sampling interval.  Due
+to the simple pseudo-moving sum mechanism and existing helper field
+(last_nr_accesses), we can also calculate the pseudo moving sum on
+demand in a much simpler way.
+
+Implement a function for getting the pseudo moving sum on demand, and
+replace nr_accessses_bp uses with the new function.  Also remove no more
+needed tests for nr_accesses_bp and the per-sampling interval update
+functions.  Finally, remove the nr_accesses_bp.  The new function is
+quite simple.
+
+Discussion
+==========
+
+Depending on the use case, multiple nr_accesses readers could be
+executed in the same kdamond_fn() main loop iteration, which is executed
+once per sampling interval.  Such readers include DAMON region exporting
+tracepoints (damon_[region_]aggregated and damos_before_apply), DAMOS,
+and DAMON sysfs interface logic for update_schemes_tried_regions
+command.  In this case, the new function will be called multiple times
+and this could be overhead compared to the old logic, which simply reads
+the field without any additional work.  Nonetheless, the new function is
+quite simple.  And the new approach does nothing while there is no need
+to read.  The old approach had to execute its update function for each
+region for every sampling interval.  Hence the new approach is believed
+to be even more lightweight in common case, and the overhead is anyway
+negligible.
+
+One more advantage of this change is that one field from the
+damon_region struct is removed.  On setups that uses a high number of
+DAMON regions, this could be a potential memory space benefit.
+
+Patches Sequence
+================
+
+Patch 1 introduces the new function for getting the pseudo moving sum of
+nr_accesses on demands.  Patch 2 implements a unit test for the new
+function's internal logic.  Patch 3 and 4 update monitoring logic and
+the new function to ready for safe use on the existing logic.  Patches
+5-7 replace uses of nr_accesses_bp in DAMOS, tracepoints and DAMON sysfs
+interface with the new function, respectively.  Patches 8-10 removes
+nr_accesses_bp validation functions in DAMON core, one by one.  Patches
+11 and 12 further remove tests and test helper for nr_accesses_bp,
+respectively.  Patches 13 removes the setups and updates or
+nr_accesses_bp field.  Patches 14-16 cleans up function parameters that
+are no more being used due to the previous patch.  Patch 17 removes the
+function that was used for updating nr_accesses_bp field with its unit
+test, which is the single remaining caller of the function.  Finally,
+patch 18 removes damon_region->nr_accesses_bp field.
+
+Changes from RFC v1.3
+- RFC v1.3: https://lore.kernel.org/20260622142139.30269-1-sj@kernel.org
+- Wordsmith and fixup commit subjects.
+- Drop RFC tag.
+- Rebase to latest mm-new.
+Changes from RFC v1.2
+- RFC v1.2: https://lore.kernel.org/20260621155715.87932-1-sj@kernel.org
+- Explicitly ignore nr_accesses from mvsum at the beginning of
+  aggregation.
+- Fix a typo in a commit message.
+Changes from RFC v1.1
+- RFC v1.1: https://lore.kernel.org/20260620172244.90953-1-sj@kernel.org
+- Handle next_aggregation_sis < passed_sample_intervals in
+  nr_accesses_mvsum().
+- Always rescale ->last_nr_accesss for parameter changes.
+- Remove unused attrs params from damon_update_region_access_rate() and
+  its callers.
+Changes from RFC v1
+- RFC v1: https://lore.kernel.org/20260619193415.73833-1-sj@kernel.org
+- Avoid divide-by-zero from zero aggregation interval.
+- Call damon_nr_accesses_mvsum() for damos tracing only when it is enabled.
+- Remove obsolete mentions of nr_accesses_bp in comments.
+
+SJ Park (18):
+  mm/damon/core: introduce damon_nr_accesses_mvsum()
+  mm/damon/tests/core-kunit: test damon_mvsum()
+  mm/damon/core: always update ->last_nr_accesses for intervals change
+  mm/damon/core: handle unreset nr_accesses in damon_nr_accesses_mvsum()
+  mm/damon/core: use damon_nr_accesses_mvsum() in __damos_valid_target()
+  mm/damon/core: use damon_nr_accesses_mvsum() for damos region tracing
+  mm/damon/sysfs-schemes: use damon_nr_accesses_mvsum() for damo regions
+  mm/damon/core: remove damon_warn_fix_nr_accesses_corruption()
+  mm/damon/core: remove damon_verify_reset_aggregated()
+  mm/damon/core: remove damon_verify_merge_regions_of()
+  mm/damon/tests/core-kunit: remove nr_accesses_bp setup and tests
+  selftests/damon/drgn_dump_damon_status: do not dump nr_accesses_bp
+  mm/damon/core: remove nr_accesses_bp setups and updates
+  mm/damon/core: remove attrs param from
+    damon_update_region_access_rate()
+  mm/damon/paddr: remove attrs param from __damon_pa_check_access()
+  mm/damon/vaddr: remove attrs param from __damon_va_check_access()
+  mm/damon/core: remove damon_moving_sum() and its unit test
+  mm/damon/core: remove damon_region->nr_accesses_bp
+
+ include/linux/damon.h                         |  15 +-
+ include/trace/events/damon.h                  |   8 +-
+ mm/damon/core.c                               | 201 +++++++-----------
+ mm/damon/paddr.c                              |   9 +-
+ mm/damon/sysfs-schemes.c                      |   6 +-
+ mm/damon/tests/core-kunit.h                   |  37 ++--
+ mm/damon/vaddr.c                              |  12 +-
+ .../selftests/damon/drgn_dump_damon_status.py |   1 -
+ 8 files changed, 119 insertions(+), 170 deletions(-)
+
+
+base-commit: d74f4c01f930b32580e172a786efbcb352c312f1
+-- 
+2.47.3
