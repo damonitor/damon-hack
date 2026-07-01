@@ -1,0 +1,65 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Tue, 9 Jun 2026 22:49:38 -0700
+Subject: [RFC PATCH 2/8] mm/damon/core: do parameter testing commit on
+         damon_start()
+Message-Id: <20260701144815.113325-3-sj@kernel.org>
+
+damon_start() and damon_commit_ctx() are two main DAMON core API
+functions for setting whole DAMON parameters.  While damon_commit_ctx()
+does holistic parameters testing, damon_start() just believes the caller
+validated the whole thing.  Embed the holistic parameter check that is
+already in damon_commit_ctx() into damon_start().  After this change,
+the callers can safely call damon_start() without validating the
+parameters.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 62c27002219cd..6b30cb6007e54 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1865,6 +1865,8 @@ static int __damon_start(struct damon_ctx *ctx)
+ 	return err;
+ }
+ 
++static int __damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src);
++
+ /**
+  * damon_start() - Starts the monitorings for a given group of contexts.
+  * @ctxs:	an array of the pointers for contexts to start monitoring
+@@ -1882,13 +1884,22 @@ static int __damon_start(struct damon_ctx *ctx)
+  */
+ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive)
+ {
++	struct damon_ctx *test_ctx;
+ 	int i;
+ 	int err = 0;
+ 
++	test_ctx = damon_new_ctx();
++	if (!test_ctx)
++		return -ENOMEM;
++
+ 	for (i = 0; i < nr_ctxs; i++) {
+-		if (!is_power_of_2(ctxs[i]->min_region_sz))
+-			return -EINVAL;
++		err = __damon_commit_ctx(test_ctx, ctxs[i]);
++		if (err) {
++			damon_destroy_ctx(test_ctx);
++			return err;
++		}
+ 	}
++	damon_destroy_ctx(test_ctx);
+ 
+ 	mutex_lock(&damon_lock);
+ 	if ((exclusive && nr_running_ctxs) ||
+-- 
+2.47.3
