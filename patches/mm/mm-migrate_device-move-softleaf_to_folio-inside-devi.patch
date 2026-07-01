@@ -1,0 +1,76 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Tue, 30 Jun 2026 09:34:42 -0700
+Subject: [PATCH] mm/migrate_device: move softleaf_to_folio() inside
+ device-private branch
+
+migrate_vma_collect_pmd() calls softleaf_to_folio() on a non-present PMD
+before checking the entry's type.  softleaf_to_folio() converts the
+entry's offset to a PFN, which is only meaningful for migration or
+device-private entries.
+
+A PMD swap entry's offset is a swap offset, not a PFN, so the lookup would
+either return a bogus folio pointer or trip pfn_to_page validation on a
+debug kernel.  In the non-device-private path the returned folio is then
+unused (the OR short-circuits to migrate_vma_collect_skip()), but the
+lookup itself is already unsafe.
+
+Move the softleaf_to_folio() call inside the device-private branch where
+the folio is actually needed, mirroring the equivalent
+change_non_present_huge_pmd() fix.
+
+Link: https://lore.kernel.org/20260630164143.1595669-6-usama.arif@linux.dev
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate_device.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index aa948db495018..36287e958b2a0 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -166,11 +166,14 @@ static int migrate_vma_collect_huge_pmd(pmd_t *pmdp, unsigned long start,
+ 	} else if (!pmd_present(*pmdp)) {
+ 		const softleaf_t entry = softleaf_from_pmd(*pmdp);
+ 
+-		folio = softleaf_to_folio(entry);
+-
+ 		if (!softleaf_is_device_private(entry) ||
+-			!(migrate->flags & MIGRATE_VMA_SELECT_DEVICE_PRIVATE) ||
+-			(folio->pgmap->owner != migrate->pgmap_owner)) {
++		    !(migrate->flags & MIGRATE_VMA_SELECT_DEVICE_PRIVATE)) {
++			spin_unlock(ptl);
++			return migrate_vma_collect_skip(start, end, walk);
++		}
++
++		folio = softleaf_to_folio(entry);
++		if (folio->pgmap->owner != migrate->pgmap_owner) {
+ 			spin_unlock(ptl);
+ 			return migrate_vma_collect_skip(start, end, walk);
+ 		}
+-- 
+2.47.3
+

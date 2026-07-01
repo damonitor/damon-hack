@@ -1,0 +1,52 @@
+From: Wentao Guan <guanwentao@uniontech.com>
+Date: Tue, 30 Jun 2026 19:38:57 +0800
+Subject: [PATCH] mm/hugetlb: avoid unnecessary TLB flush for empty folio list
+ in vmemmap optimize
+
+__hugetlb_vmemmap_optimize_folios() unconditionally issues a final
+flush_tlb_all() in its out path.  However, a TLB flush must be paired with
+an actual page table modification.
+
+When the input folio list is empty, neither PMD splitting nor PTE
+remapping takes place, so no page tables are modified and the flush is
+pure overhead.  An empty list is reached in common paths such as
+gather_bootmem_prealloc_node() on nodes without bootmem gigantic pages,
+hugetlb_pages_alloc_boot_node() when no pages were allocated, and runtime
+allocation failure paths in set_max_huge_pages().
+
+Add an early return for empty lists.  This restores the basic invariant
+that TLB flushes are only issued when page tables have been modified, and
+it also makes the NULL hstate passed by gather_bootmem_prealloc_node() on
+an empty list harmless.
+
+Assisted-by: kimi-cli:kimi-k2.7 code
+Assisted-by: Github Copilot:gpt-5.2 #Reported-by
+Link: https://lore.kernel.org/20260630113857.3319612-1-guanwentao@uniontech.com
+Fixes: 79359d6d24df ("hugetlb: perform vmemmap optimization on a list of pages")
+Signed-off-by: Wentao Guan <guanwentao@uniontech.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Guan Wentao <guanwentao@uniontech.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb_vmemmap.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index eefd6b5f9706d..1430a5aa2de57 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -624,6 +624,9 @@ static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+ 	LIST_HEAD(vmemmap_pages);
+ 	unsigned long flags = VMEMMAP_REMAP_NO_TLB_FLUSH;
+ 
++	if (list_empty(folio_list))
++		return;
++
+ 	nr_to_optimize = 0;
+ 	list_for_each_entry(folio, folio_list, lru) {
+ 		int ret;
+-- 
+2.47.3
+

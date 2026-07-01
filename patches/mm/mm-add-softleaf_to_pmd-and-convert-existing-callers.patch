@@ -1,0 +1,238 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Tue, 30 Jun 2026 09:34:38 -0700
+Subject: [PATCH] mm: add softleaf_to_pmd() and convert existing callers
+
+Patch series "mm: preparatory patches for PMD level swap entries".
+
+This is the preparatory part of the PMD page table swapin work.  The full
+PMD swap entry series has been split into two parts:
+
+  1. this preparatory series, which contains the first 6 patches. Zi [1]
+     and Lance [2] suggested to separate this out from the core series.
+  2. the PMD swap entry core series, which depends on this one. I will
+     send this once the preparatory series is merged in mm-new as v3
+     as the combined is currently at v2 [1].
+     I have not marked this prep series as v3, as its not really adding
+     support for PMD swap entries.
+
+This series does not introduce PMD swap entries and does not install any
+new page-table entry type.  It only cleans up existing PMD softleaf
+helpers and call sites so the follow-up PMD swap entry series can be
+smaller and easier to review.
+
+It should be safe to merge independently.  The patches are either helper
+additions, refactors of existing open-coded logic, defensive checks that
+preserve current migration/device-private behavior, or a mechanical rename
+of the PMD softleaf Kconfig gate.  The follow-up series depends on these
+helpers, but this series does not depend on the follow-up series.
+
+Patch breakdown:
+
+  1. mm: add softleaf_to_pmd() and convert existing callers
+     Add the PMD counterpart to softleaf_to_pte() and convert existing
+     swp_entry_to_pmd() users that are constructing PMD softleaf
+     entries.
+
+  2. mm: extract mm_prepare_for_swap_entries() helper
+     Hoist the "register mm with swapoff" double-checked-locking
+     pattern out of try_to_unmap_one() and copy_nonpresent_pte() so
+     future PMD-level users do not need another open-coded copy.
+
+  3. fs/proc: use softleaf_has_pfn() in pagemap PMD walker
+     Avoid assuming every non-present PMD softleaf entry encodes a PFN.
+     Existing migration/device-private behavior is preserved.
+
+  4. mm/huge_memory: move softleaf_to_folio() inside migration branch
+     Keep the folio lookup in change_non_present_huge_pmd() scoped to
+     the migration-entry branch that actually needs it.
+
+  5. mm/migrate_device: move softleaf_to_folio() inside device-private
+     branch
+     Apply the same ordering cleanup to migrate_vma_collect_pmd(): only
+     derive a folio after confirming the PMD entry is device-private.
+
+  6. mm: rename ARCH_ENABLE_THP_MIGRATION to ARCH_SUPPORTS_PMD_SOFTLEAF
+     Rename the architecture gate to describe what it actually enables:
+     PMD softleaf entries.  Migration remains the only current user in
+     this series; the follow-up series adds PMD swap entries.
+
+
+This patch (of 6):
+
+Add softleaf_to_pmd() as the PMD counterpart to softleaf_to_pte(),
+completing the symmetry of the softleaf abstraction for page table leaf
+entries.
+
+The upcoming PMD swap entry support needs to construct PMD entries from
+swap entries.  Converting existing swp_entry_to_pmd() callers to
+softleaf_to_pmd() in a prep patch keeps the feature patches focused on new
+functionality rather than mixing refactoring with new code.
+
+Link: https://lore.kernel.org/20260630164143.1595669-1-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260630164143.1595669-2-usama.arif@linux.dev
+Link: https://lore.kernel.org/all/6E99CC4E-A026-4DE3-8A5A-34216771F521@nvidia.com/ [1]
+Link: https://lore.kernel.org/all/b08cafbb-a4b7-4609-84ae-dbb2cfcfc8be@linux.dev/#t  [2]
+Link: https://lore.kernel.org/all/20260602142537.198755-1-usama.arif@linux.dev/ [3]
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/leafops.h | 20 ++++++++++++++++++++
+ mm/debug_vm_pgtable.c   |  4 ++--
+ mm/huge_memory.c        | 12 ++++++------
+ mm/migrate_device.c     |  2 +-
+ 4 files changed, 29 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/leafops.h b/include/linux/leafops.h
+index 992cd8bd8ed0e..803d312437dfa 100644
+--- a/include/linux/leafops.h
++++ b/include/linux/leafops.h
+@@ -108,6 +108,21 @@ static inline softleaf_t softleaf_from_pmd(pmd_t pmd)
+ 	return swp_entry(__swp_type(arch_entry), __swp_offset(arch_entry));
+ }
+ 
++/**
++ * softleaf_to_pmd() - Obtain a PMD entry from a leaf entry.
++ * @entry: Leaf entry.
++ *
++ * This generates an architecture-specific PMD entry that can be utilised to
++ * encode the metadata the leaf entry encodes.
++ *
++ * Returns: Architecture-specific PMD entry encoding leaf entry.
++ */
++static inline pmd_t softleaf_to_pmd(softleaf_t entry)
++{
++	/* Temporary until swp_entry_t eliminated. */
++	return swp_entry_to_pmd(entry);
++}
++
+ #else
+ 
+ static inline softleaf_t softleaf_from_pmd(pmd_t pmd)
+@@ -115,6 +130,11 @@ static inline softleaf_t softleaf_from_pmd(pmd_t pmd)
+ 	return softleaf_mk_none();
+ }
+ 
++static inline pmd_t softleaf_to_pmd(softleaf_t entry)
++{
++	return __pmd(0);
++}
++
+ #endif
+ 
+ /**
+diff --git a/mm/debug_vm_pgtable.c b/mm/debug_vm_pgtable.c
+index 23dc3ee095619..18411fb09aabd 100644
+--- a/mm/debug_vm_pgtable.c
++++ b/mm/debug_vm_pgtable.c
+@@ -758,7 +758,7 @@ static void __init pmd_leaf_soft_dirty_tests(struct pgtable_debug_args *args)
+ 		return;
+ 
+ 	pr_debug("Validating PMD swap soft dirty\n");
+-	pmd = swp_entry_to_pmd(args->leaf_entry);
++	pmd = softleaf_to_pmd(args->leaf_entry);
+ 	WARN_ON(!pmd_is_huge(pmd));
+ 	WARN_ON(!pmd_is_valid_softleaf(pmd));
+ 
+@@ -829,7 +829,7 @@ static void __init pmd_softleaf_tests(struct pgtable_debug_args *args)
+ 		return;
+ 
+ 	pr_debug("Validating PMD swap\n");
+-	pmd1 = swp_entry_to_pmd(args->leaf_entry);
++	pmd1 = softleaf_to_pmd(args->leaf_entry);
+ 	WARN_ON(!pmd_is_huge(pmd1));
+ 	WARN_ON(!pmd_is_valid_softleaf(pmd1));
+ 
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 2bccb0a53a0a6..d51f53cfbe4f6 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1819,7 +1819,7 @@ static void copy_huge_non_present_pmd(
+ 	if (softleaf_is_migration_write(entry) ||
+ 	    softleaf_is_migration_read_exclusive(entry)) {
+ 		entry = make_readable_migration_entry(swp_offset(entry));
+-		pmd = swp_entry_to_pmd(entry);
++		pmd = softleaf_to_pmd(entry);
+ 		if (pmd_swp_soft_dirty(*src_pmd))
+ 			pmd = pmd_swp_mksoft_dirty(pmd);
+ 		if (pmd_swp_uffd_wp(*src_pmd))
+@@ -1832,7 +1832,7 @@ static void copy_huge_non_present_pmd(
+ 		 */
+ 		if (softleaf_is_device_private_write(entry)) {
+ 			entry = make_readable_device_private_entry(swp_offset(entry));
+-			pmd = swp_entry_to_pmd(entry);
++			pmd = softleaf_to_pmd(entry);
+ 
+ 			if (pmd_swp_soft_dirty(*src_pmd))
+ 				pmd = pmd_swp_mksoft_dirty(pmd);
+@@ -2570,12 +2570,12 @@ static void change_non_present_huge_pmd(struct mm_struct *mm,
+ 			entry = make_readable_exclusive_migration_entry(swp_offset(entry));
+ 		else
+ 			entry = make_readable_migration_entry(swp_offset(entry));
+-		newpmd = swp_entry_to_pmd(entry);
++		newpmd = softleaf_to_pmd(entry);
+ 		if (pmd_swp_soft_dirty(*pmd))
+ 			newpmd = pmd_swp_mksoft_dirty(newpmd);
+ 	} else if (softleaf_is_device_private_write(entry)) {
+ 		entry = make_readable_device_private_entry(swp_offset(entry));
+-		newpmd = swp_entry_to_pmd(entry);
++		newpmd = softleaf_to_pmd(entry);
+ 		if (pmd_swp_uffd_wp(*pmd))
+ 			newpmd = pmd_swp_mkuffd_wp(newpmd);
+ 	} else {
+@@ -4923,7 +4923,7 @@ int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
+ 	}
+ 
+ 	/* Set PMD. */
+-	pmdswp = swp_entry_to_pmd(entry);
++	pmdswp = softleaf_to_pmd(entry);
+ 	if (softdirty)
+ 		pmdswp = pmd_swp_mksoft_dirty(pmdswp);
+ 	if (uffd_wp)
+@@ -4976,7 +4976,7 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
+ 		else
+ 			entry = make_readable_device_private_entry(
+ 							page_to_pfn(new));
+-		pmde = swp_entry_to_pmd(entry);
++		pmde = softleaf_to_pmd(entry);
+ 
+ 		if (pmd_swp_soft_dirty(*pvmw->pmd))
+ 			pmde = pmd_swp_mksoft_dirty(pmde);
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index ae39173d6a0e8..aa948db495018 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -835,7 +835,7 @@ static int migrate_vma_insert_huge_pmd_page(struct migrate_vma *migrate,
+ 		else
+ 			swp_entry = make_readable_device_private_entry(
+ 						page_to_pfn(page));
+-		entry = swp_entry_to_pmd(swp_entry);
++		entry = softleaf_to_pmd(swp_entry);
+ 	} else {
+ 		if (folio_is_zone_device(folio) &&
+ 		    !folio_is_device_coherent(folio)) {
+-- 
+2.47.3
+

@@ -1,18 +1,18 @@
 From: Breno Leitao <leitao@debian.org>
-Date: Fri, 26 Jun 2026 08:33:16 -0700
+Date: Tue, 30 Jun 2026 05:46:05 -0700
 Subject: [PATCH] mm/memory-failure: surface unhandlable kernel pages as
  -ENOTRECOVERABLE
 
-get_any_page() collapses every HWPoisonHandlable() rejection into a single
--EIO via the __get_hwpoison_page() -> -EBUSY -> shake_page() -> retry
-path.  That is correct for the transient case (a userspace folio briefly
-off LRU during migration or compaction, which a later shake can drag
-back), but wrong for stable kernel-owned pages: slab, page-table,
-large-kmalloc and PG_reserved pages will never become HWPoisonHandlable(),
-so the retry loop is wasted work and the final -EIO loses the "this is
-structurally unrecoverable" information.  memory_failure() then maps -EIO
-into MF_MSG_GET_HWPOISON, which the panic-on-unrecoverable sysctl
-deliberately does not act on.
+get_any_page() collapses every HWPoisonHandlable() rejection into a
+single -EIO via the __get_hwpoison_page() -> -EBUSY -> shake_page()
+-> retry path.  That is correct for the transient case (a userspace
+folio briefly off LRU during migration or compaction, which a later
+shake can drag back), but wrong for stable kernel-owned pages: slab,
+page-table, large-kmalloc and PG_reserved pages will never become
+HWPoisonHandlable(), so the retry loop is wasted work and the final
+-EIO loses the "this is structurally unrecoverable" information.
+memory_failure() then maps -EIO into MF_MSG_GET_HWPOISON, which the
+panic-on-unrecoverable sysctl deliberately does not act on.
 
 Introduce is_kernel_owned_page(), a small predicate that positively
 identifies pages the hwpoison handler cannot recover from:
@@ -23,15 +23,15 @@ identifies pages the hwpoison handler cannot recover from:
 
   where head = compound_head(p).
 
-PG_reserved is a per-page flag (PF_NO_COMPOUND) and is tested on the page
-directly.  The slab, page-table and large-kmalloc page-type bits are only
-stored on the head page, so those tests resolve the compound head first,
-then re-read compound_head(page) afterwards: a concurrent split or
-compound free that moves head invalidates the just-read flags and the loop
-retries.  The lookup still takes no refcount, mirroring the rest of
-get_any_page(); the recheck closes the common split race, and a residual
-free->alloc->free in the same window can only mis-tag a genuinely poisoned
-page, never reclassify a handlable one.
+PG_reserved is a per-page flag (PF_NO_COMPOUND) and is tested on the
+page directly.  The slab, page-table and large-kmalloc page-type bits
+are only stored on the head page, so those tests resolve the compound
+head first, then re-read compound_head(page) afterwards: a concurrent
+split or compound free that moves head invalidates the just-read flags
+and the loop retries.  The lookup still takes no refcount, mirroring
+the rest of get_any_page(); the recheck closes the common split race,
+and a residual free->alloc->free in the same window can only mis-tag
+a genuinely poisoned page, never reclassify a handlable one.
 
 No MF_SOFT_OFFLINE / page_has_movable_ops() opt-out is needed: a
 movable_ops page is always PageOffline or PageZsmalloc, whose page_type is
@@ -60,7 +60,7 @@ propagate to its callers.  A follow-up wires -ENOTRECOVERABLE through
 memory_failure() and reports MF_MSG_KERNEL for the unrecoverable cases,
 which is what the panic_on_unrecoverable_memory_failure sysctl observes.
 
-Link: https://lore.kernel.org/20260626-ecc_panic-v10-2-6dacb8ad024d@debian.org
+Link: https://lore.kernel.org/20260630-ecc_panic-v10-2-c6ed5b62eea2@debian.org
 Signed-off-by: Breno Leitao <leitao@debian.org>
 Suggested-by: David Hildenbrand <david@kernel.org>
 Suggested-by: Lance Yang <lance.yang@linux.dev>
@@ -79,14 +79,14 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/memory-failure.c | 50 +++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 48 insertions(+), 2 deletions(-)
+ mm/memory-failure.c | 52 +++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 50 insertions(+), 2 deletions(-)
 
 diff --git a/mm/memory-failure.c b/mm/memory-failure.c
-index c4d7d5ef92f06..020dfbc91c7d7 100644
+index c4d7d5ef92f06..6cb6c635565ce 100644
 --- a/mm/memory-failure.c
 +++ b/mm/memory-failure.c
-@@ -1325,6 +1325,36 @@ static inline bool HWPoisonHandlable(struct page *page, unsigned long flags)
+@@ -1325,6 +1325,38 @@ static inline bool HWPoisonHandlable(struct page *page, unsigned long flags)
  	return PageLRU(page) || is_free_buddy_page(page);
  }
  
@@ -108,8 +108,10 @@ index c4d7d5ef92f06..020dfbc91c7d7 100644
 +	 * Page-type bits live only on the head page, so resolve any tail
 +	 * first.  The check takes no refcount; recheck the head afterwards
 +	 * so a concurrent split or compound free cannot leave us trusting
-+	 * a stale view.  A free->alloc->free in the same window is still
-+	 * possible but closing it would require taking a reference here.
++	 * a stale view.  A residual free->alloc->free cannot be closed here
++	 * (frozen slab and large-kmalloc pages cannot be pinned), but is
++	 * harmless: where a wrong verdict could panic, memory_failure() has
++	 * already set PageHWPoison, which bars the page from the allocator.
 +	 */
 +retry:
 +	head = compound_head(page);
@@ -123,7 +125,7 @@ index c4d7d5ef92f06..020dfbc91c7d7 100644
  static int __get_hwpoison_page(struct page *page, unsigned long flags)
  {
  	struct folio *folio = page_folio(page);
-@@ -1371,6 +1401,19 @@ static int get_any_page(struct page *p, unsigned long flags)
+@@ -1371,6 +1403,19 @@ static int get_any_page(struct page *p, unsigned long flags)
  	if (flags & MF_COUNT_INCREASED)
  		count_increased = true;
  
@@ -143,7 +145,7 @@ index c4d7d5ef92f06..020dfbc91c7d7 100644
  try_again:
  	if (!count_increased) {
  		ret = __get_hwpoison_page(p, flags);
-@@ -1418,7 +1461,7 @@ static int get_any_page(struct page *p, unsigned long flags)
+@@ -1418,7 +1463,7 @@ static int get_any_page(struct page *p, unsigned long flags)
  		ret = -EIO;
  	}
  out:
@@ -152,7 +154,7 @@ index c4d7d5ef92f06..020dfbc91c7d7 100644
  		pr_err("%#lx: unhandlable page.\n", page_to_pfn(p));
  
  	return ret;
-@@ -1475,7 +1518,10 @@ static int __get_unpoison_page(struct page *page)
+@@ -1475,7 +1520,10 @@ static int __get_unpoison_page(struct page *page)
   *         -EIO for pages on which we can not handle memory errors,
   *         -EBUSY when get_hwpoison_page() has raced with page lifecycle
   *         operations like allocation and free,

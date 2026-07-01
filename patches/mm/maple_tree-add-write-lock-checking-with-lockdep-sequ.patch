@@ -1,0 +1,177 @@
+From: "Liam R. Howlett (Oracle)" <liam@infradead.org>
+Date: Tue, 30 Jun 2026 15:08:27 -0400
+Subject: [PATCH] maple_tree: add write lock checking with lockdep sequence
+ numbers
+
+Use the lockdep sequence numbers to ensure the write lock is not dropped
+between write operations.  The lockdep sequence is recorded on any walk
+that starts from the top of the tree and re-checked prior to any operation
+using an active node.
+
+Link: https://lore.kernel.org/20260630190843.3563858-4-liam@infradead.org
+Signed-off-by: Liam R. Howlett (Oracle) <liam@infradead.org>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Chris Mason <clm@meta.com>
+Cc: Chuck Lever <cel@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Joe Perches <joe@perches.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/maple_tree.h |  7 +++--
+ lib/maple_tree.c           | 58 ++++++++++++++++++++++++++++++--------
+ 2 files changed, 51 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/maple_tree.h b/include/linux/maple_tree.h
+index 11a16c3508dc0..220b380cdd491 100644
+--- a/include/linux/maple_tree.h
++++ b/include/linux/maple_tree.h
+@@ -485,9 +485,12 @@ struct ma_state {
+ 	unsigned char mas_flags;
+ 	unsigned char end;		/* The end of the node */
+ 	enum store_type store_type;	/* The type of store needed for this operation */
+-#if IS_ENABLED(CONFIG_LOCKDEP) && IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD)
++#ifdef CONFIG_LOCKDEP
++	u32 ld_seq;
++#ifdef CONFIG_RCU_STRICT_GRACE_PERIOD
+ 	unsigned long rcu_gp;
+-#endif
++#endif /* CONFIG_RCU_STRICT_GRACE_PERIOD */
++#endif /* CONFIG_LOCKDEP */
+ };
+ 
+ struct ma_wr_state {
+diff --git a/lib/maple_tree.c b/lib/maple_tree.c
+index 3dff0435c13a7..e2f7474572319 100644
+--- a/lib/maple_tree.c
++++ b/lib/maple_tree.c
+@@ -1153,40 +1153,71 @@ static inline void mas_free(struct ma_state *mas, struct maple_enode *used)
+ 	ma_free_rcu(mte_to_node(used));
+ }
+ 
+-void mas_lock_check(struct ma_state *mas)
++
++#ifdef CONFIG_LOCKDEP
++static struct lockdep_map *mas_lockdep_map(struct ma_state *mas)
+ {
++	struct maple_tree *mt = mas->tree;
++
++	if (mt_external_lock(mt))
++		return mt->ma_external_lock;
++
++	return &(mt->ma_lock).dep_map;
++}
++
++#endif
+ 
+-#if IS_ENABLED(CONFIG_LOCKDEP) && IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD)
++static void mas_lock_check(struct ma_state *mas)
++{
++#ifdef CONFIG_LOCKDEP
++	struct lockdep_map *map;
+ 	if (!mas_is_active(mas))
+ 		return;
+ 
++#ifdef CONFIG_RCU_STRICT_GRACE_PERIOD
+ 	if (!mt_locked(mas->tree)) {
+ 		if (mt_in_rcu(mas->tree))
+ 			WARN_ON_ONCE(poll_state_synchronize_rcu(mas->rcu_gp));
+ 	}
+-#endif
++#endif /* CONFIG_RCU_STRICT_GRACE_PERIOD */
++
++	map = mas_lockdep_map(mas);
++	if (map && lock_is_held(map))
++		WARN_ON_ONCE(mas->ld_seq != lock_sequence(map));
++#endif /* CONFIG_LOCKDEP */
+ 
+ }
+ 
+-void mas_init_lock_check(struct ma_state *mas)
++static void mas_init_lock_check(struct ma_state *mas)
+ {
+-#if IS_ENABLED(CONFIG_LOCKDEP) && IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD)
++#ifdef CONFIG_LOCKDEP
++	struct lockdep_map *map;
++#ifdef CONFIG_RCU_STRICT_GRACE_PERIOD
+ 	if (!mt_locked(mas->tree)) {
+ 		if (mt_in_rcu(mas->tree))
+ 			mas->rcu_gp = get_state_synchronize_rcu();
++		return;
+ 	}
+-#endif
++#endif /* CONFIG_RCU_STRICT_GRACE_PERIOD */
++
++	map = mas_lockdep_map(mas);
++	if (map && lock_is_held(map))
++		mas->ld_seq = lock_sequence(mas_lockdep_map(mas));
++#endif /* CONFIG_LOCKDEP */
+ 
+ }
+ 
+ static void mas_may_init_lock_check(struct ma_state *mas)
+ {
+-#if IS_ENABLED(CONFIG_LOCKDEP) && IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD)
+-	if (mas_is_start(mas) || mas_is_paused(mas))
++#ifdef CONFIG_LOCKDEP
++#ifdef CONFIG_RCU_STRICT_GRACE_PERIOD
++	if (mas_is_start(mas) || mas_is_paused(mas)) {
+ 		mas_init_lock_check(mas);
+-	else
+-		mas_lock_check(mas);
+-#endif
++		return;
++	}
++#endif /* CONFIG_RCU_STRICT_GRACE_PERIOD */
++	mas_lock_check(mas);
++#endif /* CONFIG_LOCKDEP */
+ }
+ 
+ /*
+@@ -4869,6 +4900,7 @@ void *mas_store(struct ma_state *mas, void *entry)
+ {
+ 	MA_WR_STATE(wr_mas, mas, entry);
+ 
++	mas_may_init_lock_check(mas);
+ 	trace_ma_write(TP_FCT, mas, 0, entry);
+ #ifdef CONFIG_DEBUG_MAPLE_TREE
+ 	if (MAS_WARN_ON(mas, mas->index > mas->last))
+@@ -4927,6 +4959,7 @@ int mas_store_gfp(struct ma_state *mas, void *entry, gfp_t gfp)
+ 	MA_WR_STATE(wr_mas, mas, entry);
+ 	int ret = 0;
+ 
++	mas_may_init_lock_check(mas);
+ retry:
+ 	mas_wr_preallocate(&wr_mas, entry);
+ 	if (unlikely(mas_nomem(mas, gfp))) {
+@@ -4957,6 +4990,7 @@ void mas_store_prealloc(struct ma_state *mas, void *entry)
+ {
+ 	MA_WR_STATE(wr_mas, mas, entry);
+ 
++	mas_lock_check(mas);
+ 	if (mas->store_type == wr_store_root) {
+ 		mas_wr_prealloc_setup(&wr_mas);
+ 		goto store;
+@@ -4989,6 +5023,7 @@ int mas_preallocate(struct ma_state *mas, void *entry, gfp_t gfp)
+ {
+ 	MA_WR_STATE(wr_mas, mas, entry);
+ 
++	mas_may_init_lock_check(mas);
+ 	mas_wr_prealloc_setup(&wr_mas);
+ 	mas->store_type = mas_wr_store_type(&wr_mas);
+ 	mas_prealloc_calc(&wr_mas, entry);
+@@ -5474,7 +5509,6 @@ EXPORT_SYMBOL_GPL(mas_find_range);
+ static bool mas_find_rev_setup(struct ma_state *mas, unsigned long min,
+ 		void **entry)
+ {
+-
+ 	switch (mas->status) {
+ 	case ma_active:
+ 		goto active;
+-- 
+2.47.3
+

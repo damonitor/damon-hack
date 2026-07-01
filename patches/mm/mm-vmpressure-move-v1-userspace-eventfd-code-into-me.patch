@@ -1,7 +1,7 @@
 From: Usama Arif <usama.arif@linux.dev>
-Date: Mon, 29 Jun 2026 05:59:37 -0700
-Subject: [PATCH] mm/vmpressure: split v1 userspace eventfd code into
- vmpressure-v1.c
+Date: Tue, 30 Jun 2026 04:23:33 -0700
+Subject: [PATCH] mm/vmpressure: move v1 userspace eventfd code into
+ memcontrol-v1.c
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -16,8 +16,12 @@ walk, vmpressure_event(), vmpressure_register_event(),
 vmpressure_unregister_event(), and vmpressure_prio() (which always calls
 vmpressure() with tree=true).
 
-Move it all into a new mm/vmpressure-v1.c built only when
-CONFIG_MEMCG_V1=y (following the existing memcontrol-v1.o pattern).
+Move it all into mm/memcontrol-v1.c (built only when CONFIG_MEMCG_V1=y) as
+a single contiguous block, following the per-component layout already used
+by that file.  Keeping the v1 vmpressure code with the rest of the
+deprecated cgroup v1 memory controller makes the full footprint of the
+CONFIG_MEMCG_V1 option easy to see in one place, which matters more than
+component-level file separation for code that has no active development.
 
 vmpressure.c keeps the shared bits (constants, vmpressure_calc_level, the
 runtime hierarchy check, the tree=false body, init/cleanup plumbing) and
@@ -44,9 +48,9 @@ that today rely on vmpressure's hysteresis.  The medium-term plan is to
 introduce a PSI-based socket-pressure path, keep vmpressure available for
 v2 behind a defconfig as an opt-out for several releases, and only then
 drop the tree=false path entirely, at which point everything that remains
-in mm/vmpressure-v1.c is the whole subsystem.
+of the vmpressure block in mm/memcontrol-v1.c is the whole subsystem.
 
-Link: https://lore.kernel.org/20260629130042.2649505-3-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260630112617.1198623-3-usama.arif@linux.dev
 Signed-off-by: Usama Arif <usama.arif@linux.dev>
 Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: David Hildenbrand <david@kernel.org>
@@ -63,14 +67,12 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/vmpressure.h |  46 +++++-
- mm/Makefile                |   2 +-
- mm/vmpressure-v1.c         | 305 +++++++++++++++++++++++++++++++++++++
- mm/vmpressure.c            | 292 ++---------------------------------
- 4 files changed, 357 insertions(+), 288 deletions(-)
- create mode 100644 mm/vmpressure-v1.c
+ mm/memcontrol-v1.c         | 292 +++++++++++++++++++++++++++++++++++++
+ mm/vmpressure.c            | 292 ++-----------------------------------
+ 3 files changed, 343 insertions(+), 287 deletions(-)
 
 diff --git a/include/linux/vmpressure.h b/include/linux/vmpressure.h
-index faecd55224017..e5e6b68d0dc43 100644
+index faecd55224017..b4d13457bc2ad 100644
 --- a/include/linux/vmpressure.h
 +++ b/include/linux/vmpressure.h
 @@ -13,18 +13,31 @@
@@ -119,7 +121,7 @@ index faecd55224017..e5e6b68d0dc43 100644
  extern struct vmpressure *memcg_to_vmpressure(struct mem_cgroup *memcg);
  extern struct mem_cgroup *vmpressure_to_memcg(struct vmpressure *vmpr);
 +
-+/* Shared with mm/vmpressure-v1.c. */
++/* Shared with the v1 vmpressure block in mm/memcontrol-v1.c. */
 +extern const unsigned long vmpressure_win;
 +extern enum vmpressure_levels vmpressure_calc_level(unsigned long scanned,
 +						    unsigned long reclaimed);
@@ -152,46 +154,28 @@ index faecd55224017..e5e6b68d0dc43 100644
  static inline void vmpressure(gfp_t gfp, int order, struct mem_cgroup *memcg,
  			      bool tree, unsigned long scanned,
  			      unsigned long reclaimed) {}
-diff --git a/mm/Makefile b/mm/Makefile
-index 4fc713867b9bd..de991630c96a3 100644
---- a/mm/Makefile
-+++ b/mm/Makefile
-@@ -101,7 +101,7 @@ obj-$(CONFIG_DEVICE_MIGRATION) += migrate_device.o
- obj-$(CONFIG_TRANSPARENT_HUGEPAGE) += huge_memory.o khugepaged.o
- obj-$(CONFIG_PAGE_COUNTER) += page_counter.o
- obj-$(CONFIG_LIVEUPDATE_MEMFD) += memfd_luo.o
--obj-$(CONFIG_MEMCG_V1) += memcontrol-v1.o
-+obj-$(CONFIG_MEMCG_V1) += memcontrol-v1.o vmpressure-v1.o
- obj-$(CONFIG_MEMCG) += memcontrol.o vmpressure.o
- ifdef CONFIG_BPF_SYSCALL
- obj-$(CONFIG_MEMCG) += bpf_memcontrol.o
-diff --git a/mm/vmpressure-v1.c b/mm/vmpressure-v1.c
-new file mode 100644
-index 0000000000000..fd813cba05447
---- /dev/null
-+++ b/mm/vmpressure-v1.c
-@@ -0,0 +1,305 @@
-+// SPDX-License-Identifier: GPL-2.0-only
+diff --git a/mm/memcontrol-v1.c b/mm/memcontrol-v1.c
+index 7650692115678..135622b6172b6 100644
+--- a/mm/memcontrol-v1.c
++++ b/mm/memcontrol-v1.c
+@@ -6,6 +6,7 @@
+ #include <linux/pagewalk.h>
+ #include <linux/backing-dev.h>
+ #include <linux/eventfd.h>
++#include <linux/log2.h>
+ #include <linux/poll.h>
+ #include <linux/sort.h>
+ #include <linux/file.h>
+@@ -1476,6 +1477,297 @@ void memcg1_oom_finish(struct mem_cgroup *memcg, bool locked)
+ 		mem_cgroup_oom_unlock(memcg);
+ }
+ 
 +/*
 + * cgroup v1 userspace vmpressure interface (memory.pressure_level /
-+ * cgroup.event_control). Split out of mm/vmpressure.c so that v2-only
-+ * kernels (CONFIG_MEMCG_V1=n) drop the whole eventfd accumulator,
-+ * its work item, and the per-memcg state it requires.
-+ */
-+
-+#include <linux/cgroup.h>
-+#include <linux/eventfd.h>
-+#include <linux/list.h>
-+#include <linux/log2.h>
-+#include <linux/memcontrol.h>
-+#include <linux/mutex.h>
-+#include <linux/slab.h>
-+#include <linux/string.h>
-+#include <linux/swap.h>
-+#include <linux/vmpressure.h>
-+#include <linux/workqueue.h>
-+
-+/*
++ * cgroup.event_control). Kept here so v2-only kernels (CONFIG_MEMCG_V1=n)
++ * drop the whole eventfd accumulator, its work item, and the per-memcg
++ * state it requires.
++ *
 + * When there are too little pages left to scan, vmpressure() may miss the
 + * critical pressure as number of pages will be less than "window size".
 + * However, in that case the vmscan priority will raise fast as the
@@ -476,8 +460,12 @@ index 0000000000000..fd813cba05447
 +	}
 +	mutex_unlock(&vmpr->events_lock);
 +}
++
+ static DEFINE_MUTEX(memcg_max_mutex);
+ 
+ static int mem_cgroup_resize_max(struct mem_cgroup *memcg,
 diff --git a/mm/vmpressure.c b/mm/vmpressure.c
-index c82cee1ab43b4..bcfa4bd8ffc52 100644
+index 93cc472bf2b2a..9629240d77adc 100644
 --- a/mm/vmpressure.c
 +++ b/mm/vmpressure.c
 @@ -7,16 +7,15 @@
@@ -486,7 +474,7 @@ index c82cee1ab43b4..bcfa4bd8ffc52 100644
   * Leonid Moiseichuk, Mel Gorman, Minchan Kim and Pekka Enberg.
 + *
 + * Tree-mode (cgroup v1 userspace eventfd) bookkeeping lives in
-+ * mm/vmpressure-v1.c; this file holds the shared code and the in-kernel
++ * mm/memcontrol-v1.c; this file holds the shared code and the in-kernel
 + * (tree=false) socket-pressure path that runs on cgroup v2.
   */
  
@@ -665,7 +653,7 @@ index c82cee1ab43b4..bcfa4bd8ffc52 100644
  /**
   * vmpressure() - Account memory pressure through scanned/reclaimed ratio
   * @gfp:	reclaimer's gfp mask
-@@ -283,14 +152,7 @@ void vmpressure(gfp_t gfp, int order, struct mem_cgroup *memcg, bool tree,
+@@ -282,14 +151,7 @@ void vmpressure(gfp_t gfp, int order, struct mem_cgroup *memcg, bool tree,
  		return;
  
  	if (tree) {
@@ -681,7 +669,7 @@ index c82cee1ab43b4..bcfa4bd8ffc52 100644
  	} else {
  		enum vmpressure_levels level;
  
-@@ -332,134 +194,6 @@ void vmpressure(gfp_t gfp, int order, struct mem_cgroup *memcg, bool tree,
+@@ -331,134 +193,6 @@ void vmpressure(gfp_t gfp, int order, struct mem_cgroup *memcg, bool tree,
  	}
  }
  
@@ -816,7 +804,7 @@ index c82cee1ab43b4..bcfa4bd8ffc52 100644
  /**
   * vmpressure_init() - Initialize vmpressure control structure
   * @vmpr:	Structure to be initialized
-@@ -470,9 +204,7 @@ void vmpressure_unregister_event(struct mem_cgroup *memcg,
+@@ -469,9 +203,7 @@ void vmpressure_unregister_event(struct mem_cgroup *memcg,
  void vmpressure_init(struct vmpressure *vmpr)
  {
  	spin_lock_init(&vmpr->sr_lock);
@@ -827,7 +815,7 @@ index c82cee1ab43b4..bcfa4bd8ffc52 100644
  }
  
  /**
-@@ -484,9 +216,5 @@ void vmpressure_init(struct vmpressure *vmpr)
+@@ -483,9 +215,5 @@ void vmpressure_init(struct vmpressure *vmpr)
   */
  void vmpressure_cleanup(struct vmpressure *vmpr)
  {

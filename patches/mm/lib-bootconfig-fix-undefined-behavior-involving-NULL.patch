@@ -1,0 +1,77 @@
+From: Bradley Morgan <include@grrlz.net>
+Date: Tue, 30 Jun 2026 17:47:46 +0000
+Subject: [PATCH] lib/bootconfig: fix undefined behavior involving NULL pointer
+ arithmetic
+
+When xbc_snprint_cmdline() is called during the size-probing phase (with
+buf = NULL and size = 0), the function computes the end pointer as 'buf +
+size' (NULL + 0) and repeatedly advances 'buf' via 'buf += ret'.
+
+Under the C standard, performing pointer arithmetic on a NULL pointer is
+undefined behavior.  While harmless inside the kernel, this code is also
+compiled into the userspace host tool 'tools/bootconfig', where host
+compilers with UBSan or FORTIFY_SOURCE enabled abort the build when they
+detect NULL pointer arithmetic.
+
+Fix this by guarding the pointer arithmetic so 'buf' is only advanced when
+non-NULL, and track the running written length in a separate 'len' counter
+for the return value (which cannot be recovered from pointer math when
+'buf' is NULL).  The rest() helper and snprintf call sites are unchanged.
+
+Link: https://lore.kernel.org/20260630174746.14795-1-include@grrlz.net
+Fixes: 51887d03aca1 ("bootconfig: init: Allow admin to use bootconfig for kernel command line")
+Assisted-by: GLM:glm-5.2
+Signed-off-by: Bradley Morgan <include@grrlz.net>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/bootconfig.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/lib/bootconfig.c b/lib/bootconfig.c
+index f445b7703fdd9..c913259c80ce1 100644
+--- a/lib/bootconfig.c
++++ b/lib/bootconfig.c
+@@ -427,8 +427,9 @@ static char xbc_namebuf[XBC_KEYLEN_MAX] __initdata;
+ int __init xbc_snprint_cmdline(char *buf, size_t size, struct xbc_node *root)
+ {
+ 	struct xbc_node *knode, *vnode;
+-	char *end = buf + size;
++	char *end = buf ? buf + size : NULL;
+ 	const char *val, *q;
++	size_t len = 0;
+ 	int ret;
+ 
+ 	xbc_node_for_each_key_value(root, knode, val) {
+@@ -442,7 +443,9 @@ int __init xbc_snprint_cmdline(char *buf, size_t size, struct xbc_node *root)
+ 			ret = snprintf(buf, rest(buf, end), "%s ", xbc_namebuf);
+ 			if (ret < 0)
+ 				return ret;
+-			buf += ret;
++			len += ret;
++			if (buf)
++				buf += ret;
+ 			continue;
+ 		}
+ 		xbc_array_for_each_value(vnode, val) {
+@@ -456,11 +459,13 @@ int __init xbc_snprint_cmdline(char *buf, size_t size, struct xbc_node *root)
+ 				       xbc_namebuf, q, val, q);
+ 			if (ret < 0)
+ 				return ret;
+-			buf += ret;
++			len += ret;
++			if (buf)
++				buf += ret;
+ 		}
+ 	}
+ 
+-	return buf - (end - size);
++	return len;
+ }
+ #undef rest
+ 
+-- 
+2.47.3
+

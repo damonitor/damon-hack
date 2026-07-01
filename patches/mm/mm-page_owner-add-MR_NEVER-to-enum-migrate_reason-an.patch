@@ -1,30 +1,33 @@
 From: Ye Liu <ye.liu@linux.dev>
-Date: Tue, 30 Jun 2026 09:53:19 +0800
+Date: Wed, 1 Jul 2026 09:22:28 +0800
 Subject: [PATCH] mm/page_owner: add MR_NEVER to enum migrate_reason and use it
  for last_migrate_reason
 
 The last_migrate_reason field uses -1 as a sentinel value to mean "no
 migration has happened".  Replace the four bare -1 occurrences by adding a
 proper MR_NEVER member to enum migrate_reason, defining a corresponding
-"never_migrated" string in the MIGRATE_REASON trace macro, and removing
-the local MIGRATE_REASON_NONE define.
+"never_migrated" string in the MIGRATE_REASON trace macro, and updating
+the GDB page_owner script to use MR_NEVER instead of the hardcoded -1 so
+that lx-dump-page-owner does not incorrectly report unmigrated pages as
+migrated.
 
 No functional change.
 
-Link: https://lore.kernel.org/20260630015331.147174-3-ye.liu@linux.dev
+Link: https://lore.kernel.org/20260701012239.315262-3-ye.liu@linux.dev
 Signed-off-by: Ye Liu <ye.liu@linux.dev>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: Brendan Jackman <jackmanb@google.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/migrate_mode.h   | 1 +
- include/trace/events/migrate.h | 3 ++-
- mm/page_owner.c                | 8 ++++----
- 3 files changed, 7 insertions(+), 5 deletions(-)
+ include/linux/migrate_mode.h    | 1 +
+ include/trace/events/migrate.h  | 3 ++-
+ mm/page_owner.c                 | 8 ++++----
+ scripts/gdb/linux/page_owner.py | 4 +++-
+ 4 files changed, 10 insertions(+), 6 deletions(-)
 
 diff --git a/include/linux/migrate_mode.h b/include/linux/migrate_mode.h
 index 265c4328b36ad..05102d4d2490e 100644
@@ -92,6 +95,35 @@ index 342549891a8d4..c2f43ab860eb9 100644
  						   current->tgid, current->comm);
  			count++;
  ext_put_continue:
+diff --git a/scripts/gdb/linux/page_owner.py b/scripts/gdb/linux/page_owner.py
+index 8e713a09cfe78..eeabaeed438b2 100644
+--- a/scripts/gdb/linux/page_owner.py
++++ b/scripts/gdb/linux/page_owner.py
+@@ -34,6 +34,7 @@ class DumpPageOwner(gdb.Command):
+     max_pfn = None
+     p_ops = None
+     migrate_reason_names = None
++    mr_never = None
+ 
+     def __init__(self):
+         super(DumpPageOwner, self).__init__("lx-dump-page-owner", gdb.COMMAND_SUPPORT)
+@@ -65,6 +66,7 @@ class DumpPageOwner(gdb.Command):
+         self.max_pfn = int(gdb.parse_and_eval("max_pfn"))
+         self.page_ext_size = int(gdb.parse_and_eval("page_ext_size"))
+         self.migrate_reason_names = gdb.parse_and_eval('migrate_reason_names')
++        self.mr_never = int(gdb.parse_and_eval('MR_NEVER'))
+ 
+     def page_ext_invalid(self, page_ext):
+         if page_ext == gdb.Value(0):
+@@ -138,7 +140,7 @@ class DumpPageOwner(gdb.Command):
+         else:
+             gdb.write('page last free stack trace:\n')
+             stackdepot.stack_depot_print(page_owner["free_handle"])
+-        if page_owner['last_migrate_reason'] != -1:
++        if page_owner['last_migrate_reason'] != self.mr_never:
+             gdb.write('page has been migrated, last migrate reason: %s\n' % self.migrate_reason_names[page_owner['last_migrate_reason']])
+ 
+     def read_page_owner(self):
 -- 
 2.47.3
 

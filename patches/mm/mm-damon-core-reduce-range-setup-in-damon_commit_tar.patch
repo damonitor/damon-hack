@@ -1,0 +1,81 @@
+From: SJ Park <sj@kernel.org>
+Date: Tue, 30 Jun 2026 07:17:22 -0700
+Subject: [PATCH] mm/damon/core: reduce range setup in
+ damon_commit_target_regions()
+
+damon_commit_target_regions() calls damon_set_regions() for updating the
+destination target's monitoring target region boundaries.  It sets the
+boundaries same to source target's monitoring regions, even if they are
+adjacent.  Meanwhile, damon_set_region() sets the destination target
+regions exactly the same to the source, only when the target regions are
+empty.  When there are existing target regions, only a few regions are
+expanded or shrunk to fit on only the boundaries for disjoint regions in
+the source.  Hence the adjacent source ranges mean nothing in common
+cases.  When there are many regions, such adjacent range setup is only a
+waste of time and space.  We recently found [1] it is actually causing
+memory overhead.  Setup the ranges for only distinct ranges.
+
+Link: https://lore.kernel.org/20260630141726.92246-9-sj@kernel.org
+Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9a03123269c28..5febe58a07028 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1347,21 +1347,33 @@ static struct damon_target *damon_nth_target(int n, struct damon_ctx *ctx)
+ static int damon_commit_target_regions(struct damon_target *dst,
+ 		struct damon_target *src, unsigned long src_min_region_sz)
+ {
+-	struct damon_region *src_region;
++	struct damon_region *src_region, *prev = NULL;
+ 	struct damon_addr_range *ranges;
+ 	int i = 0, err;
+ 
+-	damon_for_each_region(src_region, src)
+-		i++;
++	damon_for_each_region(src_region, src) {
++		if (!prev || prev->ar.end != src_region->ar.start)
++			i++;
++		prev = src_region;
++	}
+ 	if (!i)
+ 		return 0;
+ 
+ 	ranges = kvmalloc_objs(*ranges, i, GFP_KERNEL | __GFP_NOWARN);
+ 	if (!ranges)
+ 		return -ENOMEM;
++	prev = NULL;
+ 	i = 0;
+-	damon_for_each_region(src_region, src)
+-		ranges[i++] = src_region->ar;
++	damon_for_each_region(src_region, src) {
++		if (!prev) {
++			ranges[i].start = src_region->ar.start;
++		} else if (prev->ar.end != src_region->ar.start) {
++			ranges[i++].end = prev->ar.end;
++			ranges[i].start = src_region->ar.start;
++		}
++		prev = src_region;
++	}
++	ranges[i++].end = damon_last_region(src)->ar.end;
+ 	err = damon_set_regions(dst, ranges, i, src_min_region_sz);
+ 	kvfree(ranges);
+ 	return err;
+-- 
+2.47.3
+

@@ -1,0 +1,75 @@
+From: "Liam R. Howlett (Oracle)" <liam@infradead.org>
+Date: Tue, 30 Jun 2026 15:08:34 -0400
+Subject: [PATCH] maple_tree: micro optimisation of mas_wr_store_type()
+
+Use three new local booleans instead of reading other structures.  This
+has shown an increase of 0.62% on a 2048 entry tree of height 4.
+
+Link: https://lore.kernel.org/20260630190843.3563858-11-liam@infradead.org
+Signed-off-by: Liam R. Howlett (Oracle) <liam@infradead.org>
+Cc: Boqun Feng <boqun.feng@gmail.com>
+Cc: Chris Mason <clm@meta.com>
+Cc: Chuck Lever <cel@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Joe Perches <joe@perches.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Waiman Long <longman@redhat.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/maple_tree.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/lib/maple_tree.c b/lib/maple_tree.c
+index 1c96b3a5dab60..999a1d095e369 100644
+--- a/lib/maple_tree.c
++++ b/lib/maple_tree.c
+@@ -3736,6 +3736,9 @@ static inline enum store_type mas_wr_store_type(struct ma_wr_state *wr_mas)
+ {
+ 	struct ma_state *mas = wr_mas->mas;
+ 	unsigned char new_end;
++	bool appending;
++	bool one_slot;
++	bool in_rcu;
+ 
+ 	if (unlikely(mas_is_none(mas) || mas_is_ptr(mas)))
+ 		return wr_store_root;
+@@ -3755,21 +3758,30 @@ static inline enum store_type mas_wr_store_type(struct ma_wr_state *wr_mas)
+ 		return wr_new_root;
+ 
+ 	new_end = mas_wr_new_end(wr_mas);
++	in_rcu = mt_in_rcu(mas->tree);
++	appending = mas->offset == mas->end;
++	one_slot = wr_mas->offset_end - mas->offset == 1;
++
+ 	/* Potential spanning rebalance collapsing a node */
+ 	if (new_end < mt_min_slots[wr_mas->type]) {
+ 		if (!mte_is_root(mas->node))
+ 			return  wr_rebalance;
++		if (!in_rcu) {
++			if (appending)
++				return wr_append;
++			else if (mas->end == new_end && one_slot)
++				return wr_slot_store;
++		}
+ 		return wr_node_store;
+ 	}
+ 
+ 	if (new_end >= mt_slots[wr_mas->type])
+ 		return wr_split_store;
+ 
+-	if (!mt_in_rcu(mas->tree) && (mas->offset == mas->end))
++	if (!in_rcu && appending)
+ 		return wr_append;
+ 
+-	if ((new_end == mas->end) && (!mt_in_rcu(mas->tree) ||
+-		(wr_mas->offset_end - mas->offset == 1)))
++	if (new_end == mas->end && (!in_rcu || one_slot))
+ 		return wr_slot_store;
+ 
+ 	return wr_node_store;
+-- 
+2.47.3
+

@@ -1,0 +1,86 @@
+From: yahia ahmed <yahia.a.abdrabou@gmail.com>
+Date: Tue, 30 Jun 2026 15:02:22 +0300
+Subject: [PATCH] mm/shmem: fix data-race in shmem_fault
+
+shmem_fault and shmem_writeout access inode->i_private without holding a
+lock, while shmem_fallocate is modifying it while holding a lock, thus a
+data-race is created.
+
+Fix this by using READ_ONCE and WRITE_ONCE, which provides an atomic,
+lockless read and write of inode->i_private which prevents compiler
+optimizations such as caching in registers and add writing to
+inode->i_private with WRITE_ONCE to prevent the compiler from writing in
+registers.
+
+Link: https://lore.kernel.org/20260630120222.11562-1-yahia.a.abdrabou@gmail.com
+Signed-off-by: yahia ahmed <yahia.a.abdrabou@gmail.com>
+Reported-by: syzbot+76cc716982cf0254f302@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=76cc716982cf0254f302
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index b06c1ae2f50c3..0ea74fa84f250 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -1657,7 +1657,7 @@ int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
+ 	 * reactivate the folio, and let shmem_fallocate() quit when too many.
+ 	 */
+ 	if (!folio_test_uptodate(folio)) {
+-		if (inode->i_private) {
++		if (READ_ONCE(inode->i_private)) {
+ 			struct shmem_falloc *shmem_falloc;
+ 			spin_lock(&inode->i_lock);
+ 			shmem_falloc = inode->i_private;
+@@ -2693,7 +2693,7 @@ static vm_fault_t shmem_fault(struct vm_fault *vmf)
+ 	 * Trinity finds that probing a hole which tmpfs is punching can
+ 	 * prevent the hole-punch from ever completing: noted in i_private.
+ 	 */
+-	if (unlikely(inode->i_private)) {
++	if (unlikely(READ_ONCE(inode->i_private))) {
+ 		ret = shmem_falloc_wait(vmf, inode);
+ 		if (ret)
+ 			return ret;
+@@ -3630,7 +3630,7 @@ static long shmem_fallocate(struct file *file, int mode, loff_t offset,
+ 		shmem_falloc.start = (u64)unmap_start >> PAGE_SHIFT;
+ 		shmem_falloc.next = (unmap_end + 1) >> PAGE_SHIFT;
+ 		spin_lock(&inode->i_lock);
+-		inode->i_private = &shmem_falloc;
++		WRITE_ONCE(inode->i_private, &shmem_falloc);
+ 		spin_unlock(&inode->i_lock);
+ 
+ 		if ((u64)unmap_end > (u64)unmap_start)
+@@ -3640,7 +3640,7 @@ static long shmem_fallocate(struct file *file, int mode, loff_t offset,
+ 		/* No need to unmap again: hole-punching leaves COWed pages */
+ 
+ 		spin_lock(&inode->i_lock);
+-		inode->i_private = NULL;
++		WRITE_ONCE(inode->i_private, NULL);
+ 		wake_up_all(&shmem_falloc_waitq);
+ 		WARN_ON_ONCE(!list_empty(&shmem_falloc_waitq.head));
+ 		spin_unlock(&inode->i_lock);
+@@ -3672,7 +3672,7 @@ static long shmem_fallocate(struct file *file, int mode, loff_t offset,
+ 	shmem_falloc.nr_falloced = 0;
+ 	shmem_falloc.nr_unswapped = 0;
+ 	spin_lock(&inode->i_lock);
+-	inode->i_private = &shmem_falloc;
++	WRITE_ONCE(inode->i_private, &shmem_falloc);
+ 	spin_unlock(&inode->i_lock);
+ 
+ 	/*
+@@ -3747,7 +3747,7 @@ static long shmem_fallocate(struct file *file, int mode, loff_t offset,
+ 		i_size_write(inode, offset + len);
+ undone:
+ 	spin_lock(&inode->i_lock);
+-	inode->i_private = NULL;
++	WRITE_ONCE(inode->i_private, NULL);
+ 	spin_unlock(&inode->i_lock);
+ out:
+ 	if (!error)
+-- 
+2.47.3
+

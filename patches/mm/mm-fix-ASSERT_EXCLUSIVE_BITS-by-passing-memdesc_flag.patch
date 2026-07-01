@@ -1,0 +1,305 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Tue, 30 Jun 2026 15:08:10 +0800
+Subject: [PATCH] mm: fix ASSERT_EXCLUSIVE_BITS by passing memdesc_flags_t by
+ pointer
+
+KCSAN reports a data race between page_to_nid()/folio_pgdat() reading
+page->flags and folio_trylock()/folio_lock() concurrently doing
+test_and_set_bit_lock(PG_locked, ...) on the same word, e.g.:
+
+  BUG: KCSAN: data-race in __lruvec_stat_mod_folio / shmem_get_folio_gfp
+
+The race is benign: nid/zone bits are set once at page init and never
+overlap with PG_locked.  However, ASSERT_EXCLUSIVE_BITS() inside
+memdesc_nid/zonenum() was checking a by-value copy of the flags word, not
+the live page->flags, so it failed to annotate the real access.
+
+Change memdesc_nid(), memdesc_zonenum(), memdesc_section(), and
+memdesc_is_zone_device() to take a const memdesc_flags_t * and update all
+callers to pass &page->flags / &folio->flags, so ASSERT_EXCLUSIVE_BITS()
+operates on the actual shared word.
+
+Guard the ASSERT_EXCLUSIVE_BITS() calls in memdesc_zonenum() and
+memdesc_section() under ZONES_WIDTH != 0 / SECTIONS_WIDTH != 0 to avoid a
+zero-mask check on configs where the corresponding field is absent.  Under
+CONFIG_NUMA=n, stub out page_to_nid() and folio_nid() as plain "return 0"
+instead of reading page->flags when NODES_MASK is 0 and the check can
+never fire.
+
+Link: https://lore.kernel.org/20260630070810.470763-1-hui.zhu@linux.dev
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Co-developed-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/asm-generic/memory_model.h |  2 +-
+ include/linux/mm.h                 | 42 ++++++++++++++++++++++++------
+ include/linux/mm_inline.h          |  4 +--
+ include/linux/mmzone.h             | 26 +++++++++---------
+ mm/page_alloc.c                    |  6 ++---
+ mm/slab.h                          |  2 +-
+ mm/sparse.c                        |  2 +-
+ 7 files changed, 56 insertions(+), 28 deletions(-)
+
+diff --git a/include/asm-generic/memory_model.h b/include/asm-generic/memory_model.h
+index fd74de50b0540..c6b4eafaf4cb2 100644
+--- a/include/asm-generic/memory_model.h
++++ b/include/asm-generic/memory_model.h
+@@ -53,7 +53,7 @@ static inline int pfn_valid(unsigned long pfn)
+  */
+ #define __page_to_pfn(pg)					\
+ ({	const struct page *__pg = (pg);				\
+-	int __sec = memdesc_section(__pg->flags);		\
++	int __sec = memdesc_section(&__pg->flags);		\
+ 	(unsigned long)(__pg - __section_mem_map_addr(__nr_to_section(__sec)));	\
+ })
+ 
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 2101e5205fc0b..113e1752548c2 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -37,6 +37,7 @@
+ #include <linux/bitmap.h>
+ #include <linux/bitops.h>
+ #include <linux/iommu-debug-pagealloc.h>
++#include <linux/kcsan-checks.h>
+ 
+ struct mempolicy;
+ struct anon_vma;
+@@ -2286,23 +2287,45 @@ static inline int page_zone_id(struct page *page)
+ }
+ 
+ #ifdef NODE_NOT_IN_PAGE_FLAGS
+-int memdesc_nid(memdesc_flags_t mdf);
++int memdesc_nid(const memdesc_flags_t *mdf);
+ #else
+-static inline int memdesc_nid(memdesc_flags_t mdf)
++#ifdef CONFIG_NUMA
++static inline int memdesc_nid(const memdesc_flags_t *mdf)
+ {
+-	return (mdf.f >> NODES_PGSHIFT) & NODES_MASK;
++	ASSERT_EXCLUSIVE_BITS(mdf->f, NODES_MASK << NODES_PGSHIFT);
++	return (mdf->f >> NODES_PGSHIFT) & NODES_MASK;
++}
++#else
++static inline int memdesc_nid(const memdesc_flags_t *mdf)
++{
++	return 0;
+ }
+ #endif
++#endif
++
++#ifdef CONFIG_NUMA
++static inline int page_to_nid(const struct page *page)
++{
++	const struct page *p = PF_POISONED_CHECK(page);
+ 
++	return memdesc_nid(&p->flags);
++}
++
++static inline int folio_nid(const struct folio *folio)
++{
++	return memdesc_nid(&folio->flags);
++}
++#else
+ static inline int page_to_nid(const struct page *page)
+ {
+-	return memdesc_nid(PF_POISONED_CHECK(page)->flags);
++	return 0;
+ }
+ 
+ static inline int folio_nid(const struct folio *folio)
+ {
+-	return memdesc_nid(folio->flags);
++	return 0;
+ }
++#endif
+ 
+ #ifdef CONFIG_NUMA_BALANCING
+ /* page access time bits needs to hold at least 4 seconds */
+@@ -2541,12 +2564,15 @@ static inline void set_page_section(struct page *page, unsigned long section)
+ 	page->flags.f |= (section & SECTIONS_MASK) << SECTIONS_PGSHIFT;
+ }
+ 
+-static inline unsigned long memdesc_section(memdesc_flags_t mdf)
++static inline unsigned long memdesc_section(const memdesc_flags_t *mdf)
+ {
+-	return (mdf.f >> SECTIONS_PGSHIFT) & SECTIONS_MASK;
++#if SECTIONS_WIDTH != 0
++	ASSERT_EXCLUSIVE_BITS(mdf->f, SECTIONS_MASK << SECTIONS_PGSHIFT);
++#endif
++	return (mdf->f >> SECTIONS_PGSHIFT) & SECTIONS_MASK;
+ }
+ #else /* !SECTION_IN_PAGE_FLAGS */
+-static inline unsigned long memdesc_section(memdesc_flags_t mdf)
++static inline unsigned long memdesc_section(const memdesc_flags_t *mdf)
+ {
+ 	return 0;
+ }
+diff --git a/include/linux/mm_inline.h b/include/linux/mm_inline.h
+index a8430a7ae0544..efcddb9925add 100644
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -650,7 +650,7 @@ static inline bool vma_has_recency(const struct vm_area_struct *vma)
+ static inline size_t num_pages_contiguous(struct page **pages, size_t nr_pages)
+ {
+ 	struct page *cur_page = pages[0];
+-	unsigned long section = memdesc_section(cur_page->flags);
++	unsigned long section = memdesc_section(&cur_page->flags);
+ 	size_t i;
+ 
+ 	for (i = 1; i < nr_pages; i++) {
+@@ -660,7 +660,7 @@ static inline size_t num_pages_contiguous(struct page **pages, size_t nr_pages)
+ 		 * In unproblematic kernel configs, page_to_section() == 0 and
+ 		 * the whole check will get optimized out.
+ 		 */
+-		if (memdesc_section(cur_page->flags) != section)
++		if (memdesc_section(&cur_page->flags) != section)
+ 			break;
+ 	}
+ 
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 242ec3cb8b52a..0507193b3ae34 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -1272,31 +1272,33 @@ static inline bool zone_is_empty(const struct zone *zone)
+ #define KASAN_TAG_MASK		((1UL << KASAN_TAG_WIDTH) - 1)
+ #define ZONEID_MASK		((1UL << ZONEID_SHIFT) - 1)
+ 
+-static inline enum zone_type memdesc_zonenum(memdesc_flags_t flags)
++static inline enum zone_type memdesc_zonenum(const memdesc_flags_t *flags)
+ {
+-	ASSERT_EXCLUSIVE_BITS(flags.f, ZONES_MASK << ZONES_PGSHIFT);
+-	return (flags.f >> ZONES_PGSHIFT) & ZONES_MASK;
++#if ZONES_WIDTH != 0
++	ASSERT_EXCLUSIVE_BITS(flags->f, ZONES_MASK << ZONES_PGSHIFT);
++#endif
++	return (flags->f >> ZONES_PGSHIFT) & ZONES_MASK;
+ }
+ 
+ static inline enum zone_type page_zonenum(const struct page *page)
+ {
+-	return memdesc_zonenum(page->flags);
++	return memdesc_zonenum(&page->flags);
+ }
+ 
+ static inline enum zone_type folio_zonenum(const struct folio *folio)
+ {
+-	return memdesc_zonenum(folio->flags);
++	return memdesc_zonenum(&folio->flags);
+ }
+ 
+ #ifdef CONFIG_ZONE_DEVICE
+-static inline bool memdesc_is_zone_device(memdesc_flags_t mdf)
++static inline bool memdesc_is_zone_device(const memdesc_flags_t *mdf)
+ {
+ 	return memdesc_zonenum(mdf) == ZONE_DEVICE;
+ }
+ 
+ static inline struct dev_pagemap *page_pgmap(const struct page *page)
+ {
+-	VM_WARN_ON_ONCE_PAGE(!memdesc_is_zone_device(page->flags), page);
++	VM_WARN_ON_ONCE_PAGE(!memdesc_is_zone_device(&page->flags), page);
+ 	return page_folio(page)->pgmap;
+ }
+ 
+@@ -1311,9 +1313,9 @@ static inline struct dev_pagemap *page_pgmap(const struct page *page)
+ static inline bool zone_device_pages_have_same_pgmap(const struct page *a,
+ 						     const struct page *b)
+ {
+-	if (memdesc_is_zone_device(a->flags) != memdesc_is_zone_device(b->flags))
++	if (memdesc_is_zone_device(&a->flags) != memdesc_is_zone_device(&b->flags))
+ 		return false;
+-	if (!memdesc_is_zone_device(a->flags))
++	if (!memdesc_is_zone_device(&a->flags))
+ 		return true;
+ 	return page_pgmap(a) == page_pgmap(b);
+ }
+@@ -1321,7 +1323,7 @@ static inline bool zone_device_pages_have_same_pgmap(const struct page *a,
+ extern void memmap_init_zone_device(struct zone *, unsigned long,
+ 				    unsigned long, struct dev_pagemap *);
+ #else
+-static inline bool memdesc_is_zone_device(memdesc_flags_t mdf)
++static inline bool memdesc_is_zone_device(const memdesc_flags_t *mdf)
+ {
+ 	return false;
+ }
+@@ -1338,12 +1340,12 @@ static inline struct dev_pagemap *page_pgmap(const struct page *page)
+ 
+ static inline bool is_zone_device_page(const struct page *page)
+ {
+-	return memdesc_is_zone_device(page->flags);
++	return memdesc_is_zone_device(&page->flags);
+ }
+ 
+ static inline bool folio_is_zone_device(const struct folio *folio)
+ {
+-	return memdesc_is_zone_device(folio->flags);
++	return memdesc_is_zone_device(&folio->flags);
+ }
+ 
+ static inline bool is_zone_movable_page(const struct page *page)
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 784a6e2f8ba0e..4944ece98e471 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -6913,15 +6913,15 @@ static void __free_contig_range_common(unsigned long pfn, unsigned long nr_pages
+ 			continue;
+ 		}
+ 
+-		if (start && memdesc_section(page->flags) != start_sec) {
++		if (start && memdesc_section(&page->flags) != start_sec) {
+ 			free_prepared_contig_range(start, i - nr_start);
+ 			start = page;
+ 			nr_start = i;
+-			start_sec = memdesc_section(page->flags);
++			start_sec = memdesc_section(&page->flags);
+ 		} else if (!start) {
+ 			start = page;
+ 			nr_start = i;
+-			start_sec = memdesc_section(page->flags);
++			start_sec = memdesc_section(&page->flags);
+ 		}
+ 	}
+ 
+diff --git a/mm/slab.h b/mm/slab.h
+index 281a65233795d..9ded319495a07 100644
+--- a/mm/slab.h
++++ b/mm/slab.h
+@@ -179,7 +179,7 @@ static inline void *slab_address(const struct slab *slab)
+ 
+ static inline int slab_nid(const struct slab *slab)
+ {
+-	return memdesc_nid(slab->flags);
++	return memdesc_nid(&slab->flags);
+ }
+ 
+ static inline pg_data_t *slab_pgdat(const struct slab *slab)
+diff --git a/mm/sparse.c b/mm/sparse.c
+index 324213d8bdcb0..058ef93003672 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -43,7 +43,7 @@ static u8 section_to_node_table[NR_MEM_SECTIONS] __cacheline_aligned;
+ static u16 section_to_node_table[NR_MEM_SECTIONS] __cacheline_aligned;
+ #endif
+ 
+-int memdesc_nid(memdesc_flags_t mdf)
++int memdesc_nid(const memdesc_flags_t *mdf)
+ {
+ 	return section_to_node_table[memdesc_section(mdf)];
+ }
+-- 
+2.47.3
+
