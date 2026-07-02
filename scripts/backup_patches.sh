@@ -27,6 +27,8 @@ then
 fi
 
 dest_dir=$(realpath "$bindir/../patches/next")
+
+echo "find baseline"
 damon_next_baseline=$("$bindir/get_damon_next_baseline_commit.sh")
 if [ "$damon_next_baseline" = "" ]
 then
@@ -39,7 +41,8 @@ commit_msg="$commit_msg
 
 Assembled tree: $(git rev-parse $damon_next_commit)"
 
-git -C "$bindir" rm -r "$dest_dir"
+echo "git-rm old patches"
+git -C "$bindir" rm -r "$dest_dir" > /dev/null
 mkdir -p "$dest_dir"
 
 lbx_path=$(realpath "$bindir/../../lazybox")
@@ -54,8 +57,14 @@ then
 	exit 1
 fi
 
+echo "generate new patches"
 "$patches_queue_py" \
-	--series "${dest_dir}/series" --commits "$commits" --repo ./
+	--series "${dest_dir}/series" --commits "$commits" --repo ./ \
+	> /dev/null
 
+echo "commit new patches"
 git -C "$bindir" add "$dest_dir"
 git -C "$bindir" commit -s -m "patches/next: $commit_msg"
+
+echo "Below is the change you made."
+git -C "$bindir" show
