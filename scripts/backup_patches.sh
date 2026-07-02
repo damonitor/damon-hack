@@ -66,7 +66,10 @@ echo "commit new patches"
 git -C "$bindir" add "$dest_dir"
 git -C "$bindir" commit -s -m "patches/next: $commit_msg"
 
-read -r -p "Wannt review the change? [y/N] " answer
+echo "Done.  Diffstat is like below:"
+git -C "$bindir" diff HEAD^.. --stat
+
+read -r -p "Do you wat to review the whole changes? [y/N] " answer
 if [ "$answer" = "y" ]
 then
 	git -C "$bindir" show
