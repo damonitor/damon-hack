@@ -1,0 +1,129 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Wed, 1 Jul 2026 17:05:47 +0800
+Subject: [PATCH] mm: factor zone-device page init helpers out of
+ __init_zone_device_page
+
+memmap_init_zone_device() currently mixes refcount policy and core
+ZONE_DEVICE page setup in a single helper.
+
+Factor the refcount-reset predicate into pagemap_resets_refcount(), move
+the common page initialization into __zone_device_page_init(), and wrap
+the existing slow path in zone_device_page_init_slow().
+
+This keeps the slow-path behaviour unchanged and gives later patches
+reusable helper boundaries.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260701090553.62691-3-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 57 ++++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 38 insertions(+), 19 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index beb832f90bf08..13e776e812b67 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -995,11 +995,38 @@ static void __init memmap_init(void)
+ }
+ 
+ #ifdef CONFIG_ZONE_DEVICE
+-static void __ref __init_zone_device_page(struct page *page, unsigned long pfn,
++/*
++ * Return true when the free path for this pagemap type restores the page
++ * refcount to 1, so memmap_init_zone_device() can keep the count set by
++ * __init_single_page(). Otherwise initialize the refcount to 0 and leave
++ * it to the allocator or pgmap callbacks to raise it when the page is
++ * handed out again.
++ */
++static inline bool pagemap_resets_refcount(const struct dev_pagemap *pgmap)
++{
++	/*
++	 * MEMORY_DEVICE_GENERIC pages regain a refcount of 1 in the free
++	 * path. The remaining ZONE_DEVICE types start from 0 here and raise
++	 * the count again when the allocator or driver hands the page out.
++	 */
++	switch (pgmap->type) {
++	case MEMORY_DEVICE_FS_DAX:
++	case MEMORY_DEVICE_PRIVATE:
++	case MEMORY_DEVICE_COHERENT:
++	case MEMORY_DEVICE_PCI_P2PDMA:
++		return false;
++	case MEMORY_DEVICE_GENERIC:
++		return true;
++	default:
++		WARN_ONCE(1, "Unknown memory type!");
++		return true;
++	}
++}
++
++static void __ref __zone_device_page_init(struct page *page, unsigned long pfn,
+ 					  unsigned long zone_idx, int nid,
+ 					  struct dev_pagemap *pgmap)
+ {
+-
+ 	__init_single_page(page, pfn, zone_idx, nid);
+ 
+ 	/*
+@@ -1018,23 +1045,15 @@ static void __ref __init_zone_device_page(struct page *page, unsigned long pfn,
+ 	 */
+ 	page_folio(page)->pgmap = pgmap;
+ 	page->zone_device_data = NULL;
++}
+ 
+-	/*
+-	 * MEMORY_DEVICE_GENERIC pages regain a refcount of 1 in the free
+-	 * path. The remaining ZONE_DEVICE types start from 0 here and raise
+-	 * the count again when the allocator or driver hands the page out.
+-	 */
+-	switch (pgmap->type) {
+-	case MEMORY_DEVICE_FS_DAX:
+-	case MEMORY_DEVICE_PRIVATE:
+-	case MEMORY_DEVICE_COHERENT:
+-	case MEMORY_DEVICE_PCI_P2PDMA:
++static void __ref zone_device_page_init_slow(struct page *page,
++		unsigned long pfn, unsigned long zone_idx, int nid,
++		struct dev_pagemap *pgmap)
++{
++	__zone_device_page_init(page, pfn, zone_idx, nid, pgmap);
++	if (!pagemap_resets_refcount(pgmap))
+ 		set_page_count(page, 0);
+-		break;
+-
+-	case MEMORY_DEVICE_GENERIC:
+-		break;
+-	}
+ }
+ 
+ /*
+@@ -1080,7 +1099,7 @@ static void __ref memmap_init_compound(struct page *head,
+ 	for (pfn = head_pfn + 1; pfn < end_pfn; pfn++) {
+ 		struct page *page = pfn_to_page(pfn);
+ 
+-		__init_zone_device_page(page, pfn, zone_idx, nid, pgmap);
++		zone_device_page_init_slow(page, pfn, zone_idx, nid, pgmap);
+ 		prep_compound_tail(page, head, order);
+ 		set_page_count(page, 0);
+ 	}
+@@ -1116,7 +1135,7 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 	for (pfn = start_pfn; pfn < end_pfn; pfn += pfns_per_compound) {
+ 		struct page *page = pfn_to_page(pfn);
+ 
+-		__init_zone_device_page(page, pfn, zone_idx, nid, pgmap);
++		zone_device_page_init_slow(page, pfn, zone_idx, nid, pgmap);
+ 
+ 		if (IS_ALIGNED(pfn, PAGES_PER_SECTION))
+ 			cond_resched();
+-- 
+2.47.3
+

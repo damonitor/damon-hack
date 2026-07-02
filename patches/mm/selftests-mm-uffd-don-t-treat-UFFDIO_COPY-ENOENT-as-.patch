@@ -1,0 +1,62 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Wed, 1 Jul 2026 23:09:32 +0300
+Subject: [PATCH] selftests/mm/uffd: don't treat UFFDIO_COPY -ENOENT as a
+ failure
+
+Non-cooperarive uffd events are inherently racy and can happen in parallel
+with other userfaultfd operations.
+
+During event tests in uffd-unit-tests, the uffd monitor calls
+UFFDIO_UNREGISTER upon receiving UFFD_EVENT_REMOVE.
+
+In parallel, the faulting_process() verifies that the removed memory is
+actually zeroed.
+
+If a verification read wins the race with UFFDIO_UNREGISTER, it causes a
+missing fault that uffd monitor would receive after UFFDIO_UNREGISTER is
+complete.  The monitor resolves the fault using UFFDIO_COPY that fails
+with -ENOENT which means that VMA has been changed (see commit
+27d02568f529 ("userfaultfd: mcopy_atomic: return -ENOENT when no
+compatible VMA found")).
+
+Treat -ENOENT returned by UFFDIO_COPY as non-fatal, the same way -EEXIST
+is treated for concurrent faults, and don't fail the test.
+
+Link: https://lore.kernel.org/20260701200932.1470525-1-rppt@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/uffd-common.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/uffd-common.c b/tools/testing/selftests/mm/uffd-common.c
+index edd02328f77ba..f48f5d4594ab0 100644
+--- a/tools/testing/selftests/mm/uffd-common.c
++++ b/tools/testing/selftests/mm/uffd-common.c
+@@ -639,8 +639,13 @@ int __copy_page(uffd_global_test_opts_t *gopts, unsigned long offset, bool retry
+ 		uffdio_copy.mode = 0;
+ 	uffdio_copy.copy = 0;
+ 	if (ioctl(gopts->uffd, UFFDIO_COPY, &uffdio_copy)) {
+-		/* real retval in ufdio_copy.copy */
+-		if (uffdio_copy.copy != -EEXIST)
++		/*
++		 * real retval in uffdio_copy.copy
++		 *
++		 * -EEXIST: the page was faulted in concurrently
++		 * -ENOENT: the destination range was concurrently removed
++		 */
++		if (uffdio_copy.copy != -EEXIST && uffdio_copy.copy != -ENOENT)
+ 			err("UFFDIO_COPY error: %"PRId64,
+ 			    (int64_t)uffdio_copy.copy);
+ 		wake_range(gopts->uffd, uffdio_copy.dst, gopts->page_size);
+-- 
+2.47.3
+

@@ -1,0 +1,102 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Wed, 1 Jul 2026 07:06:38 -0700
+Subject: [PATCH] mm/migrate_device: pin large folios before splitting
+
+migrate_vma_collect_pmd() can detect a large folio while holding the PTE
+lock, then drop the PTE lock before calling migrate_vma_split_folio().
+The split helper took its own reference, but only after the lock had
+already been dropped.
+
+One way to hit this is device migration over a range that contains a large
+folio.  The walker reads the PTE while holding the PTE lock and derives
+the folio either from a present PTE via vm_normal_page(), or from a
+non-present PTE that encodes a device-private softleaf entry.  It then has
+to drop the PTE lock because split_folio() can block.  Before
+migrate_vma_split_folio() gets a folio reference, concurrent reclaim,
+migration, or truncation can replace or clear the entry and drop the last
+reference to the folio.  The split helper would then take a reference and
+lock on a stale folio pointer.
+
+Take a temporary reference before dropping the PTE lock and pass that
+reference into migrate_vma_split_folio().  The helper consumes the
+reference, so split_folio() still sees only the expected caller pin
+instead of an extra pin that could make the split fail.
+
+Link: https://lore.kernel.org/20260701140638.840773-1-usama.arif@linux.dev
+Fixes: 022a12deda53 ("mm/migrate_device: handle partially mapped folios during collection")
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Reported-by: sashiko-bot <sashiko-bot@kernel.org>
+Link: https://sashiko.dev/#/patchset/20260630164143.1595669-1-usama.arif%40linux.dev
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate_device.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index 2f8b646302c25..f5a5f699e98e3 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -77,6 +77,9 @@ static int migrate_vma_collect_hole(unsigned long start,
+  * @folio: the folio to split
+  * @fault_page: struct page associated with the fault if any
+  *
++ * If @folio is not the folio containing @fault_page, the caller must hold a
++ * reference on @folio. The helper consumes that reference.
++ *
+  * Returns 0 on success
+  */
+ static int migrate_vma_split_folio(struct folio *folio,
+@@ -86,10 +89,8 @@ static int migrate_vma_split_folio(struct folio *folio,
+ 	struct folio *fault_folio = fault_page ? page_folio(fault_page) : NULL;
+ 	struct folio *new_fault_folio = NULL;
+ 
+-	if (folio != fault_folio) {
+-		folio_get(folio);
++	if (folio != fault_folio)
+ 		folio_lock(folio);
+-	}
+ 
+ 	ret = split_folio(folio);
+ 	if (ret) {
+@@ -310,6 +311,13 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
+ 			if (folio_test_large(folio)) {
+ 				int ret;
+ 
++				/*
++				 * Keep the folio stable after dropping the PTE
++				 * lock. migrate_vma_split_folio() consumes this
++				 * reference.
++				 */
++				if (folio != fault_folio)
++					folio_get(folio);
+ 				lazy_mmu_mode_disable();
+ 				pte_unmap_unlock(ptep, ptl);
+ 				ret = migrate_vma_split_folio(folio,
+@@ -353,6 +361,13 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
+ 			if (folio && folio_test_large(folio)) {
+ 				int ret;
+ 
++				/*
++				 * Keep the folio stable after dropping the
++				 * PTE lock. migrate_vma_split_folio() consumes
++				 * this reference.
++				 */
++				if (folio != fault_folio)
++					folio_get(folio);
+ 				lazy_mmu_mode_disable();
+ 				pte_unmap_unlock(ptep, ptl);
+ 				ret = migrate_vma_split_folio(folio,
+-- 
+2.47.3
+

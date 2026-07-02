@@ -1,0 +1,158 @@
+From: Shivank Garg <shivankg@amd.com>
+Date: Wed, 1 Jul 2026 05:17:20 +0000
+Subject: [PATCH] mm/migrate: rename page to folio leftovers
+
+Patch series "mm/migrate: preparatory cleanups for batch copy and
+offload", v2.
+
+This is a small set of mm/migrate cleanups split out of the batch-copy and
+offload RFC [1], so they can be reviewed and merged independently ahead of
+that larger series.
+
+No functional change intended.
+
+
+This patch (of 3):
+
+Rename migrate_folio_undo_src()'s page_was_mapped parameter to was_mapped,
+unmap_and_move_huge_page() to unmap_and_move_hugetlb_folio(), its
+page_was_mapped variable to was_mapped and fix stale "page" wording in its
+comments.
+
+Also fix migrate_folio() kerneldoc to say "folio" instead of "page".
+
+Link: https://lore.kernel.org/20260701-migrate-cleanups-prep-v2-0-d9e8f17130b1@amd.com
+Link: https://lore.kernel.org/20260701-migrate-cleanups-prep-v2-1-d9e8f17130b1@amd.com
+Link: https://lore.kernel.org/all/20260428155043.39251-2-shivankg@amd.com [1]
+Signed-off-by: Shivank Garg <shivankg@amd.com>
+Suggested-by: Dev Jain <dev.jain@arm.com>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jonathan Cameron <jic23@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate.c | 36 +++++++++++++++++-------------------
+ 1 file changed, 17 insertions(+), 19 deletions(-)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 49e10feeb094f..858350ca58b47 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -884,7 +884,7 @@ static int __migrate_folio(struct address_space *mapping, struct folio *dst,
+  * @mapping: The address_space containing the folio.
+  * @dst: The folio to migrate the data to.
+  * @src: The folio containing the current data.
+- * @mode: How to migrate the page.
++ * @mode: How to migrate the folio.
+  *
+  * Common logic to directly migrate a single LRU folio suitable for
+  * folios that do not have private data.
+@@ -1157,13 +1157,10 @@ static void __migrate_folio_extract(struct folio *dst,
+ }
+ 
+ /* Restore the source folio to the original state upon failure */
+-static void migrate_folio_undo_src(struct folio *src,
+-				   int page_was_mapped,
+-				   struct anon_vma *anon_vma,
+-				   bool locked,
+-				   struct list_head *ret)
++static void migrate_folio_undo_src(struct folio *src, int was_mapped,
++		struct anon_vma *anon_vma, bool locked, struct list_head *ret)
+ {
+-	if (page_was_mapped)
++	if (was_mapped)
+ 		remove_migration_ptes(src, src, 0);
+ 	/* Drop an anon_vma reference if we took one */
+ 	if (anon_vma)
+@@ -1449,7 +1446,8 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+ }
+ 
+ /*
+- * Counterpart of unmap_and_move_page() for hugepage migration.
++ * Counterpart of migrate_folio_unmap() and migrate_folio_move() for hugetlb
++ * folio migration.
+  *
+  * This function doesn't wait the completion of hugepage I/O
+  * because there is no race between I/O and migration for hugepage.
+@@ -1466,20 +1464,20 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+  * because then pte is replaced with migration swap entry and direct I/O code
+  * will wait in the page fault for migration to complete.
+  */
+-static int unmap_and_move_huge_page(new_folio_t get_new_folio,
++static int unmap_and_move_hugetlb_folio(new_folio_t get_new_folio,
+ 		free_folio_t put_new_folio, unsigned long private,
+ 		struct folio *src, int force, enum migrate_mode mode,
+ 		enum migrate_reason reason, struct list_head *ret)
+ {
+ 	struct folio *dst;
+ 	int rc = -EAGAIN;
+-	int page_was_mapped = 0;
++	int was_mapped = 0;
+ 	struct anon_vma *anon_vma = NULL;
+ 	struct address_space *mapping = NULL;
+ 	enum ttu_flags ttu = 0;
+ 
+ 	if (folio_ref_count(src) == 1) {
+-		/* page was freed from under us. So we are done. */
++		/* folio was freed from under us. So we are done. */
+ 		folio_putback_hugetlb(src);
+ 		return 0;
+ 	}
+@@ -1501,8 +1499,8 @@ static int unmap_and_move_huge_page(new_folio_t get_new_folio,
+ 	}
+ 
+ 	/*
+-	 * Check for pages which are in the process of being freed.  Without
+-	 * folio_mapping() set, hugetlbfs specific move page routine will not
++	 * Check for folios which are in the process of being freed.  Without
++	 * folio_mapping() set, hugetlbfs specific move folio routine will not
+ 	 * be called and we could leak usage counts for subpools.
+ 	 */
+ 	if (hugetlb_folio_subpool(src) && !folio_mapping(src)) {
+@@ -1532,13 +1530,13 @@ static int unmap_and_move_huge_page(new_folio_t get_new_folio,
+ 		}
+ 
+ 		try_to_migrate(src, ttu);
+-		page_was_mapped = 1;
++		was_mapped = 1;
+ 	}
+ 
+ 	if (!folio_mapped(src))
+ 		rc = move_to_new_folio(dst, src, mode);
+ 
+-	if (page_was_mapped)
++	if (was_mapped)
+ 		remove_migration_ptes(src, !rc ? dst : src, ttu);
+ 
+ 	if (ttu & TTU_RMAP_LOCKED)
+@@ -1663,10 +1661,10 @@ static int migrate_hugetlbs(struct list_head *from, new_folio_t get_new_folio,
+ 				continue;
+ 			}
+ 
+-			rc = unmap_and_move_huge_page(get_new_folio,
+-						      put_new_folio, private,
+-						      folio, pass > 2, mode,
+-						      reason, ret_folios);
++			rc = unmap_and_move_hugetlb_folio(get_new_folio,
++							  put_new_folio, private,
++							  folio, pass > 2, mode,
++							  reason, ret_folios);
+ 			/*
+ 			 * The rules are:
+ 			 *	0: hugetlb folio will be put back
+-- 
+2.47.3
+

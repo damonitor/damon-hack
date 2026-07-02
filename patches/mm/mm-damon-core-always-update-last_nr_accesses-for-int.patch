@@ -1,0 +1,62 @@
+From: SJ Park <sj@kernel.org>
+Date: Mon, 29 Jun 2026 21:07:56 -0700
+Subject: [PATCH] mm/damon/core: always update ->last_nr_accesses for intervals
+ change
+
+Each iteration of kdamond_fn() main loop caches and use the next
+aggregation time (next_aggregation_sis) because it can be updated in the
+middle, inside kdamond_call().  If that happens,
+damon_update_monitoring_result() is called for scaling the access
+frequency information of each region according to the changed intervals.
+The function does not update damon_region->last_nr_accesses when it is at
+the end of the aggregation, because it will anyway be reset after the
+function is executed, in kdamond_reset_aggregated().
+
+Let's suppose damon_nr_accesses_mvsum() is called with the not yet updated
+last_nr_accesses.  It will use the fresh next_aggregation_sis in the
+context instead of the cached one, unlike kdamond_fn().  As a result, use
+of not updated last_nr_acceses with the updated next_aggregation_sis
+result in returning wrong value.
+
+There is no such damon_nr_accesses_nvsum() call at the moment, so this is
+no problem.  It is planned to add such calls, though.  Prevent the issue
+by updating last_nr_accesses always.  This adds overhead, but that's fine
+because the overhead is not big, and it is anyway not a fast path.
+
+Link: https://lore.kernel.org/20260630040812.149729-4-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f18866b5289df..49dd080ec56c8 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -877,6 +877,8 @@ static void damon_update_monitoring_result(struct damon_region *r,
+ 		struct damon_attrs *old_attrs, struct damon_attrs *new_attrs,
+ 		bool aggregating)
+ {
++	r->last_nr_accesses = damon_nr_accesses_for_new_attrs(
++			r->last_nr_accesses, old_attrs, new_attrs);
+ 	if (!aggregating) {
+ 		r->nr_accesses = damon_nr_accesses_for_new_attrs(
+ 				r->nr_accesses, old_attrs, new_attrs);
+@@ -888,8 +890,6 @@ static void damon_update_monitoring_result(struct damon_region *r,
+ 		 * interval.  In other words, make the status like
+ 		 * kdamond_reset_aggregated() is called.
+ 		 */
+-		r->last_nr_accesses = damon_nr_accesses_for_new_attrs(
+-				r->last_nr_accesses, old_attrs, new_attrs);
+ 		r->nr_accesses_bp = r->last_nr_accesses * 10000;
+ 		r->nr_accesses = 0;
+ 	}
+-- 
+2.47.3
+

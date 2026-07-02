@@ -1,0 +1,67 @@
+From: Zhen Yan <yanzhen20011121@163.com>
+Date: Tue, 30 Jun 2026 20:50:47 +0800
+Subject: [PATCH] mm: fix mapping_seek_hole_data() overflow on last page
+
+A local unprivileged process can create a shmem/tmpfs file with i_size ==
+LLONG_MAX using memfd_create() and fallocate().  If the last page is
+present in the page cache, lseek(SEEK_HOLE) on that page returns
+0x8000000000000000 as a successful offset, which is LLONG_MIN when stored
+in loff_t.
+
+The same file has readable data at the last byte, but SEEK_DATA from that
+offset returns ENXIO.
+
+The overflow is in mapping_seek_hole_data():
+
+  pos = round_up((u64)pos + 1, seek_size);
+
+For the final page below LLONG_MAX, the next page boundary is
+0x8000000000000000, which is then used as a signed file offset.  When
+assigned to the loff_t pos, this overflows to LLONG_MIN, so a subsequent
+"pos > end" comparison does not catch it.
+
+Keep mapping_seek_hole_data() inside its documented [start, end) search
+range: compute round_up() into a u64 variable and compare against (u64)end
+so the overflow is detected, then clamp pos to end when the rounded-up
+value goes past the search limit.
+
+Link: https://lore.kernel.org/20260630125047.703170-1-yanzhen20011121@163.com
+Signed-off-by: Zhen Yan <yanzhen20011121@163.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/filemap.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 6e40f36c2bffb..b39111abdc4bc 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -3229,6 +3229,7 @@ loff_t mapping_seek_hole_data(struct address_space *mapping, loff_t start,
+ 	while ((folio = find_get_entry(&xas, max, XA_PRESENT))) {
+ 		loff_t pos = (u64)xas.xa_index << PAGE_SHIFT;
+ 		size_t seek_size;
++		u64 next;
+ 
+ 		if (start < pos) {
+ 			if (!seek_data)
+@@ -3237,7 +3238,11 @@ loff_t mapping_seek_hole_data(struct address_space *mapping, loff_t start,
+ 		}
+ 
+ 		seek_size = seek_folio_size(&xas, folio);
+-		pos = round_up((u64)pos + 1, seek_size);
++		next = round_up((u64)pos + 1, seek_size);
++		if (next > (u64)end)
++			pos = end;
++		else
++			pos = next;
+ 		start = folio_seek_hole_data(&xas, mapping, folio, start, pos,
+ 				seek_data);
+ 		if (start < pos)
+-- 
+2.47.3
+

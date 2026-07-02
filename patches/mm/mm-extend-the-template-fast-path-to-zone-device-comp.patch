@@ -1,0 +1,146 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Wed, 1 Jul 2026 17:05:50 +0800
+Subject: [PATCH] mm: extend the template fast path to zone-device compound
+ tails
+
+The template fast path from the previous patch only accelerates head
+pages.  Compound tails in memmap_init_compound() still go through the slow
+path one by one.
+
+Build separate head and tail templates and reuse one prepared tail
+template across the tail pages in a compound range.  Head pages preserve
+the existing refcount policy, while compound tails always start with a
+refcount of 0 after prep_compound_tail().
+
+This extends the template-copy fast path to pfns_per_compound > 1 without
+changing the existing slow path.  Tail-page PFN-dependent fields are
+refreshed in the reusable tail template before each copy.
+
+Tested in a VM with a 100 GB devdax namespace (align=2097152) on Intel Ice
+Lake server.  This test exercises the dax_pmem rebind path and measures
+memmap initialization latency.
+
+Test procedure:
+Unbind and rebind the dax_pmem driver 30 times, collect memmap
+initialization time from the pr_debug() output of memmap_init_zone_device().
+
+Base(v7.2-rc1):
+  First binding: 1462 ms
+  Average of subsequent rebinds: 273.31 ms
+
+With this patch and its prerequisites applied:
+  First binding: 1403 ms
+  Average of subsequent rebinds: 244.37 ms
+
+This reduces the average rebind time from 273.31 ms to 244.37 ms, or
+about 10.6%.
+
+Link: https://lore.kernel.org/20260701090553.62691-6-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 47 ++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 779bfba2d99f2..851bcd437919a 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1071,6 +1071,16 @@ static inline void zone_device_template_page_init(struct page *template,
+ 	memcpy(template, src, sizeof(*template));
+ }
+ 
++static inline void zone_device_tail_page_init(struct page *page,
++		unsigned long pfn, unsigned long zone_idx, int nid,
++		struct dev_pagemap *pgmap, const struct page *head,
++		unsigned int order)
++{
++	zone_device_page_init_slow(page, pfn, zone_idx, nid, pgmap);
++	prep_compound_tail(page, head, order);
++	set_page_count(page, 0);
++}
++
+ /*
+  * 'template' is a reusable page prototype rather than a strictly immutable
+  * object. Most ZONE_DEVICE fields stay constant across the pages covered by
+@@ -1128,10 +1138,12 @@ static void __ref memmap_init_compound(struct page *head,
+ 				       unsigned long head_pfn,
+ 				       unsigned long zone_idx, int nid,
+ 				       struct dev_pagemap *pgmap,
+-				       unsigned long nr_pages)
++				       unsigned long nr_pages,
++				       bool use_template)
+ {
+ 	unsigned long pfn, end_pfn = head_pfn + nr_pages;
+ 	unsigned int order = pgmap->vmemmap_shift;
++	struct page template;
+ 
+ 	/*
+ 	 * We have to initialize the pages, including setting up page links.
+@@ -1140,12 +1152,31 @@ static void __ref memmap_init_compound(struct page *head,
+ 	 * the pages in the same go.
+ 	 */
+ 	__SetPageHead(head);
+-	for (pfn = head_pfn + 1; pfn < end_pfn; pfn++) {
++
++	pfn = head_pfn + 1;
++	/*
++	 * All tails of the same compound page share the state established by
++	 * prep_compound_tail(). Reuse one tail template for the whole range and
++	 * refresh only the PFN-dependent fields in that template before each copy.
++	 */
++	if (use_template) {
+ 		struct page *page = pfn_to_page(pfn);
+ 
+-		zone_device_page_init_slow(page, pfn, zone_idx, nid, pgmap);
+-		prep_compound_tail(page, head, order);
+-		set_page_count(page, 0);
++		zone_device_tail_page_init(page, pfn, zone_idx, nid,
++					   pgmap, head, order);
++		zone_device_template_page_init(&template, page);
++		pfn++;
++	}
++
++	for (; pfn < end_pfn; pfn++) {
++		struct page *page = pfn_to_page(pfn);
++
++		if (use_template)
++			zone_device_page_init_from_template(page, pfn,
++							    &template);
++		else
++			zone_device_tail_page_init(page, pfn, zone_idx, nid,
++						   pgmap, head, order);
+ 	}
+ 	prep_compound_head(head, order);
+ }
+@@ -1195,7 +1226,8 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 		zone_device_template_page_init(&template, page);
+ 		if (pfns_per_compound != 1)
+ 			memmap_init_compound(page, pfn, zone_idx, nid, pgmap,
+-				compound_nr_pages(start_pfn, altmap, pgmap));
++				compound_nr_pages(start_pfn, altmap, pgmap),
++				use_template);
+ 		pfn += pfns_per_compound;
+ 	}
+ 
+@@ -1216,7 +1248,8 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 			continue;
+ 
+ 		memmap_init_compound(page, pfn, zone_idx, nid, pgmap,
+-				     compound_nr_pages(pfn, altmap, pgmap));
++				     compound_nr_pages(pfn, altmap, pgmap),
++				     use_template);
+ 	}
+ 
+ 	pageblock_migratetype_init_range(start_pfn, nr_pages, MIGRATE_MOVABLE, false);
+-- 
+2.47.3
+

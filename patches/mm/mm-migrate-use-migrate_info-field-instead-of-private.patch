@@ -1,0 +1,96 @@
+From: Shivank Garg <shivankg@amd.com>
+Date: Wed, 1 Jul 2026 05:17:22 +0000
+Subject: [PATCH] mm/migrate: use migrate_info field instead of private
+
+Add an unsigned long migrate_info member to the struct folio union and use
+it to store migration state (anon_vma pointer and FOLIO_WAS_* markers)
+instead of using folio->private.  While at it, switch to bitwise OR.
+
+No functional change.
+
+Link: https://lore.kernel.org/20260701-migrate-cleanups-prep-v2-3-d9e8f17130b1@amd.com
+Signed-off-by: Shivank Garg <shivankg@amd.com>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Jonathan Cameron <jic23@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Huang Ying <ying.huang@linux.alibaba.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_types.h |  1 +
+ mm/migrate.c             | 14 +++++++-------
+ 2 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index b18c2b2e7d2c6..ae9bca4eda5ca 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -427,6 +427,7 @@ struct folio {
+ 			union {
+ 				void *private;
+ 				swp_entry_t swap;
++				unsigned long migrate_info;
+ 			};
+ 			atomic_t _mapcount;
+ 			atomic_t _refcount;
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 5bc81d61116f5..6fb6f46eea5fd 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -1130,7 +1130,7 @@ static int move_to_new_folio(struct folio *dst, struct folio *src,
+ }
+ 
+ /*
+- * To record some information during migration, we use unused private
++ * To record some information during migration, we use the migrate_info
+  * field of struct folio of the newly allocated destination folio.
+  * This is safe because nobody is using it except us.
+  */
+@@ -1143,17 +1143,17 @@ enum {
+ static void __migrate_folio_record(struct folio *dst,
+ 		int old_folio_state, struct anon_vma *anon_vma)
+ {
+-	dst->private = (void *)anon_vma + old_folio_state;
++	dst->migrate_info = (unsigned long)anon_vma | old_folio_state;
+ }
+ 
+ static void __migrate_folio_extract(struct folio *dst,
+ 		int *old_folio_state, struct anon_vma **anon_vmap)
+ {
+-	unsigned long private = (unsigned long)dst->private;
++	unsigned long info = dst->migrate_info;
+ 
+-	*anon_vmap = (struct anon_vma *)(private & ~FOLIO_OLD_STATES);
+-	*old_folio_state = private & FOLIO_OLD_STATES;
+-	dst->private = NULL;
++	*anon_vmap = (struct anon_vma *)(info & ~FOLIO_OLD_STATES);
++	*old_folio_state = info & FOLIO_OLD_STATES;
++	dst->migrate_info = 0;
+ }
+ 
+ /* Restore the source folio to the original state upon failure */
+@@ -1214,7 +1214,7 @@ static int migrate_folio_unmap(new_folio_t get_new_folio,
+ 		return -ENOMEM;
+ 	*dstp = dst;
+ 
+-	dst->private = NULL;
++	dst->migrate_info = 0;
+ 
+ 	if (!folio_trylock(src)) {
+ 		if (mode == MIGRATE_ASYNC)
+-- 
+2.47.3
+
