@@ -1,0 +1,135 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Fri, 3 Jul 2026 10:05:36 -0700
+Subject: [PATCH 0/3] mm/damon: provide pseudo moving sum probe_hits
+Message-Id: <20260703170605.94472-1-sj@kernel.org>
+
+Data attribute counters (probe_hits) of DAMON are managed in the
+classical way.  The counter value is accumulated every sampling
+interval, gets the complete view at the end of the aggregation interval,
+and is reset when the next aggregation interval starts.  Hence, the
+complete view can be retrieved only once per aggregation interval, which
+can be quite long.  With the suggested intervals autotuning setup, it
+becomes 2-4 seconds in common real production systems.  It can span up
+to 200 seconds in theory.  This will restrict online monitoring use case
+of DAMON.
+
+Actually DAMON is already providing online monitoring of probe_hits.
+DAMON sysfs interface exposes the values via schemes tried regions
+directory files.  However, due to the above mentioned limitation, it
+usually shows only partially accumulated hit counters and therefore not
+useful.
+
+DAMOS is not using probe_hits at the moment.  In the future, using it
+can further strengthen DAMOS.  However, a recommended setup of DAMOS is
+utilizing sampling/aggregation intervals auto-tuning, and having its own
+DAMOS apply_interval (1 second is mostly recommended).  In the setup,
+DAMOS will nearly always show incompletely accumulated probe_hits, which
+will not really be useful.
+
+Data frequency counter (nr_accesses) of DAMON solves this problem using
+the pseudo moving sum value.  The infrastructure is not limited to
+nr_accesses but general sampling based counters.  Maintain and provide
+the pseudo moving sum of probe_hits similar to nr_accesses, using the
+infrastructure.
+
+Tests
+=====
+
+On an idle system, I ran DAMON with an attribute probe filter for
+non-anonymous page, using DAMON user-space tool, damo [1], like below.
+
+    $ sudo ./damo start --probe_filter allow non anon
+
+Because the system is idle, nearly all memory is not an anonymous page
+but a free page, so the probe_hits are expected to be nearly always
+full.  In this setup, since the sampling interval is 5ms and the
+aggregation interval is 100ms, the counter value is expected to always
+be near 20.
+
+On kernels not having this series, if we retrieve the probe hits in an
+arbitrary time that is likely not aligned to the aggregation interval,
+the values are usually much lower than the expectation like below.  This
+is because the tool is showing the incompletely aggregated values.
+
+    $ sudo ./damo report access --format append region "probe_hits: <probe hits>"
+    heatmap: 00000000000000000000000000000000000000008999999711111111000000000000000000000000
+    # min/max temperatures: -1,630,000,000, 0, column size: 99.800 MiB
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    0   addr 4.000 KiB    size 3.898 GiB   access 0 hz   age 16.300 s     probe_hits: 11
+    1   addr 3.898 GiB    size 77.859 MiB  access 0 hz   age 1.500 s      probe_hits: 11
+    2   addr 3.974 GiB    size 700.770 MiB access 0 hz   age 0 ns         probe_hits: 11
+    3   addr 4.659 GiB    size 791.078 MiB access 0 hz   age 13.700 s     probe_hits: 11
+    4   addr 5.431 GiB    size 1.472 GiB   access 0 hz   age 15.800 s     probe_hits: 11
+    5   addr 6.903 GiB    size 915.059 MiB access 0 hz   age 15.300 s     probe_hits: 11
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+After applying this series, I was able to reliably show the expected
+results like below.
+
+    $ sudo ./damo report access --format append region "probe_hits: <probe hits>"
+    heatmap: 00000000333333330000000166666665111111139999999855555555333333333333333444444444
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    0   addr 4.000 KiB    size 790.496 MiB access 0 hz   age 1 m 33.300 s probe_hits: 20
+    1   addr 790.500 MiB  size 791.160 MiB access 0 hz   age 1 m 15.400 s probe_hits: 19
+    2   addr 1.545 GiB    size 792.316 MiB access 0 hz   age 1 m 32.400 s probe_hits: 19
+    3   addr 2.318 GiB    size 795.465 MiB access 0 hz   age 1 m 2.600 s  probe_hits: 19
+    4   addr 3.095 GiB    size 797.102 MiB access 0 hz   age 1 m 23.500 s probe_hits: 20
+    5   addr 3.874 GiB    size 797.293 MiB access 0 hz   age 47.900 s     probe_hits: 20
+    6   addr 4.652 GiB    size 787.516 MiB access 0 hz   age 1 m 3.800 s  probe_hits: 20
+    7   addr 5.421 GiB    size 784.461 MiB access 0 hz   age 1 m 14.400 s probe_hits: 19
+    8   addr 6.187 GiB    size 795.621 MiB access 0 hz   age 1 m 15.700 s probe_hits: 20
+    9   addr 6.964 GiB    size 798.000 MiB access 0 hz   age 1 m 10.200 s probe_hits: 20
+    10  addr 7.744 GiB    size 54.566 MiB  access 0 hz   age 1 m 9.300 s  probe_hits: 20
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+FYI, 'damo report access' output format has changed on v3.3.0.  Above
+outputs can be reproduced on <3.3.0 versions of damo.
+
+Patches Sequence
+================
+
+Patch 1 adds probe_hits counters for values that fully accumulated in
+the last aggregation interval.  This is required for using the moving
+sum infrastructure.  Patch 2 introduces a function for getting the
+moving sum values on demand, using the infrastructure.   Finally, patch
+3 updates the DAMON sysfs interface to expose the moving sum values to
+the schemes tried regions directory.
+
+Changelog
+=========
+
+Changes from RFC v1.1
+- RFC v1.1: https://lore.kernel.org/20260702171714.88278-1-sj@kernel.org
+- Drop RFC tag.
+- Rebase to latest mm-new.
+Changes from RFC v1
+- RFC v1: https://lore.kernel.org/20260621214231.13449-1-sj@kernel.org
+- Wordsmith cover letterr, specify damo version of the test.
+- Rebase to the latest mm-new.
+
+[1] https://github.com/damonitor/damo
+
+SJ Park (3):
+  mm/damon: add damon_region->last_probe_hits
+  mm/damon/core: introduce damon_probe_hits_mvsum()
+  mm/damon/sysfs-schemes: set probe hits as pseudo moving sums
+
+ include/linux/damon.h    |  4 +++-
+ mm/damon/core.c          | 31 +++++++++++++++++++++++++++++--
+ mm/damon/sysfs-schemes.c |  3 ++-
+ 3 files changed, 34 insertions(+), 4 deletions(-)
+
+
+base-commit: f0eadb83262e3eac82b67cb7fb5456c2e9db75f7
+-- 
+2.47.3

@@ -1,0 +1,68 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Mon, 8 Jun 2026 22:22:06 -0700
+Subject: [PATCH 2/3] mm/damon/core: introduce damon_probe_hits_mvsum()
+Message-Id: <20260703170605.94472-3-sj@kernel.org>
+
+Implement a function for getting a reasonable best effort quality pseudo
+moving sums of probe_hits on demands.  It reuses the internal function
+for the pseudo moving sum for data access frequency (nr_accesses).
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 21 +++++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 4f7e305b261c3..616bdf0954b52 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1003,6 +1003,8 @@ void damon_add_probe(struct damon_ctx *ctx, struct damon_probe *probe);
+ struct damon_region *damon_new_region(unsigned long start, unsigned long end);
+ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
+ 		struct damon_ctx *ctx);
++unsigned char damon_probe_hits_mvsum(int probe_idx, struct damon_region *r,
++		struct damon_ctx *ctx);
+ 
+ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 		unsigned int nr_ranges, unsigned long min_region_sz);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index d45dc87fbbd9c..871c6f5257c9e 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -273,6 +273,27 @@ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
+ 			left_window_bp);
+ }
+ 
++unsigned char damon_probe_hits_mvsum(int probe_idx, struct damon_region *r,
++		struct damon_ctx *ctx)
++{
++	unsigned long sample_interval, aggr_interval;
++	unsigned long window_len, left_window, left_window_bp;
++
++	sample_interval = ctx->attrs.sample_interval ? : 1;
++	aggr_interval =  ctx->attrs.aggr_interval ? : 1;
++	window_len = aggr_interval / sample_interval;
++	if (time_after_eq(ctx->passed_sample_intervals,
++				ctx->next_aggregation_sis))
++		left_window = 0;
++	else
++		left_window = ctx->next_aggregation_sis -
++			ctx->passed_sample_intervals;
++	left_window_bp = mult_frac(left_window, 10000, window_len);
++
++	return damon_mvsum(r->probe_hits[probe_idx],
++			r->last_probe_hits[probe_idx], left_window_bp);
++}
++
+ #ifdef CONFIG_DAMON_DEBUG_SANITY
+ static void damon_verify_new_region(unsigned long start, unsigned long end)
+ {
+-- 
+2.47.3
