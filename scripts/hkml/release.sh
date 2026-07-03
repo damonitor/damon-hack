@@ -8,6 +8,12 @@ then
 	exit 1
 fi
 
+echo "Below is the first part of release_note"
+echo "'''"
+head release_note
+echo "'''"
+echo
+
 current_version=$(git tag | sort -V | tail -n 1)
 
 first=$(echo "$current_version" | awk -F'[v.]' '{print $2}')
