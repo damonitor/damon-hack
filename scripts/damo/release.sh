@@ -8,6 +8,12 @@ then
 	exit 1
 fi
 
+echo "Below is the first part of release_note"
+echo "'''"
+headd release_note
+echo "'''"
+echo
+
 first=$(./damo version | awk -F'.' '{print $1}')
 second=$(./damo version | awk -F'.' '{print $2}')
 third=$(./damo version | awk -F'.' '{print $3}')
