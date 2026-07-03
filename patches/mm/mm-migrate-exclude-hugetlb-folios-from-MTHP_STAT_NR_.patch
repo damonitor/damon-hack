@@ -1,0 +1,69 @@
+From: Nico Pache <npache@redhat.com>
+Date: Thu, 2 Jul 2026 11:25:47 -0600
+Subject: [PATCH] mm/migrate: exclude hugetlb folios from MTHP_STAT_NR_ANON
+ accounting
+
+__folio_migrate_mapping() increments MTHP_STAT_NR_ANON for the destination
+folio when `folio_test_anon(folio) && folio_test_large(folio)` is true.
+However, hugetlb folios satisfy both conditions despite having a
+completely separate accounting system; they use hugetlb_add_anon_rmap()
+which does not touch mTHP stats, and their free path also bypasses the
+mTHP decrement in __free_pages_prepare().
+
+This causes MTHP_STAT_NR_ANON to be incremented on each hugetlb migration
+without a corresponding decrement, permanently inflating the nr_anon
+counter.
+
+Add a !folio_test_hugetlb() check to both places in
+__folio_migrate_mapping() so that only actual mTHP folios are counted.
+
+Link: https://lore.kernel.org/20260702172548.37075-3-npache@redhat.com
+Fixes: 5d65c8d758f2 ("mm: count the number of anonymous THPs per size")
+Co-developed-by: David Hildenbrand <david@kernel.org>
+Signed-off-by: David Hildenbrand <david@kernel.org>
+Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index d9b23909d716c..9fd50ea25d2d4 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -590,7 +590,8 @@ static int __folio_migrate_mapping(struct address_space *mapping,
+ 		/* No turning back from here */
+ 		newfolio->index = folio->index;
+ 		newfolio->mapping = folio->mapping;
+-		if (folio_test_anon(folio) && folio_test_large(folio))
++		if (folio_test_anon(folio) && folio_test_large(folio) &&
++		    !folio_test_hugetlb(folio))
+ 			mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
+ 		if (folio_test_swapbacked(folio))
+ 			__folio_set_swapbacked(newfolio);
+@@ -623,7 +624,8 @@ static int __folio_migrate_mapping(struct address_space *mapping,
+ 	 */
+ 	newfolio->index = folio->index;
+ 	newfolio->mapping = folio->mapping;
+-	if (folio_test_anon(folio) && folio_test_large(folio))
++	if (folio_test_anon(folio) && folio_test_large(folio) &&
++	    !folio_test_hugetlb(folio))
+ 		mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, 1);
+ 	folio_ref_add(newfolio, nr); /* add cache reference */
+ 	if (folio_test_swapbacked(folio))
+-- 
+2.47.3
+

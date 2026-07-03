@@ -1,0 +1,76 @@
+From: Nico Pache <npache@redhat.com>
+Date: Thu, 2 Jul 2026 11:25:46 -0600
+Subject: [PATCH] mm: decrement MTHP_STAT_NR_ANON in free_zone_device_folio()
+
+Patch series "mm: fix PMD level mTHP accounting bugs".
+
+While running selftests I noticed the PMD level per-mTHP stats (nr_anon)
+remained elevated after each run.  After further investigation I noticed
+this accounting error occurs for both the migration.private_anon_htlb_test
+and the HMM tests.
+
+In the HMM case this is due to folio_add_new_anon_rmap() incrementing the
+mTHP stats, but never containing a corresponding decrement in
+free_zone_device_folio().  We solve this by making sure to decrement the
+counter when freeing device memory.
+
+In the migration case, we are incrementing this counter without first
+checking whether this folio is a hugetlb folio, which relies on a separate
+accounting system.  We solve this by adding the proper hugetlb check
+before incrementing this counter.
+
+With these changes in place, the two tests no longer cause elevated PMD
+level accounting issues.
+
+
+This patch (of 2):
+
+When a zone device folio is mapped as anonymous, folio_add_new_anon_rmap()
+increments MTHP_STAT_NR_ANON.  The corresponding decrement lives in
+__free_pages_prepare() in page_alloc.c, but zone device folios are freed
+via free_zone_device_folio() which never calls __free_pages_prepare().
+This causes nr_anon to remain permanently elevated after zone device
+folios are freed.
+
+Add the missing mod_mthp_stat() decrement to free_zone_device_folio() so
+that the counter is properly balanced.
+
+Link: https://lore.kernel.org/20260702172548.37075-1-npache@redhat.com
+Link: https://lore.kernel.org/20260702172548.37075-2-npache@redhat.com
+Fixes: 5d65c8d758f2 ("mm: count the number of anonymous THPs per size")
+Co-developed-by: David Hildenbrand <david@kernel.org>
+Signed-off-by: David Hildenbrand <david@kernel.org>
+Signed-off-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memremap.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/memremap.c b/mm/memremap.c
+index 81766d8224009..accba23aef28c 100644
+--- a/mm/memremap.c
++++ b/mm/memremap.c
+@@ -425,6 +425,7 @@ void free_zone_device_folio(struct folio *folio)
+ 	mem_cgroup_uncharge(folio);
+ 
+ 	if (folio_test_anon(folio)) {
++		mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON, -1);
+ 		for (i = 0; i < nr; i++)
+ 			__ClearPageAnonExclusive(folio_page(folio, i));
+ 	}
+-- 
+2.47.3
+

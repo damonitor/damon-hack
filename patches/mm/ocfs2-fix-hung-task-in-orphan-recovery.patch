@@ -1,0 +1,139 @@
+From: Jiaming Zhang <r772577952@gmail.com>
+Date: Thu, 2 Jul 2026 17:05:07 +0800
+Subject: [PATCH] ocfs2: fix hung task in orphan recovery
+
+A crafted OCFS2 image with corrupted orphan-directory extent metadata can
+make umount hang.
+
+During unmount, ocfs2_recovery_disable() waits for the
+ocfs2_complete_recovery work item to finish.  The worker scans the orphan
+directory through ocfs2_queue_orphans() and ocfs2_dir_foreach().  If
+ocfs2_read_dir_block() fails on a corrupted directory block,
+ocfs2_dir_foreach_blk_el() skips the block and continues walking.  On a
+badly corrupted directory this can keep orphan recovery busy for a long
+time, leaving umount blocked while flushing osb->ocfs2_wq.
+
+Return the read error immediately for full directory scans and propagate
+the error from ocfs2_dir_foreach().  When ocfs2_empty_dir() receives such
+an error, report the directory as non-empty so unlink/rmdir does not
+proceed on an unreadable directory.
+
+Link: https://lore.kernel.org/20260702090507.446517-1-r772577952@gmail.com
+Closes: https://lore.kernel.org/lkml/CANypQFbWH76Y6LWHEwAvTP7aQL04uMJ=dDyL6YDmxa3fv3Tyjg@mail.gmail.com/
+Assisted-by: Codex:gpt-5.5-xhigh
+Signed-off-by: Jiaming Zhang <r772577952@gmail.com>
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Jun Piao <piaojun@huawei.com>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/dir.c   | 20 ++++++++++++++------
+ fs/ocfs2/namei.c | 11 ++++++++---
+ 2 files changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/fs/ocfs2/dir.c b/fs/ocfs2/dir.c
+index 8e6b032383278..baf3eca7b4e43 100644
+--- a/fs/ocfs2/dir.c
++++ b/fs/ocfs2/dir.c
+@@ -1866,6 +1866,7 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
+ 	struct super_block * sb = inode->i_sb;
+ 	unsigned int ra_sectors = 16;
+ 	int stored = 0;
++	int ret;
+ 
+ 	bh = NULL;
+ 
+@@ -1873,9 +1874,13 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
+ 
+ 	while (ctx->pos < i_size_read(inode)) {
+ 		blk = ctx->pos >> sb->s_blocksize_bits;
+-		if (ocfs2_read_dir_block(inode, blk, &bh, 0)) {
++		ret = ocfs2_read_dir_block(inode, blk, &bh, 0);
++		if (ret) {
++			if (persist)
++				return ret;
+ 			/* Skip the corrupt dirblock and keep trying */
+ 			ctx->pos += sb->s_blocksize - offset;
++			offset = 0;
+ 			continue;
+ 		}
+ 
+@@ -1969,8 +1974,7 @@ static int ocfs2_dir_foreach_blk(struct inode *inode, u64 *f_version,
+ int ocfs2_dir_foreach(struct inode *inode, struct dir_context *ctx)
+ {
+ 	u64 version = inode_query_iversion(inode);
+-	ocfs2_dir_foreach_blk(inode, &version, ctx, true);
+-	return 0;
++	return ocfs2_dir_foreach_blk(inode, &version, ctx, true);
+ }
+ 
+ /*
+@@ -2167,7 +2171,7 @@ static int ocfs2_empty_dir_dx(struct inode *inode,
+ /*
+  * routine to check that the specified directory is empty (for rmdir)
+  *
+- * Returns 1 if dir is empty, zero otherwise.
++ * Returns 1 if dir is empty, zero if not, and a negative errno on error.
+  *
+  * XXX: This is a performance problem for unindexed directories.
+  */
+@@ -2180,8 +2184,10 @@ int ocfs2_empty_dir(struct inode *inode)
+ 
+ 	if (ocfs2_dir_indexed(inode)) {
+ 		ret = ocfs2_empty_dir_dx(inode, &priv);
+-		if (ret)
++		if (ret) {
+ 			mlog_errno(ret);
++			return ret;
++		}
+ 		/*
+ 		 * We still run ocfs2_dir_foreach to get the checks
+ 		 * for "." and "..".
+@@ -2189,8 +2195,10 @@ int ocfs2_empty_dir(struct inode *inode)
+ 	}
+ 
+ 	ret = ocfs2_dir_foreach(inode, &priv.ctx);
+-	if (ret)
++	if (ret) {
+ 		mlog_errno(ret);
++		return ret;
++	}
+ 
+ 	if (!priv.seen_dot || !priv.seen_dot_dot) {
+ 		mlog(ML_ERROR, "bad directory (dir #%llu) - no `.' or `..'\n",
+diff --git a/fs/ocfs2/namei.c b/fs/ocfs2/namei.c
+index 4cfd7b3d3e1a4..8368a7f3d4a29 100644
+--- a/fs/ocfs2/namei.c
++++ b/fs/ocfs2/namei.c
+@@ -945,7 +945,10 @@ static int ocfs2_unlink(struct inode *dir,
+ 	child_locked = 1;
+ 
+ 	if (S_ISDIR(inode->i_mode)) {
+-		if (inode->i_nlink != 2 || !ocfs2_empty_dir(inode)) {
++		status = ocfs2_empty_dir(inode);
++		if (status < 0)
++			goto leave;
++		if (inode->i_nlink != 2 || !status) {
+ 			status = -ENOTEMPTY;
+ 			goto leave;
+ 		}
+@@ -1499,8 +1502,10 @@ static int ocfs2_rename(struct mnt_idmap *idmap,
+ 
+ 	if (target_exists) {
+ 		if (S_ISDIR(new_inode->i_mode)) {
+-			if (new_inode->i_nlink != 2 ||
+-			    !ocfs2_empty_dir(new_inode)) {
++			status = ocfs2_empty_dir(new_inode);
++			if (status < 0)
++				goto bail;
++			if (new_inode->i_nlink != 2 || !status) {
+ 				status = -ENOTEMPTY;
+ 				goto bail;
+ 			}
+-- 
+2.47.3
+

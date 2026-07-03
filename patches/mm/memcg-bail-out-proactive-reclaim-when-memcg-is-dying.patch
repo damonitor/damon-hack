@@ -1,0 +1,49 @@
+From: Jiayuan Chen <jiayuan.chen@shopee.com>
+Date: Thu, 2 Jul 2026 20:02:29 +0800
+Subject: [PATCH] memcg: bail out proactive reclaim when memcg is dying
+
+Proactive reclaim via memory.reclaim can run for a long time - swap I/O
+or thrashing again dominating the latency - and delays cgroup removal in
+the same way.
+
+Mitigate this by stopping the reclaim once memcg_is_dying().
+
+Link: https://lore.kernel.org/20260702120235.376752-4-jiayuan.chen@linux.dev
+Signed-off-by: Jiayuan Chen <jiayuan.chen@shopee.com>
+Reported-by: Zhou Yingfu <yingfu.zhou@shopee.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jiayuan Chen <jiayuan.chen@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index f40cfe9d703b3..56fe5393f30f8 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7904,6 +7904,10 @@ int user_proactive_reclaim(char *buf,
+ 		if (signal_pending(current))
+ 			return -EINTR;
+ 
++		/* cgroup_rmdir() waits for us with cgroup_mutex held. */
++		if (memcg && memcg_is_dying(memcg))
++			return -EAGAIN;
++
+ 		/*
+ 		 * This is the final attempt, drain percpu lru caches in the
+ 		 * hope of introducing more evictable pages.
+-- 
+2.47.3
+

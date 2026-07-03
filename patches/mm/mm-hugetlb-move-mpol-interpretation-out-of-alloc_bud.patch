@@ -1,0 +1,184 @@
+From: Ackerley Tng <ackerleytng@google.com>
+Date: Thu, 2 Jul 2026 09:21:46 -0700
+Subject: [PATCH] mm: hugetlb: move mpol interpretation out of
+ alloc_buddy_hugetlb_folio_with_mpol()
+
+Move memory policy interpretation out of
+alloc_buddy_hugetlb_folio_with_mpol() and into alloc_hugetlb_folio() to
+separate reading and interpretation of memory policy from actual
+allocation.
+
+This will later allow memory policy to be interpreted outside of the
+process of allocating a hugetlb folio entirely.  This opens doors for
+other callers of the HugeTLB folio allocation function, such as
+guest_memfd, where memory may not always be mapped and hence may not have
+an associated vma.
+
+Introduce struct mempolicy_interpreted to hold all the components of an
+interpreted memory policy.
+
+Rename alloc_buddy_hugetlb_folio_with_mpol() to
+alloc_buddy_hugetlb_folio() since the function no longer interprets memory
+policy.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-2-d53cefcccf34@google.com
+Signed-off-by: Ackerley Tng <ackerleytng@google.com>
+Reviewed-by: James Houghton <jthoughton@google.com>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Yan Zhao <yan.y.zhao@intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/uapi/linux/mempolicy.h |  2 +-
+ mm/hugetlb.c                   | 54 ++++++++++++++++++++++------------
+ 2 files changed, 37 insertions(+), 19 deletions(-)
+
+diff --git a/include/uapi/linux/mempolicy.h b/include/uapi/linux/mempolicy.h
+index 6c962d866e864..7f6fc9599693b 100644
+--- a/include/uapi/linux/mempolicy.h
++++ b/include/uapi/linux/mempolicy.h
+@@ -16,7 +16,7 @@
+  */
+ 
+ /* Policies */
+-enum {
++enum mempolicy_mode {
+ 	MPOL_DEFAULT,
+ 	MPOL_PREFERRED,
+ 	MPOL_BIND,
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index b243c1c3efcb5..cb7cad743f650 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1316,6 +1316,12 @@ static unsigned long available_huge_pages(struct hstate *h)
+ 	return h->free_huge_pages - h->resv_huge_pages;
+ }
+ 
++struct mempolicy_interpreted {
++	int nid;
++	nodemask_t *nodemask;
++	enum mempolicy_mode mode;
++};
++
+ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+ 				struct vm_area_struct *vma,
+ 				unsigned long address)
+@@ -2137,32 +2143,28 @@ static struct folio *alloc_migrate_hugetlb_folio(struct hstate *h, gfp_t gfp_mas
+ 	return folio;
+ }
+ 
+-/*
+- * Use the VMA's mpolicy to allocate a huge page from the buddy.
+- */
+ static
+-struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
+-		struct vm_area_struct *vma, unsigned long addr)
++struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
++		gfp_t gfp_mask, struct mempolicy_interpreted *mpoli)
+ {
+ 	struct folio *folio = NULL;
+-	struct mempolicy *mpol;
+-	gfp_t gfp_mask = htlb_alloc_mask(h);
+-	int nid;
+-	nodemask_t *nodemask;
++	nodemask_t *nodemask = mpoli->nodemask;
+ 
+-	nid = huge_node(vma, addr, gfp_mask, &mpol, &nodemask);
+-	if (mpol_is_preferred_many(mpol)) {
++	if (mpoli->mode == MPOL_PREFERRED_MANY) {
+ 		gfp_t gfp = gfp_mask & ~(__GFP_DIRECT_RECLAIM | __GFP_NOFAIL);
+ 
+-		folio = alloc_surplus_hugetlb_folio(h, gfp, nid, nodemask);
++		folio = alloc_surplus_hugetlb_folio(h, gfp, mpoli->nid,
++						    nodemask);
+ 
+ 		/* Fallback to all nodes if page==NULL */
+ 		nodemask = NULL;
+ 	}
+ 
+-	if (!folio)
+-		folio = alloc_surplus_hugetlb_folio(h, gfp_mask, nid, nodemask);
+-	mpol_cond_put(mpol);
++	if (!folio) {
++		folio = alloc_surplus_hugetlb_folio(h, gfp_mask, mpoli->nid,
++						    nodemask);
++	}
++
+ 	return folio;
+ }
+ 
+@@ -2852,7 +2854,7 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	int ret, idx;
+ 	struct hugetlb_cgroup *h_cg = NULL;
+ 	struct hugetlb_cgroup *h_cg_rsvd = NULL;
+-	gfp_t gfp = htlb_alloc_mask(h) | __GFP_RETRY_MAYFAIL;
++	gfp_t gfp = htlb_alloc_mask(h);
+ 
+ 	idx = hstate_index(h);
+ 
+@@ -2924,8 +2926,24 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 		folio = dequeue_hugetlb_folio_vma(h, vma, addr);
+ 
+ 	if (!folio) {
++		struct mempolicy_interpreted mpoli;
++		struct mempolicy *mpol;
++		nodemask_t *nodemask;
++		int nid;
++
+ 		spin_unlock_irq(&hugetlb_lock);
+-		folio = alloc_buddy_hugetlb_folio_with_mpol(h, vma, addr);
++		nid = huge_node(vma, addr, gfp, &mpol, &nodemask);
++		mpoli = (struct mempolicy_interpreted){
++			.nid = nid,
++#ifdef CONFIG_NUMA
++			.mode = mpol ? mpol->mode : MPOL_DEFAULT,
++#else
++			.mode = MPOL_DEFAULT,
++#endif
++			.nodemask = nodemask,
++		};
++		folio = alloc_buddy_hugetlb_folio(h, gfp, &mpoli);
++		mpol_cond_put(mpol);
+ 		if (!folio)
+ 			goto out_uncharge_cgroup;
+ 		spin_lock_irq(&hugetlb_lock);
+@@ -2981,7 +2999,7 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 		}
+ 	}
+ 
+-	ret = mem_cgroup_charge_hugetlb(folio, gfp);
++	ret = mem_cgroup_charge_hugetlb(folio, gfp | __GFP_RETRY_MAYFAIL);
+ 	/*
+ 	 * Unconditionally increment NR_HUGETLB here. If it turns out that
+ 	 * mem_cgroup_charge_hugetlb failed, then immediately free the page and
+-- 
+2.47.3
+

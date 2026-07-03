@@ -1,0 +1,107 @@
+From: Ackerley Tng <ackerleytng@google.com>
+Date: Thu, 2 Jul 2026 09:21:48 -0700
+Subject: [PATCH] mm: hugetlb: use error variable in alloc_hugetlb_folio
+
+Refactor alloc_hugetlb_folio to use a local variable for returning error
+codes.  Instead of returning ERR_PTR(-ENOSPC) at the end of the error
+path, assign -ENOSPC to a return variable at each failure point and return
+that variable at the end.
+
+This allows the cleanup goto targets to be used with other errors in a
+later patch.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-4-d53cefcccf34@google.com
+Signed-off-by: Ackerley Tng <ackerleytng@google.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Yan Zhao <yan.y.zhao@intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index f2c00b8df5b02..8068fe6b11900 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2886,8 +2886,10 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	 */
+ 	if (map_chg) {
+ 		gbl_chg = hugepage_subpool_get_pages(spool, 1);
+-		if (gbl_chg < 0)
++		if (gbl_chg < 0) {
++			ret = -ENOSPC;
+ 			goto out_end_reservation;
++		}
+ 	} else {
+ 		/*
+ 		 * If we have the vma reservation ready, no need for extra
+@@ -2903,13 +2905,17 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	if (map_chg) {
+ 		ret = hugetlb_cgroup_charge_cgroup_rsvd(
+ 			idx, pages_per_huge_page(h), &h_cg_rsvd);
+-		if (ret)
++		if (ret) {
++			ret = -ENOSPC;
+ 			goto out_subpool_put;
++		}
+ 	}
+ 
+ 	ret = hugetlb_cgroup_charge_cgroup(idx, pages_per_huge_page(h), &h_cg);
+-	if (ret)
++	if (ret) {
++		ret = -ENOSPC;
+ 		goto out_uncharge_cgroup_reservation;
++	}
+ 
+ 	/* Takes reference on mpol. */
+ 	nid = huge_node(vma, addr, gfp, &mpol, &nodemask);
+@@ -2940,6 +2946,7 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 		folio = alloc_buddy_hugetlb_folio(h, gfp, &mpoli);
+ 		if (!folio) {
+ 			mpol_cond_put(mpol);
++			ret = -ENOSPC;
+ 			goto out_uncharge_cgroup;
+ 		}
+ 		spin_lock_irq(&hugetlb_lock);
+@@ -3032,7 +3039,7 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ out_end_reservation:
+ 	if (map_chg != MAP_CHG_ENFORCED)
+ 		vma_end_reservation(h, vma, addr);
+-	return ERR_PTR(-ENOSPC);
++	return ERR_PTR(ret);
+ }
+ 
+ static __init void *alloc_bootmem(struct hstate *h, int nid, bool node_exact)
+-- 
+2.47.3
+

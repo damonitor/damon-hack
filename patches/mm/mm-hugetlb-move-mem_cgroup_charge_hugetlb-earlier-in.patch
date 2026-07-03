@@ -1,0 +1,109 @@
+From: Ackerley Tng <ackerleytng@google.com>
+Date: Thu, 2 Jul 2026 09:21:49 -0700
+Subject: [PATCH] mm: hugetlb: move mem_cgroup_charge_hugetlb() earlier in
+ allocation
+
+Move mem_cgroup_charge_hugetlb() earlier in the folio allocation process.
+This change draws a cleaner line between memcg charging and the subsequent
+hugetlb-specific reservation logic for VMAs and subpools.
+
+While it would be ideal to make all accounting and reservations perfectly
+symmetric, mem_cgroup_charge_hugetlb() is a complex operation that cannot
+be performed under the hugetlb_lock.  Moving the charge to this earlier
+point ensures that memcg charging is handled before the code begins
+manipulating subpool and VMA-specific state.  These two types of
+accounting will be separated in a future patch.
+
+If mem_cgroup_charge_hugetlb() fails, the code now branches to
+out_subpool_put to ensure the folio is freed and the subpool references
+are handled correctly.
+
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-5-d53cefcccf34@google.com
+Signed-off-by: Ackerley Tng <ackerleytng@google.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Yan Zhao <yan.y.zhao@intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 31 ++++++++++++++++++-------------
+ 1 file changed, 18 insertions(+), 13 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 8068fe6b11900..cb0a63898d64f 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2977,6 +2977,24 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 
+ 	spin_unlock_irq(&hugetlb_lock);
+ 
++	ret = mem_cgroup_charge_hugetlb(folio, gfp | __GFP_RETRY_MAYFAIL);
++	/*
++	 * Unconditionally increment NR_HUGETLB here. If it turns out that
++	 * mem_cgroup_charge_hugetlb failed, then immediately free the page and
++	 * decrement NR_HUGETLB.
++	 */
++	lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
++
++	if (ret == -ENOMEM) {
++		free_huge_folio(folio);
++		/*
++		 * Skip uncharging hugetlb_cgroup since the charges
++		 * were committed to the folio and freeing the folio
++		 * would have cleared those up.
++		 */
++		goto out_subpool_put;
++	}
++
+ 	hugetlb_set_folio_subpool(folio, spool);
+ 
+ 	if (map_chg != MAP_CHG_ENFORCED) {
+@@ -3004,19 +3022,6 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 		}
+ 	}
+ 
+-	ret = mem_cgroup_charge_hugetlb(folio, gfp | __GFP_RETRY_MAYFAIL);
+-	/*
+-	 * Unconditionally increment NR_HUGETLB here. If it turns out that
+-	 * mem_cgroup_charge_hugetlb failed, then immediately free the page and
+-	 * decrement NR_HUGETLB.
+-	 */
+-	lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
+-
+-	if (ret == -ENOMEM) {
+-		free_huge_folio(folio);
+-		return ERR_PTR(-ENOMEM);
+-	}
+-
+ 	return folio;
+ 
+ out_uncharge_cgroup:
+-- 
+2.47.3
+

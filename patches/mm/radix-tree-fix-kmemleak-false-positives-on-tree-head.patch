@@ -1,0 +1,70 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Thu, 2 Jul 2026 05:58:34 -0700
+Subject: [PATCH] radix-tree: fix kmemleak false positives on tree head
+ reassignment
+
+Kmemleak periodically reports transient false positives for radix tree
+nodes allocated through the IDR, for example:
+
+  unreferenced object 0xffff0004d6ac4200 (size 576):
+    comm "tcpeventd", pid 6412
+    backtrace (crc 335d668a):
+      kmem_cache_alloc_noprof
+      radix_tree_node_alloc
+      radix_tree_extend
+      idr_get_free
+      idr_alloc_cyclic
+      map_create
+      __sys_bpf
+
+radix_tree_extend() (grow) and radix_tree_shrink() (shrink) repoint
+root->xa_head to a new node.  If a kmemleak scan has already walked past
+root->xa_head, the new head is not reachable from any scanned pointer
+until the following scan, so kmemleak reports it as leaked even though it
+is live.
+
+This is the same race fixed for the XArray API in commit a1a029bcea59
+("XArray: fix kmemleak false positive in xas_shrink()").  The IDR uses the
+radix tree API directly and hits it on both the grow and the shrink path,
+so mark the new head as a transient leak in both.
+
+Link: https://lore.kernel.org/20260702-radix-tree-v1-1-a87c125b0f96@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/radix-tree.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/lib/radix-tree.c b/lib/radix-tree.c
+index 976b9bd02a1b5..cb5ca920fddb6 100644
+--- a/lib/radix-tree.c
++++ b/lib/radix-tree.c
+@@ -455,6 +455,8 @@ static int radix_tree_extend(struct radix_tree_root *root, gfp_t gfp,
+ 		node->slots[0] = (void __rcu *)entry;
+ 		entry = node_to_entry(node);
+ 		rcu_assign_pointer(root->xa_head, entry);
++		/* new head may be missed by an in-progress kmemleak scan */
++		kmemleak_transient_leak(node);
+ 		shift += RADIX_TREE_MAP_SHIFT;
+ 	} while (shift <= maxshift);
+ out:
+@@ -495,8 +497,11 @@ static inline bool radix_tree_shrink(struct radix_tree_root *root)
+ 		if (!node->shift && is_idr(root))
+ 			break;
+ 
+-		if (radix_tree_is_internal_node(child))
++		if (radix_tree_is_internal_node(child)) {
+ 			entry_to_node(child)->parent = NULL;
++			/* new head may be missed by an in-progress kmemleak scan */
++			kmemleak_transient_leak(entry_to_node(child));
++		}
+ 
+ 		/*
+ 		 * We don't need rcu_assign_pointer(), since we are simply
+-- 
+2.47.3
+

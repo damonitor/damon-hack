@@ -1,0 +1,158 @@
+From: Ackerley Tng <ackerleytng@google.com>
+Date: Thu, 2 Jul 2026 09:21:45 -0700
+Subject: [PATCH] mm: hugetlb: consolidate interpretation of gbl_chg within
+ alloc_hugetlb_folio()
+
+Patch series "Open HugeTLB allocation routine for more generic use", v4.
+
+The motivation for this patch series is guest_memfd, which would like to
+use HugeTLB as a generic source of huge pages but not adopt HugeTLB's
+reservation at mmap() time.
+
+By refactoring alloc_hugetlb_folio() and some dependent functions, there
+is now an option to allocate HugeTLB folios without providing a VMA.
+Specifically, HugeTLB allocation used to be dependent on the VMA to
+
+1. Look up reservations in the resv_map
+2. Get mpol, stored at vma->vm_policy
+
+This refactoring provides hugetlb_alloc_folio(), which focuses on just the
+allocation itself, and associated memory and HugeTLB charging (cgroups).
+alloc_hugetlb_folio() still handles reservations in the resv_map and
+subpools.
+
+Regarding naming, I'm definitely open to alternative names :) I chose
+hugetlb_alloc_folio() because I'm seeing this function as a general
+allocation function that is provided by the HugeTLB subsystem (hence the
+hugetlb_ prefix).  I'm intending for alloc_hugetlb_folio() to be later
+refactored as a static function for use just by HugeTLB, and HugeTLBfs
+should probably use hugetlb_alloc_folio() directly.
+
+To see how hugetlb_alloc_folio() is used by guest_memfd, the most recent
+patch series that uses this more generic HugeTLB allocation routine is at
+[1], and a newer revision of that patch series is at [2].
+
+Independently of guest_memfd, I believe this change is useful in
+simplifying alloc_hugetlb_folio().  alloc_hugetlb_folio() was so coupled
+to a VMA that even HugeTLBfs allocates HugeTLB folios using a pseudo-VMA.
+
+
+This patch (of 6):
+
+The dequeue_hugetlb_folio_vma() function currently handles the gbl_chg
+parameter to determine if a folio can be dequeued based on global page
+availability.  This leaks reservation-specific logic into the dequeueing
+path.
+
+Relocate this logic to alloc_hugetlb_folio() so that
+dequeue_hugetlb_folio_vma() focuses solely on selecting and dequeuing a
+folio.  In alloc_hugetlb_folio(), only attempt to dequeue a folio if a
+reservation exists (gbl_chg == 0) or if there are available huge pages in
+the global pool.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-0-d53cefcccf34@google.com
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-1-d53cefcccf34@google.com
+Link: https://lore.kernel.org/all/cover.1747264138.git.ackerleytng@google.com/T/ [1]
+Link: https://github.com/googleprodkernel/linux-cc/tree/wip-gmem-conversions-hugetlb-restructuring-12-08-25 [2]
+Link: https://lore.kernel.org/all/agqaUcVp_hwH-VXr@localhost.localdomain/ [3]
+Link: https://sashiko.dev/#/patchset/20260518-hugetlb-open-up-v3-0-e14b302477f8@google.com [4]
+Signed-off-by: Ackerley Tng <ackerleytng@google.com>
+Reviewed-by: James Houghton <jthoughton@google.com>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Reviewed-by: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Yan Zhao <yan.y.zhao@intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 25 ++++++++++---------------
+ 1 file changed, 10 insertions(+), 15 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 231de5012eba8..b243c1c3efcb5 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1318,7 +1318,7 @@ static unsigned long available_huge_pages(struct hstate *h)
+ 
+ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+ 				struct vm_area_struct *vma,
+-				unsigned long address, long gbl_chg)
++				unsigned long address)
+ {
+ 	struct folio *folio = NULL;
+ 	struct mempolicy *mpol;
+@@ -1326,13 +1326,6 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+ 	nodemask_t *nodemask;
+ 	int nid;
+ 
+-	/*
+-	 * gbl_chg==1 means the allocation requires a new page that was not
+-	 * reserved before.  Making sure there's at least one free page.
+-	 */
+-	if (gbl_chg && !available_huge_pages(h))
+-		goto err;
+-
+ 	gfp_mask = htlb_alloc_mask(h);
+ 	nid = huge_node(vma, address, gfp_mask, &mpol, &nodemask);
+ 
+@@ -1350,9 +1343,6 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+ 
+ 	mpol_cond_put(mpol);
+ 	return folio;
+-
+-err:
+-	return NULL;
+ }
+ 
+ #if defined(CONFIG_ARCH_HAS_GIGANTIC_PAGE) && defined(CONFIG_CONTIG_ALLOC)
+@@ -2922,12 +2912,17 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 		goto out_uncharge_cgroup_reservation;
+ 
+ 	spin_lock_irq(&hugetlb_lock);
++
+ 	/*
+-	 * glb_chg is passed to indicate whether or not a page must be taken
+-	 * from the global free pool (global change).  gbl_chg == 0 indicates
+-	 * a reservation exists for the allocation.
++	 * gbl_chg == 0 indicates a reservation exists for the
++	 * allocation, so try dequeuing a page. In case there was no
++	 * reservation, try dequeuing a page if there are available
++	 * pages in the global pool.
+ 	 */
+-	folio = dequeue_hugetlb_folio_vma(h, vma, addr, gbl_chg);
++	folio = NULL;
++	if (!gbl_chg || available_huge_pages(h))
++		folio = dequeue_hugetlb_folio_vma(h, vma, addr);
++
+ 	if (!folio) {
+ 		spin_unlock_irq(&hugetlb_lock);
+ 		folio = alloc_buddy_hugetlb_folio_with_mpol(h, vma, addr);
+-- 
+2.47.3
+

@@ -1,0 +1,181 @@
+From: Ackerley Tng <ackerleytng@google.com>
+Date: Thu, 2 Jul 2026 09:21:47 -0700
+Subject: [PATCH] mm: hugetlb: move mpol interpretation out of
+ dequeue_hugetlb_folio_vma()
+
+Move memory policy interpretation out of dequeue_hugetlb_folio_vma() and
+into alloc_hugetlb_folio() to separate reading and interpretation of
+memory policy from actual allocation.
+
+Also rename dequeue_hugetlb_folio_vma() to
+dequeue_hugetlb_folio_with_mpol() to remove association with vma and to
+align with alloc_buddy_hugetlb_folio_with_mpol().
+
+This will later allow memory policy to be interpreted outside of the
+process of allocating a hugetlb folio entirely.  This opens doors for
+other callers of the HugeTLB folio allocation function, such as
+guest_memfd, where memory may not always be mapped and hence may not have
+an associated vma.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260702-hugetlb-open-up-v4-3-d53cefcccf34@google.com
+Signed-off-by: Ackerley Tng <ackerleytng@google.com>
+Reviewed-by: James Houghton <jthoughton@google.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: "Edgecombe, Rick P" <rick.p.edgecombe@intel.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Pasha Tatashin <pasha.tatashin@soleen.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Pratyush Yadav <pratyush@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Shivank Garg <shivankg@amd.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Yan Zhao <yan.y.zhao@intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 66 +++++++++++++++++++++++++---------------------------
+ 1 file changed, 32 insertions(+), 34 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index cb7cad743f650..f2c00b8df5b02 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1322,32 +1322,26 @@ struct mempolicy_interpreted {
+ 	enum mempolicy_mode mode;
+ };
+ 
+-static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
+-				struct vm_area_struct *vma,
+-				unsigned long address)
++static struct folio *dequeue_hugetlb_folio(struct hstate *h, gfp_t gfp_mask,
++					   struct mempolicy_interpreted *mpoli)
+ {
++	nodemask_t *nodemask = mpoli->nodemask;
+ 	struct folio *folio = NULL;
+-	struct mempolicy *mpol;
+-	gfp_t gfp_mask;
+-	nodemask_t *nodemask;
+-	int nid;
+-
+-	gfp_mask = htlb_alloc_mask(h);
+-	nid = huge_node(vma, address, gfp_mask, &mpol, &nodemask);
+ 
+-	if (mpol_is_preferred_many(mpol)) {
++	if (mpoli->mode == MPOL_PREFERRED_MANY) {
+ 		folio = dequeue_hugetlb_folio_nodemask(h, gfp_mask,
+-							nid, nodemask);
++						       mpoli->nid,
++						       nodemask);
+ 
+ 		/* Fallback to all nodes if page==NULL */
+ 		nodemask = NULL;
+ 	}
+ 
+-	if (!folio)
++	if (!folio) {
+ 		folio = dequeue_hugetlb_folio_nodemask(h, gfp_mask,
+-							nid, nodemask);
+-
+-	mpol_cond_put(mpol);
++						       mpoli->nid,
++						       nodemask);
++	}
+ 	return folio;
+ }
+ 
+@@ -2854,7 +2848,11 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	int ret, idx;
+ 	struct hugetlb_cgroup *h_cg = NULL;
+ 	struct hugetlb_cgroup *h_cg_rsvd = NULL;
++	struct mempolicy_interpreted mpoli;
+ 	gfp_t gfp = htlb_alloc_mask(h);
++	struct mempolicy *mpol;
++	nodemask_t *nodemask;
++	int nid;
+ 
+ 	idx = hstate_index(h);
+ 
+@@ -2913,6 +2911,18 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	if (ret)
+ 		goto out_uncharge_cgroup_reservation;
+ 
++	/* Takes reference on mpol. */
++	nid = huge_node(vma, addr, gfp, &mpol, &nodemask);
++	mpoli = (struct mempolicy_interpreted){
++		.nid = nid,
++#ifdef CONFIG_NUMA
++		.mode = mpol ? mpol->mode : MPOL_DEFAULT,
++#else
++		.mode = MPOL_DEFAULT,
++#endif
++		.nodemask = nodemask,
++	};
++
+ 	spin_lock_irq(&hugetlb_lock);
+ 
+ 	/*
+@@ -2923,35 +2933,23 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	 */
+ 	folio = NULL;
+ 	if (!gbl_chg || available_huge_pages(h))
+-		folio = dequeue_hugetlb_folio_vma(h, vma, addr);
++		folio = dequeue_hugetlb_folio(h, gfp, &mpoli);
+ 
+ 	if (!folio) {
+-		struct mempolicy_interpreted mpoli;
+-		struct mempolicy *mpol;
+-		nodemask_t *nodemask;
+-		int nid;
+-
+ 		spin_unlock_irq(&hugetlb_lock);
+-		nid = huge_node(vma, addr, gfp, &mpol, &nodemask);
+-		mpoli = (struct mempolicy_interpreted){
+-			.nid = nid,
+-#ifdef CONFIG_NUMA
+-			.mode = mpol ? mpol->mode : MPOL_DEFAULT,
+-#else
+-			.mode = MPOL_DEFAULT,
+-#endif
+-			.nodemask = nodemask,
+-		};
+ 		folio = alloc_buddy_hugetlb_folio(h, gfp, &mpoli);
+-		mpol_cond_put(mpol);
+-		if (!folio)
++		if (!folio) {
++			mpol_cond_put(mpol);
+ 			goto out_uncharge_cgroup;
++		}
+ 		spin_lock_irq(&hugetlb_lock);
+ 		list_add(&folio->lru, &h->hugepage_activelist);
+ 		folio_ref_unfreeze(folio, 1);
+ 		/* Fall through */
+ 	}
+ 
++	mpol_cond_put(mpol);
++
+ 	/*
+ 	 * Either dequeued or buddy-allocated folio needs to add special
+ 	 * mark to the folio when it consumes a global reservation.
+-- 
+2.47.3
+
