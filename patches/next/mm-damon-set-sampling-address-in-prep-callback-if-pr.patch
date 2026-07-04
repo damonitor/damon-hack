@@ -10,7 +10,7 @@ Signed-off-by: SJ Park <sj@kernel.org>
  3 files changed, 21 insertions(+), 4 deletions(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index b02195e018932..3c1c6c09017f3 100644
+index 355554c67bd5e..027a70493866e 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -732,7 +732,7 @@ struct damon_operations {
@@ -19,11 +19,11 @@ index b02195e018932..3c1c6c09017f3 100644
  	unsigned int (*check_accesses)(struct damon_ctx *context);
 -	void (*prep_probes)(struct damon_ctx *context);
 +	void (*prep_probes)(struct damon_ctx *context, bool set_samples);
- 	void (*apply_probes)(struct damon_ctx *context, bool set_samples);
+ 	unsigned int (*apply_probes)(struct damon_ctx *context,
+ 			bool set_samples, bool return_max_wsum);
  	int (*get_scheme_score)(struct damon_ctx *context,
- 			struct damon_region *r, struct damos *scheme);
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 2fbc9183b9e3c..df8aac6e72054 100644
+index ed304d246d16f..e88b40d674aee 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -163,6 +163,18 @@ static struct damon_prep *damon_nth_prep(int n, struct damon_probe *p)
@@ -45,15 +45,15 @@ index 2fbc9183b9e3c..df8aac6e72054 100644
  struct damon_filter *damon_new_filter(enum damon_filter_type type,
  		bool matching, bool allow)
  {
-@@ -4158,6 +4170,7 @@ static int kdamond_fn(void *data)
+@@ -4149,6 +4161,7 @@ static int kdamond_fn(void *data)
  		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
  		unsigned long sample_interval = ctx->attrs.sample_interval;
  		bool access_check_disabled = damon_has_probe_weights(ctx);
 +		bool has_prep = damon_has_prep(ctx);
+ 		unsigned int max_merge_score = 0, max_wsum;
+ 		bool get_max_wsum;
  
- 		if (kdamond_wait_activation(ctx))
- 			break;
-@@ -4165,7 +4178,7 @@ static int kdamond_fn(void *data)
+@@ -4158,7 +4171,7 @@ static int kdamond_fn(void *data)
  		if (!access_check_disabled && ctx->ops.prepare_access_checks)
  			ctx->ops.prepare_access_checks(ctx);
  		if (ctx->ops.prep_probes)
@@ -63,20 +63,20 @@ index 2fbc9183b9e3c..df8aac6e72054 100644
  		kdamond_usleep(sample_interval);
  		ctx->passed_sample_intervals++;
 @@ -4180,7 +4193,8 @@ static int kdamond_fn(void *data)
+ 			else
+ 				get_max_wsum = false;
+ 			max_wsum = ctx->ops.apply_probes(ctx,
+-					access_check_disabled, get_max_wsum);
++					access_check_disabled && !has_prep,
++					get_max_wsum);
+ 			if (get_max_wsum)
+ 				max_merge_score = max_wsum;
  		}
- 
- 		if (ctx->ops.apply_probes)
--			ctx->ops.apply_probes(ctx, access_check_disabled);
-+			ctx->ops.apply_probes(ctx, access_check_disabled &&
-+					!has_prep);
- 
- 		if (time_after_eq(ctx->passed_sample_intervals,
- 					next_aggregation_sis)) {
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index c9d87aa86dfc6..37da7a979d926 100644
+index 491189fe5c5bd..3eb5b3ddbe675 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -187,7 +187,7 @@ static void damon_pa_prep_probes_region(struct damon_region *r,
+@@ -199,7 +199,7 @@ static void damon_pa_prep_probes_region(struct damon_region *r,
  	}
  }
  
@@ -85,7 +85,7 @@ index c9d87aa86dfc6..37da7a979d926 100644
  {
  	struct damon_target *t;
  	struct damon_region *r;
-@@ -195,6 +195,9 @@ static void damon_pa_prep_probes(struct damon_ctx *ctx)
+@@ -207,6 +207,9 @@ static void damon_pa_prep_probes(struct damon_ctx *ctx)
  
  	damon_for_each_target(t, ctx) {
  		damon_for_each_region(r, t) {
