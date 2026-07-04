@@ -1,0 +1,63 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 10 Jun 2026 22:20:09 -0700
+Subject: [RFC PATCH 09/11] mm/damon/core: stop ctx in damon_call() before
+         reruning an error
+Message-Id: <20260704181135.132956-10-sj@kernel.org>
+
+damon_call() failure makes the DAMON context to stop if it was running.
+The stop is asynchronously done in kdamond thread, though.  The caller's
+error handling should handle the race, too.  It is complicated and easy
+to make mistakes.
+
+Update damon_call() to ensure the context is stopped in the case.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1a6c30ae91711..5f16d2e13ebf7 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2009,6 +2009,8 @@ int damon_kdamond_pid(struct damon_ctx *ctx)
+  * @ctx has succeeded.  Otherwise, this function could fall into an indefinite
+  * wait.
+  *
++ * When this function is failed, the @ctx is guaranteed to be stopped.
++ *
+  * Return: 0 on success, negative error code otherwise.
+  */
+ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+@@ -2021,7 +2023,7 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ 	mutex_lock(&ctx->call_controls_lock);
+ 	if (ctx->call_controls_obsolete) {
+ 		mutex_unlock(&ctx->call_controls_lock);
+-		return -ECANCELED;
++		goto canceled;
+ 	}
+ 	list_add_tail(&control->list, &ctx->call_controls);
+ 	mutex_unlock(&ctx->call_controls_lock);
+@@ -2029,8 +2031,13 @@ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ 		return 0;
+ 	wait_for_completion(&control->completion);
+ 	if (control->canceled)
+-		return -ECANCELED;
++		goto canceled;
+ 	return 0;
++
++canceled:
++	__damon_stop(ctx);
++	return -ECANCELED;
++
+ }
+ 
+ /**
+-- 
+2.47.3

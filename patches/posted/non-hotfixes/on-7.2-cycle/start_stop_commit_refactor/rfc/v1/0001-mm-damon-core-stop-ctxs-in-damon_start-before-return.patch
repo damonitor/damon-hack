@@ -1,0 +1,42 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Wed, 10 Jun 2026 21:22:11 -0700
+Subject: [RFC PATCH 01/11] mm/damon/core: stop ctxs in damon_start() before
+         returning an error
+Message-Id: <20260704181135.132956-2-sj@kernel.org>
+
+When multiple contexts are passed to damon_start(), the function starts
+the contexts one by one.  If any of the operations fails, it immediately
+returns an error.  Contexts that successfully started before the failure
+keep running.  The caller should catch this and stop the contexts.  It
+is complicated and easy to make mistakes.  Stop all contexts in
+damon_start() under the failures.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 3c5a46e1c079a..16d9223c33a72 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1909,8 +1909,10 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive)
+ 
+ 	for (i = 0; i < nr_ctxs; i++) {
+ 		err = __damon_start(ctxs[i]);
+-		if (err)
++		if (err) {
++			damon_stop(ctxs, i);
+ 			break;
++		}
+ 		nr_running_ctxs++;
+ 	}
+ 	if (exclusive && nr_running_ctxs)
+-- 
+2.47.3
