@@ -1,0 +1,100 @@
+From: SJ Park <sj@kernel.org>
+Date: Sat, 4 Jul 2026 14:10:14 -0700
+Subject: [PATCH] mm/damon: set sampling address in prep callback if proper
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 +-
+ mm/damon/core.c       | 18 ++++++++++++++++--
+ mm/damon/paddr.c      |  5 ++++-
+ 3 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index b02195e018932..3c1c6c09017f3 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -732,7 +732,7 @@ struct damon_operations {
+ 	void (*update)(struct damon_ctx *context);
+ 	void (*prepare_access_checks)(struct damon_ctx *context);
+ 	unsigned int (*check_accesses)(struct damon_ctx *context);
+-	void (*prep_probes)(struct damon_ctx *context);
++	void (*prep_probes)(struct damon_ctx *context, bool set_samples);
+ 	void (*apply_probes)(struct damon_ctx *context, bool set_samples);
+ 	int (*get_scheme_score)(struct damon_ctx *context,
+ 			struct damon_region *r, struct damos *scheme);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 2fbc9183b9e3c..df8aac6e72054 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -163,6 +163,18 @@ static struct damon_prep *damon_nth_prep(int n, struct damon_probe *p)
+ 	return NULL;
+ }
+ 
++static bool damon_has_prep(struct damon_ctx *c)
++{
++	struct damon_prep *prep;
++	struct damon_probe *probe;
++
++	damon_for_each_probe(probe, c) {
++		damon_for_each_prep(prep, probe)
++			return true;
++	}
++	return false;
++}
++
+ struct damon_filter *damon_new_filter(enum damon_filter_type type,
+ 		bool matching, bool allow)
+ {
+@@ -4158,6 +4170,7 @@ static int kdamond_fn(void *data)
+ 		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
+ 		unsigned long sample_interval = ctx->attrs.sample_interval;
+ 		bool access_check_disabled = damon_has_probe_weights(ctx);
++		bool has_prep = damon_has_prep(ctx);
+ 
+ 		if (kdamond_wait_activation(ctx))
+ 			break;
+@@ -4165,7 +4178,7 @@ static int kdamond_fn(void *data)
+ 		if (!access_check_disabled && ctx->ops.prepare_access_checks)
+ 			ctx->ops.prepare_access_checks(ctx);
+ 		if (ctx->ops.prep_probes)
+-			ctx->ops.prep_probes(ctx);
++			ctx->ops.prep_probes(ctx, has_prep);
+ 
+ 		kdamond_usleep(sample_interval);
+ 		ctx->passed_sample_intervals++;
+@@ -4180,7 +4193,8 @@ static int kdamond_fn(void *data)
+ 		}
+ 
+ 		if (ctx->ops.apply_probes)
+-			ctx->ops.apply_probes(ctx, access_check_disabled);
++			ctx->ops.apply_probes(ctx, access_check_disabled &&
++					!has_prep);
+ 
+ 		if (time_after_eq(ctx->passed_sample_intervals,
+ 					next_aggregation_sis)) {
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index c9d87aa86dfc6..37da7a979d926 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -187,7 +187,7 @@ static void damon_pa_prep_probes_region(struct damon_region *r,
+ 	}
+ }
+ 
+-static void damon_pa_prep_probes(struct damon_ctx *ctx)
++static void damon_pa_prep_probes(struct damon_ctx *ctx, bool set_samples)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+@@ -195,6 +195,9 @@ static void damon_pa_prep_probes(struct damon_ctx *ctx)
+ 
+ 	damon_for_each_target(t, ctx) {
+ 		damon_for_each_region(r, t) {
++			if (set_samples)
++				r->sampling_addr = damon_rand(ctx, r->ar.start,
++						r->ar.end);
+ 			damon_for_each_probe(p, ctx)
+ 				damon_pa_prep_probes_region(r, p, ctx);
+ 		}
+-- 
+2.47.3
+
