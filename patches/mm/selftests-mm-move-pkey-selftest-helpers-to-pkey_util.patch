@@ -1,9 +1,9 @@
 From: Hongfu Li <lihongfu@kylinos.cn>
-Date: Tue, 30 Jun 2026 15:32:31 +0800
+Date: Thu, 2 Jul 2026 14:23:28 +0800
 Subject: [PATCH] selftests/mm: move pkey selftest helpers to pkey_util.c
 
 Patch series "selftests/mm: refactor pkey helpers and fix mmap error
-handling", v8.
+handling", v9.
 
 The main changes in this series are to refactor shared tracing and
 assertion helpers into a common file, unify both pkey selftests on
@@ -15,21 +15,21 @@ readability and consistency.
 This patch (of 5):
 
 Move pkey selftest debugging helpers into shared code so both pkey
-selftests can use the same tracing and abort-hook logic.
+selftests can use the same tracing and abort-hook logic.  Also fix
+cat_into_file() to print file, not str, in the open() failure message.
 
-Link: https://lore.kernel.org/20260630073235.3802271-1-lihongfu@kylinos.cn
-Link: https://lore.kernel.org/20260630073235.3802271-2-lihongfu@kylinos.cn
+Link: https://lore.kernel.org/20260702062332.911786-1-lihongfu@kylinos.cn
+Link: https://lore.kernel.org/20260702062332.911786-2-lihongfu@kylinos.cn
 Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Acked-by: Liam R. Howlett (Oracle) <liam@infradead.org>
-Tested-by: Kevin Brodsky <kevin.brodsky@arm.com>
 Reviewed-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Tested-by: Kevin Brodsky <kevin.brodsky@arm.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Joey Gouly <joey.gouly@arm.com>
 Cc: John Hubbard <jhubbard@nvidia.com>
 Cc: Keith Lucas <keith.lucas@oracle.com>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
 Cc: Ross Zwisler <zwisler@google.com>
@@ -40,9 +40,9 @@ Cc: Yury Khrustalev <yury.khrustalev@arm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  tools/testing/selftests/mm/pkey-helpers.h    |  4 +-
- tools/testing/selftests/mm/pkey_util.c       | 86 ++++++++++++++++++++
- tools/testing/selftests/mm/protection_keys.c | 83 -------------------
- 3 files changed, 89 insertions(+), 84 deletions(-)
+ tools/testing/selftests/mm/pkey_util.c       | 90 ++++++++++++++++++++
+ tools/testing/selftests/mm/protection_keys.c | 87 -------------------
+ 3 files changed, 93 insertions(+), 88 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/pkey-helpers.h b/tools/testing/selftests/mm/pkey-helpers.h
 index 2c377f4e9df1d..46a8a1878dc1f 100644
@@ -60,10 +60,10 @@ index 2c377f4e9df1d..46a8a1878dc1f 100644
  	if (!(condition)) {			\
  		dprintf0("# assert() at %s::%d test_nr: %d iteration: %d\n", \
 diff --git a/tools/testing/selftests/mm/pkey_util.c b/tools/testing/selftests/mm/pkey_util.c
-index 255b332f7a08b..abf708d6575ec 100644
+index 255b332f7a08b..fbef3cd45447b 100644
 --- a/tools/testing/selftests/mm/pkey_util.c
 +++ b/tools/testing/selftests/mm/pkey_util.c
-@@ -2,9 +2,95 @@
+@@ -2,9 +2,99 @@
  #define __SANE_USERSPACE_TYPES__
  #include <sys/syscall.h>
  #include <unistd.h>
@@ -73,6 +73,10 @@ index 255b332f7a08b..abf708d6575ec 100644
  
  #include "pkey-helpers.h"
  
++int iteration_nr = 1;
++int test_nr;
++int dprint_in_signal;
++
 +#if CONTROL_TRACING > 0
 +static void cat_into_file(char *str, char *file)
 +{
@@ -85,7 +89,7 @@ index 255b332f7a08b..abf708d6575ec 100644
 +	 * pkey_assert()
 +	 */
 +	if (fd < 0) {
-+		fprintf(stderr, "error opening '%s'\n", str);
++		fprintf(stderr, "error opening '%s'\n", file);
 +		perror("error: ");
 +		exit(__LINE__);
 +	}
@@ -160,10 +164,22 @@ index 255b332f7a08b..abf708d6575ec 100644
  {
  	int ret = syscall(SYS_pkey_alloc, flags, init_val);
 diff --git a/tools/testing/selftests/mm/protection_keys.c b/tools/testing/selftests/mm/protection_keys.c
-index 9a6d954ee3712..e504544e2197b 100644
+index 9a6d954ee3712..be4a0470cc61e 100644
 --- a/tools/testing/selftests/mm/protection_keys.c
 +++ b/tools/testing/selftests/mm/protection_keys.c
-@@ -62,89 +62,6 @@ noinline int read_ptr(int *ptr)
+@@ -49,11 +49,7 @@
+ #include "hugepage_settings.h"
+ #include "pkey-helpers.h"
+ 
+-int iteration_nr = 1;
+-int test_nr;
+-
+ u64 shadow_pkey_reg;
+-int dprint_in_signal;
+ 
+ noinline int read_ptr(int *ptr)
+ {
+@@ -62,89 +58,6 @@ noinline int read_ptr(int *ptr)
  	return *ptr;
  }
  

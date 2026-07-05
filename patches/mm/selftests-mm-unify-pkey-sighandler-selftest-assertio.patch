@@ -1,5 +1,5 @@
 From: Hongfu Li <lihongfu@kylinos.cn>
-Date: Tue, 30 Jun 2026 15:32:32 +0800
+Date: Thu, 2 Jul 2026 14:23:29 +0800
 Subject: [PATCH] selftests/mm: unify pkey sighandler selftest assertions and
  tracing
 
@@ -8,17 +8,17 @@ pkey_assert() for error handling.  Each test enables tracing at start and
 disables it at end; on failure, pkey_assert() calls abort_hooks() to turn
 tracing off so ftrace is not left enabled.
 
-Link: https://lore.kernel.org/20260630073235.3802271-3-lihongfu@kylinos.cn
+Link: https://lore.kernel.org/20260702062332.911786-3-lihongfu@kylinos.cn
 Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Acked-by: Liam R. Howlett (Oracle) <liam@infradead.org>
 Tested-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Reviewed-by: Kevin Brodsky <kevin.brodsky@arm.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Joey Gouly <joey.gouly@arm.com>
 Cc: John Hubbard <jhubbard@nvidia.com>
 Cc: Keith Lucas <keith.lucas@oracle.com>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
 Cc: Ross Zwisler <zwisler@google.com>
@@ -28,11 +28,11 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Yury Khrustalev <yury.khrustalev@arm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- .../selftests/mm/pkey_sighandler_tests.c      | 69 ++++++++++---------
- 1 file changed, 36 insertions(+), 33 deletions(-)
+ .../selftests/mm/pkey_sighandler_tests.c      | 89 +++++++++----------
+ 1 file changed, 44 insertions(+), 45 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/pkey_sighandler_tests.c b/tools/testing/selftests/mm/pkey_sighandler_tests.c
-index 302fef54049c8..085e771227fb4 100644
+index 302fef54049c8..8b34003794231 100644
 --- a/tools/testing/selftests/mm/pkey_sighandler_tests.c
 +++ b/tools/testing/selftests/mm/pkey_sighandler_tests.c
 @@ -19,7 +19,6 @@
@@ -43,18 +43,7 @@ index 302fef54049c8..085e771227fb4 100644
  #include <stdlib.h>
  #include <sys/mman.h>
  #include <sys/types.h>
-@@ -36,6 +35,10 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
- static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
- static siginfo_t siginfo = {0};
- 
-+int iteration_nr = 1;
-+int test_nr;
-+int dprint_in_signal;
-+
- /*
-  * We need to use inline assembly instead of glibc's syscall because glibc's
-  * syscall will attempt to access the PLT in order to call a library function
-@@ -207,15 +210,14 @@ static void test_sigsegv_handler_with_pkey0_disabled(void)
+@@ -207,15 +206,14 @@ static void test_sigsegv_handler_with_pkey0_disabled(void)
  	struct sigaction sa;
  	pthread_attr_t attr;
  	pthread_t thr;
@@ -73,7 +62,7 @@ index 302fef54049c8..085e771227fb4 100644
  
  	memset(&siginfo, 0, sizeof(siginfo));
  
-@@ -247,15 +249,14 @@ static void test_sigsegv_handler_cannot_access_stack(void)
+@@ -247,15 +245,14 @@ static void test_sigsegv_handler_cannot_access_stack(void)
  	struct sigaction sa;
  	pthread_attr_t attr;
  	pthread_t thr;
@@ -92,7 +81,7 @@ index 302fef54049c8..085e771227fb4 100644
  
  	memset(&siginfo, 0, sizeof(siginfo));
  
-@@ -288,21 +289,20 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+@@ -288,21 +285,20 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
  	int parent_pid = 0;
  	int child_pid = 0;
  	u64 pkey_reg;
@@ -118,16 +107,28 @@ index 302fef54049c8..085e771227fb4 100644
  
  	/* Allow access to MPK 0 and MPK 1 */
  	pkey_reg = pkey_reg_restrictive_default();
-@@ -323,7 +323,7 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+@@ -323,13 +319,13 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
  	memset(&siginfo, 0, sizeof(siginfo));
  
  	/* Use clone to avoid newer glibcs using rseq on new threads */
 -	long ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
+-			     CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
+-			     CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
+-			     CLONE_DETACHED,
+-			     stack + STACK_SIZE,
+-			     &parent_pid,
+-			     &child_pid);
 +	ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
- 			     CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
- 			     CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
- 			     CLONE_DETACHED,
-@@ -358,6 +358,7 @@ static void test_pkru_preserved_after_sigusr1(void)
++			CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
++			CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
++			CLONE_DETACHED,
++			stack + STACK_SIZE,
++			&parent_pid,
++			&child_pid);
+ 
+ 	if (ret < 0) {
+ 		errno = -ret;
+@@ -358,6 +354,7 @@ static void test_pkru_preserved_after_sigusr1(void)
  {
  	struct sigaction sa;
  	u64 pkey_reg;
@@ -135,7 +136,7 @@ index 302fef54049c8..085e771227fb4 100644
  
  	/* Allow access to MPK 0 and an arbitrary set of keys */
  	pkey_reg = pkey_reg_restrictive_default();
-@@ -369,10 +370,8 @@ static void test_pkru_preserved_after_sigusr1(void)
+@@ -369,10 +366,8 @@ static void test_pkru_preserved_after_sigusr1(void)
  
  	sa.sa_sigaction = sigusr1_handler;
  	sigemptyset(&sa.sa_mask);
@@ -148,7 +149,7 @@ index 302fef54049c8..085e771227fb4 100644
  
  	memset(&siginfo, 0, sizeof(siginfo));
  
-@@ -444,6 +443,13 @@ static void test_pkru_sigreturn(void)
+@@ -444,6 +439,13 @@ static void test_pkru_sigreturn(void)
  	int parent_pid = 0;
  	int child_pid = 0;
  	u64 pkey_reg;
@@ -162,7 +163,7 @@ index 302fef54049c8..085e771227fb4 100644
  
  	sa.sa_handler = SIG_DFL;
  	sa.sa_flags = 0;
-@@ -453,24 +459,20 @@ static void test_pkru_sigreturn(void)
+@@ -453,24 +455,20 @@ static void test_pkru_sigreturn(void)
  	 * For this testcase, we do not want to handle SIGSEGV. Reset handler
  	 * to default so that the application can crash if it receives SIGSEGV.
  	 */
@@ -192,16 +193,28 @@ index 302fef54049c8..085e771227fb4 100644
  
  	/*
  	 * Allow access to MPK 0 and MPK 2. The child thread (to be created
-@@ -494,7 +496,7 @@ static void test_pkru_sigreturn(void)
+@@ -494,13 +492,13 @@ static void test_pkru_sigreturn(void)
  	sigstack.ss_size = STACK_SIZE;
  
  	/* Use clone to avoid newer glibcs using rseq on new threads */
 -	long ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
+-			     CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
+-			     CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
+-			     CLONE_DETACHED,
+-			     stack + STACK_SIZE,
+-			     &parent_pid,
+-			     &child_pid);
 +	ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
- 			     CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
- 			     CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
- 			     CLONE_DETACHED,
-@@ -530,16 +532,17 @@ static void (*pkey_tests[])(void) = {
++			CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
++			CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
++			CLONE_DETACHED,
++			stack + STACK_SIZE,
++			&parent_pid,
++			&child_pid);
+ 
+ 	if (ret < 0) {
+ 		errno = -ret;
+@@ -530,16 +528,17 @@ static void (*pkey_tests[])(void) = {
  
  int main(int argc, char *argv[])
  {

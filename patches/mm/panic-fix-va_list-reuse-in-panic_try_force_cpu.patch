@@ -1,0 +1,38 @@
+From: Bradley Morgan <include@grrlz.net>
+Date: Sun, 5 Jul 2026 16:41:23 +0000
+Subject: [PATCH] panic: fix va_list reuse in panic_try_force_cpu()
+
+vsnprintf() consumes the caller's va_list. When the redirect fails,
+vpanic() reuses it for the panic message, which is undefined
+behavior. Use va_copy().
+
+Link: https://lore.kernel.org/20260705164123.18746-1-include@grrlz.net
+Signed-off-by: Bradley Morgan <include@grrlz.net>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Wang Jinchao <wangjinchao600@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/panic.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/panic.c b/kernel/panic.c
+index 213725b612aa1..90e21f15fd7ea 100644
+--- a/kernel/panic.c
++++ b/kernel/panic.c
+@@ -412,7 +412,12 @@ static bool panic_try_force_cpu(const char *fmt, va_list args)
+ 	 * fall back to static message for early boot panics or allocation failure.
+ 	 */
+ 	if (panic_force_buf) {
+-		vsnprintf(panic_force_buf, PANIC_MSG_BUFSZ, fmt, args);
++		va_list ap;
++
++		/* Do not consume args, the caller reuses it if we fail */
++		va_copy(ap, args);
++		vsnprintf(panic_force_buf, PANIC_MSG_BUFSZ, fmt, ap);
++		va_end(ap);
+ 		msg = panic_force_buf;
+ 	} else {
+ 		msg = "Redirected panic (buffer unavailable)";
+-- 
+2.47.3
+

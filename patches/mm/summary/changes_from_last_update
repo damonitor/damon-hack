@@ -1,74 +1,51 @@
 - baseline: v7.2-rc1 -> v7.2-rc1 (no change)
-- mm-hotfixes-stable: 0 -> 6 commits
-  - series: 0 (0) -> 1 (2)
-    - no role, nobody: 0 -> 3 commits
-    - no role, maintainer: 0 -> 1 commits
-    - maintainer, nobody: 0 -> 2 commits
-  - changed commits
-    - series "mm/damon/sysfs-schemes: fix wrong directories put orders in error paths". (2)
-      - d58fdbe37a82 "mm/damon/sysfs-schemes: fix dir put orders in access_pattern_add_dirs() (0/2)"
-        - Authored by no role player, reviewed by nobody
-        - branch: mm-stable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260618005650.83868-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260617060005.86852-1-sj@kernel.org [1]
-      - 05ea83ee88ca "mm/damon/sysfs-schemes: put stats for scheme_add_dirs() internal error (1/2)"
-        - Authored by no role player, reviewed by nobody
-        - branch: mm-stable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260618005650.83868-3-sj@kernel.org
-        - Link: https://lore.kernel.org/20260617005223.96813-1-sj@kernel.org [1]
-    - 35d4a3cf70a8 "mm/damon/ops-common: handle extreme intervals in damon_hot_score()"
-      - Authored by no role player, reviewed by nobody
-      - branch: mm-stable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260623135834.67189-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260619202459.145010-1-sj@kernel.org [1]
-    - 48a926cb6788 "mm/damon: add a kernel-doc comment for damon_ctx->probes"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-stable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260628220808.98931-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260628220808.98931-2-sj@kernel.org
-    - 968a672b9938 "mm/damon: add a kernel-doc comment for damon_ctx->rnd_state"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-stable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260628220808.98931-3-sj@kernel.org
-    - 7746d72c6405 "samples/damon/mtier: fail early if address range parameters are invalid"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-stable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260629144432.133962-1-sj@kernel.org
-- mm-hotfixes-unstable: 2 -> 3 commits
+- mm-hotfixes-stable: 6 -> 6 commits (no change)
+  - series: 1 (2) -> 1 (2) (no change)
+    - no role, nobody: 3 -> 3 commits (no change)
+    - no role, maintainer: 1 -> 1 commits (no change)
+    - maintainer, nobody: 2 -> 2 commits (no change)
+- mm-hotfixes-unstable: 3 -> 3 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 1 -> 2 commits
+    - maintainer, nobody: 2 -> 2 commits (no change)
     - maintainer, no role : 1 -> 1 commits (no change)
-  - new commits
-    - 230f0f19b98d "mm/damon/core: disallow overlapping input ranges for damon_set_regions()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260703165610.92894-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260630041806.151124-1-sj@kernel.org [1]
-- mm-stable: 6 -> 0 commits
-  - series: 1 (2) -> 0 (0)
-    - no role, nobody: 3 -> 0 commits
-    - no role, maintainer: 1 -> 0 commits
-    - maintainer, nobody: 2 -> 0 commits
+- mm-stable: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 61 -> 61 commits (no change)
   - series: 9 (60) -> 9 (60) (no change)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 14 -> 14 commits (no change)
     - maintainer, nobody: 40 -> 40 commits (no change)
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-new: 0 -> 3 commits
-  - series: 0 (0) -> 1 (3)
-    - maintainer, nobody: 0 -> 3 commits
+- mm-new: 3 -> 11 commits
+  - series: 1 (3) -> 2 (11)
+    - maintainer, nobody: 3 -> 11 commits
   - new commits
-    - series "mm/damon: provide pseudo moving sum probe_hits". (3)
-      - c16632fba0db "mm/damon: add damon_region->last_probe_hits (0/3)"
+    - series "mm/damon: validate all parameters in the core". (8)
+      - eadd479dc721 "mm/damon/core: safely validate src on damon_commit_ctx() (0/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260703170605.94472-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260703170605.94472-2-sj@kernel.org
-      - 97bc611088e1 "mm/damon/core: introduce damon_probe_hits_mvsum() (1/3)"
+        - Link: https://lore.kernel.org/20260705155600.96555-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260705155600.96555-2-sj@kernel.org
+      - ba01987d1492 "mm/damon/core: do parameter testing commit on damon_start() (1/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260703170605.94472-3-sj@kernel.org
-      - 4edebc5066a3 "mm/damon/sysfs-schemes: set probe hits as pseudo moving sums (2/3)"
+        - Link: https://lore.kernel.org/20260705155600.96555-3-sj@kernel.org
+      - 7163d776654e "mm/damon/sysfs: remove duplicated commit input validity check (2/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260703170605.94472-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260705155600.96555-4-sj@kernel.org
+      - 2c041029bb2f "mm/damon/reclaim: remove duplicated min_region_sz power of 2 check (3/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260705155600.96555-5-sj@kernel.org
+      - afca28b68538 "mm/damon/lru_sort: remove duplicated min_region_sz power_of_2() check (4/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260705155600.96555-6-sj@kernel.org
+      - 24ff0b08c196 "mm/damon: document region size validation in damon_set_regions() (5/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260705155600.96555-7-sj@kernel.org
+      - 9b36a7325d3b "mm/damon/core: remove start, end check in damon_set_region_system_rams() (6/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260705155600.96555-8-sj@kernel.org
+      - 2d39b01c1b8e "mm/damon/sysfs: remove region size validation (7/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260705155600.96555-9-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

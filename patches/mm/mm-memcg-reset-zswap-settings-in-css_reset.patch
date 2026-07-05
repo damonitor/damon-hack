@@ -1,0 +1,82 @@
+From: Jiayuan Chen <jiayuan.chen@shopee.com>
+Date: Thu, 2 Jul 2026 10:48:25 +0800
+Subject: [PATCH] mm: memcg: reset zswap settings in css_reset
+
+mem_cgroup_css_reset() is called when the memory controller is disabled on
+a cgroup but the memcg cannot be destroyed because it is pinned by a
+subsystem dependency -- for example, the io controller declares
+.depends_on = 1 << memory_cgrp_id, so memory remains in the cgroup_ss_mask
+and the css is hidden rather than killed.
+
+The purpose of css_reset is to revert the memcg to its vanilla state so
+that no policies are applied and the css can be safely made visible again
+later.  Currently, all page counters (memory.max, swap.max, kmem.max,
+tcpmem.max) and other limits (soft_limit, memory.high, swap.high) are
+reset to their defaults, but zswap_max and zswap_writeback are not.
+
+These fields are initialized in css_alloc (zswap_max = PAGE_COUNTER_MAX,
+zswap_writeback inherited from parent) but were missing from css_reset.
+As a result, stale zswap policies remain in effect after css_reset: the
+zswap charge path (obj_cgroup_may_zswap) continues to enforce the old
+zswap_max limit, and the writeback path continues to honor the old
+zswap_writeback setting, even though the memory controller has been
+"disabled" on this cgroup.
+
+Reset zswap_max to PAGE_COUNTER_MAX and zswap_writeback to true, matching
+their defaults in css_alloc.
+
+Test:
+	echo "+memory +io" > /sys/fs/cgroup/cgroup.subtree_control
+
+	mkdir /sys/fs/cgroup/test
+	mkdir /sys/fs/cgroup/test/child
+
+	echo "+memory +io" > /sys/fs/cgroup/test/cgroup.subtree_control
+	echo 10000 > /sys/fs/cgroup/test/child/memory.zswap.max
+
+	# child/memory.swap.max and child/memory.zswap.max disappear
+	echo "-memory" > /sys/fs/cgroup/test/cgroup.subtree_control
+
+	# re-enable memory control
+	echo "+memory" > /sys/fs/cgroup/test/cgroup.subtree_control
+
+	# before this patch
+	cat /sys/fs/cgroup/test/child/memory.zswap.max
+	    8192
+
+	# after this patch, same as memory.swap.max
+	cat /sys/fs/cgroup/test/child/memory.zswap.max
+	    max
+
+Link: https://lore.kernel.org/20260702024827.353185-1-jiayuan.chen@linux.dev
+Signed-off-by: Jiayuan Chen <jiayuan.chen@shopee.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 938f190a98fea..fd655c14d43c6 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4362,6 +4362,10 @@ static void mem_cgroup_css_reset(struct cgroup_subsys_state *css)
+ 
+ 	page_counter_set_max(&memcg->memory, PAGE_COUNTER_MAX);
+ 	page_counter_set_max(&memcg->swap, PAGE_COUNTER_MAX);
++#ifdef CONFIG_ZSWAP
++	WRITE_ONCE(memcg->zswap_max, PAGE_COUNTER_MAX);
++	WRITE_ONCE(memcg->zswap_writeback, true);
++#endif
+ #ifdef CONFIG_MEMCG_V1
+ 	page_counter_set_max(&memcg->kmem, PAGE_COUNTER_MAX);
+ 	page_counter_set_max(&memcg->tcpmem, PAGE_COUNTER_MAX);
+-- 
+2.47.3
+
