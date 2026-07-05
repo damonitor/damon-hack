@@ -69,4 +69,5 @@ git -C "$bindir" commit -s -m "patches/next: $commit_msg"
 echo
 echo "Done.  Diffstat is like below:"
 echo
-git -C "$bindir" diff HEAD^.. --stat
+diff=$(git -C "$bindir" diff HEAD^.. --stat)
+echo "$diff"
