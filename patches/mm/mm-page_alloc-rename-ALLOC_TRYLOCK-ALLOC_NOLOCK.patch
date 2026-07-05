@@ -1,0 +1,167 @@
+From: Brendan Jackman <jackmanb@google.com>
+Date: Fri, 3 Jul 2026 12:31:41 +0000
+Subject: [PATCH] mm/page_alloc: rename ALLOC_TRYLOCK -> ALLOC_NOLOCK
+
+Patch series "mm: Some cleanups for page allocator APIs", v5.
+
+Some tweaks and cleanups for page allocator entrypoint and flags.  This is
+motivated by preparation for __GFP_UNMAPPED [1] (which will probably
+become ALLOC_UNMAPPED in its next iteration), but all this is supposed to
+be an improvement to the codebase in its own right: unifying code paths,
+reducing API surface, and removing GFP flags.
+
+This started with unifying __alloc_frozen_pages[_nolock]_noprof() and
+expanded from there.
+
+Unifying the nolock allocator entrypoint with the normal allocator
+entrypoint means adding an alloc_flags argument to the later (only exposed
+within mm/).  This presents an opportunity to take advantage of that arg
+to remove some GFP flags, if we add that alloc_flags arg a bit more
+broadly to allocator entrypoints.
+
+To distinguish between mm-internal and "public" allocator entrypoints, it
+makes sense to use the __ prefix.  There are already some public APIs with
+that prefix.  For *alloc_pages*, just removing those variants seems like a
+nice cleanup anyway, so do that.  For get_free_pages, the "__" variant is
+the _only_ variant and it's very widely used, so it doesn't seem
+worthwhile to modify that.  Therefore, scope this "__" change specifically
+to the *alloc_pages* API, which means we leave the *folio_alloc* API
+untouched too, even though that could probably be cleaned up if so
+desired.
+
+
+This patch (of 18):
+
+It's confusing that the function is called "nolock" but the flag is called
+"trylock", align them.
+
+The function's terminology is more visible and has more mindshare so use that.
+
+Link: https://lore.kernel.org/20260703-alloc-trylock-v5-0-c87b714e19d3@google.com
+Link: https://lore.kernel.org/20260703-alloc-trylock-v5-1-c87b714e19d3@google.com
+Link: https://lore.kernel.org/linux-mm/2399b3ad-4eac-4a14-94c3-27e9f07972a1@kernel.org/
+Link: https://lore.kernel.org/all/20260320-page_alloc-unmapped-v2-0-28bf1bd54f41@google.com/ [1]
+Signed-off-by: Brendan Jackman <jackmanb@google.com>
+Suggested-by: "Vlastimil Babka (SUSE)" <vbabka@kernel.org>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Harry Yoo (Oracle) <harry@kernel.org>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Adrian Hunter <adrian.hunter@intel.com>
+Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dimitris Michailidis <dmichail@fungible.com>
+Cc: Eric Dumazet <edumazet@google.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Ian Rogers <irogers@google.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jakub Kacinski <kuba@kernel.org>
+Cc: James Clark <james.clark@linaro.org>
+Cc: Jiri Olsa <jolsa@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Namhyung kim <namhyung@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Reiji Watanabe <reijiw@google.com>
+Cc: Robin Holt <robinmholt@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Steve Wahl <steve.wahl@hpe.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h   |  2 +-
+ mm/page_alloc.c | 10 +++++-----
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index fa4fb69444ecd..a2b09a13735bf 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1480,7 +1480,7 @@ unsigned int reclaim_clean_pages_from_list(struct zone *zone,
+ #define ALLOC_NOFRAGMENT	  0x0
+ #endif
+ #define ALLOC_HIGHATOMIC	0x200 /* Allows access to MIGRATE_HIGHATOMIC */
+-#define ALLOC_TRYLOCK		0x400 /* Only use spin_trylock in allocation path */
++#define ALLOC_NOLOCK		0x400 /* Only use spin_trylock in allocation path */
+ #define ALLOC_KSWAPD		0x800 /* allow waking of kswapd, __GFP_KSWAPD_RECLAIM set */
+ 
+ /* Flags that allow allocations below the min watermark. */
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 762d9b6bc792f..6004fe6583d47 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -2530,7 +2530,7 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
+ 	unsigned long flags;
+ 	int i;
+ 
+-	if (unlikely(alloc_flags & ALLOC_TRYLOCK)) {
++	if (unlikely(alloc_flags & ALLOC_NOLOCK)) {
+ 		if (!spin_trylock_irqsave(&zone->lock, flags))
+ 			return 0;
+ 	} else {
+@@ -3218,7 +3218,7 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
+ 
+ 	do {
+ 		page = NULL;
+-		if (unlikely(alloc_flags & ALLOC_TRYLOCK)) {
++		if (unlikely(alloc_flags & ALLOC_NOLOCK)) {
+ 			if (!spin_trylock_irqsave(&zone->lock, flags))
+ 				return NULL;
+ 		} else {
+@@ -5059,7 +5059,7 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
+ 	 * Don't invoke should_fail logic, since it may call
+ 	 * get_random_u32() and printk() which need to spin_lock.
+ 	 */
+-	if (!(*alloc_flags & ALLOC_TRYLOCK) &&
++	if (!(*alloc_flags & ALLOC_NOLOCK) &&
+ 	    should_fail_alloc_page(gfp_mask, order))
+ 		return false;
+ 
+@@ -7804,7 +7804,7 @@ static bool cond_accept_memory(struct zone *zone, unsigned int order,
+ 		return false;
+ 
+ 	/* Bailout, since try_to_accept_memory_one() needs to take a lock */
+-	if (alloc_flags & ALLOC_TRYLOCK)
++	if (alloc_flags & ALLOC_NOLOCK)
+ 		return false;
+ 
+ 	wmark = promo_wmark_pages(zone);
+@@ -7896,7 +7896,7 @@ struct page *alloc_frozen_pages_nolock_noprof(gfp_t gfp_flags, int nid, unsigned
+ 	 */
+ 	gfp_t alloc_gfp = __GFP_NOWARN | __GFP_ZERO | __GFP_NOMEMALLOC | __GFP_COMP
+ 			| gfp_flags;
+-	unsigned int alloc_flags = ALLOC_TRYLOCK;
++	unsigned int alloc_flags = ALLOC_NOLOCK;
+ 	struct alloc_context ac = { };
+ 	struct page *page;
+ 
+-- 
+2.47.3
+

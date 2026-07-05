@@ -1,0 +1,89 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Fri, 3 Jul 2026 11:41:59 +0000
+Subject: [PATCH] mm/mprotect: use huge_ptep_get() for hugetlb
+
+prot_none_hugetlb_entry() is the hugetlb callback for the early
+mprotect(PROT_NONE) PFN permission walk on x86.
+
+The callback passes the decoded PFN to pfn_modify_allowed().  For a
+hugetlb callback, the pte pointer refers to a hugetlb entry.  On
+architectures where hugetlb entries need huge_ptep_get(), reading that
+entry with ptep_get() can make the permission check use the wrong PFN.
+
+Use huge_ptep_get() before decoding the hugetlb PFN.
+
+Currently there is no path which can trigger a bug: huge_ptep_get() is a
+simple ptep_get() for x86, and the prot_none walk occurs only for x86.
+
+So no need to backport - use the correct helper anyways.
+
+Link: https://lore.kernel.org/20260703114202.365553-7-dev.jain@arm.com
+Fixes: 42e4089c7890 ("x86/speculation/l1tf: Disallow non privileged high MMIO PROT_NONE mappings")
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Andi Kleen <ak@linux.intel.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@intel.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Josh Poimboeuf <jpoimboe@kernel.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Jun'ichi "Nick" Nomura <j-nomura@ce.jp.nec.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Mel Gorman <mel@csn.ul.ie>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ralph Campbell <rcampbell@nvidia.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mprotect.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index 8665a23f38d3d..55fc01ae4fbcf 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -699,14 +699,20 @@ static int prot_none_pte_entry(pte_t *pte, unsigned long addr,
+ 		0 : -EACCES;
+ }
+ 
++#ifdef CONFIG_HUGETLB_PAGE
+ static int prot_none_hugetlb_entry(pte_t *pte, unsigned long hmask,
+ 				   unsigned long addr, unsigned long next,
+ 				   struct mm_walk *walk)
+ {
+-	return pfn_modify_allowed(pte_pfn(ptep_get(pte)),
+-				  *(pgprot_t *)(walk->private)) ?
+-		0 : -EACCES;
++	const pte_t entry = huge_ptep_get(walk->mm, addr, pte);
++
++	if (pfn_modify_allowed(pte_pfn(entry), *(pgprot_t *)(walk->private)))
++		return 0;
++	return -EACCESS;
+ }
++#else
++#define prot_none_hugetlb_entry	NULL
++#endif
+ 
+ static const struct mm_walk_ops prot_none_walk_ops = {
+ 	.pte_entry		= prot_none_pte_entry,
+-- 
+2.47.3
+

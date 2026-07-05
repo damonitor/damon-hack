@@ -1,0 +1,113 @@
+From: Brendan Jackman <jackmanb@google.com>
+Date: Fri, 3 Jul 2026 12:31:58 +0000
+Subject: [PATCH] mm: factor out can_spin_trylock()
+
+Deduplicate checks for whether the current context is safe for
+spin_trylock().
+
+Does this function really belong in mm/internal.h or is it generic?  Not
+sure.  If someone ends up duplicating this logic elsewhere in the kernel,
+that would be a shame.  But if it goes in some generic header, someone
+treats it as documentation about where it's guaranteed safe to
+spin_trylock(), and then it emerges that there are other subtle
+preconditions that didn't affect the mm usecase, that would be worse.  So,
+just be conservative and keep it local.
+
+Link: https://lore.kernel.org/20260703-alloc-trylock-v5-18-c87b714e19d3@google.com
+Signed-off-by: Brendan Jackman <jackmanb@google.com>
+Suggested-by: Harry Yoo <harry@kernel.org>
+Link: https://lore.kernel.org/all/397859cb-b127-4cc6-9c71-044afc99bf0c@kernel.org/
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Reviewed-by: Harry Yoo (Oracle) <harry@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h   | 23 +++++++++++++++++++++++
+ mm/page_alloc.c | 17 +----------------
+ mm/slub.c       | 10 +---------
+ 3 files changed, 25 insertions(+), 25 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 7e3b2386e274b..0ae6ad2265125 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1716,4 +1716,27 @@ static inline void mm_prepare_for_swap_entries(struct mm_struct *mm)
+ 	}
+ }
+ 
++static inline bool can_spin_trylock(void)
++{
++	/*
++	 * In PREEMPT_RT spin_trylock() will call raw_spin_lock() which is
++	 * unsafe in NMI. If spin_trylock() is called from hard IRQ the current
++	 * task may be waiting for one rt_spin_lock, but rt_spin_trylock() will
++	 * mark the task as the owner of another rt_spin_lock which will
++	 * confuse PI logic, so return immediately if called from hard IRQ or
++	 * NMI.
++	 *
++	 * Note, irqs_disabled() case is ok. spin_trylock() can be called
++	 * from raw_spin_lock_irqsave region.
++	 */
++	if (IS_ENABLED(CONFIG_PREEMPT_RT) && (in_nmi() || in_hardirq()))
++		return false;
++
++	/* On UP, spin_trylock() always succeeds even when it is locked */
++	if (!IS_ENABLED(CONFIG_SMP) && in_nmi())
++		return false;
++
++	return true;
++}
++
+ #endif	/* __MM_INTERNAL_H */
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index c3b246e67ed14..a63733dac659e 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5291,22 +5291,7 @@ static inline bool alloc_order_allowed(gfp_t gfp, unsigned int order,
+ 
+ static inline bool alloc_nolock_allowed(void)
+ {
+-	/*
+-	 * In PREEMPT_RT spin_trylock() will call raw_spin_lock() which is
+-	 * unsafe in NMI. If spin_trylock() is called from hard IRQ the current
+-	 * task may be waiting for one rt_spin_lock, but rt_spin_trylock() will
+-	 * mark the task as the owner of another rt_spin_lock which will
+-	 * confuse PI logic, so return immediately if called from hard IRQ or
+-	 * NMI.
+-	 *
+-	 * Note, irqs_disabled() case is ok. This function can be called
+-	 * from raw_spin_lock_irqsave region.
+-	 */
+-	if (IS_ENABLED(CONFIG_PREEMPT_RT) && (in_nmi() || in_hardirq()))
+-		return false;
+-
+-	/* On UP, spin_trylock() always succeeds even when it is locked */
+-	if (!IS_ENABLED(CONFIG_SMP) && in_nmi())
++	if (!can_spin_trylock())
+ 		return false;
+ 
+ 	/* Bailout, since _deferred_grow_zone() needs to take a lock */
+diff --git a/mm/slub.c b/mm/slub.c
+index 3989b4758ae0a..b19dc46de73c5 100644
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -5408,15 +5408,7 @@ static void *__kmalloc_nolock_noprof(DECL_TOKEN_PARAMS(size, token), gfp_t gfp_f
+ 	if (unlikely(!size))
+ 		return ZERO_SIZE_PTR;
+ 
+-	/*
+-	 * See the comment for the same check in
+-	 * alloc_frozen_pages_nolock_noprof()
+-	 */
+-	if (IS_ENABLED(CONFIG_PREEMPT_RT) && (in_nmi() || in_hardirq()))
+-		return NULL;
+-
+-	/* On UP, spin_trylock() always succeeds even when it is locked */
+-	if (!IS_ENABLED(CONFIG_SMP) && in_nmi())
++	if (!can_spin_trylock())
+ 		return NULL;
+ 
+ retry:
+-- 
+2.47.3
+

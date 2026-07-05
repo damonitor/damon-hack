@@ -1,13 +1,5 @@
 - baseline: v7.2-rc1 -> v7.2-rc1 (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 8 -> 2 commits
-  - series: 1 (2) -> 0 (0)
-    - no role, nobody: 3 -> 0 commits
-    - no role, maintainer: 1 -> 0 commits
-    - maintainer, nobody: 3 -> 1 commits
-    - maintainer, no role : 1 -> 1 commits (no change)
-- mm-stable: 0 -> 6 commits
+- mm-hotfixes-stable: 0 -> 6 commits
   - series: 0 (0) -> 1 (2)
     - no role, nobody: 0 -> 3 commits
     - no role, maintainer: 0 -> 1 commits
@@ -16,116 +8,67 @@
     - series "mm/damon/sysfs-schemes: fix wrong directories put orders in error paths". (2)
       - d58fdbe37a82 "mm/damon/sysfs-schemes: fix dir put orders in access_pattern_add_dirs() (0/2)"
         - Authored by no role player, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-stable
+        - branch: mm-stable -> mm-hotfixes-stable
         - Link: https://lore.kernel.org/20260618005650.83868-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260617060005.86852-1-sj@kernel.org [1]
       - 05ea83ee88ca "mm/damon/sysfs-schemes: put stats for scheme_add_dirs() internal error (1/2)"
         - Authored by no role player, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-stable
+        - branch: mm-stable -> mm-hotfixes-stable
         - Link: https://lore.kernel.org/20260618005650.83868-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260617005223.96813-1-sj@kernel.org [1]
     - 35d4a3cf70a8 "mm/damon/ops-common: handle extreme intervals in damon_hot_score()"
       - Authored by no role player, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-stable
+      - branch: mm-stable -> mm-hotfixes-stable
       - Link: https://lore.kernel.org/20260623135834.67189-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260619202459.145010-1-sj@kernel.org [1]
     - 48a926cb6788 "mm/damon: add a kernel-doc comment for damon_ctx->probes"
       - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-stable
+      - branch: mm-stable -> mm-hotfixes-stable
       - Link: https://lore.kernel.org/20260628220808.98931-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260628220808.98931-2-sj@kernel.org
     - 968a672b9938 "mm/damon: add a kernel-doc comment for damon_ctx->rnd_state"
       - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-stable
+      - branch: mm-stable -> mm-hotfixes-stable
       - Link: https://lore.kernel.org/20260628220808.98931-3-sj@kernel.org
     - 7746d72c6405 "samples/damon/mtier: fail early if address range parameters are invalid"
       - Authored by no role player, reviewed by a maintainer
-      - branch: mm-hotfixes-unstable -> mm-stable
+      - branch: mm-stable -> mm-hotfixes-stable
       - Link: https://lore.kernel.org/20260629144432.133962-1-sj@kernel.org
-- mm-unstable: 43 -> 61 commits
-  - series: 8 (42) -> 9 (60)
+- mm-hotfixes-unstable: 2 -> 3 commits
+  - series: 0 (0) -> 0 (0) (no change)
+    - maintainer, nobody: 1 -> 2 commits
+    - maintainer, no role : 1 -> 1 commits (no change)
+  - new commits
+    - 230f0f19b98d "mm/damon/core: disallow overlapping input ranges for damon_set_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260703165610.92894-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260630041806.151124-1-sj@kernel.org [1]
+- mm-stable: 6 -> 0 commits
+  - series: 1 (2) -> 0 (0)
+    - no role, nobody: 3 -> 0 commits
+    - no role, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 2 -> 0 commits
+- mm-unstable: 61 -> 61 commits (no change)
+  - series: 9 (60) -> 9 (60) (no change)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 14 -> 14 commits (no change)
-    - maintainer, nobody: 22 -> 40 commits
+    - maintainer, nobody: 40 -> 40 commits (no change)
     - maintainer, no role : 6 -> 6 commits (no change)
-  - changed commits
-    - series "mm/damon: optimize out nr_accesses_bp". (18)
-      - ce9cb9517893 "mm/damon/core: introduce damon_nr_accesses_mvsum() (0/18)"
+- mm-new: 0 -> 3 commits
+  - series: 0 (0) -> 1 (3)
+    - maintainer, nobody: 0 -> 3 commits
+  - new commits
+    - series "mm/damon: provide pseudo moving sum probe_hits". (3)
+      - c16632fba0db "mm/damon: add damon_region->last_probe_hits (0/3)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260630040812.149729-2-sj@kernel.org
-      - d5d6fd638175 "mm/damon/tests/core-kunit: test damon_mvsum() (1/18)"
+        - Link: https://lore.kernel.org/20260703170605.94472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260703170605.94472-2-sj@kernel.org
+      - 97bc611088e1 "mm/damon/core: introduce damon_probe_hits_mvsum() (1/3)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-3-sj@kernel.org
-      - 098c72e157ce "mm/damon/core: always update ->last_nr_accesses for intervals change (2/18)"
+        - Link: https://lore.kernel.org/20260703170605.94472-3-sj@kernel.org
+      - 4edebc5066a3 "mm/damon/sysfs-schemes: set probe hits as pseudo moving sums (2/3)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-4-sj@kernel.org
-      - 9542ca6776ac "mm/damon/core: handle unreset nr_accesses in damon_nr_accesses_mvsum() (3/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-5-sj@kernel.org
-      - d4728a7b0b1d "mm/damon/core: use damon_nr_accesses_mvsum() in __damos_valid_target() (4/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-6-sj@kernel.org
-      - 2f9ec2acae68 "mm/damon/core: use damon_nr_accesses_mvsum() for damos region tracing (5/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-7-sj@kernel.org
-      - 1ffb3408f02a "mm/damon/sysfs-schemes: use damon_nr_accesses_mvsum() for damo regions (6/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-8-sj@kernel.org
-      - e7af105dbfa8 "mm/damon/core: remove damon_warn_fix_nr_accesses_corruption() (7/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-9-sj@kernel.org
-      - 5852d19cb499 "mm/damon/core: remove damon_verify_reset_aggregated() (8/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-10-sj@kernel.org
-      - 955bae3ebe73 "mm/damon/core: remove damon_verify_merge_regions_of() (9/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-11-sj@kernel.org
-      - 130b034a8fc7 "mm/damon/tests/core-kunit: remove nr_accesses_bp setup and tests (10/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-12-sj@kernel.org
-      - cb5973266a48 "selftests/damon/drgn_dump_damon_status: do not dump nr_accesses_bp (11/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-13-sj@kernel.org
-      - d5dc34f47564 "mm/damon/core: remove nr_accesses_bp setups and updates (12/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-14-sj@kernel.org
-      - 88a9fc1909d6 "mm/damon/core: remove attrs param from damon_update_region_access_rate() (13/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-15-sj@kernel.org
-      - 0fe3273e0bf6 "mm/damon/paddr: remove attrs param from __damon_pa_check_access() (14/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-16-sj@kernel.org
-      - 7020b4086133 "mm/damon/vaddr: remove attrs param from __damon_va_check_access() (15/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-17-sj@kernel.org
-      - 0ebb4083a690 "mm/damon/core: remove damon_moving_sum() and its unit test (16/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-18-sj@kernel.org
-      - 5203828b75bf "mm/damon/core: remove damon_region->nr_accesses_bp (17/18)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260630040812.149729-19-sj@kernel.org
-- mm-new: 18 -> 0 commits
-  - series: 1 (18) -> 0 (0)
-    - maintainer, nobody: 18 -> 0 commits
+        - Link: https://lore.kernel.org/20260703170605.94472-4-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
