@@ -1,0 +1,128 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 27 Jun 2026 12:34:13 -0700
+Subject: [PATCH 1/8] mm/damon/core: safely validate src on damon_commit_ctx()
+Message-Id: <20260705155600.96555-2-sj@kernel.org>
+
+damon_commit_ctx() does its holistic parameter set validation while
+applying the new parameter in the set one by one.  If it finds a
+parameter is invalid, because some invalid parameters may already be
+committed (it is called "commit" but not atomic and irreversable), it
+stops the running DAMON context.
+
+The callers of the function therefore have to validate the parameters
+before calling it.  Because the function already embeds holistic
+validation, DAMON_SYSFS reuses it in a safe way.  It creates a
+test-purpose context that is not running but mimics the running one, and
+calls damon_commit_ctx() against the test purpose context.  If it
+succeeds, the parameters are considered valid, and a real
+damon_commit_ctx() call against the running context is made with those.
+
+Other callers such as DAMON_RECLAIM and DAMON_LRU_SORT do not expose
+full parameters to users.  For efficiency, they validate only the known
+set of parameters.  The efficiency gain is arguably small and doubtful,
+though.  Meanwhile the maintenance overhead of the multiple different
+validations is clearly high.  We actually found and fixed a few bugs in
+the class.
+
+Update damon_commit_ctx() to embed DAMON_SYSFS' safe and holistic
+validation approach.  Callers can simply call damon_commit_ctx() without
+worrying if their parameters are invalid.
+
+Note that damon_commit_ctx() can still cause an unexpected stop of the
+running context, if internal memory allocation fails.  It is arguably
+unlikely since those internal allocations are too small to fail, but
+theoretically possible.  It should also be better addressed, but not
+necessarily a blocker of this small and incremental improvement effort.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 61 +++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 47 insertions(+), 14 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 871c6f5257c9e..018dd5ff80324 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1664,20 +1664,7 @@ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ 	return 0;
+ }
+ 
+-/**
+- * damon_commit_ctx() - Commit parameters of a DAMON context to another.
+- * @dst:	The commit destination DAMON context.
+- * @src:	The commit source DAMON context.
+- *
+- * This function copies user-specified parameters from @src to @dst and update
+- * the internal status and results accordingly.  Users should use this function
+- * for context-level parameters update of running context, instead of manual
+- * in-place updates.
+- *
+- * This function should be called from parameters-update safe context, like
+- * damon_call().
+- */
+-int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
++static int __damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ {
+ 	int err;
+ 	struct damos *scheme;
+@@ -1732,6 +1719,52 @@ int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 	return 0;
+ }
+ 
++static struct damon_ctx *damon_new_test_ctx(struct damon_ctx *dst)
++{
++	struct damon_ctx *test_ctx;
++	int err;
++
++	test_ctx = damon_new_ctx();
++	if (!test_ctx)
++		return NULL;
++	err = __damon_commit_ctx(test_ctx, dst);
++	if (err) {
++		damon_destroy_ctx(test_ctx);
++		return NULL;
++	}
++	return test_ctx;
++}
++
++/**
++ * damon_commit_ctx() - Commit parameters of a DAMON context to another.
++ * @dst:	The commit destination DAMON context.
++ * @src:	The commit source DAMON context.
++ *
++ * This function copies user-specified parameters from @src to @dst and update
++ * the internal status and results accordingly.  Users should use this function
++ * for context-level parameters update of running context, instead of manual
++ * in-place updates.
++ *
++ * This function should be called from parameters-update safe context, like
++ * damon_call().
++ */
++int damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
++{
++	struct damon_ctx *test_ctx;
++	int err;
++
++	test_ctx = damon_new_test_ctx(dst);
++	if (!test_ctx)
++		return -ENOMEM;
++	err = __damon_commit_ctx(test_ctx, src);
++	if (err)
++		goto out;
++	err = __damon_commit_ctx(dst, src);
++out:
++	damon_destroy_ctx(test_ctx);
++	return err;
++}
++
+ /**
+  * damon_nr_running_ctxs() - Return number of currently running contexts.
+  */
+-- 
+2.47.3
