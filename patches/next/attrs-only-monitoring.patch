@@ -16,17 +16,17 @@ For example, some users want to know how much of a hot memory region
 belongs to huge pages or specific cgroups.  Page level properties based
 monitoring was introduced with commit 626ffabe67c2 ("mm/damon: clarify
 trying vs applying on damos_stat kernel-doc comment") to fill the gap.
-Because it works only in snapshot level and snapshot capturing in the
+Because it works only at snapshot level and snapshot capturing in the
 mode can induce high overhead, commit 45c49d9fd608 ("mm/damon/core:
 introduce struct damon_probe") introduced data attributes monitoring.
 
 Data attributes monitoring treats the attributes as only additional and
 subordinate information.  Data access monitoring is always turned on,
-and regions are adjusted for best accuracy of the access information.
-In some cases, users may primarily interested in the attributes more
+and regions are adjusted for best accuracy of the access information. In
+some cases, users may be primarily interested in the attributes more
 than the access.  They might even not care about the access information
 at all.  Because DAMON treats data accesses as the only primary
-information, such users cannot get high quality attributes innformation.
+information, such users cannot get high quality attributes information.
 
 Design and Implementation
 =========================
@@ -34,42 +34,27 @@ Design and Implementation
 Introduce another way for treating data attributes as the primary
 information.  Add 'weight' property to each data attribute probe.  When
 any of the weights are set, the mode is enabled.  Data access monitoring
-is completely turned off in the mode.  For the regions  adjustment, the
+is completely turned off in the mode.  For region  adjustment, the
 weighted sum of probe hit counters is used instead of the nr_accesses.
 
 Using the weights, users can specify to what attributes they are
-interested in what degree.  DAMON will adjust the regions and provide
+interested in to what degree.  DAMON will adjust the regions and provide
 the best-effort quality monitoring that is optimized for the user
 demands.
 
-Extend damon_operations for efficient use of probe hits.  Update regiosn
+Extend damon_operations for efficient use of probe hits.  Update regions
 merge and kdamond main logic to support the new mode.  Add a new struct
 field and a sysfs file for API callers and ABI users, respectively.
-
-Patches Sequence
-================
-
-Patch 1 introduces damon_probe->weight for speccifying the weights of
-each attribute.  Patches 2-6 extends apply_probe() damon_ops callback to
-efficiently support the new mode.  Patch 7 extends regions merge
-function to work with probe hits in the mode.  Patch 7 also introduce
-the function for detecting the mode enablement but always returns false,
-for safe and incremental changes.  Patches 8-11 incrementally update
-kdamond_fn() to support the mode.  Patch 12 completes the mode detection
-function implementation, so that the new mode really works.  Patch 13
-introduces a new sysfs file for ABI users.  Finally, patche 14-16
-repsectively updates design, usage and ABI documents for the new feature
-and interfaces.
 
 Test
 ====
 
 On ~7 GiB memory idle system, run a simple AI-assisted program.  The
-program allocates and fault 2 GiB anonymous pages.  Then, it does
+program allocates and faults 2 GiB anonymous pages.  Then, it does
 nothing but wait until the user terminates it.  Hence, the system ~2 GiB
 of anonymous pages with no active accesses.
 
-Monitor the distribution of the anonymous pages using DAMON attrributes
+Monitor the distribution of the anonymous pages using DAMON attributes
 monitoring mode, using DAMON user-space tool, damo [1].
 
     $ sudo ./damo start --probe_filter allow anon
@@ -94,22 +79,23 @@ monitoring mode, using DAMON user-space tool, damo [1].
     total size: 7.797 GiB
     record DAMON intervals: sample 5 ms, aggr 100 ms
 
-Note that the line after the line startign with "intervals:" is not
+Note that the line after the line starting with "intervals:" is not
 provided by the current version of 'damo'.  I manually added the legends
-line for easier understanding of this results.
+line for easier understanding of these results.
 
 Each of the 12 lines after the legend line shows the DAMON-found
 regions.  Each line shows 1) index of the region, 2) start address of
-the region, 3) size of the region, 4) acceess frequency of the region,
-5) age (how long the access frequency on the region was kept) of the
+the region, 3) size of the region, 4) access frequency of the region, 5)
+age (how long the access frequency on the region was kept) of the
 region, and finally 6) the probe hit count.
 
 Because data access is the primary information that adjusts region for,
 and there is only nearly zero access on the system, regions are naively
-adjusted with same size.  Still <probe hits> show different distribution
-of the anonymous pages, but it is obviously very rough information.
+adjusted with the same size.  Still <probe hits> show different
+distribution of the anonymous pages, but it is obviously very rough
+information.
 
-Switch to the attributes only mode annd show how it changes the picture:
+Switch to the attributes only mode and show how it changes the picture:
 
     $ sudo ./damo tune --probe_filter allow anon --probe_weight 100
     $ sudo ./damo report access --dont_merge_regions
@@ -137,22 +123,37 @@ Switch to the attributes only mode annd show how it changes the picture:
     record DAMON intervals: sample 5 ms, aggr 100 ms
 
 As expected, regions are adjusted to provide the best accurate picture
-for the anonymous pages distribution (<probe hits>).  The first
-60.445 MiB region (region 0) has nearly zero anonymous page.  The 1.363
-MiB region (region 1) starting from 60.449 MiB address is nearly full
-with anonymous pages.  8 KiB memory from 5.132 GiB address (region 500)
-is certaily two anonymous pages.
+for the anonymous pages distribution (<probe hits>).  The region 0
+(60.445 MiB memory from the address 4.000 KiB) has nearly zero anonymous
+pages.  The region 1 (1.363 MiB memory from the address 60.449 MiB) is
+nearly full with anonymous pages.  Region 500 (8 KiB memory from the
+address 5.132 GiB) is certainly two anonymous pages.
 
 Future Work
 ===========
 
 Attributes only monitoring disables access monitoring.  We will enable
-that in future, by extending the supported attributse to include data
+that in future, by extending the supported attributes to include data
 accesses.  This patch series, and the future work are parts of the
 ongoing project [2] for extending DAMON.  The project aims to extend
 DAMON with primitives other than page table accessed bits such as AMD
 IBS, Intel PEBS, and Arm SPE, to provide more powerful and detailed
-information like per-CPUs/threads/readss/writes monitoring.
+information like per-CPUs/threads/reads/writes monitoring.
+
+Patches Sequence
+================
+
+Patch 1 introduces damon_probe->weight for specifying the weights of
+each attribute.  Patches 2-6 extends apply_probe() damon_ops callback to
+efficiently support the new mode.  Patch 7 extends regions merge
+function to work with probe hits in the mode.  Patch 7 also introduces
+the function for detecting the mode enablement but always returns false,
+for safe and incremental changes.  Patches 8-11 incrementally update
+kdamond_fn() to support the mode.  Patch 12 completes the mode detection
+function implementation, so that the new mode really works.  Patch 13
+introduces a new sysfs file for ABI users.  Finally, patches 14-16
+respectively updates design, usage and ABI documents for the new feature
+and interfaces.
 
 [1] https://github.com/damonitor/damo
 [2] https://lore.kernel.org/20260525225208.1179-1-sj@kernel.org/
