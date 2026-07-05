@@ -1,21 +1,28 @@
 From: SJ Park <sj@kernel.org>
-Date: Sat, 4 Jul 2026 18:35:47 -0700
+Date: Sat, 4 Jul 2026 18:13:03 -0700
 Subject: [PATCH] mm/damon/core: update kdamond_fn() for probe weights
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 26 ++++++++++++++++++++------
- 1 file changed, 20 insertions(+), 6 deletions(-)
+ mm/damon/core.c | 27 ++++++++++++++++++++-------
+ 1 file changed, 20 insertions(+), 7 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 3028457e0ab84..b95635f562cd5 100644
+index 9bb884ab135ec..b95635f562cd5 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -3713,25 +3713,39 @@ static int kdamond_fn(void *data)
+@@ -3681,7 +3681,6 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ static int kdamond_fn(void *data)
+ {
+ 	struct damon_ctx *ctx = data;
+-	unsigned int max_nr_accesses = 0;
+ 	unsigned long sz_limit = 0;
+ 
+ 	pr_debug("kdamond (%d) starts\n", current->pid);
+@@ -3714,25 +3713,39 @@ static int kdamond_fn(void *data)
  		unsigned long next_aggregation_sis = ctx->next_aggregation_sis;
  		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
  		unsigned long sample_interval = ctx->attrs.sample_interval;
--		unsigned int max_merge_score = 0;
 +		bool access_check_disabled = damon_has_probe_weights(ctx);
 +		unsigned int max_merge_score = 0, max_wsum;
 +		bool get_max_wsum;
@@ -31,10 +38,11 @@ index 3028457e0ab84..b95635f562cd5 100644
  		ctx->passed_sample_intervals++;
  
 -		if (ctx->ops.check_accesses)
-+		if (!access_check_disabled)
- 			max_merge_score = ctx->ops.check_accesses(ctx);
+-			max_nr_accesses = ctx->ops.check_accesses(ctx);
 -		if (ctx->ops.apply_probes)
 -			ctx->ops.apply_probes(ctx, false, false);
++		if (!access_check_disabled)
++			max_merge_score = ctx->ops.check_accesses(ctx);
 +
 +		if (ctx->ops.apply_probes) {
 +			if (time_after_eq(ctx->passed_sample_intervals,
@@ -51,8 +59,8 @@ index 3028457e0ab84..b95635f562cd5 100644
  
  		if (time_after_eq(ctx->passed_sample_intervals,
  					next_aggregation_sis)) {
--			kdamond_merge_regions(ctx, max_merge_score / 10,
-+			kdamond_merge_regions(ctx,
+ 			kdamond_merge_regions(ctx,
+-					max_nr_accesses / 10,
 +					max_merge_score / 10,
  					sz_limit);
  			/* online updates might be made */
