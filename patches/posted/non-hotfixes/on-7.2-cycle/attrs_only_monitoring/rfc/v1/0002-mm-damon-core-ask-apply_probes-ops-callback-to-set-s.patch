@@ -1,0 +1,76 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 4 Jul 2026 18:15:36 -0700
+Subject: [RFC PATCH 02/16] mm/damon/core: ask apply_probes() ops callback to set
+         sampling address
+Message-Id: <20260705205743.98656-3-sj@kernel.org>
+
+prepare_access_checks() DAMON ops callback sets the monitoring sampling
+address per region.  In future, DAMON will be able to call only
+apply_probes().  In this case, applyy_probes() may need to do the
+sampling address setup, to minimize unnecessary regions iteration.
+Update the protocol for the request.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h | 5 +++--
+ mm/damon/core.c       | 2 +-
+ mm/damon/paddr.c      | 2 +-
+ 3 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index c9c1de7ec0e7b..4dec5d314c782 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -647,7 +647,8 @@ enum damon_ops_id {
+  * It should also return max number of observed accesses that made as a result
+  * of its update.  The value will be used for regions adjustment threshold.
+  * @apply_probes should apply the data attribute probes to each region and
+- * accordingly update the probe hits counter of the region.
++ * accordingly update the probe hits counter of the region.  It should also
++ * &set sampling_addr or each region if &set_samples is true.
+  * @get_scheme_score should return the priority score of a region for a scheme
+  * as an integer in [0, &DAMOS_MAX_SCORE].
+  * @apply_scheme is called from @kdamond when a region for user provided
+@@ -665,7 +666,7 @@ struct damon_operations {
+ 	void (*update)(struct damon_ctx *context);
+ 	void (*prepare_access_checks)(struct damon_ctx *context);
+ 	unsigned int (*check_accesses)(struct damon_ctx *context);
+-	void (*apply_probes)(struct damon_ctx *context);
++	void (*apply_probes)(struct damon_ctx *context, bool set_samples);
+ 	int (*get_scheme_score)(struct damon_ctx *context,
+ 			struct damon_region *r, struct damos *scheme);
+ 	unsigned long (*apply_scheme)(struct damon_ctx *context,
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index ca5c3f3e45fc6..7c0184cb78a50 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3675,7 +3675,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 		if (ctx->ops.apply_probes)
+-			ctx->ops.apply_probes(ctx);
++			ctx->ops.apply_probes(ctx, false);
+ 
+ 		if (time_after_eq(ctx->passed_sample_intervals,
+ 					next_aggregation_sis)) {
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 6172464981730..b13bf7c6eade3 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -166,7 +166,7 @@ static bool damon_pa_filter_pass(phys_addr_t pa, struct folio *folio,
+ 	return pass;
+ }
+ 
+-static void damon_pa_apply_probes(struct damon_ctx *ctx)
++static void damon_pa_apply_probes(struct damon_ctx *ctx, bool set_samples)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+-- 
+2.47.3
