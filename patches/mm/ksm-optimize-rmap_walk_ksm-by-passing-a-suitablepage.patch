@@ -1,9 +1,6 @@
 From: xu xin <xu.xin16@zte.com.cn>
 Date: Fri, 3 Jul 2026 16:25:10 +0800
 Subject: [PATCH] ksm: optimize rmap_walk_ksm by passing a suitablepage index
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 User impact / Why this matters to Linux users
 =============================================
@@ -13,20 +10,21 @@ walk by rmap_walk_ksm to locate all page table entries that reference
 these pages. If A large number of unrelated VMAs can attach to a single
 anon_vma related with this KSM page, then rmap_walk might be severe
 performance bottleneck.  In our embedded test environment, we observed
-~20,000 VMAs sharing one anon_vma without any fork – purely from VMA
-splits， which cause 200~700ms duration of rmap_walk_ksm.
+~20,000 VMAs sharing one anon_vma without any fork  purely from VMA
+splits
+ which cause 200~700ms duration of rmap_walk_ksm.
 
 When one of those VMAs mapped a KSM page, then this KSM page's rmapping
 will become bottleneck with hold its anon_vma lock for a long time. The
 anon_vma lock is not only used by KSM; it is a core lock protecting the
 VMA interval tree and is acquired by many critical memory operations:
 
-  â' Page faults: do_anonymous_page(), do_wp_page() (during COW)
-  â' Memory reclaim: try_to_unmap()
-  â' Page migration & compaction: migrate_pages(), compact_zone()
-  â' mlock / munlock: mlock_fixup()
-  â' Process exit: exit_mmap() (tearing down VMAs)
-  â' Cgroup memory accounting: mem_cgroup_move_charge()
+  ' Page faults: do_anonymous_page(), do_wp_page() (during COW)
+  ' Memory reclaim: try_to_unmap()
+  ' Page migration & compaction: migrate_pages(), compact_zone()
+  ' mlock / munlock: mlock_fixup()
+  ' Process exit: exit_mmap() (tearing down VMAs)
+  ' Cgroup memory accounting: mem_cgroup_move_charge()
 
 If one thread holds the anon_vma lock for hundreds of milliseconds
 because of an inefficient KSM rmap walk, any other thread that
@@ -71,7 +69,7 @@ Solution
 ========
 We cannot rely solely on anon_vma to locate all PTEs mapping this page
 but also need to have the original page's linear_page_index. Since the
-implementation of anon_vma_interval_tree_foreach — it essentially
+implementation of anon_vma_interval_tree_foreach  it essentially
 iterates to find a suitable VMA such that the provided page index
 falls within the candidate's vm_pgoff range.
 
@@ -88,16 +86,16 @@ tools/testing/rmap/rmap_benchmark.c, we can start the performance test.
 
 The testing result in QEMU is shown as follows:
 
-KSM rmapping	Maximum duration		Average duration
+KSM rmapping    Maximum duration                Average duration
 
-Before:		705.12 ms (705119858 ns)	532.04 ms (532041586 ns)
-After:		1.67 ms (1665917 ns)		1.44 ms (1443784 ns)
+Before:         705.12 ms (705119858 ns)        532.04 ms (532041586 ns)
+After:          1.67 ms (1665917 ns)            1.44 ms (1443784 ns)
 
 The benchmark numbers are realistic, since we observed ~20,000 VMAs
 sharing one anon_vma on a production system running a Java application
 with KSM enabled. The lock hold time before the patch was measured at
-228 ms (max) during rmap walks triggered by memory compaction and page
-migration. The benchmark reproduces that VMA count and lock‑hold
+228ms (max) during rmap walks triggered by memory compaction and page
+migration. The benchmark reproduces that VMA count and lockhold
 behavior in a controlled environment.
 
 Link: https://lore.kernel.org/20260703162510242nxmjbcLy5ccp1dbZSK3EU@zte.com.cn

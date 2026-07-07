@@ -1,0 +1,47 @@
+From: Bradley Morgan <include@grrlz.net>
+Date: Tue, 7 Jul 2026 20:59:21 +0000
+Subject: [PATCH] panic: make force_cpu redirect work from an NMI
+
+nmi_panic sets panic_cpu first.  Bail only on a different owner, and hand
+panic_cpu to the target after the IPI.
+
+Found by sashiko [1].
+
+Link: https://lore.kernel.org/20260707205921.15247-1-include@grrlz.net
+Link: https://sashiko.dev/#/patchset/20260707183253.9793-1-include@grrlz.net [1]
+Signed-off-by: Bradley Morgan <include@grrlz.net>
+Cc: Feng Tang <feng.tang@linux.alibaba.com>
+Cc: Petr Mladek <pmladek@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/panic.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/kernel/panic.c b/kernel/panic.c
+index cb78aa9dfd915..53386f9c0f982 100644
+--- a/kernel/panic.c
++++ b/kernel/panic.c
+@@ -396,8 +396,8 @@ static bool panic_try_force_cpu(const char *fmt, va_list args)
+ 		return false;
+ 	}
+ 
+-	/* Another panic already in progress */
+-	if (panic_in_progress())
++	/* Bail only if a different CPU is already handling it. */
++	if (panic_in_progress() && atomic_read(&panic_cpu) != this_cpu)
+ 		return false;
+ 
+ 	/* Which CPU won the race? */
+@@ -440,6 +440,9 @@ static bool panic_try_force_cpu(const char *fmt, va_list args)
+ 		return false;
+ 	}
+ 
++	/* Hand panic_cpu to the target so it wins its own panic_try_start. */
++	atomic_set(&panic_cpu, panic_force_cpu);
++
+ 	/* IPI/NMI sent, this CPU should stop */
+ 	return true;
+ }
+-- 
+2.47.3
+
