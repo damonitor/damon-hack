@@ -1,5 +1,5 @@
 From: SJ Park <sj@kernel.org>
-Date: Wed, 24 Jun 2026 21:46:42 -0700
+Date: Mon, 6 Jul 2026 21:56:55 -0700
 Subject: [PATCH] mm/damon/core: extend merge function to work with probe hits
 
 When probe weights are set, users may want DAMON monitoring results to
@@ -15,12 +15,12 @@ current mode.
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c             | 48 +++++++++++++++++++++++++++++--------
+ mm/damon/core.c             | 49 +++++++++++++++++++++++++++++--------
  mm/damon/tests/core-kunit.h | 13 ++++++++--
- 2 files changed, 49 insertions(+), 12 deletions(-)
+ 2 files changed, 50 insertions(+), 12 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 59bd7bc3a98f2..2f28c5443a6f1 100644
+index ad2b60b224a50..a4a701ed944c6 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -209,6 +209,11 @@ static struct damon_probe *damon_nth_probe(int n, struct damon_ctx *ctx)
@@ -52,7 +52,7 @@ index 59bd7bc3a98f2..2f28c5443a6f1 100644
  /*
   * Merge adjacent regions having similar access frequencies
   *
-@@ -3257,24 +3272,37 @@ static void damon_merge_two_regions(struct damon_target *t,
+@@ -3257,24 +3272,38 @@ static void damon_merge_two_regions(struct damon_target *t,
   * sz_limit	size upper limit of each region
   */
  static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
@@ -63,13 +63,13 @@ index 59bd7bc3a98f2..2f28c5443a6f1 100644
 +	bool use_probe_hits = damon_has_probe_weights(ctx);
  
  	damon_for_each_region_safe(r, next, t) {
--		if (abs(r->nr_accesses - r->last_nr_accesses) > thres)
-+		unsigned int score, last_score;
+-		if (abs_diff(r->nr_accesses, r->last_nr_accesses) > thres)
++		unsigned int score, last_score, diff;
 +
 +		score = damon_merge_score(r, false, ctx, use_probe_hits);
 +		last_score = damon_merge_score(r, true, ctx, use_probe_hits);
 +
-+		if (abs(score - last_score) > thres)
++		if (abs_diff(score, last_score) > thres)
  			r->age = 0;
 -		else if ((r->nr_accesses == 0) != (r->last_nr_accesses == 0))
 +		else if ((score == 0) != (last_score == 0))
@@ -78,7 +78,7 @@ index 59bd7bc3a98f2..2f28c5443a6f1 100644
  			r->age++;
  
 -		if (prev && prev->ar.end == r->ar.start &&
--		    abs(prev->nr_accesses - r->nr_accesses) <= thres &&
+-		    abs_diff(prev->nr_accesses, r->nr_accesses) <= thres &&
 -		    damon_sz_region(prev) + damon_sz_region(r) <= sz_limit)
 -			damon_merge_two_regions(t, prev, r);
 -		else
@@ -87,8 +87,9 @@ index 59bd7bc3a98f2..2f28c5443a6f1 100644
 +			goto set_prev_continue;
 +		if (prev->ar.end != r->ar.start)
 +			goto set_prev_continue;
-+		if (abs(damon_merge_score(prev, false, ctx, use_probe_hits) -
-+					score) > thres)
++		diff = abs_diff(score, damon_merge_score(prev, false, ctx,
++					use_probe_hits));
++		if (diff > thres)
 +			goto set_prev_continue;
 +		if (damon_sz_region(prev) + damon_sz_region(r) > sz_limit)
 +			goto set_prev_continue;
@@ -99,7 +100,7 @@ index 59bd7bc3a98f2..2f28c5443a6f1 100644
  	}
  }
  
-@@ -3307,7 +3335,7 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+@@ -3307,7 +3336,7 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
  	do {
  		nr_regions = 0;
  		damon_for_each_target(t, c) {
