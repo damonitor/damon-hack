@@ -1,0 +1,100 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Thu, 2 Jul 2026 07:59:52 +0800
+Subject: [PATCH] mm: avoid unnecessary lru drain for wp_can_reuse_anon_folio()
+
+Patch series "mm: drop redundant lru_add_drain in anon folio reuse paths",
+v3.
+
+We are doing a large number of redundant lru_add_drain() calls in both
+wp_can_reuse_anon_folio() and do_swap_page(), leading to LRU lock
+contention and unnecessary overhead.
+
+In wp_can_reuse_anon_folio(), we can check the refcount against the
+lru_cache before deciding to drain.  In do_swap_page(), the drain is now
+entirely redundant after Kairui's work to route SYNC I/O through the
+swapcache in the same way as ASYNC I/O.
+
+Build the kernel within a 1 GB memcg using 20 threads with zRAM swap.  The
+number of lru_add_drain() calls is reduced from 276,278 to 226,318, a
+reduction of about 18%.
+
+Build the kernel within an 800 MB memcg using 20 threads with zRAM swap.
+The number of lru_add_drain() calls is reduced from 778,950 to 541,149, a
+reduction of 30.5%.
+
+
+This patch (of 4):
+
+There is a case where `folio_ref_count(folio) == 3` and
+`!folio_test_swapcache(folio)`. In that case, both
+`folio_ref_count(folio) > 3` and
+`folio_ref_count(folio) > 1 + folio_test_swapcache(folio)` evaluate
+false, causing an unnecessary local LRU drain.
+
+During an Ubuntu boot, I observed over 5,000 redundant local LRU drains.
+For a kernel build with a minimal configuration, I observed more than
+20,000 redundant drains.
+
+Fix this by checking against: `1 + in_swapcache + in_lrucache` instead of
+hardcoding `folio_ref_count(folio) > 3`.
+
+Link: https://lore.kernel.org/20260701235955.36126-1-baohua@kernel.org
+Link: https://lore.kernel.org/20260701235955.36126-2-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Kairui Song <kasong@tencent.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Usama Arif <usama.arif@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index 6637c5b13c9ba..9fac7d30162ff 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -4174,6 +4174,9 @@ static bool __wp_can_reuse_large_anon_folio(struct folio *folio,
+ static bool wp_can_reuse_anon_folio(struct folio *folio,
+ 				    struct vm_area_struct *vma)
+ {
++	const bool in_lru_cache = !folio_test_lru(folio);
++	const bool in_swapcache = folio_test_swapcache(folio);
++
+ 	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && folio_test_large(folio))
+ 		return __wp_can_reuse_large_anon_folio(folio, vma);
+ 
+@@ -4184,15 +4187,16 @@ static bool wp_can_reuse_anon_folio(struct folio *folio,
+ 	 *
+ 	 * KSM doesn't necessarily raise the folio refcount.
+ 	 */
+-	if (folio_test_ksm(folio) || folio_ref_count(folio) > 3)
++	if (folio_test_ksm(folio) ||
++	    folio_ref_count(folio) > 1 + in_lru_cache + in_swapcache)
+ 		return false;
+-	if (!folio_test_lru(folio))
++	if (in_lru_cache)
+ 		/*
+ 		 * We cannot easily detect+handle references from
+ 		 * remote LRU caches or references to LRU folios.
+ 		 */
+ 		lru_add_drain();
+-	if (folio_ref_count(folio) > 1 + folio_test_swapcache(folio))
++	if (folio_ref_count(folio) > 1 + in_swapcache)
+ 		return false;
+ 	if (!folio_trylock(folio))
+ 		return false;
+-- 
+2.47.3
+

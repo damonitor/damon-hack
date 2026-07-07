@@ -10,42 +10,70 @@
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 61 -> 61 commits (no change)
-  - series: 9 (60) -> 9 (60) (no change)
+- mm-unstable: 61 -> 64 commits
+  - series: 9 (60) -> 10 (63)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 14 -> 14 commits (no change)
-    - maintainer, nobody: 40 -> 40 commits (no change)
+    - maintainer, nobody: 40 -> 43 commits
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-new: 3 -> 11 commits
-  - series: 1 (3) -> 2 (11)
-    - maintainer, nobody: 3 -> 11 commits
+  - changed commits
+    - series "mm/damon: provide pseudo moving sum probe_hits". (3)
+      - 1cafb67f6a27 "mm/damon: add damon_region->last_probe_hits (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260703170605.94472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260703170605.94472-2-sj@kernel.org
+      - 5007def6cb56 "mm/damon/core: introduce damon_probe_hits_mvsum() (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260703170605.94472-3-sj@kernel.org
+      - 3322626f7593 "mm/damon/sysfs-schemes: set probe hits as pseudo moving sums (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260703170605.94472-4-sj@kernel.org
+- mm-new: 11 -> 20 commits
+  - series: 2 (11) -> 2 (19)
+    - no role, maintainer: 0 -> 1 commits
+    - maintainer, nobody: 11 -> 19 commits
   - new commits
-    - series "mm/damon: validate all parameters in the core". (8)
-      - eadd479dc721 "mm/damon/core: safely validate src on damon_commit_ctx() (0/8)"
+    - 528a26e4092e "selftests/damon: check correct path in ensure_file() not_exist case"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260706134305.5224-1-a929244872@163.com
+    - series "mm/damon: refactor damon_{start,stop,commit}() for simple error handling". (11)
+      - fb991ac46d80 "mm/damon/core: stop ctxs in damon_start() before returning an error (0/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260705155600.96555-2-sj@kernel.org
-      - ba01987d1492 "mm/damon/core: do parameter testing commit on damon_start() (1/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260706140628.87414-2-sj@kernel.org
+      - 1ff623d37e81 "samples/damon/mtier: do not stop first context for damon_start() failure (1/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-3-sj@kernel.org
-      - 7163d776654e "mm/damon/sysfs: remove duplicated commit input validity check (2/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-3-sj@kernel.org
+      - b2df3a23b454 "mm/damon/core: make damon_stop() never fail (2/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-4-sj@kernel.org
-      - 2c041029bb2f "mm/damon/reclaim: remove duplicated min_region_sz power of 2 check (3/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-4-sj@kernel.org
+      - bc6d441f145d "mm/damon/sysfs: ignore damon_stop() return value (3/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-5-sj@kernel.org
-      - afca28b68538 "mm/damon/lru_sort: remove duplicated min_region_sz power_of_2() check (4/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-5-sj@kernel.org
+      - 372c07da25a4 "mm/damon/reclaim: ignore damon_stop() return value (4/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-6-sj@kernel.org
-      - 24ff0b08c196 "mm/damon: document region size validation in damon_set_regions() (5/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-6-sj@kernel.org
+      - 9c0a6345301c "mm/damon/lru_sort: ignore damon_stop() return value (5/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-7-sj@kernel.org
-      - 9b36a7325d3b "mm/damon/core: remove start, end check in damon_set_region_system_rams() (6/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-7-sj@kernel.org
+      - 88f1a9679124 "mm/damon/core: change damon_stop() return type to void (6/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-8-sj@kernel.org
-      - 2d39b01c1b8e "mm/damon/sysfs: remove region size validation (7/8)"
+        - Link: https://lore.kernel.org/20260706140628.87414-8-sj@kernel.org
+      - 8ea002ce2c82 "samples/damon/mtier: stop all contexts with single damon_stop() call (7/11)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260705155600.96555-9-sj@kernel.org
+        - Link: https://lore.kernel.org/20260706140628.87414-9-sj@kernel.org
+      - a943c3c24e72 "mm/damon/core: wait ctx stop in damon_call() before reruning an error (8/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260706140628.87414-10-sj@kernel.org
+      - d33365b702c9 "samples/damon/wsse: do not stop ctx for damon_call() failure (9/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260706140628.87414-11-sj@kernel.org
+      - dcf1b545c8fd "samples/damon/prcl: do not stop DAMON for damon_call() failure (10/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260706140628.87414-12-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

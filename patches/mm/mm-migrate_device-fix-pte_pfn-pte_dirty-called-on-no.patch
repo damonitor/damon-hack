@@ -1,0 +1,56 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Mon, 6 Jul 2026 19:19:58 +0800
+Subject: [PATCH] mm: migrate_device: fix pte_pfn/pte_dirty called on
+ non-present PTE
+
+pte_pfn() and pte_dirty() have undefined behaviour when called on a
+non-present PTE.  In migrate_vma_collect_pmd(), these functions may be
+invoked on non-present entries (e.g., swap PTEs), leading to potential
+crashes from pte_pfn() or incorrect dirty folio accounting from
+pte_dirty().  Fix both by guarding with pte_present() checks.
+
+Link: https://lore.kernel.org/20260706111958.3649651-1-wangkefeng.wang@huawei.com
+Fixes: fd35ca3d12cc ("mm/migrate_device.c: copy pte dirty bit to page")
+Fixes: a3589e1d5fe3 ("mm/migrate_device.c: add missing flush_cache_page()")
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate_device.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index 7c048ff5b69f6..2fffeb1f99694 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -411,7 +411,8 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
+ 			bool anon_exclusive;
+ 			pte_t swp_pte;
+ 
+-			flush_cache_page(vma, addr, pte_pfn(pte));
++			if (pte_present(pte))
++				flush_cache_page(vma, addr, pte_pfn(pte));
+ 			anon_exclusive = folio_test_anon(folio) &&
+ 					  PageAnonExclusive(page);
+ 			if (anon_exclusive) {
+@@ -432,7 +433,7 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
+ 			migrate->cpages++;
+ 
+ 			/* Set the dirty flag on the folio now the pte is gone. */
+-			if (pte_dirty(pte))
++			if (pte_present(pte) && pte_dirty(pte))
+ 				folio_mark_dirty(folio);
+ 
+ 			/* Setup special migration page table entry */
+-- 
+2.47.3
+

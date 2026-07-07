@@ -1,0 +1,111 @@
+From: Hongfu Li <lihongfu@kylinos.cn>
+Date: Mon, 6 Jul 2026 16:16:00 +0800
+Subject: [PATCH] selftests/mm: fix clone cleartid race in pkey sighandler
+ tests
+
+Passing a stack-local child_pid to clone() with CLONE_CHILD_CLEARTID is
+unsafe: the kernel clears that address when the child exits, which may
+happen after the test function has returned and the stack slot has been
+reused.
+
+Neither testcase uses the settid/cleartid pointers for synchronization.
+
+Drop CLONE_PARENT_SETTID and CLONE_CHILD_CLEARTID and pass NULL for the
+clone tid arguments.  Wait for the clone child to exit via tkill in
+test_sigsegv_handler_with_different_pkey_for_stack(), matching
+test_pkru_sigreturn(), so the detached thread cannot overlap with the next
+testcase.
+
+Link: https://lore.kernel.org/20260706081600.3570203-7-lihongfu@kylinos.cn
+Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Keith Lucas <keith.lucas@oracle.com>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Liam R. Howlett (Oracle) <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Ross Zwisler <zwisler@google.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Yury Khrustalev <yury.khrustalev@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../selftests/mm/pkey_sighandler_tests.c      | 20 +++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/pkey_sighandler_tests.c b/tools/testing/selftests/mm/pkey_sighandler_tests.c
+index cbc24d6cf7705..c218d0510a2a4 100644
+--- a/tools/testing/selftests/mm/pkey_sighandler_tests.c
++++ b/tools/testing/selftests/mm/pkey_sighandler_tests.c
+@@ -290,7 +290,6 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+ 	static stack_t sigstack;
+ 	void *stack;
+ 	int pkey;
+-	int parent_pid = 0;
+ 	int child_pid = 0;
+ 	u64 pkey_reg;
+ 	long ret;
+@@ -330,11 +329,10 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+ 	/* Use clone to avoid newer glibcs using rseq on new threads */
+ 	ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
+ 			CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
+-			CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
+ 			CLONE_DETACHED,
+ 			stack + STACK_SIZE,
+-			&parent_pid,
+-			&child_pid);
++			NULL,
++			NULL);
+ 
+ 	if (ret < 0) {
+ 		errno = -ret;
+@@ -344,11 +342,19 @@ static void test_sigsegv_handler_with_different_pkey_for_stack(void)
+ 		syscall_raw(SYS_exit, 0, 0, 0, 0, 0, 0);
+ 	}
+ 
++	child_pid = ret;
++
+ 	pthread_mutex_lock(&mutex);
+ 	while (siginfo.si_signo == 0)
+ 		pthread_cond_wait(&cond, &mutex);
+ 	pthread_mutex_unlock(&mutex);
+ 
++	/* Wait for child to exit before returning */
++	do {
++		sched_yield();
++		ret = syscall_raw(SYS_tkill, child_pid, 0, 0, 0, 0, 0);
++	} while (ret != -ESRCH && ret != -EINVAL);
++
+ 	ksft_test_result(siginfo.si_signo == SIGSEGV &&
+ 			 siginfo.si_code == SEGV_MAPERR &&
+ 			 siginfo.si_addr == NULL,
+@@ -445,7 +451,6 @@ static void test_pkru_sigreturn(void)
+ 	static stack_t sigstack;
+ 	void *stack;
+ 	int pkey;
+-	int parent_pid = 0;
+ 	int child_pid = 0;
+ 	u64 pkey_reg;
+ 	long ret;
+@@ -504,11 +509,10 @@ static void test_pkru_sigreturn(void)
+ 	/* Use clone to avoid newer glibcs using rseq on new threads */
+ 	ret = clone_raw(CLONE_VM | CLONE_FS | CLONE_FILES |
+ 			CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
+-			CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID |
+ 			CLONE_DETACHED,
+ 			stack + STACK_SIZE,
+-			&parent_pid,
+-			&child_pid);
++			NULL,
++			NULL);
+ 
+ 	if (ret < 0) {
+ 		errno = -ret;
+-- 
+2.47.3
+

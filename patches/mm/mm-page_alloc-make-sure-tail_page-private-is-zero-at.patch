@@ -1,0 +1,68 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Fri, 3 Jul 2026 09:47:49 -0400
+Subject: [PATCH] mm/page_alloc: make sure tail_page->private is zero at page
+ free time
+
+Any code using tail_page->private of a folio, a compound page or a
+high-order page is supposed to reset it after use, otherwise ->private
+data can leak to new page user and cause unexpected issues.  Add a
+bad_page() check at page free path for it.
+
+Link: https://lore.kernel.org/20260703-keep-subpage-private-zero-at-free-v2-4-2970fe777dd6@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index a63733dac659e..39ae512e6b194 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -1377,15 +1377,22 @@ static __always_inline bool __free_pages_prepare(struct page *page,
+ #endif
+ 		}
+ 		for (i = 1; i < (1 << order); i++) {
++			struct page *tail_page = page + i;
++
+ 			if (compound)
+-				bad += free_tail_page_prepare(page, page + i);
++				bad += free_tail_page_prepare(page, tail_page);
+ 			if (is_check_pages_enabled()) {
+-				if (free_page_is_bad(page + i)) {
++				if (free_page_is_bad(tail_page)) {
+ 					bad++;
+ 					continue;
+ 				}
+ 			}
+-			(page + i)->flags.f &= ~PAGE_FLAGS_CHECK_AT_PREP;
++			tail_page->flags.f &= ~PAGE_FLAGS_CHECK_AT_PREP;
++			if (is_check_pages_enabled() && tail_page->private) {
++				bad_page(tail_page, "nonzero private");
++				bad++;
++				continue;
++			}
+ 		}
+ 	}
+ 	if (folio_test_anon(folio)) {
+-- 
+2.47.3
+

@@ -1,0 +1,117 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Fri, 3 Jul 2026 09:47:46 -0400
+Subject: [PATCH] mm/percpu-km: clear page->private before free them
+
+Patch series "Keep tail page private zero at free and folio split", v2.
+
+This patchset makes sure tail_page->private is zero before compound or
+high-order pages are returned to the allocator.  It also checks tail pages
+that become new folio heads during large folio split, before their private
+fields are used by new folios.
+
+Note on ZONE_DEVICE and DAX page/folio
+===
+ZONE_DEVICE and DAX use prep_compound_tail() to reinitialize folios, so
+tail_page->private was reset before this patchset. There was a concern that
+after this patchset stale ->private can appear after ZONE_DEVICE/DAX folio
+initialization. My reasoning is that no code sets ZONE_DEVICE/DAX
+page->private, so their page->private stays zero all the time.
+ZONE_DEVICE_PRIVATE page migration only supports anonymous memory without
+swapcache, so after the migration ->private remains zero.
+
+Motivation
+===
+
+page->private is zeroed at page free time since commit ac1ea219590c0
+("mm/page_alloc: clear page->private in free_pages_prepare()"), since we
+concluded that it might be too much to ask every page user to free a page
+with ->private zeroed. The holder of the last page reference might not know
+whether ->private needs to be cleared.
+
+For compound and high-order pages, tail_page->private can also leak to
+later users if it is left uncleared. The page allocation path does not zero
+every tail_page->private field, so they can be seen by new users and cause
+unexpected issues[1].
+
+Check tail_page->private at page free time, and check tail pages that
+become new folio heads during large folio split. With those checks in
+place, prep_compound_tail() no longer needs to clear tail_page->private
+when preparing compound page metadata.
+
+Overview
+===
+
+1. Patch 1 clears all pages ->private before percpu-km frees them.
+2. Patch 2 removes setting page->private in compaction code when a free
+   page is taken out of the buddy allocator. cc->freepages is indexed by
+   page order, so storing the free page order in page->private is
+   redundant. In alloc_contig_frozen_range_noprof(),
+   isolate_freepages_range() is used to grab free pages from buddy
+   allocator and it leaves the aforementioned page->private set until
+   either split_free_frozen_pages() or prep_new_page() is called. That
+   stale value without resetting triggers the tail_page->private nonzero
+   check once set_page_private(0) is removed from prep_compound_tail().
+
+3. Patch 3 adds back the page->private check for tail pages promoted to new
+   folio heads in __split_folio_to_order().
+4. Patch 4 adds a tail_page->private check in the page free path.
+5. Patch 5 removes tail_page->private zeroing from prep_compound_tail().
+
+
+This patch (of 5):
+
+page->private is cleared in free page path.  In a subsequent commit,
+tail_page->private will be checked and ensured to be zero.  Clearing
+percpu-km allocated pages' ->private to prevent triggering warnings later.
+
+Link: https://lore.kernel.org/20260703-keep-subpage-private-zero-at-free-v2-0-2970fe777dd6@nvidia.com
+Link: https://lore.kernel.org/20260703-keep-subpage-private-zero-at-free-v2-1-2970fe777dd6@nvidia.com
+Link: https://lore.kernel.org/all/20260206174017.128673-1-mikhail.v.gavrilov@gmail.com/ [1]
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/percpu-km.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/mm/percpu-km.c b/mm/percpu-km.c
+index 4efa74a495cb6..7ffe84adadb9d 100644
+--- a/mm/percpu-km.c
++++ b/mm/percpu-km.c
+@@ -94,8 +94,15 @@ static void pcpu_destroy_chunk(struct pcpu_chunk *chunk)
+ 	pcpu_stats_chunk_dealloc();
+ 	trace_percpu_destroy_chunk(chunk->base_addr);
+ 
+-	if (chunk->data)
++	if (chunk->data) {
++		struct page *pages = (struct page *)chunk->data;
++		int i;
++
++		/* clear chunk info from each page before free them */
++		for (i = 0; i < nr_pages; i++)
++			pcpu_set_page_chunk(pages + i, NULL);
+ 		__free_pages(chunk->data, order_base_2(nr_pages));
++	}
+ 	pcpu_free_chunk(chunk);
+ }
+ 
+-- 
+2.47.3
+
