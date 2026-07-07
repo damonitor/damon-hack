@@ -1,34 +1,59 @@
 From: SJ Park <sj@kernel.org>
-Date: Mon, 6 Jul 2026 17:57:40 -0700
+Date: Mon, 6 Jul 2026 17:54:44 -0700
 Subject: [PATCH] mm/damon/core: disallow probe_hits overflow on attrs only
  monitoring
 
+When any damon_probe->weight is set, DAMON will do only probe
+monitoring.  probe_hits is 'unsigned char'.  It could overflow when the
+aggregation interval is larger than the sampling interval times 256.
+damon_as_probe_weights() always return false, so such overflow cannot
+happen.  Even if it happens, it only degrades the monitoring results for
+unreasonable user setup.
+
+That said, the overflow is not intentional.  It is better to be
+prevented as long as the cost is not expensive.  Disallow the overflow
+by adding a validation logic on the core layer parameters validation
+function.
+
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 8 +++++++-
- 1 file changed, 7 insertions(+), 1 deletion(-)
+ mm/damon/core.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 56827f5ada950..51099efebb35b 100644
+index 0bc301e49708e..51099efebb35b 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -1485,9 +1485,15 @@ static void damos_set_filters_default_reject(struct damos *s)
+@@ -1483,6 +1483,19 @@ static void damos_set_filters_default_reject(struct damos *s)
+ 		damos_filters_default_reject(&s->ops_filters);
+ }
  
- static bool damon_valid_probe_params(struct damon_ctx *ctx)
- {
++static bool damon_valid_probe_params(struct damon_ctx *ctx)
++{
 +	unsigned long sample_interval;
 +
- 	if (!damon_has_probe_weights(ctx))
- 		return true;
--	return false;
++	if (!damon_has_probe_weights(ctx))
++		return true;
 +
 +	sample_interval = ctx->attrs.sample_interval ? : 1;
 +	if (ctx->attrs.aggr_interval / sample_interval > U8_MAX)
 +		return false;
 +	return true;
- }
- 
++}
++
  /*
+  * damos_commit_dests() - Copy migration destinations from @src to @dst.
+  * @dst:	Destination structure to update.
+@@ -2014,6 +2027,9 @@ static int __damon_commit_ctx(struct damon_ctx *dst, struct damon_ctx *src)
+ 		}
+ 	}
+ 
++	if (!damon_valid_probe_params(src))
++		return -EINVAL;
++
+ 	err = damon_commit_schemes(dst, src);
+ 	if (err)
+ 		return err;
 -- 
 2.47.3
 
