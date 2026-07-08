@@ -10,7 +10,7 @@ fi
 
 echo "Below is the first part of release_note"
 echo "'''"
-headd release_note
+head release_note
 echo "'''"
 echo
 
