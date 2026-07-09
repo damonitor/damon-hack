@@ -1,0 +1,105 @@
+From: SJ Park <sj@kernel.org>
+Date: Wed, 8 Jul 2026 06:53:51 -0700
+Subject: [PATCH] mm/damon/core: remove comment and test for nr_to_bp()
+ divide-by-zero
+
+Patch series "mm/damon: update probe hits for runtime parameter commits".
+
+DAMON users can update DAMON parameters such as sampling and aggregation
+intervals at runtime.  For such changes, monitoring results that depend on
+the intervals should be properly updated for better accuracy.  For
+example, the access frequency counter (nr_accesses) is updated.  The data
+attribute monitoring counter (probe_hits) is not being updated, though.
+Do the updates for new parameters.
+
+Patch 1 removes obsolete comments and test code for a function that this
+series will touch.  Patches 2-5 rename functions that are being used for
+nr_accesses update, to be able to be used for probe_hits without
+confusion.  Patch 6 does the probe_hits update.  Patch 7 update
+damon_probe_hits_mvsum() to cover a corner case from the update for better
+accuracy.
+
+
+This patch (of 7):
+
+The comments on damon_nr_accesses_to_accesses_bp() and its unit test warn
+it can trigger division-by-zero when the aggregation interval is zero.
+Commit 35d4a3cf70a8 ("mm/damon/ops-common: handle extreme intervals in
+damon_hot_score()") modified damon_max_nr_accesses() to always return
+non-zero.  Hence no division-by-zero of the note can happen.  Remove the
+obsolete comment on the function.  The test code was written to test the
+division-by-zero case, which cannot happen anymore.  Having it makes no
+sense.  Entirely remove the test code and its comment.
+
+Link: https://lore.kernel.org/20260708135359.122587-1-sj@kernel.org
+Link: https://lore.kernel.org/20260708135359.122587-2-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c             |  8 +-------
+ mm/damon/tests/core-kunit.h | 23 -----------------------
+ 2 files changed, 1 insertion(+), 30 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 390e00b3685ef..a15005db82899 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -883,13 +883,7 @@ static unsigned int damon_accesses_bp_to_nr_accesses(
+ 	return accesses_bp * damon_max_nr_accesses(attrs) / 10000;
+ }
+ 
+-/*
+- * Convert nr_accesses to access ratio in bp (per 10,000).
+- *
+- * Callers should ensure attrs.aggr_interval is not zero, like
+- * damon_update_monitoring_results() does .  Otherwise, divide-by-zero would
+- * happen.
+- */
++/* Convert nr_accesses to access ratio in bp (per 10,000) */
+ static unsigned int damon_nr_accesses_to_accesses_bp(
+ 		unsigned int nr_accesses, struct damon_attrs *attrs)
+ {
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 0124f83b39b83..278d46632eff4 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -575,28 +575,6 @@ static void damon_test_set_regions(struct kunit *test)
+ 			}, 3);
+ }
+ 
+-static void damon_test_nr_accesses_to_accesses_bp(struct kunit *test)
+-{
+-	struct damon_attrs attrs = {
+-		.sample_interval = 10,
+-		.aggr_interval = ((unsigned long)UINT_MAX + 1) * 10
+-	};
+-
+-	/*
+-	 * In some cases such as 32bit architectures where UINT_MAX is
+-	 * ULONG_MAX, attrs.aggr_interval becomes zero.  Calling
+-	 * damon_nr_accesses_to_accesses_bp() in the case will cause
+-	 * divide-by-zero.  Such case is prohibited in normal execution since
+-	 * the caution is documented on the comment for the function, and
+-	 * damon_update_monitoring_results() does the check.  Skip the test in
+-	 * the case.
+-	 */
+-	if (!attrs.aggr_interval)
+-		kunit_skip(test, "aggr_interval is zero.");
+-
+-	KUNIT_EXPECT_EQ(test, damon_nr_accesses_to_accesses_bp(123, &attrs), 0);
+-}
+-
+ static void damon_test_update_monitoring_result(struct kunit *test)
+ {
+ 	struct damon_attrs old_attrs = {
+@@ -1572,7 +1550,6 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_split_above_half_progresses),
+ 	KUNIT_CASE(damon_test_ops_registration),
+ 	KUNIT_CASE(damon_test_set_regions),
+-	KUNIT_CASE(damon_test_nr_accesses_to_accesses_bp),
+ 	KUNIT_CASE(damon_test_update_monitoring_result),
+ 	KUNIT_CASE(damon_test_set_attrs),
+ 	KUNIT_CASE(damon_test_mvsum),
+-- 
+2.47.3
+

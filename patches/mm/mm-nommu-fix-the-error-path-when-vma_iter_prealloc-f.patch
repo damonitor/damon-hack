@@ -1,0 +1,158 @@
+From: Hajime Tazaki <thehajime@gmail.com>
+Date: Wed, 8 Jul 2026 17:38:29 +0900
+Subject: [PATCH] mm: nommu: fix the error path when vma_iter_prealloc() fails
+
+When vma_iter_prealloc() fails in do_mmap(), it jumps to error_just_free
+as a error path of this function, but there are several possible issues.
+
+1) It jumps to error_just_free without updating ret to -ENOMEM, meaning
+   do_mmap() will return 0 on failure.
+
+2) The error path unconditionally frees the region struct.  Since the
+   region was already added to the global nommu_region_tree via
+   add_nommu_region(), leaving it makes a potential dangling pointer in
+   the tree and may cause a use-after-free on the next tree walk.
+
+3) If do_mmap() finds an existing overlapping shared region, it
+   increments its usage, sets region to this existing pregion, and jumps
+   to share:
+
+	region = pregion;
+	result = start;
+	goto share;
+
+   When vma_iter_prealloc() fails and jumps to error_just_free, the
+   error path unconditionally frees the region:
+
+error:
+	...
+	if (region->vm_file)
+		fput(region->vm_file);
+	kmem_cache_free(vm_region_jar, region);
+
+   This potentially leaves a dangling pointer in nommu_region_tree and
+   causes RB-tree corruption.
+
+4) When establishing a new private mapping, do_mmap_private() allocates
+   physical pages and assigns them to region->vm_start:
+
+	base = alloc_pages_exact(total << PAGE_SHIFT, GFP_KERNEL);
+	...
+	region->vm_start = (unsigned long) base;
+
+   If we later fail at vma_iter_prealloc() and jump to error_just_free,
+   the region struct is freed, but the backing physical memory isn't freed
+   via free_page_series().
+
+5) In the error label of do_mmap(), the vm_area_struct allocated is
+   freed by vm_area_free(vma) but not called after vma_close(), leaving
+   potential memory leak which should be handled by a custom .close
+   handler of vm_ops.
+
+This commit fixes those issues by introducing new jump label,
+error_vma_iter_prealloc, to correctly handle the error case of
+vma_iter_prealloc(), updating ret value (1), and move the region updates
+after the place that the allocation is finished (2).
+
+Additionally, the commit removes the existing goto label, error, and
+consolidates to error_just_free as existing `goto error;` code blocks
+always release nommu_region_sem.
+
+Moreover, it only frees region allocated in this request to avoid
+freeing the shared, existing region shared by other processes (3), and
+free physical memory when do_mmap_private() allocates (4). It also add
+vma_close() before vm_area_free() to fix the potential leak (5).
+
+Those issues are discovered by Sashiko, linked below.
+
+Link: https://sashiko.dev/#/patchset/20260702012830.667205-1-thehajime%40gmail.com
+Link: https://sashiko.dev/#/patchset/c8513ee5aa8444ec9bf6c276043c9f833016a2fa.1783304131.git.thehajime%40gmail.com
+Link: https://sashiko.dev/#/patchset/20260707235137.498738-1-thehajime%40gmail.com
+Link: https://lore.kernel.org/20260708083829.576036-1-thehajime@gmail.com
+Fixes: b5df09226450 ("mm: set up vma iterator for vma_iter_prealloc() calls")
+Signed-off-by: Hajime Tazaki <thehajime@gmail.com>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/nommu.c | 36 ++++++++++++++++++++++++++++--------
+ 1 file changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/mm/nommu.c b/mm/nommu.c
+index 815ebefddfaef..852ec9bd05059 100644
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -1181,7 +1181,6 @@ unsigned long do_mmap(struct file *file,
+ 		ret = do_mmap_private(vma, region, len, capabilities);
+ 	if (ret < 0)
+ 		goto error_just_free;
+-	add_nommu_region(region);
+ 
+ 	/* clear anonymous mappings that don't ask for uninitialized data */
+ 	if (!vma->vm_file &&
+@@ -1199,7 +1198,9 @@ unsigned long do_mmap(struct file *file,
+ 	BUG_ON(!vma->vm_region);
+ 	vma_iter_config(&vmi, vma->vm_start, vma->vm_end);
+ 	if (vma_iter_prealloc(&vmi, vma))
+-		goto error_just_free;
++		goto error_vma_iter_prealloc;
++
++	add_nommu_region(region);
+ 
+ 	setup_vma_to_mm(vma, current->mm);
+ 	current->mm->map_count++;
+@@ -1218,22 +1219,41 @@ unsigned long do_mmap(struct file *file,
+ 	return result;
+ 
+ error_just_free:
++	vma_close(vma);
++	/* if the error was from shared mapping/existing region, don't free the region.
++	 * this has to be before releasing semaphore.
++	 */
++	if (region->vm_usage == 1) {
++		if (region->vm_file)
++			fput(region->vm_file);
++		kmem_cache_free(vm_region_jar, region);
++
++	} else
++		region->vm_usage--;
++
+ 	up_write(&nommu_region_sem);
+-error:
+ 	vma_iter_free(&vmi);
+-	if (region->vm_file)
+-		fput(region->vm_file);
+-	kmem_cache_free(vm_region_jar, region);
++
+ 	if (vma->vm_file)
+ 		fput(vma->vm_file);
+ 	vm_area_free(vma);
+ 	return ret;
+ 
+ sharing_violation:
+-	up_write(&nommu_region_sem);
+ 	pr_warn("Attempt to share mismatched mappings\n");
+ 	ret = -EINVAL;
+-	goto error;
++	goto error_just_free;
++
++error_vma_iter_prealloc:
++	pr_warn("Allocation of vma iterator for process %d failed\n", current->pid);
++	show_mem();
++	ret = -ENOMEM;
++
++	/* in case that the region is allocated via do_mmap_private() */
++	if ((region->vm_usage == 1) && (region->vm_flags & VM_MAPPED_COPY))
++		free_page_series(region->vm_start, region->vm_top);
++
++	goto error_just_free;
+ 
+ error_getting_vma:
+ 	kmem_cache_free(vm_region_jar, region);
+-- 
+2.47.3
+

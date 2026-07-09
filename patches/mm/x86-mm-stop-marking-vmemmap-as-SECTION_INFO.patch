@@ -1,0 +1,116 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Wed, 8 Jul 2026 16:11:00 +0200
+Subject: [PATCH] x86/mm: stop marking vmemmap as SECTION_INFO
+
+We added the whole bootmem registration machinery in commit 04753278769f
+("memory hotplug: register section/node id to free").
+
+The main use case was to remember to which memory section memmap pages
+belonged, so the memmap could be handled accordingly when freeing memory.
+
+However, all that machinery is not required anymore: a memory section can
+only get offlined if *all* pages can get offlined; and it can only get
+unplugged once offline.  If some of these pages are unmovable memmap
+pages: bad luck, doesn't work.  Offlining will fail.
+
+Further, a lot of this machinery was required for pre-vmemmap support.
+Now we only support the vmemmap with memory hotplug.
+
+So the whole machinery is useless today.  Let's start by removing the last
+pieces by first stopping to mark vmemmap pages as SECTION_INFO.  In
+free_vmemmap_pages(), we can now always just free the reserved pages
+directly.
+
+Link: https://lore.kernel.org/20260708-bootmem_info_part2-v1-5-156ce4986598@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/mm/init_64.c | 30 ++++--------------------------
+ 1 file changed, 4 insertions(+), 26 deletions(-)
+
+diff --git a/arch/x86/mm/init_64.c b/arch/x86/mm/init_64.c
+index 320e742b0bb3f..82bb0384b8ab0 100644
+--- a/arch/x86/mm/init_64.c
++++ b/arch/x86/mm/init_64.c
+@@ -1024,19 +1024,12 @@ static void __meminit free_vmemmap_pages(struct page *page, unsigned int order,
+ {
+ 	unsigned long nr_pages = 1u << order;
+ 
+-	if (altmap) {
++	if (altmap)
+ 		vmem_altmap_free(altmap, nr_pages);
+-	} else if (PageReserved(page)) {
+-		if (IS_ENABLED(CONFIG_HAVE_BOOTMEM_INFO_NODE) &&
+-		    bootmem_type(page) == SECTION_INFO) {
+-			while (nr_pages--)
+-				put_page_bootmem(page++);
+-		} else {
+-			free_reserved_pages(page, order);
+-		}
+-	} else {
++	else if (PageReserved(page))
++		free_reserved_pages(page, order);
++	else
+ 		__free_pages(page, order);
+-	}
+ }
+ 
+ static void __meminit free_pte_table(pte_t *pte_start, pmd_t *pmd)
+@@ -1593,12 +1586,8 @@ void register_page_bootmem_memmap(unsigned long section_nr,
+ 	p4d_t *p4d;
+ 	pud_t *pud;
+ 	pmd_t *pmd;
+-	unsigned int nr_pmd_pages;
+-	struct page *page;
+ 
+ 	for (; addr < end; addr = next) {
+-		pte_t *pte = NULL;
+-
+ 		pgd = pgd_offset_k(addr);
+ 		if (pgd_none(*pgd)) {
+ 			next = (addr + PAGE_SIZE) & PAGE_MASK;
+@@ -1630,19 +1619,8 @@ void register_page_bootmem_memmap(unsigned long section_nr,
+ 			next = (addr + PAGE_SIZE) & PAGE_MASK;
+ 			get_page_bootmem(section_nr, pmd_page(*pmd),
+ 					 MIX_SECTION_INFO);
+-
+-			pte = pte_offset_kernel(pmd, addr);
+-			if (pte_none(*pte))
+-				continue;
+-			get_page_bootmem(section_nr, pte_page(*pte),
+-					 SECTION_INFO);
+ 		} else {
+ 			next = pmd_addr_end(addr, end);
+-			nr_pmd_pages = (next - addr) >> PAGE_SHIFT;
+-			page = pmd_page(*pmd);
+-			while (nr_pmd_pages--)
+-				get_page_bootmem(section_nr, page++,
+-						 SECTION_INFO);
+ 		}
+ 	}
+ }
+-- 
+2.47.3
+

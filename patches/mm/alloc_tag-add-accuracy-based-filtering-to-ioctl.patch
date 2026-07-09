@@ -1,0 +1,78 @@
+From: Abhishek Bapat <abhishekbapat@google.com>
+Date: Wed, 8 Jul 2026 18:01:26 +0000
+Subject: [PATCH] alloc_tag: add accuracy based filtering to ioctl
+
+Extend the allocinfo filtering mechanism to allow users to filter tags
+based on their accuracy.
+
+Link: https://lore.kernel.org/396a5e4bc3b2990223ab355f2cd3ceb6aa15499e.1783532853.git.abhishekbapat@google.com
+Signed-off-by: Abhishek Bapat <abhishekbapat@google.com>
+Acked-by: Hao Ge <hao.ge@linux.dev>
+Acked-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Sourav Panda <souravpanda@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/uapi/linux/alloc_tag.h | 4 ++++
+ mm/alloc_tag.c                 | 8 ++++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/include/uapi/linux/alloc_tag.h b/include/uapi/linux/alloc_tag.h
+index 0de5fc180790f..270f693b18220 100644
+--- a/include/uapi/linux/alloc_tag.h
++++ b/include/uapi/linux/alloc_tag.h
+@@ -31,6 +31,8 @@ struct allocinfo_tag {
+ 	char function[ALLOCINFO_STR_SIZE];
+ 	char filename[ALLOCINFO_STR_SIZE];
+ 	__u64 lineno;
++	/* filter criteria only; see allocinfo_counter.accurate for actual accuracy */
++	__u64 inaccurate;
+ };
+ 
+ /* The alignment ensures 32-bit compatible interfaces are not broken */
+@@ -50,6 +52,7 @@ enum {
+ 	ALLOCINFO_FILTER_FUNCTION,
+ 	ALLOCINFO_FILTER_FILENAME,
+ 	ALLOCINFO_FILTER_LINENO,
++	ALLOCINFO_FILTER_INACCURATE,
+ 	ALLOCINFO_FILTER_MIN_SIZE,
+ 	ALLOCINFO_FILTER_MAX_SIZE,
+ 	__ALLOCINFO_FILTER_LAST = ALLOCINFO_FILTER_MAX_SIZE
+@@ -59,6 +62,7 @@ enum {
+ #define ALLOCINFO_FILTER_MASK_FUNCTION		(1 << ALLOCINFO_FILTER_FUNCTION)
+ #define ALLOCINFO_FILTER_MASK_FILENAME		(1 << ALLOCINFO_FILTER_FILENAME)
+ #define ALLOCINFO_FILTER_MASK_LINENO		(1 << ALLOCINFO_FILTER_LINENO)
++#define ALLOCINFO_FILTER_MASK_INACCURATE	(1 << ALLOCINFO_FILTER_INACCURATE)
+ #define ALLOCINFO_FILTER_MASK_MIN_SIZE		(1 << ALLOCINFO_FILTER_MIN_SIZE)
+ #define ALLOCINFO_FILTER_MASK_MAX_SIZE		(1 << ALLOCINFO_FILTER_MAX_SIZE)
+ 
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index 27aa47c4c1cc9..2c819fa9eafad 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -252,6 +252,8 @@ static bool matches_filter(struct codetag *ct, struct allocinfo_filter *filter,
+ 			   struct alloc_tag_counters *counters,
+ 			   bool *fetched_counters)
+ {
++	bool inaccurate;
++
+ 	if (!filter || !filter->mask)
+ 		return true;
+ 
+@@ -277,6 +279,12 @@ static bool matches_filter(struct codetag *ct, struct allocinfo_filter *filter,
+ 	    ct->lineno != filter->fields.lineno)
+ 		return false;
+ 
++	if (filter->mask & ALLOCINFO_FILTER_MASK_INACCURATE) {
++		inaccurate = !!(ct->flags & CODETAG_FLAG_INACCURATE);
++		if (inaccurate != !!(filter->fields.inaccurate))
++			return false;
++	}
++
+ 	if (filter->mask & (ALLOCINFO_FILTER_MASK_MIN_SIZE | ALLOCINFO_FILTER_MASK_MAX_SIZE)) {
+ 		if (!*fetched_counters) {
+ 			*counters = allocinfo_prefetch_counters(ct);
+-- 
+2.47.3
+

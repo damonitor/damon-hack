@@ -1,0 +1,40 @@
+From: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Date: Wed, 8 Jul 2026 13:19:41 +0200
+Subject: [PATCH] mm/shmem: annotate benign data-race in shmem_getattr()
+
+shmem_getattr() reads info->alloced, info->swapped and i_mapping->nrpages
+without info->lock to decide whether shmem_recalc_inode() should be
+called.  shmem_recalc_inode() recomputes these under info->lock, so a
+stale read here only affects whether shmem_recalc_inode() runs.
+
+Annotate data_race() to silence KCSAN.
+
+Link: https://lore.kernel.org/20260708111941.35460-1-jaeyeon.lee.dev@gmail.com
+Signed-off-by: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Reported-by: syzbot+dfb578404df369f6599b@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=dfb578404df369f6599b
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Marco Elver <elver@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 0ea74fa84f250..3fb6dbbfa20b0 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -1287,7 +1287,8 @@ static int shmem_getattr(struct mnt_idmap *idmap,
+ 	struct inode *inode = path->dentry->d_inode;
+ 	struct shmem_inode_info *info = SHMEM_I(inode);
+ 
+-	if (info->alloced - info->swapped != inode->i_mapping->nrpages)
++	/* Fast-path hint; recalc under info->lock corrects any stale read. */
++	if (data_race(info->alloced - info->swapped != inode->i_mapping->nrpages))
+ 		shmem_recalc_inode(inode, 0, 0);
+ 
+ 	if (info->fsflags & FS_APPEND_FL)
+-- 
+2.47.3
+

@@ -1,0 +1,138 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Wed, 8 Jul 2026 12:14:09 +0100
+Subject: [PATCH] mm: handle VM_UFFD_RWP in khugepaged, rmap, and GUP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three mm paths outside the fault handler gate on the uffd PTE bit today:
+khugepaged (skip collapse on ranges carrying markers), rmap (cap unmap
+batching), and GUP (force a fault through gup_can_follow_protnone).
+Extend each to treat VM_UFFD_RWP the same as VM_UFFD_WP; otherwise per-PTE
+RWP state is silently destroyed or bypassed.
+
+khugepaged: try_collapse_pte_mapped_thp() and
+file_backed_vma_is_retractable() already refuse to collapse or retract
+page tables on ranges carrying the uffd PTE bit.  Broaden the VMA
+predicate from userfaultfd_wp() to userfaultfd_protected() so VM_UFFD_RWP
+ranges get the same protection.  hpage_collapse_scan_pmd() needs no change
+— its existing pte_uffd() check already catches an RWP PTE because it
+carries the uffd bit.
+
+rmap: folio_unmap_pte_batch() caps batching at 1 for VM_UFFD_RWP so the
+restore path handles each PTE with its own marker.
+
+GUP: gup_can_follow_protnone() forces a fault on VM_UFFD_RWP VMAs
+regardless of FOLL_HONOR_NUMA_FAULT.  RWP uses protnone as an
+access-tracking marker, not for NUMA hinting, so any GUP — read or write
+— must go through the userfaultfd fault path.
+
+Link: https://lore.kernel.org/20260708111417.173443-9-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau <kas@kernel.org>
+Assisted-by: Claude:claude-opus-4-6
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h | 16 +++++++++++++++-
+ mm/khugepaged.c    | 18 +++++++++++-------
+ mm/rmap.c          |  2 +-
+ 3 files changed, 27 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index be4457269a38a..25e669632d2c3 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -4654,11 +4654,25 @@ static inline int vm_fault_to_errno(vm_fault_t vm_fault, int foll_flags)
+ 
+ /*
+  * Indicates whether GUP can follow a PROT_NONE mapped page, or whether
+- * a (NUMA hinting) fault is required.
++ * a (NUMA hinting or userfaultfd RWP) fault is required.
+  */
+ static inline bool gup_can_follow_protnone(const struct vm_area_struct *vma,
+ 					   unsigned int flags)
+ {
++	/*
++	 * VM_UFFD_RWP uses protnone as an access-tracking marker, not for
++	 * NUMA hinting. GUP must always take a fault so the access is
++	 * delivered to userfaultfd, regardless of FOLL_HONOR_NUMA_FAULT.
++	 *
++	 * Only do so while the VMA is accessible. If it has been made
++	 * inaccessible (e.g. mprotect(PROT_NONE)), fall through to the guard
++	 * below: forcing a fault there would loop, as handle_mm_fault() makes
++	 * no progress on protnone in an inaccessible VMA, and the access is
++	 * denied regardless of RWP anyway.
++	 */
++	if (vma_test_single_mask(vma, VMA_UFFD_RWP) && vma_is_accessible(vma))
++		return false;
++
+ 	/*
+ 	 * If callers don't want to honor NUMA hinting faults, no need to
+ 	 * determine if we would actually have to trigger a NUMA hinting fault.
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 0b5fb0d0a0c1c..55157567dc4cc 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -1893,8 +1893,11 @@ static enum scan_result try_collapse_pte_mapped_thp(struct mm_struct *mm, unsign
+ 	if (!thp_vma_allowable_order(vma, vma->vm_flags, TVA_FORCED_COLLAPSE, PMD_ORDER))
+ 		return SCAN_VMA_CHECK;
+ 
+-	/* Keep pmd pgtable for uffd-wp; see comment in retract_page_tables() */
+-	if (userfaultfd_wp(vma))
++	/*
++	 * Keep pmd pgtable while the uffd bit is in use; see comment in
++	 * retract_page_tables().
++	 */
++	if (userfaultfd_protected(vma))
+ 		return SCAN_PTE_UFFD;
+ 
+ 	folio = filemap_lock_folio(vma->vm_file->f_mapping,
+@@ -2107,13 +2110,14 @@ static bool file_backed_vma_is_retractable(struct vm_area_struct *vma)
+ 		return false;
+ 
+ 	/*
+-	 * When a vma is registered with uffd-wp, we cannot recycle
++	 * When a vma is registered with uffd-wp or RWP, we cannot recycle
+ 	 * the page table because there may be pte markers installed.
+-	 * Other vmas can still have the same file mapped hugely, but
+-	 * skip this one: it will always be mapped in small page size
+-	 * for uffd-wp registered ranges.
++	 * VM_UFFD_RWP ranges similarly rely on per-PTE uffd state
++	 * and cannot be recycled to a shared PMD. Other vmas can still
++	 * have the same file mapped hugely, but skip this one: it will
++	 * always be mapped in small page size for these registrations.
+ 	 */
+-	if (userfaultfd_wp(vma))
++	if (userfaultfd_protected(vma))
+ 		return false;
+ 
+ 	/*
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 50f973b63f1c5..26166a6b8cb9b 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1965,7 +1965,7 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
+ 	if (pte_unused(pte))
+ 		return 1;
+ 
+-	if (userfaultfd_wp(vma))
++	if (userfaultfd_protected(vma))
+ 		return 1;
+ 
+ 	/*
+-- 
+2.47.3
+

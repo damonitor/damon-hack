@@ -1,0 +1,315 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Wed, 8 Jul 2026 12:14:14 +0100
+Subject: [PATCH] userfaultfd: add UFFDIO_SET_MODE for runtime sync/async
+ toggle
+
+Add an ioctl to toggle async mode at runtime without re-registering the
+userfaultfd.  This allows a VMM to switch between sync and async RWP modes
+on-the-fly -- for example, starting in async mode for working set
+scanning, then switching to sync mode to intercept faults during page
+eviction.
+
+UFFDIO_SET_MODE takes an enable/disable bitmask of UFFD_FEATURE_* flags.
+Only UFFD_FEATURE_RWP_ASYNC is toggleable today; the ioctl rejects any
+other bit with -EINVAL.  Enabling RWP_ASYNC also requires RWP to have been
+negotiated at UFFDIO_API time, mirroring the UFFDIO_API invariant.
+
+Fault-path readers of ctx->features run under mmap_read_lock or a per-VMA
+lock; the RMW takes mmap_write_lock and calls vma_start_write() on every
+UFFD-armed VMA, so those readers are fully excluded.
+userfaultfd_show_fdinfo(), however, reads ctx->features without any lock,
+so the RMW is written as a single WRITE_ONCE and fdinfo reads it with
+READ_ONCE.  That keeps the lockless observer from seeing a mid-RMW
+intermediate and removes the audit burden when new toggleable bits are
+added later.
+
+When switching to async, pending sync waiters are woken so they retry and
+auto-resolve under the new mode.
+
+Link: https://lore.kernel.org/20260708111417.173443-14-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Assisted-by: Claude:claude-opus-4-6
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/uapi/linux/userfaultfd.h |  14 +++
+ mm/userfaultfd.c                 | 152 +++++++++++++++++++++++++------
+ 2 files changed, 137 insertions(+), 29 deletions(-)
+
+diff --git a/include/uapi/linux/userfaultfd.h b/include/uapi/linux/userfaultfd.h
+index c10f08f8a618e..cea11aad6b544 100644
+--- a/include/uapi/linux/userfaultfd.h
++++ b/include/uapi/linux/userfaultfd.h
+@@ -49,6 +49,7 @@
+ #define UFFD_API_IOCTLS				\
+ 	((__u64)1 << _UFFDIO_REGISTER |		\
+ 	 (__u64)1 << _UFFDIO_UNREGISTER |	\
++	 (__u64)1 << _UFFDIO_SET_MODE |		\
+ 	 (__u64)1 << _UFFDIO_API)
+ #define UFFD_API_RANGE_IOCTLS			\
+ 	((__u64)1 << _UFFDIO_WAKE |		\
+@@ -85,6 +86,7 @@
+ #define _UFFDIO_CONTINUE		(0x07)
+ #define _UFFDIO_POISON			(0x08)
+ #define _UFFDIO_RWPROTECT		(0x09)
++#define _UFFDIO_SET_MODE		(0x0A)
+ #define _UFFDIO_API			(0x3F)
+ 
+ /* userfaultfd ioctl ids */
+@@ -111,6 +113,8 @@
+ 				      struct uffdio_poison)
+ #define UFFDIO_RWPROTECT	_IOWR(UFFDIO, _UFFDIO_RWPROTECT,	\
+ 				      struct uffdio_rwprotect)
++#define UFFDIO_SET_MODE		_IOW(UFFDIO, _UFFDIO_SET_MODE,	\
++				     struct uffdio_set_mode)
+ 
+ /* read() structure */
+ struct uffd_msg {
+@@ -406,6 +410,16 @@ struct uffdio_move {
+ 	__s64 move;
+ };
+ 
++struct uffdio_set_mode {
++	/*
++	 * Toggle async mode for features at runtime.
++	 * Supported: UFFD_FEATURE_RWP_ASYNC.
++	 * Setting a bit in both enable and disable is invalid.
++	 */
++	__u64 enable;
++	__u64 disable;
++};
++
+ /*
+  * Flags for the userfaultfd(2) system call itself.
+  */
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 3c887aaa10564..73f32299453b2 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -2486,19 +2486,29 @@ struct userfaultfd_wake_range {
+ /* internal indication that UFFD_API ioctl was successfully executed */
+ #define UFFD_FEATURE_INITIALIZED		(1u << 31)
+ 
++/*
++ * UFFDIO_SET_MODE updates ctx->features under mmap_write_lock with
++ * WRITE_ONCE; readers that run outside mmap_read_lock or the per-VMA
++ * lock (poll/read_iter/ioctl, fdinfo) must pair with READ_ONCE.
++ */
++static unsigned int userfaultfd_features(struct userfaultfd_ctx *ctx)
++{
++	return READ_ONCE(ctx->features);
++}
++
+ static bool userfaultfd_is_initialized(struct userfaultfd_ctx *ctx)
+ {
+-	return ctx->features & UFFD_FEATURE_INITIALIZED;
++	return userfaultfd_features(ctx) & UFFD_FEATURE_INITIALIZED;
+ }
+ 
+ static bool userfaultfd_wp_async_ctx(struct userfaultfd_ctx *ctx)
+ {
+-	return ctx && (ctx->features & UFFD_FEATURE_WP_ASYNC);
++	return ctx && (userfaultfd_features(ctx) & UFFD_FEATURE_WP_ASYNC);
+ }
+ 
+ static bool userfaultfd_rwp_async_ctx(struct userfaultfd_ctx *ctx)
+ {
+-	return ctx && (ctx->features & UFFD_FEATURE_RWP_ASYNC);
++	return ctx && (userfaultfd_features(ctx) & UFFD_FEATURE_RWP_ASYNC);
+ }
+ 
+ /*
+@@ -2513,7 +2523,7 @@ bool userfaultfd_wp_unpopulated(struct vm_area_struct *vma)
+ 	if (!ctx)
+ 		return false;
+ 
+-	return ctx->features & UFFD_FEATURE_WP_UNPOPULATED;
++	return userfaultfd_features(ctx) & UFFD_FEATURE_WP_UNPOPULATED;
+ }
+ 
+ static int userfaultfd_wake_function(wait_queue_entry_t *wq, unsigned mode,
+@@ -3750,7 +3760,7 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
+ 	if (uffdio_register.mode & UFFDIO_REGISTER_MODE_RWP) {
+ 		if (!pgtable_supports_uffd() || VM_UFFD_RWP == VM_NONE)
+ 			goto out;
+-		if (!(ctx->features & UFFD_FEATURE_RWP))
++		if (!(userfaultfd_features(ctx) & UFFD_FEATURE_RWP))
+ 			goto out;
+ 		vm_flags |= VM_UFFD_RWP;
+ 	}
+@@ -4310,6 +4320,109 @@ static int userfaultfd_rwprotect(struct userfaultfd_ctx *ctx,
+ 	return ret;
+ }
+ 
++/* Subset of UFFD_API_FEATURES actually supported by this kernel/arch */
++static __u64 uffd_api_available_features(void)
++{
++	__u64 f = UFFD_API_FEATURES;
++
++	if (!IS_ENABLED(CONFIG_HAVE_ARCH_USERFAULTFD_MINOR))
++		f &= ~(UFFD_FEATURE_MINOR_HUGETLBFS | UFFD_FEATURE_MINOR_SHMEM);
++	if (!pgtable_supports_uffd())
++		f &= ~UFFD_FEATURE_PAGEFAULT_FLAG_WP;
++	if (!uffd_supports_wp_marker())
++		f &= ~(UFFD_FEATURE_WP_HUGETLBFS_SHMEM |
++		       UFFD_FEATURE_WP_UNPOPULATED |
++		       UFFD_FEATURE_WP_ASYNC);
++	/*
++	 * RWP needs both PROT_NONE support and the uffd PTE bit. The
++	 * VM_UFFD_RWP check covers compile-time unavailability; the
++	 * pgtable_supports_uffd() check covers runtime (e.g. riscv
++	 * without the SVRSW60T59B extension) where the PTE bit is declared
++	 * but not actually usable.
++	 */
++	if (VM_UFFD_RWP == VM_NONE || !pgtable_supports_uffd())
++		f &= ~(UFFD_FEATURE_RWP | UFFD_FEATURE_RWP_ASYNC);
++	return f;
++}
++
++/* Async features that can be toggled at runtime via UFFDIO_SET_MODE */
++#define UFFD_FEATURE_TOGGLEABLE	UFFD_FEATURE_RWP_ASYNC
++
++static int userfaultfd_set_mode(struct userfaultfd_ctx *ctx,
++				unsigned long arg)
++{
++	struct uffdio_set_mode mode;
++	struct mm_struct *mm = ctx->mm;
++
++	if (copy_from_user(&mode, (void __user *)arg, sizeof(mode)))
++		return -EFAULT;
++
++	/* enable and disable must not overlap */
++	if (mode.enable & mode.disable)
++		return -EINVAL;
++
++	/* only toggleable features that this kernel/arch actually supports */
++	if ((mode.enable | mode.disable) &
++	    ~(uffd_api_available_features() & UFFD_FEATURE_TOGGLEABLE))
++		return -EINVAL;
++
++	/* RWP_ASYNC can only be enabled on contexts that negotiated RWP */
++	if ((mode.enable & UFFD_FEATURE_RWP_ASYNC) &&
++	    !(userfaultfd_features(ctx) & UFFD_FEATURE_RWP))
++		return -EINVAL;
++
++	if (!mmget_not_zero(mm))
++		return -ESRCH;
++
++	/*
++	 * Drain in-flight faults before flipping features. mmap_write_lock()
++	 * blocks new mmap_read_lock() callers, but per-VMA locked faults
++	 * (lock_vma_under_rcu() + FAULT_FLAG_VMA_LOCK) that acquired before
++	 * this point keep running. Calling vma_start_write() on each UFFD-
++	 * armed VMA waits for those readers to drop, so no in-flight fault
++	 * can observe the old features after mmap_write_unlock().
++	 */
++	mmap_write_lock(mm);
++	{
++		struct vm_area_struct *vma;
++		VMA_ITERATOR(vmi, mm, 0);
++
++		for_each_vma(vmi, vma) {
++			if (vma->vm_userfaultfd_ctx.ctx == ctx)
++				vma_start_write(vma);
++		}
++	}
++	/*
++	 * Single WRITE_ONCE so lockless readers (fdinfo, poll/read_iter
++	 * via userfaultfd_is_initialized(), and the userfaultfd_features()
++	 * helper used elsewhere) can't observe a mid-RMW intermediate
++	 * value. Hot-path readers already serialise through the mmap lock
++	 * + vma_start_write() drain above, so their load doesn't need an
++	 * annotation.
++	 */
++	WRITE_ONCE(ctx->features,
++		   (ctx->features | mode.enable) & ~mode.disable);
++	mmap_write_unlock(mm);
++
++	/*
++	 * If switching to async, wake threads blocked in handle_userfault().
++	 * They will retry the fault and auto-resolve under the new mode.
++	 * len=0 means wake all pending faults on this context.
++	 */
++	if (mode.enable & UFFD_FEATURE_RWP_ASYNC) {
++		struct userfaultfd_wake_range range = { .len = 0 };
++
++		spin_lock_irq(&ctx->fault_pending_wqh.lock);
++		__wake_up_locked_key(&ctx->fault_pending_wqh, TASK_NORMAL,
++				     &range);
++		__wake_up(&ctx->fault_wqh, TASK_NORMAL, 1, &range);
++		spin_unlock_irq(&ctx->fault_pending_wqh.lock);
++	}
++
++	mmput(mm);
++	return 0;
++}
++
+ static int userfaultfd_continue(struct userfaultfd_ctx *ctx, unsigned long arg)
+ {
+ 	__s64 ret;
+@@ -4548,29 +4661,7 @@ static int userfaultfd_api(struct userfaultfd_ctx *ctx,
+ 		goto err_out;
+ 
+ 	/* report all available features and ioctls to userland */
+-	uffdio_api.features = UFFD_API_FEATURES;
+-#ifndef CONFIG_HAVE_ARCH_USERFAULTFD_MINOR
+-	uffdio_api.features &=
+-		~(UFFD_FEATURE_MINOR_HUGETLBFS | UFFD_FEATURE_MINOR_SHMEM);
+-#endif
+-	if (!pgtable_supports_uffd())
+-		uffdio_api.features &= ~UFFD_FEATURE_PAGEFAULT_FLAG_WP;
+-
+-	if (!uffd_supports_wp_marker()) {
+-		uffdio_api.features &= ~UFFD_FEATURE_WP_HUGETLBFS_SHMEM;
+-		uffdio_api.features &= ~UFFD_FEATURE_WP_UNPOPULATED;
+-		uffdio_api.features &= ~UFFD_FEATURE_WP_ASYNC;
+-	}
+-	/*
+-	 * RWP needs both PROT_NONE support and the uffd-wp PTE bit. The
+-	 * VM_UFFD_RWP check covers compile-time unavailability; the
+-	 * pgtable_supports_uffd() check covers runtime (e.g. riscv
+-	 * without the SVRSW60T59B extension) where the PTE bit is declared
+-	 * but not actually usable.
+-	 */
+-	if (VM_UFFD_RWP == VM_NONE || !pgtable_supports_uffd())
+-		uffdio_api.features &=
+-			~(UFFD_FEATURE_RWP | UFFD_FEATURE_RWP_ASYNC);
++	uffdio_api.features = uffd_api_available_features();
+ 
+ 	ret = -EINVAL;
+ 	if (features & ~uffdio_api.features)
+@@ -4640,6 +4731,9 @@ static long userfaultfd_ioctl(struct file *file, unsigned cmd,
+ 	case UFFDIO_RWPROTECT:
+ 		ret = userfaultfd_rwprotect(ctx, arg);
+ 		break;
++	case UFFDIO_SET_MODE:
++		ret = userfaultfd_set_mode(ctx, arg);
++		break;
+ 	}
+ 	return ret;
+ }
+@@ -4667,7 +4761,7 @@ static void userfaultfd_show_fdinfo(struct seq_file *m, struct file *f)
+ 	 *	protocols: aa:... bb:...
+ 	 */
+ 	seq_printf(m, "pending:\t%lu\ntotal:\t%lu\nAPI:\t%Lx:%x:%Lx\n",
+-		   pending, total, UFFD_API, ctx->features,
++		   pending, total, UFFD_API, userfaultfd_features(ctx),
+ 		   UFFD_API_IOCTLS|UFFD_API_RANGE_IOCTLS);
+ }
+ #endif
+-- 
+2.47.3
+
