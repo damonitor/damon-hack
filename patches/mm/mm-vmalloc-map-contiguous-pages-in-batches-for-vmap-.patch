@@ -1,0 +1,157 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Thu, 9 Jul 2026 15:38:22 +0800
+Subject: [PATCH] mm/vmalloc: map contiguous pages in batches for vmap() if
+ possible
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In many cases, the pages passed to vmap() may include high-order pages.
+For example, the systemheap often allocates pages in descending order:
+order 8, then 4, then 0.  Currently, vmap() iterates over every page
+individually—even pages inside a high-order block are handled one by
+one.
+
+This patch detects physically contiguous pages (regardless of whether they
+are compound or non-compound) by scanning with num_pages_contiguous(), and
+maps them as a single contiguous block whenever possible.  The mapping
+order is determined by taking the minimum of the contiguous page count and
+the pfn alignment, allowing graceful degradation when pfn alignment is
+less than the contiguous range.
+
+Pages with the same page_shift are coalesced and mapped via
+vmap_pages_range_noflush_walk() to avoid page table rewalk.
+
+As users typically allocate memory in descending orders (e.g.  8 → 4 →
+0), once an order-0 page is encountered, we stop scanning for contiguous
+pages since subsequent pages are likely order-0 as well.
+
+Link: https://lore.kernel.org/20260709073823.6643-6-jiangwen6@xiaomi.com
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Co-developed-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Signed-off-by: Wen Jiang <jiangwen6@xiaomi.com>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Tested-by: Leo Yan <leo.yan@arm.com>
+Cc: Andrew Donnellan <ajd@linux.ibm.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 87 ++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 85 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 665d0c8392f2a..7c46c52bb34c6 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3549,6 +3549,89 @@ void vunmap(const void *addr)
+ }
+ EXPORT_SYMBOL(vunmap);
+ 
++static inline unsigned int vm_shift(pgprot_t prot, unsigned long size)
++{
++	if (arch_vmap_pmd_supported(prot) && size >= PMD_SIZE)
++		return PMD_SHIFT;
++
++	return arch_vmap_pte_supported_shift(size);
++}
++
++static inline int get_vmap_batch_order(struct page **pages,
++		pgprot_t prot, unsigned int max_steps, unsigned int idx)
++{
++	unsigned int nr_contig;
++	int order;
++
++	if (!IS_ENABLED(CONFIG_HAVE_ARCH_HUGE_VMAP))
++		return 0;
++
++	nr_contig = num_pages_contiguous(&pages[idx], max_steps);
++	if (nr_contig < 2)
++		return 0;
++
++	order = ilog2(nr_contig);
++
++	/* Limit order by pfn alignment */
++	order = min_t(int, order, __ffs(page_to_pfn(pages[idx])));
++
++	if (vm_shift(prot, PAGE_SIZE << order) == PAGE_SHIFT)
++		return 0;
++
++	return order;
++}
++
++static int vmap_pages_range_batched(unsigned long addr, unsigned long end,
++		pgprot_t prot, struct page **pages)
++{
++	unsigned int count = (end - addr) >> PAGE_SHIFT;
++	unsigned int prev_shift = 0, idx = 0;
++	unsigned long map_addr = addr, batch_end = addr;
++	int err;
++
++	err = kmsan_vmap_pages_range_noflush(addr, end, prot, pages,
++						PAGE_SHIFT, GFP_KERNEL);
++	if (err)
++		goto out;
++
++	for (unsigned int i = 0; i < count; ) {
++		unsigned int shift = PAGE_SHIFT +
++			get_vmap_batch_order(pages, prot, count - i, i);
++
++		if (!i)
++			prev_shift = shift;
++
++		if (shift != prev_shift) {
++			err = vmap_pages_range_noflush_walk(map_addr, batch_end,
++					prot, pages + idx, prev_shift);
++			if (err)
++				goto out;
++			prev_shift = shift;
++			map_addr = batch_end;
++			idx = i;
++		}
++
++		/*
++		 * Once small pages are encountered, the remaining pages
++		 * are likely small as well.
++		 */
++		if (shift == PAGE_SHIFT)
++			break;
++
++		batch_end += 1UL << shift;
++		i += 1U << (shift - PAGE_SHIFT);
++	}
++
++	/* Remaining */
++	if (map_addr < end)
++		err = vmap_pages_range_noflush_walk(map_addr, end,
++				prot, pages + idx, prev_shift);
++
++out:
++	flush_cache_vmap(addr, end);
++	return err;
++}
++
+ /**
+  * vmap - map an array of pages into virtually contiguous space
+  * @pages: array of page pointers
+@@ -3592,8 +3675,8 @@ void *vmap(struct page **pages, unsigned int count,
+ 		return NULL;
+ 
+ 	addr = (unsigned long)area->addr;
+-	if (vmap_pages_range(addr, addr + size, pgprot_nx(prot),
+-				pages, PAGE_SHIFT) < 0) {
++	if (vmap_pages_range_batched(addr, addr + size, pgprot_nx(prot),
++				pages) < 0) {
+ 		vunmap(area->addr);
+ 		return NULL;
+ 	}
+-- 
+2.47.3
+

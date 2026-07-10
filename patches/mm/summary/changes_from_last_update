@@ -1,92 +1,37 @@
 - baseline: v7.2-rc2-22-g0e35b9b6ec0ff -> v7.2-rc2-22-g0e35b9b6ec0ff (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
+- mm-hotfixes-stable: 0 -> 3 commits
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 3 -> 3 commits (no change)
+    - maintainer, nobody: 0 -> 2 commits
+    - maintainer, no role : 0 -> 1 commits
+  - changed commits
+    - 14afcf67dc2c "MAINTAINERS: s/SeongJae/SJ/"
+      - Authored by a maintainer, reviewed by no role player
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260630013820.143366-1-sj@kernel.org
+    - 1292c0ecb1ca "mm/damon/core: validate ranges in damon_set_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260630035221.146458-1-sj@kernel.org
+    - 954157679ec3 "mm/damon/core: disallow overlapping input ranges for damon_set_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260703165610.92894-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260630041806.151124-1-sj@kernel.org [1]
+- mm-hotfixes-unstable: 3 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 2 commits (no change)
-    - maintainer, no role : 1 -> 1 commits (no change)
+    - maintainer, nobody: 2 -> 0 commits
+    - maintainer, no role : 1 -> 0 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 73 -> 84 commits
-  - series: 11 (71) -> 12 (82)
+- mm-unstable: 84 -> 84 commits (no change)
+  - series: 12 (82) -> 12 (82) (no change)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 15 -> 15 commits (no change)
-    - maintainer, nobody: 51 -> 62 commits
+    - maintainer, nobody: 62 -> 62 commits (no change)
     - maintainer, no role : 6 -> 6 commits (no change)
-  - changed commits
-    - series "mm/damon: refactor damon_{start,stop,commit}() for simple error handling". (11)
-      - ecf383cc7d27 "mm/damon/core: stop ctxs in damon_start() before returning an error (0/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260706140628.87414-2-sj@kernel.org
-      - ffdb30bf60e4 "samples/damon/mtier: do not stop first context for damon_start() failure (1/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-3-sj@kernel.org
-      - 24ae6b6b1b8c "mm/damon/core: make damon_stop() never fail (2/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-4-sj@kernel.org
-      - 200c28c6e34e "mm/damon/sysfs: ignore damon_stop() return value (3/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-5-sj@kernel.org
-      - 52eeb04eb2fd "mm/damon/reclaim: ignore damon_stop() return value (4/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-6-sj@kernel.org
-      - 0b837ce961a9 "mm/damon/lru_sort: ignore damon_stop() return value (5/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-7-sj@kernel.org
-      - 22f1a3b3c365 "mm/damon/core: change damon_stop() return type to void (6/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-8-sj@kernel.org
-      - 82345cca9673 "samples/damon/mtier: stop all contexts with single damon_stop() call (7/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-9-sj@kernel.org
-      - 408706c29f69 "mm/damon/core: wait ctx stop in damon_call() before reruning an error (8/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-10-sj@kernel.org
-      - bfa327fd91e6 "samples/damon/wsse: do not stop ctx for damon_call() failure (9/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-11-sj@kernel.org
-      - c7bf81a726b5 "samples/damon/prcl: do not stop DAMON for damon_call() failure (10/11)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260706140628.87414-12-sj@kernel.org
-- mm-new: 11 -> 7 commits
-  - series: 1 (11) -> 1 (7)
-    - maintainer, nobody: 11 -> 7 commits
-  - new commits
-    - series "mm/damon: update probe hits for runtime parameter commits". (7)
-      - 9e7c9b67f5a0 "mm/damon/core: remove comment and test for nr_to_bp() divide-by-zero (0/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260708135359.122587-2-sj@kernel.org
-      - b426a64ec7b9 "mm/damon/core: s/damon_max_nr_accesses()/damon_nr_samples_per_aggr()/ (1/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-3-sj@kernel.org
-      - 8eac27355bba "mm/damon/core: s/accesses_bp_to_nr_accesses/sample_bp_to_count/ (2/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-4-sj@kernel.org
-      - a0b0e55b802e "mm/damon/core: s/nr_accesses_to_accesses_bp/sample_count_to_bp/ (3/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-5-sj@kernel.org
-      - 2368d4840b5e "mm/damon/core: s/nr_accesses_for_new_attrs/nr_samples_for_new_attrs/ (4/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-6-sj@kernel.org
-      - 1afdcd0d9635 "mm/damon/core: update probe hits for new parameter commit (5/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-7-sj@kernel.org
-      - 7a544405f732 "mm/damon/core: handle unreset probe_hits in probe_hits_mvsum() (6/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260708135359.122587-8-sj@kernel.org
+- mm-new: 7 -> 7 commits (no change)
+  - series: 1 (7) -> 1 (7) (no change)
+    - maintainer, nobody: 7 -> 7 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

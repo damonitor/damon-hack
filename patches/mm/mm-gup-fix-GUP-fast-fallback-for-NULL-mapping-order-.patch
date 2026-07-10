@@ -1,0 +1,64 @@
+From: John Hubbard <jhubbard@nvidia.com>
+Date: Tue, 7 Jul 2026 17:57:45 -0700
+Subject: [PATCH] mm/gup: fix GUP-fast fallback for NULL-mapping order-0 folios
+
+Since commit f002882ca369 ("mm: merge folio_is_secretmem() and
+folio_fast_pin_allowed() into gup_fast_folio_allowed()"),
+gup_fast_folio_allowed() falls back to the slow path for any order-0 folio
+with a NULL mapping when CONFIG_SECRETMEM=y.  This causes a performance
+regression for drivers that allocate pages with alloc_page() and insert
+them into VMAs via vm_insert_page().  These pages legitimately have a NULL
+folio->mapping, but they cannot be secretmem pages.
+
+Secretmem pages are always added to the secretmem inode's page cache via
+filemap_add_folio(), which sets folio->mapping to the inode's i_mapping.
+A folio with a NULL mapping can never be a secretmem folio.  The
+NULL-mapping check was intended to handle truncated file-backed pages (a
+reject_file_backed concern), not secretmem detection.
+
+When only check_secretmem is true (and reject_file_backed is false), a
+NULL mapping is sufficient to prove the folio is not secretmem, so the
+fast path can proceed.
+
+Link: https://lore.kernel.org/20260708005745.164928-1-jhubbard@nvidia.com
+Fixes: f002882ca369 ("mm: merge folio_is_secretmem() and folio_fast_pin_allowed() into gup_fast_folio_allowed()")
+Signed-off-by: John Hubbard <jhubbard@nvidia.com>
+Tested-by: Sourab Gupta <sougupta@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/gup.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/mm/gup.c b/mm/gup.c
+index 0692119b79043..99902c15703b0 100644
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -2784,12 +2784,17 @@ static bool gup_fast_folio_allowed(struct folio *folio, unsigned int flags)
+ 	mapping = READ_ONCE(folio->mapping);
+ 
+ 	/*
+-	 * The mapping may have been truncated, in any case we cannot determine
+-	 * if this mapping is safe - fall back to slow path to determine how to
+-	 * proceed.
++	 * If the mapping is NULL (truncated, or never set), we cannot
++	 * determine whether the folio is file-backed, so a long-term writable
++	 * pin must fall back to the slow path.
++	 *
++	 * Otherwise, a NULL mapping proves this is not a secretmem folio
++	 * (secretmem folios always have a valid mapping to the secretmem
++	 * inode's address_space), so in that case, we can continue with the
++	 * fast path.
+ 	 */
+ 	if (!mapping)
+-		return false;
++		return !reject_file_backed;
+ 
+ 	/* Anonymous folios pose no problem. */
+ 	mapping_flags = (unsigned long)mapping & FOLIO_MAPPING_FLAGS;
+-- 
+2.47.3
+
