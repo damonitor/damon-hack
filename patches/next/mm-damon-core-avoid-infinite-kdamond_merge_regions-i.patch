@@ -1,0 +1,49 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 9 Jul 2026 17:38:52 -0700
+Subject: [PATCH] mm/damon/core: avoid infinite kdamond_merge_regions()
+ internal loop
+
+Due to online parameters commit like event, the number of DAMON regions
+could be higher than the user-set upper limit.  kdamond_merge_regions()
+repeats merge regions until the number meets the limit, while doubling
+the merge threshold up to the theoretical maximum threshold.
+
+If max_thres is larger than UINT_MAX / 2, threshold in the loop of will
+overflow and bypass 'threshold / 2 < = max_thres' loop break condition.
+As a result, the loop can infinitely continued.
+
+Prevent the overflow case by testing threshold against 'max_thres / 2'.
+
+This issue is unlikely to occur in real world, since having the
+max_thres higher than UINT_MAX / 2 require unrealistic intervals setup.
+Also, in normal cases, regions may merged enough to break the loop by
+meeting the number of regions limit.  Nonetheless, the consequence is
+not good once happened.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org
+
+Fixes: 310d6c15e910 ("mm/damon/core: merge regions aggressively when max_nr_regions is unmet")
+Cc: <stable@vger.kernel.org> # 6.10.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 77cd1d4f96b3b..0397e538a6cd1 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3724,7 +3724,7 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 		}
+ 		threshold = max(1, threshold * 2);
+ 	} while (nr_regions > c->attrs.max_nr_regions &&
+-			threshold / 2 < max_thres);
++			threshold <= max_thres / 2);
+ }
+ 
+ #ifdef CONFIG_DAMON_DEBUG_SANITY
+-- 
+2.47.3
+
