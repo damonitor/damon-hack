@@ -1,0 +1,68 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Sat, 4 Jul 2026 18:10:53 -0700
+Subject: [RFC PATCH v1.3 01/19] mm/damon/core: introduce damon_probe->weight
+Message-Id: <20260710002349.111414-2-sj@kernel.org>
+
+Add a new field, weight to damon_probe struct.  The field is used to
+specify the degree of the API caller's interest to the data attribute
+of the probe.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h | 2 ++
+ mm/damon/core.c       | 3 +++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 63f596957c1f1..d8251c83e6e55 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -760,10 +760,12 @@ struct damon_filter {
+ /**
+  * struct damon_probe - Data region attribute probe.
+  *
++ * @weight:	Relative priority of the attribute for this probe.
+  * @filters:	Filters for assessing if a given region is for this probe.
+  * @list:	Siblings list.
+  */
+ struct damon_probe {
++	unsigned int weight;
+ 	struct list_head filters;
+ 	struct list_head list;
+ };
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 11473aa1f70f4..327398fa4ee56 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -166,6 +166,7 @@ struct damon_probe *damon_new_probe(void)
+ 	p = kmalloc_obj(*p);
+ 	if (!p)
+ 		return NULL;
++	p->weight = 0;
+ 	INIT_LIST_HEAD(&p->filters);
+ 	INIT_LIST_HEAD(&p->list);
+ 	return p;
+@@ -1658,6 +1659,7 @@ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ 	damon_for_each_probe_safe(dst_probe, next, dst) {
+ 		src_probe = damon_nth_probe(i++, src);
+ 		if (src_probe) {
++			dst_probe->weight = src_probe->weight;
+ 			err = damon_commit_filters(dst_probe, src_probe);
+ 			if (err)
+ 				return err;
+@@ -1674,6 +1676,7 @@ static int damon_commit_probes(struct damon_ctx *dst, struct damon_ctx *src)
+ 		if (!new_probe)
+ 			return -ENOMEM;
+ 		damon_add_probe(dst, new_probe);
++		new_probe->weight = src_probe->weight;
+ 		err = damon_commit_filters(new_probe, src_probe);
+ 		if (err)
+ 			return err;
+-- 
+2.47.3
