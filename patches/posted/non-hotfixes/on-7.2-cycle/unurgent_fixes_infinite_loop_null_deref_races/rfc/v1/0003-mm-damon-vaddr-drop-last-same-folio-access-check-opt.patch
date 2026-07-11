@@ -1,0 +1,120 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 5.15.x
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Fernand Sieber <sieberf@amazon.com>
+Cc: Leonard Foerster <foersleo@amazon.de>
+Cc: SJ Park <sj@kernel.org>
+Cc: SeongJae Park <sjpark@amazon.de>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 25 Jun 2026 17:46:19 -0700
+Subject: [RFC PATCH 3/5] mm/damon/vaddr: drop last same folio access check
+         optimization
+Message-Id: <20260711180409.82093-4-sj@kernel.org>
+
+The optimization can race when multiple kdamonds are running.
+Meanwhile, the impact of the optimization is quite doubtful.  Just
+remove it.
+
+The user impact of the issue should be quite trivial.  After all, the
+race can happen only when the user intentionally setup DAMON in the way.
+Even if it happens, it would be rare and only degrade the best-effort
+monitoring results.  No critical consequences like kernel panic or
+memory corruption happen.
+
+The race possibility was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org
+
+Fixes: 3f49584b262c ("mm/damon: implement primitives for the virtual memory address spaces")
+Cc: <stable@vger.kernel.org> # 5.15.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/vaddr.c | 26 ++++----------------------
+ 1 file changed, 4 insertions(+), 22 deletions(-)
+
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index d10b8042adb5b..16fe210d2042a 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -383,8 +383,6 @@ static void damon_va_prepare_access_checks(struct damon_ctx *ctx)
+ }
+ 
+ struct damon_young_walk_private {
+-	/* size of the folio for the access checked virtual memory address */
+-	unsigned long *folio_sz;
+ 	bool young;
+ };
+ 
+@@ -411,7 +409,6 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 					mmu_notifier_test_young(walk->mm,
+ 						addr))
+ 			priv->young = true;
+-		*priv->folio_sz = HPAGE_PMD_SIZE;
+ huge_out:
+ 		spin_unlock(ptl);
+ 		return 0;
+@@ -430,7 +427,6 @@ static int damon_young_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	if (pte_young(ptent) || !folio_test_idle(folio) ||
+ 			mmu_notifier_test_young(walk->mm, addr))
+ 		priv->young = true;
+-	*priv->folio_sz = folio_size(folio);
+ out:
+ 	pte_unmap_unlock(pte, ptl);
+ 	return 0;
+@@ -458,7 +454,6 @@ static int damon_young_hugetlb_entry(pte_t *pte, unsigned long hmask,
+ 	if (pte_young(entry) || !folio_test_idle(folio) ||
+ 	    mmu_notifier_test_young(walk->mm, addr))
+ 		priv->young = true;
+-	*priv->folio_sz = huge_page_size(h);
+ 
+ 	folio_put(folio);
+ 
+@@ -470,11 +465,9 @@ static int damon_young_hugetlb_entry(pte_t *pte, unsigned long hmask,
+ #define damon_young_hugetlb_entry NULL
+ #endif /* CONFIG_HUGETLB_PAGE */
+ 
+-static bool damon_va_young(struct mm_struct *mm, unsigned long addr,
+-		unsigned long *folio_sz)
++static bool damon_va_young(struct mm_struct *mm, unsigned long addr)
+ {
+ 	struct damon_young_walk_private arg = {
+-		.folio_sz = folio_sz,
+ 		.young = false,
+ 	};
+ 
+@@ -496,26 +489,15 @@ static bool damon_va_young(struct mm_struct *mm, unsigned long addr,
+ static void __damon_va_check_access(struct mm_struct *mm,
+ 				struct damon_region *r, bool same_target)
+ {
+-	static unsigned long last_addr;
+-	static unsigned long last_folio_sz = PAGE_SIZE;
+-	static bool last_accessed;
++	bool accessed;
+ 
+ 	if (!mm) {
+ 		damon_update_region_access_rate(r, false);
+ 		return;
+ 	}
+ 
+-	/* If the region is in the last checked page, reuse the result */
+-	if (same_target && (ALIGN_DOWN(last_addr, last_folio_sz) ==
+-				ALIGN_DOWN(r->sampling_addr, last_folio_sz))) {
+-		damon_update_region_access_rate(r, last_accessed);
+-		return;
+-	}
+-
+-	last_accessed = damon_va_young(mm, r->sampling_addr, &last_folio_sz);
+-	damon_update_region_access_rate(r, last_accessed);
+-
+-	last_addr = r->sampling_addr;
++	accessed = damon_va_young(mm, r->sampling_addr);
++	damon_update_region_access_rate(r, accessed);
+ }
+ 
+ static unsigned int damon_va_check_accesses(struct damon_ctx *ctx)
+-- 
+2.47.3
