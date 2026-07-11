@@ -1,0 +1,151 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:07 +0100
+Subject: [PATCH] mm/vma: update vma_shrink() to not pass start, pgoff
+ parameters
+
+vma_shrink() is only used by relocate_vma_down() to shrink the tail of a
+VMA. Therefore neither the start nor the pgoff parameters make any sense.
+
+It seemed we were passing the pgoff parameter solely to satisfy
+vma_set_range()'s requirement for pgoff being specified.
+
+Since vma_set_range() is now isolated to vma.c, we can simply introduce
+__vma_set_range() which sets only vma->vm_[start, end], and invoke this
+instead, removing start and pgoff from vma_shrink() altogether.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-26-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c                        | 31 +++++++++++++++++--------------
+ mm/vma.h                        |  3 +--
+ mm/vma_exec.c                   |  2 +-
+ tools/testing/vma/tests/merge.c |  2 +-
+ 4 files changed, 20 insertions(+), 18 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index cc0e449ad0be2..a474920a25b3f 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -70,11 +70,17 @@ struct mmap_state {
+ 		.state = VMA_MERGE_START,				\
+ 	}
+ 
+-static void vma_set_range(struct vm_area_struct *vma, unsigned long start,
+-			  unsigned long end, pgoff_t pgoff)
++static void __vma_set_range(struct vm_area_struct *vma, unsigned long start,
++			    unsigned long end)
+ {
+ 	vma->vm_start = start;
+ 	vma->vm_end = end;
++}
++
++static void vma_set_range(struct vm_area_struct *vma, unsigned long start,
++			  unsigned long end, pgoff_t pgoff)
++{
++	__vma_set_range(vma, start, end);
+ 	vma->vm_pgoff = pgoff;
+ }
+ 
+@@ -1279,27 +1285,24 @@ int vma_expand(struct vma_merge_struct *vmg)
+ 	return -ENOMEM;
+ }
+ 
+-/*
+- * vma_shrink() - Reduce an existing VMAs memory area
++/**
++ * vma_shrink() - Shrink the end of a VMA
+  * @vmi: The vma iterator
+  * @vma: The VMA to modify
+- * @start: The new start
+  * @end: The new end
+  *
++ * Note that the caller may only shrink the end of the VMA.
++ *
+  * Returns: 0 on success, -ENOMEM otherwise
+  */
+ int vma_shrink(struct vma_iterator *vmi, struct vm_area_struct *vma,
+-	       unsigned long start, unsigned long end, pgoff_t pgoff)
++	       unsigned long end)
+ {
+ 	struct vma_prepare vp;
+ 
+-	WARN_ON((vma->vm_start != start) && (vma->vm_end != end));
+-
+-	if (vma->vm_start < start)
+-		vma_iter_config(vmi, vma->vm_start, start);
+-	else
+-		vma_iter_config(vmi, end, vma->vm_end);
++	VM_WARN_ON_ONCE(end > vma->vm_end);
+ 
++	vma_iter_config(vmi, end, vma->vm_end);
+ 	if (vma_iter_prealloc(vmi, NULL))
+ 		return -ENOMEM;
+ 
+@@ -1307,10 +1310,10 @@ int vma_shrink(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 
+ 	init_vma_prep(&vp, vma);
+ 	vma_prepare(&vp);
+-	vma_adjust_trans_huge(vma, start, end, NULL);
++	vma_adjust_trans_huge(vma, vma->vm_start, end, NULL);
+ 
+ 	vma_iter_clear(vmi);
+-	vma_set_range(vma, start, end, pgoff);
++	__vma_set_range(vma, vma->vm_start, end);
+ 	vma_complete(&vp, vmi, vma->vm_mm);
+ 	validate_mm(vma->vm_mm);
+ 	return 0;
+diff --git a/mm/vma.h b/mm/vma.h
+index 14f026bf3be46..40effaa3ebe44 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -297,8 +297,7 @@ void validate_mm(struct mm_struct *mm);
+ 
+ __must_check int vma_expand(struct vma_merge_struct *vmg);
+ __must_check int vma_shrink(struct vma_iterator *vmi,
+-		struct vm_area_struct *vma,
+-		unsigned long start, unsigned long end, pgoff_t pgoff);
++		struct vm_area_struct *vma, unsigned long end);
+ 
+ static inline int vma_iter_store_gfp(struct vma_iterator *vmi,
+ 			struct vm_area_struct *vma, gfp_t gfp)
+diff --git a/mm/vma_exec.c b/mm/vma_exec.c
+index e3644a3042e25..13a05e041195b 100644
+--- a/mm/vma_exec.c
++++ b/mm/vma_exec.c
+@@ -89,7 +89,7 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
+ 
+ 	vma_prev(&vmi);
+ 	/* Shrink the vma to just the new range */
+-	return vma_shrink(&vmi, vma, new_start, new_end, vma_start_pgoff(vma));
++	return vma_shrink(&vmi, vma, new_end);
+ }
+ 
+ /*
+diff --git a/tools/testing/vma/tests/merge.c b/tools/testing/vma/tests/merge.c
+index f8666a7557492..e357accc84990 100644
+--- a/tools/testing/vma/tests/merge.c
++++ b/tools/testing/vma/tests/merge.c
+@@ -227,7 +227,7 @@ static bool test_simple_shrink(void)
+ 
+ 	ASSERT_FALSE(attach_vma(&mm, vma));
+ 
+-	ASSERT_FALSE(vma_shrink(&vmi, vma, 0, 0x1000, 0));
++	ASSERT_FALSE(vma_shrink(&vmi, vma, 0x1000));
+ 
+ 	ASSERT_EQ(vma->vm_start, 0);
+ 	ASSERT_EQ(vma->vm_end, 0x1000);
+-- 
+2.47.3
+

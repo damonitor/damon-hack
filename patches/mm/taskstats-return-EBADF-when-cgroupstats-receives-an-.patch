@@ -1,0 +1,65 @@
+From: Yiyang Chen <cyyzero16@gmail.com>
+Date: Sat, 11 Jul 2026 04:07:36 +0800
+Subject: [PATCH] taskstats: return -EBADF when cgroupstats receives an invalid
+ fd
+
+Patch series "taskstats: fix cgroupstats invalid fd handling and add
+selftests".
+
+This series fixes an issue where cgroupstats mishandles invalid file
+descriptors, and introduces a functional kselftest to prevent regressions.
+
+When an invalid file descriptor is passed via CGROUPSTATS_CMD_ATTR_FD,
+cgroupstats_user_cmd() returns 0 instead of an error code. This leads to
+two broken behaviors depending on netlink flags:
+- Callers without NLM_F_ACK block indefinitely on recv().
+- Callers with NLM_F_ACK receive a misleading success ACK (errno == 0)
+  but no actual statistics payload.
+
+The first patch addresses this by returning -EBADF when the fd cannot be
+resolved.  The second patch adds a comprehensive kselftest covering both
+the valid cgroup v1 query and the invalid fd paths (with and without
+NLM_F_ACK) to ensure the fixes work as intended.
+
+
+This patch (of 2):
+
+cgroupstats_user_cmd() returns 0 without sending a reply or a netlink
+error when the fd passed via CGROUPSTATS_CMD_ATTR_FD does not resolve to
+an open file in the caller's table.  As a result:
+
+- clients that did not set NLM_F_ACK block on recv() indefinitely
+  waiting for a CGROUPSTATS_CMD_NEW message that is never emitted;
+
+- clients that set NLM_F_ACK receive a misleading "success" ACK (errno
+  == 0) with no statistics payload.
+
+Return -EBADF instead so the netlink layer propagates the error to
+userspace as expected.
+
+Link: https://lore.kernel.org/cover.1783713230.git.cyyzero16@gmail.com
+Link: https://lore.kernel.org/b4fd9e288e4a48efebaf41b4ffcdb204b06675c4.1783713230.git.cyyzero16@gmail.com
+Signed-off-by: Yiyang Chen <cyyzero16@gmail.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Dr. Thomas Orgis <thomas.orgis@uni-hamburg.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/taskstats.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/taskstats.c b/kernel/taskstats.c
+index 2cd0172d05160..8d115670a3ca6 100644
+--- a/kernel/taskstats.c
++++ b/kernel/taskstats.c
+@@ -423,7 +423,7 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
+ 	fd = nla_get_u32(info->attrs[CGROUPSTATS_CMD_ATTR_FD]);
+ 	CLASS(fd, f)(fd);
+ 	if (fd_empty(f))
+-		return 0;
++		return -EBADF;
+ 
+ 	size = nla_total_size(sizeof(struct cgroupstats));
+ 
+-- 
+2.47.3
+

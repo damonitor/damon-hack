@@ -1,0 +1,89 @@
+From: SJ Park <sj@kernel.org>
+Date: Fri, 10 Jul 2026 06:46:33 -0700
+Subject: [PATCH] mm/damon/core: ask apply_probe() to return max probe hits
+ weighted sum
+
+check_accesses() DAMON ops callback returns the maximum nr_accesses of
+regions.  DAMON core uses it to calculate a reasonable region merge
+threshold.  The core will need to adjust regions for not nr_accesses but
+probe hits weighted sum in future.  For that, the core needs to know the
+maximum weighted sum of the regions.  Update the protocol for the task.
+
+Link: https://lore.kernel.org/20260710134651.18084-5-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h | 5 ++++-
+ mm/damon/core.c       | 2 +-
+ mm/damon/paddr.c      | 4 +++-
+ 3 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index aee28b05acc6c..e7acd8e610a64 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -649,6 +649,8 @@ enum damon_ops_id {
+  * @apply_probes should apply the data attribute probes to each region and
+  * accordingly update the probe hits counter of the region.  It should also
+  * set &damon_region->sampling_addr of each region if ``set_samples`` is true.
++ * It should also return maximum probe hits weighted sum of regions if
++ * ``return_max_wsum`` is true.
+  * @get_scheme_score should return the priority score of a region for a scheme
+  * as an integer in [0, &DAMOS_MAX_SCORE].
+  * @apply_scheme is called from @kdamond when a region for user provided
+@@ -666,7 +668,8 @@ struct damon_operations {
+ 	void (*update)(struct damon_ctx *context);
+ 	void (*prepare_access_checks)(struct damon_ctx *context);
+ 	unsigned int (*check_accesses)(struct damon_ctx *context);
+-	void (*apply_probes)(struct damon_ctx *context, bool set_samples);
++	unsigned int (*apply_probes)(struct damon_ctx *context,
++			bool set_samples, bool return_max_wsum);
+ 	int (*get_scheme_score)(struct damon_ctx *context,
+ 			struct damon_region *r, struct damos *scheme);
+ 	unsigned long (*apply_scheme)(struct damon_ctx *context,
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9fbea6204520b..9f6cdd810bd8a 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3692,7 +3692,7 @@ static int kdamond_fn(void *data)
+ 		if (ctx->ops.check_accesses)
+ 			max_nr_accesses = ctx->ops.check_accesses(ctx);
+ 		if (ctx->ops.apply_probes)
+-			ctx->ops.apply_probes(ctx, false);
++			ctx->ops.apply_probes(ctx, false, false);
+ 
+ 		if (time_after_eq(ctx->passed_sample_intervals,
+ 					next_aggregation_sis)) {
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index ff4fcca949660..3eba3564a31fc 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -166,7 +166,8 @@ static bool damon_pa_filter_pass(phys_addr_t pa, struct folio *folio,
+ 	return pass;
+ }
+ 
+-static void damon_pa_apply_probes(struct damon_ctx *ctx, bool set_samples)
++static unsigned int damon_pa_apply_probes(struct damon_ctx *ctx,
++		bool set_samples, bool return_max_wsum)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+@@ -194,6 +195,7 @@ static void damon_pa_apply_probes(struct damon_ctx *ctx, bool set_samples)
+ 				folio_put(folio);
+ 		}
+ 	}
++	return 0;
+ }
+ 
+ /*
+-- 
+2.47.3
+

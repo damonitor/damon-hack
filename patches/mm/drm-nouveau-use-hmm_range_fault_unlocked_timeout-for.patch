@@ -1,0 +1,79 @@
+From: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Date: Fri, 10 Jul 2026 14:26:58 -0700
+Subject: [PATCH] drm/nouveau: use hmm_range_fault_unlocked_timeout() for SVM
+ faults
+
+nouveau_range_fault() takes mmap_read_lock() only to call
+hmm_range_fault().  It also keeps a single HMM_RANGE_DEFAULT_TIMEOUT
+deadline across both HMM -EBUSY retries and post-fault
+mmu_interval_read_retry() retries.
+
+Use hmm_range_fault_unlocked_timeout() instead.  The HMM helper now owns
+the mmap lock and refreshes range->notifier_seq for its internal retries.
+Nouveau keeps its existing absolute deadline in the outer loop and passes
+the remaining jiffies to the helper for each fault attempt, so retries
+caused by mmu_interval_read_retry() do not reset the overall retry budget.
+
+Nouveau still validates the interval notifier sequence while holding
+svmm->mutex before programming the GPU mapping.
+
+Link: https://lore.kernel.org/178371881847.900500.8789369230260725500.stgit@skinsburskii
+Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Danilo Krummrich <dakr@kernel.org>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kees Cook <kees@kernel.org>
+Cc: K. Y. Srinivasan <kys@microsoft.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lizhi Hou <lizhi.hou@amd.com>
+Cc: Long Li <longli@microsoft.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Lyude <lyude@redhat.com>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oded Gabbay <ogabbay@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Zimemrmann <tzimmermann@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Liu <wei.liu@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/gpu/drm/nouveau/nouveau_svm.c | 12 ++++--------
+ 1 file changed, 4 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_svm.c b/drivers/gpu/drm/nouveau/nouveau_svm.c
+index dcc92131488ea..4cfb6eb7c7715 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_svm.c
++++ b/drivers/gpu/drm/nouveau/nouveau_svm.c
+@@ -683,15 +683,11 @@ static int nouveau_range_fault(struct nouveau_svmm *svmm,
+ 			goto out;
+ 		}
+ 
+-		range.notifier_seq = mmu_interval_read_begin(range.notifier);
+-		mmap_read_lock(mm);
+-		ret = hmm_range_fault(&range);
+-		mmap_read_unlock(mm);
+-		if (ret) {
+-			if (ret == -EBUSY)
+-				continue;
++		ret = hmm_range_fault_unlocked_timeout(&range,
++						       max(timeout - jiffies,
++							   1L));
++		if (ret)
+ 			goto out;
+-		}
+ 
+ 		mutex_lock(&svmm->mutex);
+ 		if (mmu_interval_read_retry(range.notifier,
+-- 
+2.47.3
+

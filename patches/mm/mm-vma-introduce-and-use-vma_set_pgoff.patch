@@ -1,0 +1,210 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:10 +0100
+Subject: [PATCH] mm/vma: introduce and use vma_set_pgoff()
+
+In order to lay the foundation for work that permits us to track the
+virtual page offset of MAP_PRIVATE file-backed mappings, we abstract the
+assignment of vma->vm_pgoff to vma_set_pgoff().
+
+We additionally add a lock check here using the newly introduced
+vma_assert_can_modify(). This asserts the VMA write lock if the VMA is
+attached.
+
+We also assert that, if this is an anonymous VMA and unfaulted, that its
+(virtual) page offset is equal to the page offset of the VMA's address.
+
+We must be careful about MAP_PRIVATE-/dev/zero which violates fundamental
+assumptions about anonymous memory, so we check for !vma->vm_file after
+using vma_is_anonymous() which these mappings satisfy.
+
+Additionally, we only perform the assert if CONFIG_MMU is defined, as nommu
+does not set vma->vm_pgoff = addr >> PAGE_SHIFT. This isn't really relevant
+to rmap as it has no anon rmap (nor needs it), but we must avoid it
+asserting falsely.
+
+All of this logic is kept in assert_sane_pgoff() to keep things clear.
+
+In order to maintain correctness given this assert, we also update
+__install_special_mapping() to invoke vma_set_range() after it's set
+vma->vm_ops (which determine whether the VMA is anonymous or not).
+
+We do not use vma_set_pgoff() in vm_area_init_from(), as at the point of
+forking, we don't necessarily have correct locking state.
+
+Updating vma_set_range() covers most cases, but in addition to this we also
+update insert_vm_struct(), compat_set_vma_from_desc() and nommu callers.
+
+We also update vma_add_pgoff() and vma_sub_pgoff() to use vma_set_pgoff().
+
+While we're here, we drop a BUG_ON() and update insert_vm_struct()'s
+comment to reflect the fact anonymous mappings can be added here.
+
+Finally, we update the CONFIG_MMU, CONFIG_PER_VMA_LOCK defines in the VMA
+userland tests so IS_ENABLED() will work correctly with them.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-29-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/nommu.c                       |  2 +-
+ mm/vma.c                         | 14 ++++++-------
+ mm/vma.h                         | 35 +++++++++++++++++++++++++++++---
+ tools/testing/vma/vma_internal.h |  4 ++--
+ 4 files changed, 42 insertions(+), 13 deletions(-)
+
+diff --git a/mm/nommu.c b/mm/nommu.c
+index 2a0136f6081d2..21cbe8b093fc7 100644
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -1062,7 +1062,7 @@ unsigned long do_mmap(struct file *file,
+ 	region->vm_pgoff = pgoff;
+ 
+ 	vm_flags_init(vma, vm_flags);
+-	vma->vm_pgoff = pgoff;
++	vma_set_pgoff(vma, pgoff);
+ 
+ 	if (file) {
+ 		region->vm_file = get_file(file);
+diff --git a/mm/vma.c b/mm/vma.c
+index ec64e179d2f9d..7c75dd78edefa 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -81,7 +81,7 @@ static void vma_set_range(struct vm_area_struct *vma, unsigned long start,
+ 			  unsigned long end, pgoff_t pgoff)
+ {
+ 	__vma_set_range(vma, start, end);
+-	vma->vm_pgoff = pgoff;
++	vma_set_pgoff(vma, pgoff);
+ }
+ 
+ /* Was this VMA ever forked from a parent, i.e. maybe contains CoW mappings? */
+@@ -3347,9 +3347,9 @@ int __vm_munmap(unsigned long start, size_t len, bool unlock)
+ 	return ret;
+ }
+ 
+-/* Insert vm structure into process list sorted by address
+- * and into the inode's i_mmap tree.  If vm_file is non-NULL
+- * then i_mmap_rwsem is taken here.
++/*
++ * Insert vm structure into process list sorted by address
++ * and into the inode's i_mmap tree if file-backed.
+  */
+ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
+ {
+@@ -3375,8 +3375,8 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
+ 	 * Similarly in do_mmap and in do_brk_flags.
+ 	 */
+ 	if (vma_is_anonymous(vma)) {
+-		BUG_ON(vma->anon_vma);
+-		vma->vm_pgoff = vma->vm_start >> PAGE_SHIFT;
++		WARN_ON_ONCE(vma->anon_vma);
++		vma_set_pgoff(vma, vma->vm_start >> PAGE_SHIFT);
+ 	}
+ 
+ 	if (vma_link(mm, vma)) {
+@@ -3422,7 +3422,6 @@ struct vm_area_struct *__install_special_mapping(
+ 	if (unlikely(vma == NULL))
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	vma_set_range(vma, addr, addr + len, 0);
+ 	vm_flags |= mm->def_flags | VM_DONTEXPAND;
+ 	if (pgtable_supports_soft_dirty())
+ 		vm_flags |= VM_SOFTDIRTY;
+@@ -3431,6 +3430,7 @@ struct vm_area_struct *__install_special_mapping(
+ 
+ 	vma->vm_ops = ops;
+ 	vma->vm_private_data = priv;
++	vma_set_range(vma, addr, addr + len, 0);
+ 
+ 	ret = insert_vm_struct(mm, vma);
+ 	if (ret)
+diff --git a/mm/vma.h b/mm/vma.h
+index 40effaa3ebe44..58f48609ce22b 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -247,16 +247,45 @@ static inline pgoff_t vmg_end_pgoff(const struct vma_merge_struct *vmg)
+ 	return vmg_start_pgoff(vmg) + vmg_pages(vmg);
+ }
+ 
++static inline void assert_sane_pgoff(struct vm_area_struct *vma, pgoff_t pgoff)
++{
++	/* nommu doesn't set a virtual pgoff for anon VMAs. */
++	if (!IS_ENABLED(CONFIG_MMU))
++		return;
++	/*
++	 * File-backed VMAs have arbitrary page offset (either page offset into
++	 * file or for pfnmap the PFN of the start of the range or drivers may
++	 * set arbitrary page offset).
++	 */
++	if (!vma_is_anonymous(vma))
++		return;
++	/* MAP_PRIVATE-/dev/zero is anon, non-NULL vm_file, but has file pgoff. */
++	if (vma->vm_file)
++		return;
++	/* If faulted in, could have been remapped. */
++	if (vma->anon_vma)
++		return;
++	/* OK this is really an anon VMA - expect virtual page offset. */
++	VM_WARN_ON_ONCE(pgoff != vma->vm_start >> PAGE_SHIFT);
++}
++
++static inline void vma_set_pgoff(struct vm_area_struct *vma, pgoff_t pgoff)
++{
++	vma_assert_can_modify(vma);
++	assert_sane_pgoff(vma, pgoff);
++	vma->vm_pgoff = pgoff;
++}
++
+ static inline void vma_add_pgoff(struct vm_area_struct *vma, pgoff_t delta)
+ {
+ 	vma_assert_can_modify(vma);
+-	vma->vm_pgoff += delta;
++	vma_set_pgoff(vma, vma_start_pgoff(vma) + delta);
+ }
+ 
+ static inline void vma_sub_pgoff(struct vm_area_struct *vma, pgoff_t delta)
+ {
+ 	vma_assert_can_modify(vma);
+-	vma->vm_pgoff -= delta;
++	vma_set_pgoff(vma, vma_start_pgoff(vma) - delta);
+ }
+ 
+ #define VMG_STATE(name, mm_, vmi_, start_, end_, vma_flags_, pgoff_)	\
+@@ -331,7 +360,7 @@ static inline void compat_set_vma_from_desc(struct vm_area_struct *vma,
+ 	 */
+ 
+ 	/* Mutable fields. Populated with initial state. */
+-	vma->vm_pgoff = desc->pgoff;
++	vma_set_pgoff(vma, desc->pgoff);
+ 	if (desc->vm_file != vma->vm_file)
+ 		vma_set_file(vma, desc->vm_file);
+ 	vma->flags = desc->vma_flags;
+diff --git a/tools/testing/vma/vma_internal.h b/tools/testing/vma/vma_internal.h
+index e12ab2c80f950..4f6c5666ac07d 100644
+--- a/tools/testing/vma/vma_internal.h
++++ b/tools/testing/vma/vma_internal.h
+@@ -14,8 +14,8 @@
+ 
+ #include <stdlib.h>
+ 
+-#define CONFIG_MMU
+-#define CONFIG_PER_VMA_LOCK
++#define CONFIG_MMU		1
++#define CONFIG_PER_VMA_LOCK	1
+ 
+ #ifdef __CONCAT
+ #undef __CONCAT
+-- 
+2.47.3
+

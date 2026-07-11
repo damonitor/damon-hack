@@ -1,0 +1,78 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:08 +0100
+Subject: [PATCH] mm/vma: update vmg_adjust_set_range() to offset pgoff instead
+
+We are calculating the pgoff as an offset, since we have vma_add_pgoff()
+and vma_sub_pgoff() available, just offset this value directly and use
+__vma_set_range() for vma->vm_[start, end] values.
+
+We take care to update the range before offsetting the page offset, so the
+adjusted VMA's vm_start and vm_pgoff are mutually consistent at the point
+the page offset helpers operate - this matters once vma_set_pgoff() comes
+to assert invariants which relate the two.
+
+Doing so lays the foundation for future work which allows for use of
+virtual page offsets for MAP_PRIVATE-file backed mappings.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-27-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 15 ++++-----------
+ 1 file changed, 4 insertions(+), 11 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index a474920a25b3f..0699fa07c40fe 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -714,9 +714,6 @@ void validate_mm(struct mm_struct *mm)
+  */
+ static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
+ {
+-	struct vm_area_struct *adjust;
+-	pgoff_t pgoff;
+-
+ 	if (vmg->__adjust_middle_start) {
+ 		/*
+ 		 * vmg->start    vmg->end
+@@ -735,8 +732,8 @@ static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
+ 		struct vm_area_struct *middle = vmg->middle;
+ 		const unsigned long delta = vmg->end - middle->vm_start;
+ 
+-		pgoff = vma_start_pgoff(middle) + (delta >> PAGE_SHIFT);
+-		adjust = middle;
++		__vma_set_range(middle, vmg->end, middle->vm_end);
++		vma_add_pgoff(middle, delta >> PAGE_SHIFT);
+ 	} else if (vmg->__adjust_next_start) {
+ 		/*
+ 		 *                Originally:
+@@ -764,13 +761,9 @@ static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
+ 		struct vm_area_struct *next = vmg->next;
+ 		const unsigned long delta = next->vm_start - vmg->end;
+ 
+-		pgoff = vma_start_pgoff(next) - (delta >> PAGE_SHIFT);
+-		adjust = next;
+-	} else {
+-		return;
++		__vma_set_range(next, vmg->end, next->vm_end);
++		vma_sub_pgoff(next, delta >> PAGE_SHIFT);
+ 	}
+-
+-	vma_set_range(adjust, vmg->end, adjust->vm_end, pgoff);
+ }
+ 
+ /*
+-- 
+2.47.3
+

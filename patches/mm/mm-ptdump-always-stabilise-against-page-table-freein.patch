@@ -1,0 +1,83 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 14:29:21 +0100
+Subject: [PATCH] mm/ptdump: always stabilise against page table freeing using
+ init_mm
+
+x86 and arm64 invoke ptdump_walk_pgd() with non-init_mm mm whilst still
+walking kernel page table ranges.
+
+For x86 this is done in ptdump_curknl_show() and ptdump_efi_show(), the
+first passing current->mm, and the second passing efi_mm (we reach kernel
+mappings that init_mm protects for current->mm due to x86 cloning shared
+kernel page tables for arbitrary mm's).
+
+arm64 does so via ptdump_debugfs_register(), configured by efi_ptdump_info
+for efi ranges against efi_mm.
+
+The init_mm mmap lock is used to stabilise page table freeing against
+ptdump, so take a nested lock on init_mm to ensure that we are correctly
+stabilised.
+
+We take this after mmap write locking the non-init_mm mm.  Nothing
+acquires the init_mm lock first before locking an arbitrary mm, so no
+deadlock is possible.
+
+Other fixes have been sent which update the two cases which can cause
+races with ptdump in init_mm ranges to acquire the init_mm mmap write lock
+- vmap and x86 CPA huge page promotion.
+
+For arm64, commit fa93b45fd397 ("arm64: Enable vmalloc-huge with ptdump")
+already provides exclusion against init_mm for the vmap case, which this
+patch also pairs with.
+
+The first point at which ptdump can race kernel page table freeing is
+commit b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page
+table"), so we target this in the Fixes tag.
+
+Link: https://lore.kernel.org/20260710-b4-fix-non-init_mm-ptdump-v1-1-2d40982c98ec@kernel.org
+Fixes: b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page table")
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Toshi Kani <toshi.kani@hpe.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/ptdump.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/ptdump.c b/mm/ptdump.c
+index 973020000096c..6bef47b1a0732 100644
+--- a/mm/ptdump.c
++++ b/mm/ptdump.c
+@@ -178,11 +178,18 @@ void ptdump_walk_pgd(struct ptdump_state *st, struct mm_struct *mm, pgd_t *pgd)
+ 
+ 	get_online_mems();
+ 	mmap_write_lock(mm);
++	/* To stabilise page tables we must hold the init_mm lock too. */
++	if (mm != &init_mm)
++		mmap_write_lock_nested(&init_mm, SINGLE_DEPTH_NESTING);
++
+ 	while (range->start != range->end) {
+ 		walk_page_range_debug(mm, range->start, range->end,
+ 				      &ptdump_ops, pgd, st);
+ 		range++;
+ 	}
++
++	if (mm != &init_mm)
++		mmap_write_unlock(&init_mm);
+ 	mmap_write_unlock(mm);
+ 	put_online_mems();
+ 
+-- 
+2.47.3
+

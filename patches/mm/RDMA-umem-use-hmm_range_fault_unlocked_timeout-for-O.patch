@@ -1,0 +1,98 @@
+From: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Date: Fri, 10 Jul 2026 14:27:05 -0700
+Subject: [PATCH] RDMA/umem: use hmm_range_fault_unlocked_timeout() for ODP
+ faults
+
+ib_umem_odp_map_dma_and_lock() takes mmap_read_lock() only around
+hmm_range_fault(), then retries -EBUSY until HMM_RANGE_DEFAULT_TIMEOUT
+expires.
+
+Use hmm_range_fault_unlocked_timeout() instead.  The HMM helper now owns
+the mmap lock and refreshes range->notifier_seq for its internal retries.
+ODP keeps using HMM_RANGE_DEFAULT_TIMEOUT for each HMM fault attempt,
+while interval invalidation retries continue to be handled by the existing
+outer loop.
+
+ODP still validates the interval notifier sequence while holding
+umem_mutex before DMA mapping pages.
+
+Link: https://lore.kernel.org/178371882559.900500.4008217424194230517.stgit@skinsburskii
+Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Danilo Krummrich <dakr@kernel.org>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kees Cook <kees@kernel.org>
+Cc: K. Y. Srinivasan <kys@microsoft.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lizhi Hou <lizhi.hou@amd.com>
+Cc: Long Li <longli@microsoft.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Lyude <lyude@redhat.com>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oded Gabbay <ogabbay@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Zimemrmann <tzimmermann@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Liu <wei.liu@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/infiniband/core/umem_odp.c | 18 +++++-------------
+ 1 file changed, 5 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/infiniband/core/umem_odp.c b/drivers/infiniband/core/umem_odp.c
+index 404fa1cc32542..9cc21cd762d98 100644
+--- a/drivers/infiniband/core/umem_odp.c
++++ b/drivers/infiniband/core/umem_odp.c
+@@ -329,7 +329,7 @@ int ib_umem_odp_map_dma_and_lock(struct ib_umem_odp *umem_odp, u64 user_virt,
+ 	struct mm_struct *owning_mm = umem_odp->umem.owning_mm;
+ 	int pfn_index, dma_index, ret = 0, start_idx;
+ 	unsigned int page_shift, hmm_order, pfn_start_idx;
+-	unsigned long num_pfns, current_seq;
++	unsigned long num_pfns;
+ 	struct hmm_range range = {};
+ 	unsigned long timeout;
+ 
+@@ -363,26 +363,18 @@ int ib_umem_odp_map_dma_and_lock(struct ib_umem_odp *umem_odp, u64 user_virt,
+ 	}
+ 
+ 	range.hmm_pfns = &(umem_odp->map.pfn_list[pfn_start_idx]);
+-	timeout = jiffies + msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
++	timeout = msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
+ 
+ retry:
+-	current_seq = range.notifier_seq =
+-		mmu_interval_read_begin(&umem_odp->notifier);
+-
+-	mmap_read_lock(owning_mm);
+-	ret = hmm_range_fault(&range);
+-	mmap_read_unlock(owning_mm);
+-	if (unlikely(ret)) {
+-		if (ret == -EBUSY && !time_after(jiffies, timeout))
+-			goto retry;
++	ret = hmm_range_fault_unlocked_timeout(&range, timeout);
++	if (unlikely(ret))
+ 		goto out_put_mm;
+-	}
+ 
+ 	start_idx = (range.start - ib_umem_start(umem_odp)) >> page_shift;
+ 	dma_index = start_idx;
+ 
+ 	mutex_lock(&umem_odp->umem_mutex);
+-	if (mmu_interval_read_retry(&umem_odp->notifier, current_seq)) {
++	if (mmu_interval_read_retry(&umem_odp->notifier, range.notifier_seq)) {
+ 		mutex_unlock(&umem_odp->umem_mutex);
+ 		goto retry;
+ 	}
+-- 
+2.47.3
+

@@ -1,0 +1,95 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:16:56 +0100
+Subject: [PATCH] mm/vma: refactor vmg_adjust_set_range() for clarity
+
+Add comments with ASCII diagrams to describe what we're doing, avoid
+dubious use of PHYS_PFN(), and use vma_start_pgoff().
+
+The most complicated scenario represented here is vmg->__adjust_next_start
+- when this is set, vmg->[start, end] actually indicate the range to be
+retained, so take special care to describe this accurately.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-15-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 51 +++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 47 insertions(+), 4 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index 084afdf373858..7265a054cfa3a 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -704,11 +704,54 @@ static void vmg_adjust_set_range(struct vma_merge_struct *vmg)
+ 	pgoff_t pgoff;
+ 
+ 	if (vmg->__adjust_middle_start) {
+-		adjust = vmg->middle;
+-		pgoff = adjust->vm_pgoff + PHYS_PFN(vmg->end - adjust->vm_start);
++		/*
++		 * vmg->start    vmg->end
++		 * |             |
++		 * v    merge    v
++		 * <------------->
++		 *         delta
++		 *        <------>
++		 * |------|----------------|
++		 * | prev |    middle      |
++		 * |------|----------------|
++		 *        ^
++		 *        |
++		 *        middle->vm_start
++		 */
++		struct vm_area_struct *middle = vmg->middle;
++		const unsigned long delta = vmg->end - middle->vm_start;
++
++		pgoff = vma_start_pgoff(middle) + (delta >> PAGE_SHIFT);
++		adjust = middle;
+ 	} else if (vmg->__adjust_next_start) {
+-		adjust = vmg->next;
+-		pgoff = adjust->vm_pgoff - PHYS_PFN(adjust->vm_start - vmg->end);
++		/*
++		 *                Originally:
++		 *
++		 *            vmg->start   vmg->end
++		 *            |            |
++		 *            v    merge   v
++		 *            <------------>
++		 *            .            .
++		 * merge_existing_range() updates to:
++		 *            .            .
++		 * vmg->start vmg->end     .
++		 * |          |            .
++		 * v  retain  v            .
++		 * <---------->            .
++		 *             delta       .
++		 *            <----->      .
++		 * |----------------|------|
++		 * |    middle      | next |
++		 * |----------------|------|
++		 *                  ^
++		 *                  |
++		 *                  next->vm_start
++		 */
++		struct vm_area_struct *next = vmg->next;
++		const unsigned long delta = next->vm_start - vmg->end;
++
++		pgoff = vma_start_pgoff(next) - (delta >> PAGE_SHIFT);
++		adjust = next;
+ 	} else {
+ 		return;
+ 	}
+-- 
+2.47.3
+

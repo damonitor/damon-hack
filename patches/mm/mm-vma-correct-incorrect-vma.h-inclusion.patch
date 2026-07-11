@@ -1,0 +1,163 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:11 +0100
+Subject: [PATCH] mm/vma: correct incorrect vma.h inclusion
+
+The only files which should be including vma.h are the implementation files
+for the core VMA logic - vma.c, vma_init.c, and vma_exec.c.
+
+This is in order to allow for userland testing of core VMA logic. In this
+cases, vma_internal.h and vma.h are included, providing both the
+dependencies upon which the core VMA logic requires and its declarations.
+
+Userland testable VMA logic is achieved by having separate vma_internal.h
+implementations for userland and kernel.
+
+Callers other than the core VMA implementation should include internal.h
+instead. This header does not need to include vma_internal.h as it only
+contains the vma.h declarations, for which the includes already present
+suffice.
+
+Update code to reflect this, update comments to reflect the fact there are
+3 VMA implementation files and document things more clearly.
+
+While we're here, slightly improve the language of the comment describing
+vma_exec.c.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-30-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mmu_notifier.c | 2 +-
+ mm/nommu.c        | 1 -
+ mm/vma.c          | 4 ++++
+ mm/vma.h          | 9 ++++++++-
+ mm/vma_exec.c     | 8 ++++++--
+ mm/vma_init.c     | 4 ++++
+ mm/vma_internal.h | 4 ++--
+ 7 files changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/mm/mmu_notifier.c b/mm/mmu_notifier.c
+index 245b74f39f912..df69ba6e797f7 100644
+--- a/mm/mmu_notifier.c
++++ b/mm/mmu_notifier.c
+@@ -19,7 +19,7 @@
+ #include <linux/sched/mm.h>
+ #include <linux/slab.h>
+ 
+-#include "vma.h"
++#include "internal.h"
+ 
+ /* global SRCU for all MMs */
+ DEFINE_STATIC_SRCU(srcu);
+diff --git a/mm/nommu.c b/mm/nommu.c
+index 21cbe8b093fc7..adc0b0ca906bd 100644
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -41,7 +41,6 @@
+ #include <asm/tlbflush.h>
+ #include <asm/mmu_context.h>
+ #include "internal.h"
+-#include "vma.h"
+ 
+ unsigned long highest_memmap_pfn;
+ int heap_stack_gap = 0;
+diff --git a/mm/vma.c b/mm/vma.c
+index 7c75dd78edefa..737f0d692e6b4 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -4,6 +4,10 @@
+  * VMA-specific functions.
+  */
+ 
++/*
++ * To allow for userland testing we place internal dependencies in
++ * vma_internal.h and external VMA API declarations in vma.h.
++ */
+ #include "vma_internal.h"
+ #include "vma.h"
+ 
+diff --git a/mm/vma.h b/mm/vma.h
+index 58f48609ce22b..adb7a0ba11920 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -2,7 +2,14 @@
+ /*
+  * vma.h
+  *
+- * Core VMA manipulation API implemented in vma.c.
++ * Core VMA manipulation API implemented in vma.c, vma_init.c and vma_exec.c.
++ *
++ * Note that, in order for VMA logic to be userland testable, this header
++ * intentionally includes no dependencies.
++ *
++ * This is specifically scoped to mm-only. Users of this functionality (other
++ * than the core VMA implementation itself) should not include this header
++ * directly, but rather include internal.h.
+  */
+ #ifndef __MM_VMA_H
+ #define __MM_VMA_H
+diff --git a/mm/vma_exec.c b/mm/vma_exec.c
+index 13a05e041195b..ef1fa2b161f3b 100644
+--- a/mm/vma_exec.c
++++ b/mm/vma_exec.c
+@@ -1,10 +1,14 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
+ /*
+- * Functions explicitly implemented for exec functionality which however are
+- * explicitly VMA-only logic.
++ * Functions provided for exec functionality which however are
++ * specifically VMA-only logic.
+  */
+ 
++/*
++ * To allow for userland testing we place internal dependencies in
++ * vma_internal.h and external VMA API declarations in vma.h.
++ */
+ #include "vma_internal.h"
+ #include "vma.h"
+ 
+diff --git a/mm/vma_init.c b/mm/vma_init.c
+index a459669a1654a..715feee283f0f 100644
+--- a/mm/vma_init.c
++++ b/mm/vma_init.c
+@@ -5,6 +5,10 @@
+  * between CONFIG_MMU and non-CONFIG_MMU kernel configurations.
+  */
+ 
++/*
++ * To allow for userland testing we place internal dependencies in
++ * vma_internal.h and external VMA API declarations in vma.h.
++ */
+ #include "vma_internal.h"
+ #include "vma.h"
+ 
+diff --git a/mm/vma_internal.h b/mm/vma_internal.h
+index 2da6d224c1a85..4d300e7bbaf4c 100644
+--- a/mm/vma_internal.h
++++ b/mm/vma_internal.h
+@@ -2,8 +2,8 @@
+ /*
+  * vma_internal.h
+  *
+- * Headers required by vma.c, which can be substituted accordingly when testing
+- * VMA functionality.
++ * Headers required by vma.c, vma_init.c and vma_exec.c, which can be
++ * substituted accordingly when testing VMA functionality.
+  */
+ 
+ #ifndef __MM_VMA_INTERNAL_H
+-- 
+2.47.3
+

@@ -1,0 +1,63 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:16:55 +0100
+Subject: [PATCH] mm/vma: clean up anon_vma_compatible()
+
+Break up the existing very large conditional, add comments and use
+vma_[start/end]_pgoff() to make clearer what we're doing here.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-14-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index 995de8198fbb1..084afdf373858 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -1967,14 +1967,25 @@ static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *
+ {
+ 	vma_flags_t diff = vma_flags_diff_pair(&a->flags, &b->flags);
+ 
++	/* Ignore flags that mprotect() can change. */
+ 	vma_flags_clear_mask(&diff, VMA_ACCESS_FLAGS);
++	/* Ignore flags that do not impact merging. */
+ 	vma_flags_clear_mask(&diff, VMA_IGNORE_MERGE_FLAGS);
+ 
+-	return a->vm_end == b->vm_start &&
+-		mpol_equal(vma_policy(a), vma_policy(b)) &&
+-		a->vm_file == b->vm_file &&
+-		vma_flags_empty(&diff) &&
+-		b->vm_pgoff == a->vm_pgoff + ((b->vm_start - a->vm_start) >> PAGE_SHIFT);
++	/* Must be adjacent. */
++	if (a->vm_end != b->vm_start)
++		return false;
++	/* Must have matching policy. */
++	if (!mpol_equal(vma_policy(a), vma_policy(b)))
++		return false;
++	/* Must both be anon or map the same file (MAP_PRIVATE case). */
++	if (a->vm_file != b->vm_file)
++		return false;
++	/* Flags must be equivalent modulo mprotect(). */
++	if (!vma_flags_empty(&diff))
++		return false;
++	/* Page offset must align. */
++	return vma_end_pgoff(a) == vma_start_pgoff(b);
+ }
+ 
+ /*
+-- 
+2.47.3
+

@@ -1,0 +1,92 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:14 +0100
+Subject: [PATCH] tools/testing/vma: output compared expression on ASSERT_[EQ,
+ NE]()
+
+Update the macros to output the compared values at hex for easier debugging
+when test asserts fail.
+
+We have to be careful not to re-evaluate expressions as they may have
+side-effects. So update the code to take local copies and use these for
+both the test and the debug output.
+
+Also remove unused IS_SET() macro.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-33-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/vma/shared.h | 38 ++++++++++++++++++++++++++------------
+ 1 file changed, 26 insertions(+), 12 deletions(-)
+
+diff --git a/tools/testing/vma/shared.h b/tools/testing/vma/shared.h
+index ca4f1238f1c7f..97cd7a679dc19 100644
+--- a/tools/testing/vma/shared.h
++++ b/tools/testing/vma/shared.h
+@@ -21,19 +21,35 @@
+ 		}							\
+ 	} while (0)
+ 
+-#define ASSERT_TRUE(_expr)						\
+-	do {								\
+-		if (!(_expr)) {						\
+-			fprintf(stderr,					\
+-				"Assert FAILED at %s:%d:%s(): %s is FALSE.\n", \
+-				__FILE__, __LINE__, __FUNCTION__, #_expr); \
+-			return false;					\
+-		}							\
++#define __ASSERT_TRUE(_expr, _fmt, ...)					   \
++	do {								   \
++		if (!(_expr)) {						   \
++			fprintf(stderr,					   \
++				"Assert FAILED at %s:%d:%s(): %s is FALSE" \
++				_fmt ".\n",				   \
++				__FILE__, __LINE__, __FUNCTION__, #_expr   \
++				__VA_OPT__(,) __VA_ARGS__);		   \
++			return false;					   \
++		}							   \
+ 	} while (0)
+ 
++#define __TO_SCALAR(x)	((unsigned long long)(uintptr_t)(x))
++
++#define ASSERT_TRUE(_expr) __ASSERT_TRUE(_expr, "")
+ #define ASSERT_FALSE(_expr) ASSERT_TRUE(!(_expr))
+-#define ASSERT_EQ(_val1, _val2) ASSERT_TRUE((_val1) == (_val2))
+-#define ASSERT_NE(_val1, _val2) ASSERT_TRUE((_val1) != (_val2))
++#define ASSERT_EQ(_val1, _val2) do {				 \
++	__typeof__(_val1) __val1 = (_val1);			 \
++	__typeof__(_val2) __val2 = (_val2);			 \
++	__ASSERT_TRUE(__val1 == __val2, " (0x%llx != 0x%llx)",	 \
++		      __TO_SCALAR(__val1), __TO_SCALAR(__val2)); \
++	} while (0)
++
++#define ASSERT_NE(_val1, _val2) do {				 \
++	__typeof__(_val1) __val1 = (_val1);			 \
++	__typeof__(_val2) __val2 = (_val2);			 \
++	__ASSERT_TRUE(__val1 != __val2, " (0x%llx == 0x%llx)",	 \
++		      __TO_SCALAR(__val1), __TO_SCALAR(__val2)); \
++	} while (0)
+ 
+ #define ASSERT_FLAGS_SAME_MASK(_flags, _flags_other) \
+ 	ASSERT_TRUE(vma_flags_same_mask((_flags), (_flags_other)))
+@@ -53,8 +69,6 @@
+ #define ASSERT_FLAGS_NONEMPTY(_flags) \
+ 	ASSERT_FALSE(vma_flags_empty(_flags))
+ 
+-#define IS_SET(_val, _flags) ((_val & _flags) == _flags)
+-
+ extern bool fail_prealloc;
+ 
+ /* Override vma_iter_prealloc() so we can choose to fail it. */
+-- 
+2.47.3
+

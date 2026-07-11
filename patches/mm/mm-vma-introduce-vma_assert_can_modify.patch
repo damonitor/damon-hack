@@ -1,0 +1,110 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:03 +0100
+Subject: [PATCH] mm/vma: introduce vma_assert_can_modify()
+
+vma_assert_write_locked() and vma_assert_attached() are useful for their
+own purposes, however VMA code absolutely does allow the modification of
+non-write locked VMAs if they are at that point detached (i.e. unreachable
+from anywhere).
+
+It's therefore useful to be able to assert that a VMA is either
+detached (modification doesn't matter) or write locked (you're explicitly
+locked for modification).
+
+Therefore introduce vma_assert_can_modify() for this purpose.
+
+While we're here, make vma_is_attached() available generally - if
+!CONFIG_PER_VMA_LOCK, then there's no sense in which a VMA is
+detached (vma_mark_detached() is a noop), so have this default to true in
+this case.
+
+Also update VMA userland tests to reflect this change, correcting the
+previously open-coded vma_assert_[attached,detached]() there.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-22-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmap_lock.h       |  8 ++++++++
+ tools/testing/vma/include/dup.h | 15 +++++++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index 6b5c2390cc301..bec0eab6ef035 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -506,6 +506,8 @@ static inline __must_check
+ int vma_start_write_killable(struct vm_area_struct *vma) { return 0; }
+ static inline void vma_assert_write_locked(struct vm_area_struct *vma)
+ 		{ mmap_assert_write_locked(vma->vm_mm); }
++static inline bool vma_is_attached(struct vm_area_struct *vma)
++		{ return true; }
+ static inline void vma_assert_attached(struct vm_area_struct *vma) {}
+ static inline void vma_assert_detached(struct vm_area_struct *vma) {}
+ static inline void vma_mark_attached(struct vm_area_struct *vma) {}
+@@ -530,6 +532,12 @@ static inline void vma_assert_stabilised(struct vm_area_struct *vma)
+ 
+ #endif /* CONFIG_PER_VMA_LOCK */
+ 
++static inline void vma_assert_can_modify(struct vm_area_struct *vma)
++{
++	if (vma_is_attached(vma))
++		vma_assert_write_locked(vma);
++}
++
+ static inline void mmap_write_lock(struct mm_struct *mm)
+ {
+ 	__mmap_lock_trace_start_locking(mm, true);
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index eb330d9aa42d6..773e23303e26a 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -1163,6 +1163,11 @@ static inline struct vm_area_struct *vma_next(struct vma_iterator *vmi)
+ 	return mas_find(&vmi->mas, ULONG_MAX);
+ }
+ 
++static inline bool vma_is_attached(struct vm_area_struct *vma)
++{
++	return refcount_read(&vma->vm_refcnt);
++}
++
+ /*
+  * WARNING: to avoid racing with vma_mark_attached()/vma_mark_detached(), these
+  * assertions should be made either under mmap_write_lock or when the object
+@@ -1170,12 +1175,12 @@ static inline struct vm_area_struct *vma_next(struct vma_iterator *vmi)
+  */
+ static inline void vma_assert_attached(struct vm_area_struct *vma)
+ {
+-	WARN_ON_ONCE(!refcount_read(&vma->vm_refcnt));
++	WARN_ON_ONCE(!vma_is_attached(vma));
+ }
+ 
+ static inline void vma_assert_detached(struct vm_area_struct *vma)
+ {
+-	WARN_ON_ONCE(refcount_read(&vma->vm_refcnt));
++	WARN_ON_ONCE(vma_is_attached(vma));
+ }
+ 
+ static inline void vma_assert_write_locked(struct vm_area_struct *);
+@@ -1564,3 +1569,9 @@ static inline pgoff_t linear_page_index(const struct vm_area_struct *vma,
+ 	pgoff += vma_start_pgoff(vma);
+ 	return pgoff;
+ }
++
++static inline void vma_assert_can_modify(struct vm_area_struct *vma)
++{
++	if (vma_is_attached(vma))
++		vma_assert_write_locked(vma);
++}
+-- 
+2.47.3
+

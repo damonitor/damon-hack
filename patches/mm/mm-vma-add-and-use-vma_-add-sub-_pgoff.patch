@@ -1,0 +1,121 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:17:04 +0100
+Subject: [PATCH] mm/vma: add and use vma_[add/sub]_pgoff()
+
+Add helpers for adding or subtracting to a VMA's page offset, exposed
+internally for VMA users within mm in mm/vma.h.
+
+This is to lay the foundations for tracking anonymous page offset for
+MAP_PRIVATE file-backed mappings, where adding and subtracting from this
+value must be reflected in both the file and anonymous offsets.
+
+These are used on VMA split and downward stack expansion.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-23-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/nommu.c |  6 ++++--
+ mm/vma.c   |  6 +++---
+ mm/vma.h   | 12 ++++++++++++
+ 3 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/mm/nommu.c b/mm/nommu.c
+index c0a0869cd0d65..2a0136f6081d2 100644
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -41,6 +41,7 @@
+ #include <asm/tlbflush.h>
+ #include <asm/mmu_context.h>
+ #include "internal.h"
++#include "vma.h"
+ 
+ unsigned long highest_memmap_pfn;
+ int heap_stack_gap = 0;
+@@ -1361,7 +1362,8 @@ static int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 		region->vm_top = region->vm_end = new->vm_end = addr;
+ 	} else {
+ 		region->vm_start = new->vm_start = addr;
+-		region->vm_pgoff = new->vm_pgoff += npages;
++		vma_add_pgoff(new, npages);
++		region->vm_pgoff = vma_start_pgoff(new);
+ 	}
+ 
+ 	vma_iter_config(vmi, new->vm_start, new->vm_end);
+@@ -1378,7 +1380,7 @@ static int split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 	delete_nommu_region(vma->vm_region);
+ 	if (new_below) {
+ 		vma->vm_region->vm_start = vma->vm_start = addr;
+-		vma->vm_pgoff += npages;
++		vma_add_pgoff(vma, npages);
+ 		vma->vm_region->vm_pgoff = vma_start_pgoff(vma);
+ 	} else {
+ 		vma->vm_region->vm_end = vma->vm_end = addr;
+diff --git a/mm/vma.c b/mm/vma.c
+index 7aa0149f076c7..bdd99ba56b4d8 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -517,7 +517,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 		new->vm_end = addr;
+ 	} else {
+ 		new->vm_start = addr;
+-		new->vm_pgoff += linear_page_delta(vma, addr);
++		vma_add_pgoff(new, linear_page_delta(vma, addr));
+ 	}
+ 
+ 	err = -ENOMEM;
+@@ -556,7 +556,7 @@ __split_vma(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 
+ 	if (new_below) {
+ 		vma->vm_start = addr;
+-		vma->vm_pgoff += (addr - new->vm_start) >> PAGE_SHIFT;
++		vma_add_pgoff(vma, (addr - new->vm_start) >> PAGE_SHIFT);
+ 	} else {
+ 		vma->vm_end = addr;
+ 	}
+@@ -3305,7 +3305,7 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
+ 				vm_stat_account(mm, vma->vm_flags, grow);
+ 				anon_rmap_tree_pre_update_vma(vma);
+ 				vma->vm_start = address;
+-				vma->vm_pgoff -= grow;
++				vma_sub_pgoff(vma, grow);
+ 				/* Overwrite old entry in mtree. */
+ 				vma_iter_store_overwrite(&vmi, vma);
+ 				anon_rmap_tree_post_update_vma(vma);
+diff --git a/mm/vma.h b/mm/vma.h
+index 2342516ce00e3..47fe35e5307e4 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -247,6 +247,18 @@ static inline pgoff_t vmg_end_pgoff(const struct vma_merge_struct *vmg)
+ 	return vmg_start_pgoff(vmg) + vmg_pages(vmg);
+ }
+ 
++static inline void vma_add_pgoff(struct vm_area_struct *vma, pgoff_t delta)
++{
++	vma_assert_can_modify(vma);
++	vma->vm_pgoff += delta;
++}
++
++static inline void vma_sub_pgoff(struct vm_area_struct *vma, pgoff_t delta)
++{
++	vma_assert_can_modify(vma);
++	vma->vm_pgoff -= delta;
++}
++
+ #define VMG_STATE(name, mm_, vmi_, start_, end_, vma_flags_, pgoff_)	\
+ 	struct vma_merge_struct name = {				\
+ 		.mm = mm_,						\
+-- 
+2.47.3
+

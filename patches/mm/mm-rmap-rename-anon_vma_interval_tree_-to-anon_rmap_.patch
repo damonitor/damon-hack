@@ -1,0 +1,348 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Fri, 10 Jul 2026 21:16:52 +0100
+Subject: [PATCH] mm/rmap: rename anon_vma_interval_tree_*() to
+ anon_rmap_tree_*()
+
+To be consistent with the newly renamed mapping_rmap_tree_*(), rename the
+anon_vma_interval_tree_*() helpers to anon_rmap_tree_*().
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-11-2a5aa403d977@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Gregory Price <gourry@gourry.net>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Kai Huang <kai.huang@intel.com>
+Cc: Marek Szyprowski <m.szyprowski@samsung.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: SJ Park <sj@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h                | 27 ++++++++++++---------------
+ mm/interval_tree.c                | 30 +++++++++++++++---------------
+ mm/ksm.c                          |  4 ++--
+ mm/memory-failure.c               |  2 +-
+ mm/rmap.c                         | 10 +++++-----
+ mm/vma.c                          | 30 +++++++++++++++---------------
+ tools/testing/vma/include/stubs.h |  8 ++++----
+ 7 files changed, 54 insertions(+), 57 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index e108b03f536a8..498692da306c1 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -4114,26 +4114,23 @@ mapping_rmap_tree_iter_next(struct vm_area_struct *vma,
+ 	     vma; vma = mapping_rmap_tree_iter_next(vma, pgoff_start,	 \
+ 						    pgoff_last))
+ 
+-void anon_vma_interval_tree_insert(struct anon_vma_chain *avc,
+-				   struct anon_vma *anon_vma);
+-void anon_vma_interval_tree_remove(struct anon_vma_chain *avc,
+-				   struct anon_vma *anon_vma);
+-
++void anon_rmap_tree_insert(struct anon_vma_chain *avc,
++			   struct anon_vma *anon_vma);
++void anon_rmap_tree_remove(struct anon_vma_chain *avc,
++			   struct anon_vma *anon_vma);
+ struct anon_vma_chain *
+-anon_vma_interval_tree_iter_first(struct anon_vma *anon_vma,
+-				  pgoff_t pgoff_start, pgoff_t pgoff_last);
++anon_rmap_tree_iter_first(struct anon_vma *anon_vma,
++			  pgoff_t pgoff_start, pgoff_t pgoff_last);
+ struct anon_vma_chain *
+-anon_vma_interval_tree_iter_next(struct anon_vma_chain *avc,
+-				 pgoff_t pgoff_start, pgoff_t pgoff_last);
++anon_rmap_tree_iter_next(struct anon_vma_chain *avc,
++			 pgoff_t pgoff_start, pgoff_t pgoff_last);
+ #ifdef CONFIG_DEBUG_VM_RB
+-void anon_vma_interval_tree_verify(struct anon_vma_chain *avc);
++void anon_rmap_tree_verify(struct anon_vma_chain *avc);
+ #endif
+ 
+-#define anon_vma_interval_tree_foreach(avc, anon_vma, pgoff_start, pgoff_last) \
+-	for (avc = anon_vma_interval_tree_iter_first(anon_vma, pgoff_start,    \
+-						     pgoff_last);	       \
+-	     avc; avc = anon_vma_interval_tree_iter_next(avc, pgoff_start,     \
+-							 pgoff_last))
++#define anon_rmap_tree_foreach(avc, anon_vma, pgoff_start, pgoff_last)		 \
++	for (avc = anon_rmap_tree_iter_first(anon_vma, pgoff_start, pgoff_last); \
++	     avc; avc = anon_rmap_tree_iter_next(avc, pgoff_start, pgoff_last))
+ 
+ /* mmap.c */
+ extern int __vm_enough_memory(const struct mm_struct *mm, long pages, int cap_sys_admin);
+diff --git a/mm/interval_tree.c b/mm/interval_tree.c
+index 5bfe95b5cd28d..3ae9e106d3afd 100644
+--- a/mm/interval_tree.c
++++ b/mm/interval_tree.c
+@@ -93,41 +93,41 @@ static pgoff_t avc_last_pgoff(struct anon_vma_chain *avc)
+ 
+ INTERVAL_TREE_DEFINE(struct anon_vma_chain, rb, pgoff_t, rb_subtree_last,
+ 		     avc_start_pgoff, avc_last_pgoff,
+-		     static, __anon_vma_interval_tree)
++		     static, __anon_rmap_tree)
+ 
+-void anon_vma_interval_tree_insert(struct anon_vma_chain *avc,
+-				   struct anon_vma *anon_vma)
++void anon_rmap_tree_insert(struct anon_vma_chain *avc,
++			   struct anon_vma *anon_vma)
+ {
+ #ifdef CONFIG_DEBUG_VM_RB
+ 	avc->cached_vma_start = avc_start_pgoff(avc);
+ 	avc->cached_vma_last = avc_last_pgoff(avc);
+ #endif
+-	__anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
++	__anon_rmap_tree_insert(avc, &anon_vma->rb_root);
+ }
+ 
+-void anon_vma_interval_tree_remove(struct anon_vma_chain *avc,
+-				   struct anon_vma *anon_vma)
++void anon_rmap_tree_remove(struct anon_vma_chain *avc,
++			   struct anon_vma *anon_vma)
+ {
+-	__anon_vma_interval_tree_remove(avc, &anon_vma->rb_root);
++	__anon_rmap_tree_remove(avc, &anon_vma->rb_root);
+ }
+ 
+ struct anon_vma_chain *
+-anon_vma_interval_tree_iter_first(struct anon_vma *anon_vma,
+-				  pgoff_t pgoff_start, pgoff_t pgoff_last)
++anon_rmap_tree_iter_first(struct anon_vma *anon_vma,
++			  pgoff_t pgoff_start, pgoff_t pgoff_last)
+ {
+-	return __anon_vma_interval_tree_iter_first(&anon_vma->rb_root,
+-						   pgoff_start, pgoff_last);
++	return __anon_rmap_tree_iter_first(&anon_vma->rb_root,
++					   pgoff_start, pgoff_last);
+ }
+ 
+ struct anon_vma_chain *
+-anon_vma_interval_tree_iter_next(struct anon_vma_chain *avc,
+-				  pgoff_t pgoff_start, pgoff_t pgoff_last)
++anon_rmap_tree_iter_next(struct anon_vma_chain *avc,
++			 pgoff_t pgoff_start, pgoff_t pgoff_last)
+ {
+-	return __anon_vma_interval_tree_iter_next(avc, pgoff_start, pgoff_last);
++	return __anon_rmap_tree_iter_next(avc, pgoff_start, pgoff_last);
+ }
+ 
+ #ifdef CONFIG_DEBUG_VM_RB
+-void anon_vma_interval_tree_verify(struct anon_vma_chain *avc)
++void anon_rmap_tree_verify(struct anon_vma_chain *avc)
+ {
+ 	WARN_ON_ONCE(avc->cached_vma_start != avc_start_pgoff(avc));
+ 	WARN_ON_ONCE(avc->cached_vma_last != avc_last_pgoff(avc));
+diff --git a/mm/ksm.c b/mm/ksm.c
+index c0bd8eae763f6..14550f69cf020 100644
+--- a/mm/ksm.c
++++ b/mm/ksm.c
+@@ -3232,7 +3232,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+ 		 * we wouldn't have the KSM folio mapped in these processes
+ 		 * anymore.
+ 		 */
+-		anon_vma_interval_tree_foreach(vmac, anon_vma, index, index) {
++		anon_rmap_tree_foreach(vmac, anon_vma, index, index) {
+ 
+ 			cond_resched();
+ 			vma = vmac->vma;
+@@ -3294,7 +3294,7 @@ void collect_procs_ksm(const struct folio *folio, const struct page *page,
+ 				task_early_kill(tsk, force_early);
+ 			if (!t)
+ 				continue;
+-			anon_vma_interval_tree_foreach(vmac, av, index, index)
++			anon_rmap_tree_foreach(vmac, av, index, index)
+ 			{
+ 				vma = vmac->vma;
+ 				if (vma->vm_mm == t->mm) {
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 24d660c320580..aaf14608b30e2 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -564,7 +564,7 @@ static void collect_procs_anon(const struct folio *folio,
+ 
+ 		if (!t)
+ 			continue;
+-		anon_vma_interval_tree_foreach(vmac, av, pgoff, pgoff) {
++		anon_rmap_tree_foreach(vmac, av, pgoff, pgoff) {
+ 			vma = vmac->vma;
+ 			if (vma->vm_mm != t->mm)
+ 				continue;
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 6d4423a16c8b3..e854679553b9c 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -211,7 +211,7 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
+ 	if (likely(!vma->anon_vma)) {
+ 		vma->anon_vma = anon_vma;
+ 		anon_vma_chain_assign(vma, avc, anon_vma);
+-		anon_vma_interval_tree_insert(avc, anon_vma);
++		anon_rmap_tree_insert(avc, anon_vma);
+ 		anon_vma->num_active_vmas++;
+ 		allocated = NULL;
+ 		avc = NULL;
+@@ -354,7 +354,7 @@ int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src,
+ 	list_for_each_entry_reverse(avc, &dst->anon_vma_chain, same_vma) {
+ 		struct anon_vma *anon_vma = avc->anon_vma;
+ 
+-		anon_vma_interval_tree_insert(avc, anon_vma);
++		anon_rmap_tree_insert(avc, anon_vma);
+ 		if (operation == VMA_OP_FORK)
+ 			maybe_reuse_anon_vma(dst, anon_vma);
+ 	}
+@@ -434,7 +434,7 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
+ 	anon_vma_chain_assign(vma, avc, anon_vma);
+ 	/* Now let rmap see it. */
+ 	anon_vma_lock_write(anon_vma);
+-	anon_vma_interval_tree_insert(avc, anon_vma);
++	anon_rmap_tree_insert(avc, anon_vma);
+ 	anon_vma->parent->num_children++;
+ 	anon_vma_unlock_write(anon_vma);
+ 
+@@ -499,7 +499,7 @@ void unlink_anon_vmas(struct vm_area_struct *vma)
+ 	list_for_each_entry_safe(avc, next, &vma->anon_vma_chain, same_vma) {
+ 		struct anon_vma *anon_vma = avc->anon_vma;
+ 
+-		anon_vma_interval_tree_remove(avc, anon_vma);
++		anon_rmap_tree_remove(avc, anon_vma);
+ 
+ 		/*
+ 		 * Leave empty anon_vmas on the list - we'll need
+@@ -2988,7 +2988,7 @@ static void rmap_walk_anon(struct folio *folio,
+ 
+ 	pgoff_start = folio_pgoff(folio);
+ 	pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+-	anon_vma_interval_tree_foreach(avc, anon_vma, pgoff_start, pgoff_end) {
++	anon_rmap_tree_foreach(avc, anon_vma, pgoff_start, pgoff_end) {
+ 		struct vm_area_struct *vma = avc->vma;
+ 		unsigned long address = vma_address(vma, pgoff_start,
+ 				folio_nr_pages(folio));
+diff --git a/mm/vma.c b/mm/vma.c
+index 2cd70f1d4db72..35ba3475128f7 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -258,30 +258,30 @@ static void __remove_shared_vm_struct(struct vm_area_struct *vma,
+  *
+  * Before updating the vma's vm_start / vm_end / vm_pgoff fields, the
+  * vma must be removed from the anon_vma's interval trees using
+- * anon_vma_interval_tree_pre_update_vma().
++ * anon_rmap_tree_pre_update_vma().
+  *
+  * After the update, the vma will be reinserted using
+- * anon_vma_interval_tree_post_update_vma().
++ * anon_rmap_tree_post_update_vma().
+  *
+  * The entire update must be protected by exclusive mmap_lock and by
+  * the root anon_vma's mutex.
+  */
+ static void
+-anon_vma_interval_tree_pre_update_vma(struct vm_area_struct *vma)
++anon_rmap_tree_pre_update_vma(struct vm_area_struct *vma)
+ {
+ 	struct anon_vma_chain *avc;
+ 
+ 	list_for_each_entry(avc, &vma->anon_vma_chain, same_vma)
+-		anon_vma_interval_tree_remove(avc, avc->anon_vma);
++		anon_rmap_tree_remove(avc, avc->anon_vma);
+ }
+ 
+ static void
+-anon_vma_interval_tree_post_update_vma(struct vm_area_struct *vma)
++anon_rmap_tree_post_update_vma(struct vm_area_struct *vma)
+ {
+ 	struct anon_vma_chain *avc;
+ 
+ 	list_for_each_entry(avc, &vma->anon_vma_chain, same_vma)
+-		anon_vma_interval_tree_insert(avc, avc->anon_vma);
++		anon_rmap_tree_insert(avc, avc->anon_vma);
+ }
+ 
+ /*
+@@ -312,9 +312,9 @@ static void vma_prepare(struct vma_prepare *vp)
+ 
+ 	if (vp->anon_vma) {
+ 		anon_vma_lock_write(vp->anon_vma);
+-		anon_vma_interval_tree_pre_update_vma(vp->vma);
++		anon_rmap_tree_pre_update_vma(vp->vma);
+ 		if (vp->adj_next)
+-			anon_vma_interval_tree_pre_update_vma(vp->adj_next);
++			anon_rmap_tree_pre_update_vma(vp->adj_next);
+ 	}
+ 
+ 	if (vp->file) {
+@@ -359,9 +359,9 @@ static void vma_complete(struct vma_prepare *vp, struct vma_iterator *vmi,
+ 	}
+ 
+ 	if (vp->anon_vma) {
+-		anon_vma_interval_tree_post_update_vma(vp->vma);
++		anon_rmap_tree_post_update_vma(vp->vma);
+ 		if (vp->adj_next)
+-			anon_vma_interval_tree_post_update_vma(vp->adj_next);
++			anon_rmap_tree_post_update_vma(vp->adj_next);
+ 		anon_vma_unlock_write(vp->anon_vma);
+ 	}
+ 
+@@ -677,7 +677,7 @@ void validate_mm(struct mm_struct *mm)
+ 		if (anon_vma) {
+ 			anon_vma_lock_read(anon_vma);
+ 			list_for_each_entry(avc, &vma->anon_vma_chain, same_vma)
+-				anon_vma_interval_tree_verify(avc);
++				anon_rmap_tree_verify(avc);
+ 			anon_vma_unlock_read(anon_vma);
+ 		}
+ #endif
+@@ -3177,11 +3177,11 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
+ 				if (vma_test(vma, VMA_LOCKED_BIT))
+ 					mm->locked_vm += grow;
+ 				vm_stat_account(mm, vma->vm_flags, grow);
+-				anon_vma_interval_tree_pre_update_vma(vma);
++				anon_rmap_tree_pre_update_vma(vma);
+ 				vma->vm_end = address;
+ 				/* Overwrite old entry in mtree. */
+ 				vma_iter_store_overwrite(&vmi, vma);
+-				anon_vma_interval_tree_post_update_vma(vma);
++				anon_rmap_tree_post_update_vma(vma);
+ 
+ 				perf_event_mmap(vma);
+ 			}
+@@ -3256,12 +3256,12 @@ int expand_downwards(struct vm_area_struct *vma, unsigned long address)
+ 				if (vma_test(vma, VMA_LOCKED_BIT))
+ 					mm->locked_vm += grow;
+ 				vm_stat_account(mm, vma->vm_flags, grow);
+-				anon_vma_interval_tree_pre_update_vma(vma);
++				anon_rmap_tree_pre_update_vma(vma);
+ 				vma->vm_start = address;
+ 				vma->vm_pgoff -= grow;
+ 				/* Overwrite old entry in mtree. */
+ 				vma_iter_store_overwrite(&vmi, vma);
+-				anon_vma_interval_tree_post_update_vma(vma);
++				anon_rmap_tree_post_update_vma(vma);
+ 
+ 				perf_event_mmap(vma);
+ 			}
+diff --git a/tools/testing/vma/include/stubs.h b/tools/testing/vma/include/stubs.h
+index 3a11547b5bd1d..d6136e19a8af3 100644
+--- a/tools/testing/vma/include/stubs.h
++++ b/tools/testing/vma/include/stubs.h
+@@ -271,13 +271,13 @@ static inline void flush_dcache_mmap_unlock(struct address_space *mapping)
+ {
+ }
+ 
+-static inline void anon_vma_interval_tree_insert(struct anon_vma_chain *avc,
+-						 struct anon_vma *anon_vma)
++static inline void anon_rmap_tree_insert(struct anon_vma_chain *avc,
++					 struct anon_vma *anon_vma)
+ {
+ }
+ 
+-static inline void anon_vma_interval_tree_remove(struct anon_vma_chain *avc,
+-						 struct anon_vma *anon_vma)
++static inline void anon_rmap_tree_remove(struct anon_vma_chain *avc,
++					 struct anon_vma *anon_vma)
+ {
+ }
+ 
+-- 
+2.47.3
+
