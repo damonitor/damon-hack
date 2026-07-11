@@ -1,0 +1,108 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 6.10
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Date: Thu, 9 Jul 2026 17:58:54 -0700
+Subject: [RFC PATCH] mm/damon/core: skip aging from repeated aggressive merging
+Message-Id: <20260711171537.75278-1-sj@kernel.org>
+
+The number of DAMON regions could temporarily exceed the user-defined
+maximum number of regions limit for corner cases.  For example, users
+could lower the limit via runtime parameters update.  For such a case,
+kdamond_merge_regions() repeats merging regions in the case doubling the
+merge threshold.  The repeated merge operation could update the age of
+regions multiple times.  This corrupts the monitoring results.  Fix the
+issue by asking the merge operation to skip aging for the corner case.
+
+The user impact is degradation of the monitoring quality.  The impact
+should be mild, since the degradation is only temporal, and it is not
+common to happen in realistic setups.
+
+The issue was discovered [1,2] by Sashiko.
+
+[1] https://lore.kernel.org/20260621203548.10718-1-sj@kernel.org
+[2] https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org
+
+Fixes: 310d6c15e910 ("mm/damon/core: merge regions aggressively when max_nr_regions is unmet")
+Cc: <stable@vger.kernel.org> # 6.10
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c             | 21 +++++++++++++--------
+ mm/damon/tests/core-kunit.h |  2 +-
+ 2 files changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 806a67d02a6e9..6c4215cc809ec 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3308,7 +3308,7 @@ static unsigned int damon_merge_score(struct damon_region *r, bool last,
+  * sz_limit	size upper limit of each region
+  */
+ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+-		unsigned long sz_limit, struct damon_ctx *ctx)
++		unsigned long sz_limit, struct damon_ctx *ctx, bool count_age)
+ {
+ 	struct damon_region *r, *prev = NULL, *next;
+ 	bool use_probe_hits = damon_has_probe_weights(ctx);
+@@ -3319,12 +3319,14 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+ 		score = damon_merge_score(r, false, ctx, use_probe_hits);
+ 		last_score = damon_merge_score(r, true, ctx, use_probe_hits);
+ 
+-		if (abs_diff(score, last_score) > thres)
+-			r->age = 0;
+-		else if ((score == 0) != (last_score == 0))
+-			r->age = 0;
+-		else
+-			r->age++;
++		if (count_age) {
++			if (abs_diff(score, last_score) > thres)
++				r->age = 0;
++			else if ((score == 0) != (last_score == 0))
++				r->age = 0;
++			else
++				r->age++;
++		}
+ 
+ 		if (!prev)
+ 			goto set_prev_continue;
+@@ -3366,15 +3368,18 @@ static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+ 	struct damon_target *t;
+ 	unsigned int nr_regions;
+ 	unsigned int max_thres;
++	bool count_age = true;
+ 
+ 	max_thres = c->attrs.aggr_interval /
+ 		(c->attrs.sample_interval ?  c->attrs.sample_interval : 1);
+ 	do {
+ 		nr_regions = 0;
+ 		damon_for_each_target(t, c) {
+-			damon_merge_regions_of(t, threshold, sz_limit, c);
++			damon_merge_regions_of(t, threshold, sz_limit, c,
++					count_age);
+ 			nr_regions += damon_nr_regions(t);
+ 		}
++		count_age = false;
+ 		threshold = max(1, threshold * 2);
+ 	} while (nr_regions > c->attrs.max_nr_regions &&
+ 			threshold / 2 < max_thres);
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 6ad73559dd8ea..68d30648c612e 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -257,7 +257,7 @@ static void damon_test_merge_regions_of(struct kunit *test)
+ 		damon_add_region(r, t);
+ 	}
+ 
+-	damon_merge_regions_of(t, 9, 9999, ctx);
++	damon_merge_regions_of(t, 9, 9999, ctx, true);
+ 	/* 0-112, 114-130, 130-156, 156-170, 170-230, 230-10170 */
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 6u);
+ 	for (i = 0; i < 6; i++) {
+
+base-commit: 3700e40ed9161bcf1b76601fa50b2b0ff8972eb8
+-- 
+2.47.3
