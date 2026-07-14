@@ -1,0 +1,54 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Fri, 3 Jul 2026 10:26:04 -0700
+Subject: [PATCH 5/5] mm/damon/sysfs: read ops_id only once
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260714135236.92699-6-sj@kernel.org>
+
+damon_sysfs_apply_inputs() reads ops_id twice.  It could race with
+ops_id_store().  As a result, the min_region_sz could wrongly be set up.
+Read it once.
+
+The user impact is trivial.  Sane users ain't update the parameter in
+parallel.  Even if it happens, only monitoring itself runs differently
+than expected.  No critical consequences like kernel panic or memory
+corruption happen.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260703172417.95426-1-sj@kernel.org
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/sysfs.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index b5fe036f78015..60a1a9e4ada34 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -2094,14 +2094,16 @@ static inline bool damon_sysfs_kdamond_running(
+ static int damon_sysfs_apply_inputs(struct damon_ctx *ctx,
+ 		struct damon_sysfs_context *sys_ctx)
+ {
++	enum damon_ops_id ops_id;
+ 	int err;
+ 
+-	err = damon_select_ops(ctx, sys_ctx->ops_id);
++	ops_id = READ_ONCE(sys_ctx->ops_id);
++	err = damon_select_ops(ctx, ops_id);
+ 	if (err)
+ 		return err;
+ 	ctx->addr_unit = sys_ctx->addr_unit;
+ 	/* addr_unit is respected by only DAMON_OPS_PADDR */
+-	if (sys_ctx->ops_id == DAMON_OPS_PADDR)
++	if (ops_id == DAMON_OPS_PADDR)
+ 		ctx->min_region_sz = max(
+ 				DAMON_MIN_REGION_SZ / sys_ctx->addr_unit, 1);
+ 	ctx->pause = sys_ctx->pause;
+-- 
+2.47.3
