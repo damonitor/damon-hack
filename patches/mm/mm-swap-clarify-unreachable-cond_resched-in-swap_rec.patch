@@ -1,0 +1,60 @@
+From: Youngjun Park <youngjun.park@lge.com>
+Date: Mon, 13 Jul 2026 13:50:14 +0900
+Subject: [PATCH] mm/swap: clarify unreachable cond_resched() in
+ swap_reclaim_full_clusters
+
+Commit 66366d291f66 ("mm/swap: add cond_resched() in
+swap_reclaim_full_clusters to prevent softlockup") added cond_resched() to
+prevent soft lockups during heavy swap reclaim.
+
+Currently, there are two call sites for this function:
+1. swap_reclaim_work(): called with force=true in a workqueue context.
+2. cluster_alloc_swap_entry(): called with force=false, holding a
+   local_lock and potentially a global cluster spinlock (atomic context).
+
+In the second case, calling cond_resched() would normally cause a
+"scheduling while atomic" bug.  However, it is currently safe because when
+force=false, 'to_scan' is initialized to 1.  The loop decrements it to 0
+and breaks before ever reaching cond_resched().
+
+This implicit dependency is hard to notice and recently triggered a false
+positive in AI Sashiko review.
+
+Add a comment to explicitly clarify that cond_resched() is unreachable in
+atomic contexts.  This improves readability and prevents future misuse if
+the loop logic or 'to_scan' initialization is modified.
+
+Link: https://sashiko.dev/#/patchset/20260713025644.170839-1-youngjun.park@lge.com?part=4
+Link: https://lore.kernel.org/20260713045014.219653-1-youngjun.park@lge.com
+Signed-off-by: Youngjun Park <youngjun.park@lge.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/swapfile.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 1333def0870cb..70b90fa9c2a04 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1072,6 +1072,12 @@ static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
+ 		swap_cluster_unlock(ci);
+ 		if (to_scan <= 0)
+ 			break;
++
++		/*
++		 * When 'force' is false, 'to_scan' is initialized to 1.
++		 * The loop breaks above, making this cond_resched() unreachable
++		 * in atomic contexts.
++		 */
+ 		cond_resched();
+ 	}
+ }
+-- 
+2.47.3
+

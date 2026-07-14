@@ -1,0 +1,125 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Mon, 13 Jul 2026 11:33:38 +0200
+Subject: [PATCH] shmem: provide a shmem_write_folio wrapper
+
+Patch series "better block swap batching and a different take on swap_ops
+v5".
+
+This series makes use of the swap_iocb for block as well so that it
+doesn't do inefficient single-bio I/O, and then rebases the swap_ops from
+Baoquan on top of the now very different method structure.
+
+When running doing kernels builds, which is a workload that doesn't really
+do much THP anonymous memory it still gets 2x clustering for writeout and
+1.2x for reading back swap in.  The overall times do not actually change,
+though.
+
+
+This patch (of 7):
+
+Provide a wrapper for the shmem abuses in drm to prepare for swap I/O
+refactoring by keeping swap_iocb handling entirely contained in mm/.
+
+Link: https://lore.kernel.org/20260713093350.2154226-1-hch@lst.de
+Link: https://lore.kernel.org/20260713093350.2154226-2-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/gpu/drm/i915/gem/i915_gem_shmem.c | 2 +-
+ drivers/gpu/drm/ttm/ttm_backup.c          | 2 +-
+ include/linux/shmem_fs.h                  | 5 +----
+ mm/shmem.c                                | 7 ++++++-
+ mm/swap.h                                 | 4 ++++
+ 5 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/gpu/drm/i915/gem/i915_gem_shmem.c b/drivers/gpu/drm/i915/gem/i915_gem_shmem.c
+index 06543ae60706e..ef94401662955 100644
+--- a/drivers/gpu/drm/i915/gem/i915_gem_shmem.c
++++ b/drivers/gpu/drm/i915/gem/i915_gem_shmem.c
+@@ -325,7 +325,7 @@ void __shmem_writeback(size_t size, struct address_space *mapping)
+ 		if (folio_mapped(folio))
+ 			folio_redirty_for_writepage(&wbc, folio);
+ 		else
+-			error = shmem_writeout(folio, NULL, NULL);
++			error = shmem_write_folio(folio);
+ 	}
+ }
+ 
+diff --git a/drivers/gpu/drm/ttm/ttm_backup.c b/drivers/gpu/drm/ttm/ttm_backup.c
+index 81df4cb5606b4..c5b813a563e7f 100644
+--- a/drivers/gpu/drm/ttm/ttm_backup.c
++++ b/drivers/gpu/drm/ttm/ttm_backup.c
+@@ -117,7 +117,7 @@ ttm_backup_backup_page(struct file *backup, struct page *page,
+ 	if (writeback && !folio_mapped(to_folio) &&
+ 	    folio_clear_dirty_for_io(to_folio)) {
+ 		folio_set_reclaim(to_folio);
+-		ret = shmem_writeout(to_folio, NULL, NULL);
++		ret = shmem_write_folio(to_folio);
+ 		if (!folio_test_writeback(to_folio))
+ 			folio_clear_reclaim(to_folio);
+ 		/*
+diff --git a/include/linux/shmem_fs.h b/include/linux/shmem_fs.h
+index e729b9b0e38d4..5663dff53186e 100644
+--- a/include/linux/shmem_fs.h
++++ b/include/linux/shmem_fs.h
+@@ -12,8 +12,6 @@
+ #include <linux/userfaultfd_k.h>
+ #include <linux/bits.h>
+ 
+-struct swap_iocb;
+-
+ /* inode in-kernel data */
+ 
+ #ifdef CONFIG_TMPFS_QUOTA
+@@ -123,8 +121,7 @@ static inline bool shmem_mapping(const struct address_space *mapping)
+ void shmem_unlock_mapping(struct address_space *mapping);
+ struct page *shmem_read_mapping_page_gfp(struct address_space *mapping,
+ 					pgoff_t index, gfp_t gfp_mask);
+-int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
+-		struct list_head *folio_list);
++int shmem_write_folio(struct folio *folio);
+ void shmem_truncate_range(struct inode *inode, loff_t start, uoff_t end);
+ int shmem_unuse(unsigned int type);
+ 
+diff --git a/mm/shmem.c b/mm/shmem.c
+index c8e2011e0ce68..e523ec1a2e459 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -1738,7 +1738,12 @@ int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
+ 	folio_mark_dirty(folio);
+ 	return AOP_WRITEPAGE_ACTIVATE;	/* Return with folio locked */
+ }
+-EXPORT_SYMBOL_GPL(shmem_writeout);
++
++int shmem_write_folio(struct folio *folio)
++{
++	return shmem_writeout(folio, NULL, NULL);
++}
++EXPORT_SYMBOL_GPL(shmem_write_folio);
+ 
+ #if defined(CONFIG_NUMA) && defined(CONFIG_TMPFS)
+ static void shmem_show_mpol(struct seq_file *seq, struct mempolicy *mpol)
+diff --git a/mm/swap.h b/mm/swap.h
+index b51ad3071a730..fe0b694a324d1 100644
+--- a/mm/swap.h
++++ b/mm/swap.h
+@@ -471,4 +471,8 @@ static inline unsigned int folio_swap_flags(struct folio *folio)
+ }
+ 
+ #endif /* CONFIG_SWAP */
++
++int shmem_writeout(struct folio *folio, struct swap_iocb **plug,
++		struct list_head *folio_list);
++
+ #endif /* _MM_SWAP_H */
+-- 
+2.47.3
+

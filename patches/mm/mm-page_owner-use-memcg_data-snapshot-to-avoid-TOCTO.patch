@@ -1,0 +1,94 @@
+From: Ye Liu <ye.liu@linux.dev>
+Date: Tue, 14 Jul 2026 09:51:08 +0800
+Subject: [PATCH] mm/page_owner: use memcg_data snapshot to avoid TOCTOU in
+ print_page_owner_memcg()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+print_page_owner_memcg() takes a snapshot of page->memcg_data via
+READ_ONCE at the top of the function and guards against tail pages and
+NULL memcg_data.  However, it later calls two functions that re-read
+page->memcg_data locklessly:
+
+  1) page_memcg_check(page) — re-reads page->memcg_data;
+  2) PageMemcgKmem(page) — calls folio_memcg_kmem(), which re-reads
+     folio->memcg_data and folio->page->compound_head, wrapping both
+     in VM_BUG_ON assertions:
+
+        VM_BUG_ON_PGFLAGS(PageTail(&folio->page), &folio->page);
+        VM_BUG_ON_FOLIO(folio->memcg_data & MEMCG_DATA_OBJEXTS, folio);
+
+If the page is concurrently freed and reallocated as a THP tail page or a
+slab page between the initial guards and these later calls, the VM_BUG_ON
+assertions can fire on debug builds (CONFIG_DEBUG_VM=y), causing a kernel
+panic.
+
+Fix both TOCTOU issues by using the memcg_data snapshot throughout:
+  - Extract objcg from the snapshot via objcg = (void *)(memcg_data &
+    ~OBJEXTS_FLAGS_MASK) instead of calling page_memcg_check(page);
+  - Test (memcg_data & MEMCG_DATA_KMEM) instead of calling
+    PageMemcgKmem(page), which is semantically equivalent:
+    PageMemcgKmem()->folio_memcg_kmem()->folio->memcg_data &
+    MEMCG_DATA_KMEM.
+  - When memcg_data has MEMCG_DATA_OBJEXTS set, early-return after
+    printing "Slab cache page\n" since objcg != memcg for slab pages
+    and there is no meaningful cgroup to look up.
+
+This avoids both TOCTOU windows and the assertions entirely.
+
+Link: https://lore.kernel.org/20260714015117.78351-10-ye.liu@linux.dev
+Signed-off-by: Ye Liu <ye.liu@linux.dev>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_owner.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/mm/page_owner.c b/mm/page_owner.c
+index 2e3880053a349..e18512a49e38a 100644
+--- a/mm/page_owner.c
++++ b/mm/page_owner.c
+@@ -540,6 +540,7 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
+ 					 struct page *page)
+ {
+ 	unsigned long memcg_data;
++	struct obj_cgroup *objcg;
+ 	struct mem_cgroup *memcg;
+ 	bool online;
+ 	char name[80];
+@@ -549,11 +550,14 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
+ 	if (!memcg_data || PageTail(page))
+ 		goto out_unlock;
+ 
+-	if (memcg_data & MEMCG_DATA_OBJEXTS)
++	if (memcg_data & MEMCG_DATA_OBJEXTS) {
+ 		ret += scnprintf(kbuf + ret, count - ret,
+ 				"Slab cache page\n");
++		goto out_unlock;
++	}
+ 
+-	memcg = page_memcg_check(page);
++	objcg = (void *)(memcg_data & ~OBJEXTS_FLAGS_MASK);
++	memcg = objcg ? obj_cgroup_memcg(objcg) : NULL;
+ 	if (!memcg)
+ 		goto out_unlock;
+ 
+@@ -561,7 +565,7 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
+ 	cgroup_name(memcg->css.cgroup, name, sizeof(name));
+ 	ret += scnprintf(kbuf + ret, count - ret,
+ 			"Charged %sto %smemcg %s\n",
+-			PageMemcgKmem(page) ? "(via objcg) " : "",
++			(memcg_data & MEMCG_DATA_KMEM) ? "(via objcg) " : "",
+ 			online ? "" : "offline ",
+ 			name);
+ out_unlock:
+-- 
+2.47.3
+

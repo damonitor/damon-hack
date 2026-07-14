@@ -1,0 +1,262 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Mon, 13 Jul 2026 11:33:43 +0200
+Subject: [PATCH] mm/swap: remove SWP_FS_OPS
+
+Provide a swap_fs_activate helper that directly sets up swap_fs_ops, and a
+flag in struct swap_ops to indicate of NOFS swapping is allowed.
+
+Link: https://lore.kernel.org/20260713093350.2154226-7-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/filesystems/locking.rst |  5 +++--
+ Documentation/filesystems/vfs.rst     |  4 ++--
+ fs/nfs/file.c                         |  4 +---
+ fs/smb/client/file.c                  |  4 +---
+ include/linux/swap.h                  |  6 +++++-
+ mm/page_io.c                          | 10 +++++++++-
+ mm/swap.h                             | 22 ++++++++++------------
+ mm/swapfile.c                         |  2 --
+ mm/vmscan.c                           | 15 +++++++--------
+ 9 files changed, 38 insertions(+), 34 deletions(-)
+
+diff --git a/Documentation/filesystems/locking.rst b/Documentation/filesystems/locking.rst
+index 08d01bc62c319..1a50d41a39a1e 100644
+--- a/Documentation/filesystems/locking.rst
++++ b/Documentation/filesystems/locking.rst
+@@ -355,13 +355,14 @@ should perform any validation and preparation necessary to ensure that
+ writes can be performed with minimal memory allocation.  It should call
+ add_swap_extent(), or the helper iomap_swapfile_activate(), and return
+ the number of extents added.  If IO should be submitted through
+-->swap_rw(), it should set SWP_FS_OPS, otherwise IO will be submitted
++->swap_rw(), it should call swap_fs_activate, otherwise IO will be submitted
+ directly to the block device ``sis->bdev``.
+ 
+ ->swap_deactivate() will be called in the sys_swapoff()
+ path after ->swap_activate() returned success.
+ 
+-->swap_rw will be called for swap IO if SWP_FS_OPS was set by ->swap_activate().
++->swap_rw will be called for swap IO if swap_fs_activate was called by
++->swap_activate().
+ 
+ file_lock_operations
+ ====================
+diff --git a/Documentation/filesystems/vfs.rst b/Documentation/filesystems/vfs.rst
+index 7c753148af888..e7677423a20f7 100644
+--- a/Documentation/filesystems/vfs.rst
++++ b/Documentation/filesystems/vfs.rst
+@@ -977,7 +977,7 @@ cache in your filesystem.  The following members are defined:
+ 	can be performed with minimal memory allocation.  It should call
+ 	add_swap_extent(), or the helper iomap_swapfile_activate(), and
+ 	return the number of extents added.  If IO should be submitted
+-	through ->swap_rw(), it should set SWP_FS_OPS, otherwise IO will
++	through ->swap_rw(), it should call swap_fs_activate, otherwise IO will
+ 	be submitted directly to the block device ``sis->bdev``.
+ 
+ ``swap_deactivate``
+@@ -985,7 +985,7 @@ cache in your filesystem.  The following members are defined:
+ 	successful.
+ 
+ ``swap_rw``
+-	Called to read or write swap pages when SWP_FS_OPS is set.
++	Called to read or write swap pages when swap_fs_activate was called.
+ 
+ The File Object
+ ===============
+diff --git a/fs/nfs/file.c b/fs/nfs/file.c
+index a0d8f1c1cf103..851d93a099889 100644
+--- a/fs/nfs/file.c
++++ b/fs/nfs/file.c
+@@ -597,7 +597,7 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
+ 	ret = rpc_clnt_swap_activate(clnt);
+ 	if (ret)
+ 		return ret;
+-	ret = add_swap_extent(sis, 0, sis->max, 0);
++	ret = swap_fs_activate(sis);
+ 	if (ret < 0) {
+ 		rpc_clnt_swap_deactivate(clnt);
+ 		return ret;
+@@ -607,8 +607,6 @@ static int nfs_swap_activate(struct swap_info_struct *sis, struct file *file,
+ 
+ 	if (cl->rpc_ops->enable_swap)
+ 		cl->rpc_ops->enable_swap(inode);
+-
+-	sis->flags |= SWP_FS_OPS;
+ 	return ret;
+ }
+ 
+diff --git a/fs/smb/client/file.c b/fs/smb/client/file.c
+index 5a25635bc62a9..4b1bc16b8f3f6 100644
+--- a/fs/smb/client/file.c
++++ b/fs/smb/client/file.c
+@@ -3387,9 +3387,7 @@ static int cifs_swap_activate(struct swap_info_struct *sis,
+ 	 * but we could add call to grab a byte range lock to prevent others
+ 	 * from reading or writing the file
+ 	 */
+-
+-	sis->flags |= SWP_FS_OPS;
+-	return add_swap_extent(sis, 0, sis->max, 0);
++	return swap_fs_activate(sis);
+ }
+ 
+ static void cifs_swap_deactivate(struct file *file)
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 8c15d0b16a3fe..45f301d73e2ae 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -202,7 +202,6 @@ enum {
+ 	SWP_SOLIDSTATE	= (1 << 4),	/* blkdev seeks are cheap */
+ 	SWP_BLKDEV	= (1 << 6),	/* its a block device */
+ 	SWP_ACTIVATED	= (1 << 7),	/* set after swap_activate success */
+-	SWP_FS_OPS	= (1 << 8),	/* swapfile operations go through fs */
+ 	SWP_AREA_DISCARD = (1 << 9),	/* single-time swap area discards */
+ 	SWP_PAGE_DISCARD = (1 << 10),	/* freed swap page-cluster discards */
+ 	SWP_STABLE_WRITES = (1 << 11),	/* no overwrite PG_writeback pages */
+@@ -335,6 +334,7 @@ extern void __meminit kswapd_stop(int nid);
+ 
+ #ifdef CONFIG_SWAP
+ 
++int swap_fs_activate(struct swap_info_struct *sis);
+ int add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
+ 		unsigned long nr_pages, sector_t start_block);
+ int generic_swapfile_activate(struct swap_info_struct *, struct file *,
+@@ -460,6 +460,10 @@ static inline bool folio_free_swap(struct folio *folio)
+ 	return false;
+ }
+ 
++static inline int swap_fs_activate(struct swap_info_struct *sis)
++{
++	return -EINVAL;
++}
+ static inline int add_swap_extent(struct swap_info_struct *sis,
+ 				  unsigned long start_page,
+ 				  unsigned long nr_pages, sector_t start_block)
+diff --git a/mm/page_io.c b/mm/page_io.c
+index c36b44ffe9471..cea438b66bceb 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -686,12 +686,20 @@ static bool swap_fs_can_merge(struct folio *folio, struct folio *prev_folio,
+ 		swap_dev_pos(prev_folio->swap) + prev_folio_size;
+ }
+ 
+-const struct swap_ops swap_fs_ops = {
++static const struct swap_ops swap_fs_ops = {
++	.flags			= SWAP_OPS_F_REQUIRE_NOFS,
+ 	.submit_write		= swap_fs_submit_write,
+ 	.submit_read		= swap_fs_submit_read,
+ 	.can_merge		= swap_fs_can_merge,
+ };
+ 
++int swap_fs_activate(struct swap_info_struct *sis)
++{
++	sis->ops = &swap_fs_ops;
++	return add_swap_extent(sis, 0, sis->max, 0);
++}
++EXPORT_SYMBOL_GPL(swap_fs_activate);
++
+ void swap_write_submit(struct swap_io_ctx *ctx)
+ {
+ 	if (!ctx->sio)
+diff --git a/mm/swap.h b/mm/swap.h
+index 33a258c77064e..8fb32bf157392 100644
+--- a/mm/swap.h
++++ b/mm/swap.h
+@@ -82,7 +82,17 @@ struct swap_io_ctx {
+ 	struct swap_info_struct	*sis;
+ };
+ 
++/*
++ * SWAP_OPS_F_REQUIRE_NOFS:
++ *	When set, all reclaim operations must operated as GFS_NOFS and not
++ *	just GFP_NOIO, as GFP_NOIO allocations could recourse into the
++ *	file system backing this swap file.
++ */
++#define SWAP_OPS_F_REQUIRE_NOFS		(1U << 0)
++
+ struct swap_ops {
++	unsigned int		flags;
++
+ 	bool (*can_merge)(struct folio *folio, struct folio *prev_folio,
+ 			size_t prev_folio_size, int rw);
+ 	void (*submit_write)(struct swap_io_ctx *ctx);
+@@ -333,11 +343,6 @@ struct folio *swapin_sync(swp_entry_t entry, gfp_t flag, unsigned long orders,
+ void swap_update_readahead(struct folio *folio, struct vm_area_struct *vma,
+ 			   unsigned long addr);
+ 
+-static inline unsigned int folio_swap_flags(struct folio *folio)
+-{
+-	return __swap_entry_to_info(folio->swap)->flags;
+-}
+-
+ #else /* CONFIG_SWAP */
+ static inline struct swap_cluster_info *swap_cluster_lock(
+ 	struct swap_info_struct *si, pgoff_t offset, bool irq)
+@@ -468,16 +473,9 @@ static inline void __swap_cache_replace_folio(struct swap_cluster_info *ci,
+ 		struct folio *old, struct folio *new)
+ {
+ }
+-
+-static inline unsigned int folio_swap_flags(struct folio *folio)
+-{
+-	return 0;
+-}
+-
+ #endif /* CONFIG_SWAP */
+ 
+ extern const struct swap_ops swap_bdev_ops;
+-extern const struct swap_ops swap_fs_ops;
+ 
+ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
+ 		struct list_head *folio_list);
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index c6b3e4278045e..1333def0870cb 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -2962,8 +2962,6 @@ static int setup_swap_extents(struct swap_info_struct *sis,
+ 		ret = mapping->a_ops->swap_activate(sis, swap_file, span);
+ 		if (ret < 0)
+ 			return ret;
+-		if (sis->flags & SWP_FS_OPS)
+-			sis->ops = &swap_fs_ops;
+ 		sis->flags |= SWP_ACTIVATED;
+ 		return ret;
+ 	}
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 1c42c925add2c..4357a44ee8767 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -1033,16 +1033,15 @@ static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
+ {
+ 	if (gfp_mask & __GFP_FS)
+ 		return true;
+-	if (!folio_test_swapcache(folio) || !(gfp_mask & __GFP_IO))
+-		return false;
+ 	/*
+-	 * We can "enter_fs" for swap-cache with only __GFP_IO
+-	 * providing this isn't SWP_FS_OPS.
+-	 * ->flags can be updated non-atomically,
+-	 * but that will never affect SWP_FS_OPS, so the data_race
+-	 * is safe.
++	 * We can "enter_fs" for swap-cache with only __GFP_IO unless backed by
++	 * a swapfile that requires GFP_NOFS I/O.
+ 	 */
+-	return !data_race(folio_swap_flags(folio) & SWP_FS_OPS);
++	if (folio_test_swapcache(folio) && (gfp_mask & __GFP_IO) &&
++	    !(__swap_entry_to_info(folio->swap)->ops->flags &
++			SWAP_OPS_F_REQUIRE_NOFS))
++		return true;
++	return false;
+ }
+ 
+ /*
+-- 
+2.47.3
+

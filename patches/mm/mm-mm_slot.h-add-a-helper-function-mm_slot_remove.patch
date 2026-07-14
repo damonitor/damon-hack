@@ -1,0 +1,123 @@
+From: xu xin <xu.xin16@zte.com.cn>
+Date: Tue, 14 Jul 2026 09:26:22 +0800
+Subject: [PATCH] mm/mm_slot.h: add a helper function mm_slot_remove
+
+Patch series "Two small patches to clean up mm/mm_slot.h", v3.
+
+mm_slot.h is mainly used by THP and KSM.
+
+Patch 1 introduces mm_slot_remove() to abstract the common
+hash_del() + list_del() sequence used in both khugepaged and KSM.
+
+Patch 2 adds a comment explaining why mm_slot_lookup/insert cannot
+be converted to static inline functions.
+
+
+This patch (of 2):
+
+Both THP and KSM manage per-mm scanning slots using the mm_slot structure.
+The slot is kept in a hash table and a list, and removal from both
+containers requires the same two operations: hash_del() and list_del().
+
+Introduce mm_slot_remove() to abstract the common hash_del() + list_del()
+sequence used in both khugepaged and KSM.
+
+No functional change is intended.
+
+Link: https://lore.kernel.org/202607140924549782dUh3YBPmy8g1NDMK2zIW@zte.com.cn
+Link: https://lore.kernel.org/20260714092622583ayzGzGYSjAareKKHt_T91@zte.com.cn
+Signed-off-by: xu xin <xu.xin16@zte.com.cn>
+Reviewed-by: Nico Pache <npache@redhat.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Wang Yaxin <wang.yaxin@zte.com.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 6 ++----
+ mm/ksm.c        | 9 +++------
+ mm/mm_slot.h    | 5 +++++
+ 3 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 45e8245d80dad..27e8f3077e80f 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -606,8 +606,7 @@ void __khugepaged_exit(struct mm_struct *mm)
+ 	spin_lock(&khugepaged_mm_lock);
+ 	slot = mm_slot_lookup(mm_slots_hash, mm);
+ 	if (slot && khugepaged_scan.mm_slot != slot) {
+-		hash_del(&slot->hash);
+-		list_del(&slot->mm_node);
++		mm_slot_remove(slot);
+ 		free = 1;
+ 	}
+ 	spin_unlock(&khugepaged_mm_lock);
+@@ -1802,8 +1801,7 @@ static void collect_mm_slot(struct mm_slot *slot)
+ 
+ 	if (collapse_test_exit(mm)) {
+ 		/* free mm_slot */
+-		hash_del(&slot->hash);
+-		list_del(&slot->mm_node);
++		mm_slot_remove(slot);
+ 
+ 		/*
+ 		 * Not strictly needed because the mm exited already.
+diff --git a/mm/ksm.c b/mm/ksm.c
+index 14550f69cf020..47006f494fcb1 100644
+--- a/mm/ksm.c
++++ b/mm/ksm.c
+@@ -1257,8 +1257,7 @@ static int unmerge_and_remove_all_rmap_items(void)
+ 				  struct mm_slot, mm_node);
+ 		ksm_scan.mm_slot = mm_slot_entry(slot, struct ksm_mm_slot, slot);
+ 		if (ksm_test_exit(mm)) {
+-			hash_del(&mm_slot->slot.hash);
+-			list_del(&mm_slot->slot.mm_node);
++			mm_slot_remove(&mm_slot->slot);
+ 			spin_unlock(&ksm_mmlist_lock);
+ 
+ 			mm_slot_free(mm_slot_cache, mm_slot);
+@@ -2772,8 +2771,7 @@ static struct ksm_rmap_item *scan_get_next_rmap_item(struct page **page)
+ 		 * or when all VM_MERGEABLE areas have been unmapped (and
+ 		 * mmap_lock then protects against race with MADV_MERGEABLE).
+ 		 */
+-		hash_del(&mm_slot->slot.hash);
+-		list_del(&mm_slot->slot.mm_node);
++		mm_slot_remove(&mm_slot->slot);
+ 		spin_unlock(&ksm_mmlist_lock);
+ 
+ 		mm_slot_free(mm_slot_cache, mm_slot);
+@@ -3116,8 +3114,7 @@ void __ksm_exit(struct mm_struct *mm)
+ 	if (ksm_scan.mm_slot == mm_slot)
+ 		goto unlock;
+ 	if (!mm_slot->rmap_list) {
+-		hash_del(&slot->hash);
+-		list_del(&slot->mm_node);
++		mm_slot_remove(slot);
+ 		easy_to_free = 1;
+ 	} else {
+ 		list_move(&slot->mm_node,
+diff --git a/mm/mm_slot.h b/mm/mm_slot.h
+index 83f18ed1c4bde..5de3e91d86b43 100644
+--- a/mm/mm_slot.h
++++ b/mm/mm_slot.h
+@@ -52,4 +52,9 @@ static inline void mm_slot_free(struct kmem_cache *cache, void *objp)
+ 	hash_add(_hashtable, &_mm_slot->hash, (unsigned long)_mm);	       \
+ })
+ 
++static inline void mm_slot_remove(struct mm_slot *slot)
++{
++	hash_del(&slot->hash);
++	list_del(&slot->mm_node);
++}
+ #endif /* _LINUX_MM_SLOT_H */
+-- 
+2.47.3
+

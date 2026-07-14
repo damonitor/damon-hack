@@ -1,0 +1,85 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Mon, 13 Jul 2026 11:33:44 +0200
+Subject: [PATCH] mm/vmstat: add NRSWP{IN,OUT} counters
+
+Count how many swap I/Os we cause.  Due to batching this can be different
+than the current counter number of pages written/read, and tracking this
+information is useful to see how efficient the batching is.
+
+The counters are added at the end of enum vm_event_item and the
+vmstat_text array under the assumption that the order of fields in
+/proc/vmstat is an ABI.  If that is not the case, they could be grouped
+with the other swap counters.
+
+Link: https://lore.kernel.org/20260713093350.2154226-8-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/vm_event_item.h | 4 ++++
+ mm/page_io.c                  | 2 ++
+ mm/vmstat.c                   | 6 +++++-
+ 3 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/vm_event_item.h b/include/linux/vm_event_item.h
+index 03fe95f5a0201..2628ccda076a0 100644
+--- a/include/linux/vm_event_item.h
++++ b/include/linux/vm_event_item.h
+@@ -175,6 +175,10 @@ enum vm_event_item { PGPGIN, PGPGOUT, PSWPIN, PSWPOUT,
+ 		KSTACK_REST,
+ #endif
+ #endif /* CONFIG_DEBUG_STACK_USAGE */
++#ifdef CONFIG_SWAP
++		NRSWPIN,
++		NRSWPOUT,
++#endif /* CONFIG_SWAP */
+ 		NR_VM_EVENT_ITEMS
+ };
+ 
+diff --git a/mm/page_io.c b/mm/page_io.c
+index cea438b66bceb..e4fa7ffffe8bb 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -704,6 +704,7 @@ void swap_write_submit(struct swap_io_ctx *ctx)
+ {
+ 	if (!ctx->sio)
+ 		return;
++	count_vm_events(NRSWPOUT, 1);
+ 	ctx->sis->ops->submit_write(ctx);
+ 	ctx->sio = NULL;
+ 	ctx->sis = NULL;
+@@ -713,6 +714,7 @@ void swap_read_submit(struct swap_io_ctx *ctx)
+ {
+ 	if (!ctx->sio)
+ 		return;
++	count_vm_events(NRSWPIN, 1);
+ 	ctx->sis->ops->submit_read(ctx);
+ 	ctx->sio = NULL;
+ 	ctx->sis = NULL;
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index 3b5cb1031f720..4e26e5fd66662 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -1489,7 +1489,11 @@ const char * const vmstat_text[] = {
+ #if THREAD_SIZE > 65536
+ 	[I(KSTACK_REST)]			= "kstack_rest",
+ #endif
+-#endif
++#endif /* CONFIG_DEBUG_STACK_USAGE */
++#ifdef CONFIG_SWAP
++	[I(NRSWPIN)]				= "nrswpin",
++	[I(NRSWPOUT)]				= "nrswpout",
++#endif /* CONFIG_SWAP */
+ #undef I
+ #endif /* CONFIG_VM_EVENT_COUNTERS */
+ };
+-- 
+2.47.3
+

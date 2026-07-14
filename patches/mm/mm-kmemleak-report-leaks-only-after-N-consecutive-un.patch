@@ -1,0 +1,118 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Mon, 13 Jul 2026 04:48:05 -0700
+Subject: [PATCH] mm: kmemleak: report leaks only after N consecutive
+ unreferenced scans
+
+kmemleak reports an object the first scan it is found unreferenced.  Its
+mark phase runs without stopping the rest of the kernel and without a
+write barrier, so a live object whose only reference is briefly invisible
+during a concurrent RCU update -- e.g.  a VMA moved between maple tree
+nodes, or a page-cache xa_node -- can be seen as unreferenced for that one
+scan.  Because an object is flagged as reported only once, such a
+transient race turns into a permanent false positive.
+
+Track how many consecutive scans each object has been seen unreferenced
+and only report it once that reaches min_unref_scans, a new module
+parameter.  It defaults to 1, leaving the behaviour unchanged; setting it
+higher (e.g.  2) still reports a genuine leak, one scan later, while an
+object referenced again before the threshold restarts its run and is never
+reported.
+
+min_unref_scans can be set at boot with kmemleak.min_unref_scans=<n> or at
+run-time via /sys/module/kmemleak/parameters/min_unref_scans.
+
+Link: https://lore.kernel.org/20260713-catalin_pto-v1-2-5b93b1131089@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/dev-tools/kmemleak.rst |  8 ++++++++
+ mm/kmemleak.c                        | 13 ++++++++++++-
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/dev-tools/kmemleak.rst b/Documentation/dev-tools/kmemleak.rst
+index 7d784e03f3f9d..a8a83bc69ceb8 100644
+--- a/Documentation/dev-tools/kmemleak.rst
++++ b/Documentation/dev-tools/kmemleak.rst
+@@ -198,6 +198,14 @@ systems, because of pointers temporarily stored in CPU registers or
+ stacks. Kmemleak defines MSECS_MIN_AGE (defaulting to 1000) representing
+ the minimum age of an object to be reported as a memory leak.
+ 
++The ``min_unref_scans`` module parameter (default 1) requires an object to
++be seen unreferenced in that many consecutive scans before it is reported.
++Keeping it at 1 preserves the historical behaviour; higher values filter
++the transient false positives described above, at the cost of delaying
++genuine reports by up to that many scans. It can be set at boot with
++``kmemleak.min_unref_scans=<n>`` or at run-time via
++``/sys/module/kmemleak/parameters/min_unref_scans``.
++
+ Limitations and Drawbacks
+ -------------------------
+ 
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index ac77bab580688..2fff11637e490 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -151,6 +151,8 @@ struct kmemleak_object {
+ 	int min_count;
+ 	/* the total number of pointers found pointing to this object */
+ 	int count;
++	/* consecutive scans the object has been seen unreferenced */
++	unsigned int unref_scans;
+ 	/* checksum for detecting modified objects */
+ 	u32 checksum;
+ 	depot_stack_handle_t trace_handle;
+@@ -234,6 +236,9 @@ static unsigned long max_percpu_addr;
+ static struct task_struct *scan_thread;
+ /* used to avoid reporting of recently allocated objects */
+ static unsigned long jiffies_min_age;
++/* consecutive scans an object must stay unreferenced before reporting */
++static unsigned int min_unref_scans = 1;
++module_param(min_unref_scans, uint, 0644);
+ static unsigned long jiffies_last_scan;
+ /* delay between automatic memory scannings */
+ static unsigned long jiffies_scan_wait;
+@@ -692,6 +697,7 @@ static struct kmemleak_object *__alloc_object(gfp_t gfp)
+ 	object->excess_ref = 0;
+ 	object->count = 0;			/* white color initially */
+ 	object->checksum = ~0;
++	object->unref_scans = 0;
+ 	object->del_state = 0;
+ 
+ 	/* task information */
+@@ -1890,6 +1896,9 @@ static int __kmemleak_scan(bool full)
+ 				__paint_it(object, KMEMLEAK_BLACK);
+ 		}
+ 
++		/* referenced last scan: restart the unreferenced run */
++		if (!color_white(object))
++			object->unref_scans = 0;
+ 		/* reset the reference count (whiten the object) */
+ 		object->count = 0;
+ 		if (full)
+@@ -2064,9 +2073,11 @@ static void kmemleak_scan(void)
+ 		raw_spin_lock_irq(&object->lock);
+ 		trace_handle = 0;
+ 		dedup_print = false;
++
+ 		if (unreferenced_object(object) &&
+ 		    (object->flags & OBJECT_SUSPECT) &&
+-		    !(object->flags & OBJECT_REPORTED)) {
++		    !(object->flags & OBJECT_REPORTED) &&
++		    ++object->unref_scans >= min_unref_scans) {
+ 			object->flags |= OBJECT_REPORTED;
+ 			if (kmemleak_verbose) {
+ 				trace_handle = object->trace_handle;
+-- 
+2.47.3
+

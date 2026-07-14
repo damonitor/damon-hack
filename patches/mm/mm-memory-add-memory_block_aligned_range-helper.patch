@@ -1,0 +1,137 @@
+From: Gregory Price <gourry@gourry.net>
+Date: Sun, 12 Jul 2026 11:44:55 -0400
+Subject: [PATCH] mm/memory: add memory_block_aligned_range() helper
+
+Patch series "dax/kmem: atomic whole-device hotplug via sysfs", v7.
+
+The dax kmem driver onlines memory during probe using the system default
+policy, with no atomic control for the state of an entire region at
+runtime - only by toggling individual memory blocks.
+
+Offlining and removing a whole region therefore races with other userland
+controllers that interfere between the two steps.
+
+This series adds a sysfs "state" attribute for atomic whole-device hotplug
+control, plus the mm and dax plumbing to support it.
+
+Transitions are atomic across every range of the device.  The state names
+mirror the per-block memoryX/state ABI with one modification:
+
+  - "unplugged":      memory blocks are not present
+  - "online":         online as system RAM, zone chosen by the kernel
+  - "online_kernel":  online in ZONE_NORMAL
+  - "online_movable": online in ZONE_MOVABLE
+
+"offline" (blocks present but offline) is reportable for backward
+compatibility but is not writable because it entices the race condition we
+are trying to solve (separate atomic steps for offline and unplug).
+
+'unplugged' (atomic offline+remove of the whole device) is the new
+capability provided by the new kmem sysfs attribute.
+
+dax/kmem probe still creates the memory blocks by default when the default
+policy is "offline", to preserve backwards compatibility.
+
+
+This patch (of 10):
+
+Memory hotplug operations require ranges aligned to memory block
+boundaries.  This is a generic operation for hotplug.
+
+Add memory_block_aligned_range() as a common helper in <linux/memory.h>
+that aligns the start address up and end address down to memory block
+boundaries.  Guard against end underflow when the range falls below the
+first memory block boundary, returning an empty range instead.
+
+Update dax/kmem to use this helper.
+
+Link: https://lore.kernel.org/20260712154505.3564379-1-gourry@gourry.net
+Link: https://lore.kernel.org/20260712154505.3564379-2-gourry@gourry.net
+Signed-off-by: Gregory Price <gourry@gourry.net>
+Reviewed-by: Dave Jiang <dave.jiang@intel.com>
+Reviewed-by: Dan Williams <djbw@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alison Schofield <alison.schofield@intel.com>
+Cc: Danilo Krummrich <dakr@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: "Rafael J. Wysocki" <rafael@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vishal Verma <vishal.l.verma@intel.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Hannes Reinecke <hare@suse.de>
+Cc: Pankaj Gupta <pankaj.gupta@amd.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/dax/kmem.c     |  4 +---
+ include/linux/memory.h | 27 +++++++++++++++++++++++++++
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/dax/kmem.c b/drivers/dax/kmem.c
+index a18e2b968e4da..592171ec10f49 100644
+--- a/drivers/dax/kmem.c
++++ b/drivers/dax/kmem.c
+@@ -33,9 +33,7 @@ static int dax_kmem_range(struct dev_dax *dev_dax, int i, struct range *r)
+ 	struct dev_dax_range *dax_range = &dev_dax->ranges[i];
+ 	struct range *range = &dax_range->range;
+ 
+-	/* memory-block align the hotplug range */
+-	r->start = ALIGN(range->start, memory_block_size_bytes());
+-	r->end = ALIGN_DOWN(range->end + 1, memory_block_size_bytes()) - 1;
++	*r = memory_block_aligned_range(range);
+ 	if (r->start >= r->end) {
+ 		r->start = range->start;
+ 		r->end = range->end;
+diff --git a/include/linux/memory.h b/include/linux/memory.h
+index 463dc02f6cff0..1783299073e47 100644
+--- a/include/linux/memory.h
++++ b/include/linux/memory.h
+@@ -20,6 +20,7 @@
+ #include <linux/compiler.h>
+ #include <linux/mutex.h>
+ #include <linux/memory_hotplug.h>
++#include <linux/range.h>
+ 
+ #define MIN_MEMORY_BLOCK_SIZE     (1UL << SECTION_SIZE_BITS)
+ 
+@@ -100,6 +101,32 @@ int arch_get_memory_phys_device(unsigned long start_pfn);
+ unsigned long memory_block_size_bytes(void);
+ int set_memory_block_size_order(unsigned int order);
+ 
++/**
++ * memory_block_aligned_range - align a physical address range to memory blocks
++ * @range: the input range to align
++ *
++ * Aligns the start address up and the end address down to memory block
++ * boundaries. This is required for memory hotplug operations which must
++ * operate on memory-block aligned ranges.
++ *
++ * Returns the aligned range. Callers should check that the returned
++ * range is valid (aligned.start < aligned.end) before using it.
++ */
++static inline struct range memory_block_aligned_range(const struct range *range)
++{
++	struct range aligned;
++
++	aligned.start = ALIGN(range->start, memory_block_size_bytes());
++	aligned.end = ALIGN_DOWN(range->end + 1, memory_block_size_bytes());
++	/* No whole block fits (e.g. range below the first boundary): empty. */
++	if (aligned.end <= aligned.start)
++		aligned.start = aligned.end;
++	else
++		aligned.end -= 1;
++
++	return aligned;
++}
++
+ struct memory_notify {
+ 	unsigned long start_pfn;
+ 	unsigned long nr_pages;
+-- 
+2.47.3
+

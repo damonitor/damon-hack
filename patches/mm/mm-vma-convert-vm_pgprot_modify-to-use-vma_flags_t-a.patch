@@ -1,0 +1,103 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Sat, 11 Jul 2026 19:45:03 +0100
+Subject: [PATCH] mm/vma: convert vm_pgprot_modify() to use vma_flags_t and
+ rename
+
+Update vm_pgprot_modify() to use the new VMA flags type vma_flags_t
+and rename to vma_pgprot_modify() accordingly.
+
+This is part of the ongoing work to convert vm_flags_t to vma_flags_t, in
+order to eliminate the arbitrary limit of the number of bits in a system
+word on available VMA flags.
+
+Update VMA userland tests accordingly, updating vma_set_page_prot() to no
+longer inline vma_pgprot_modify(), rather we can simply define
+vma_pgprot_modify() as a static inline function and the tests will pick it
+up from vma.h.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260711-b4-vma-flags-mm-v2-6-0fa2357d5431@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jani Nikula <jani.nikula@intel.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mmap.c | 8 ++++----
+ mm/vma.c  | 2 +-
+ mm/vma.h  | 6 ++++--
+ 3 files changed, 9 insertions(+), 7 deletions(-)
+
+diff --git a/mm/mmap.c b/mm/mmap.c
+index ae9a5018e20e1..2076c70e7700c 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -80,13 +80,13 @@ core_param(ignore_rlimit_data, ignore_rlimit_data, bool, 0644);
+ /* Update vma->vm_page_prot to reflect vma->vm_flags. */
+ void vma_set_page_prot(struct vm_area_struct *vma)
+ {
+-	vm_flags_t vm_flags = vma->vm_flags;
++	vma_flags_t vma_flags = vma->flags;
+ 	pgprot_t vm_page_prot;
+ 
+-	vm_page_prot = vm_pgprot_modify(vma->vm_page_prot, vm_flags);
++	vm_page_prot = vma_pgprot_modify(vma->vm_page_prot, vma_flags);
+ 	if (vma_wants_writenotify(vma, vm_page_prot)) {
+-		vm_flags &= ~VM_SHARED;
+-		vm_page_prot = vm_pgprot_modify(vm_page_prot, vm_flags);
++		vma_flags_clear(&vma_flags, VMA_SHARED_BIT);
++		vm_page_prot = vma_pgprot_modify(vm_page_prot, vma_flags);
+ 	}
+ 	/* remove_protection_ptes reads vma->vm_page_prot without mmap_lock */
+ 	WRITE_ONCE(vma->vm_page_prot, vm_page_prot);
+diff --git a/mm/vma.c b/mm/vma.c
+index 1f443d979a7d7..a74a0e467c630 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2176,7 +2176,7 @@ bool vma_wants_writenotify(struct vm_area_struct *vma, pgprot_t vm_page_prot)
+ 	/* The open routine did something to the protections that pgprot_modify
+ 	 * won't preserve? */
+ 	if (pgprot_val(vm_page_prot) !=
+-	    pgprot_val(vm_pgprot_modify(vm_page_prot, vma->vm_flags)))
++	    pgprot_val(vma_pgprot_modify(vm_page_prot, vma->flags)))
+ 		return false;
+ 
+ 	/*
+diff --git a/mm/vma.h b/mm/vma.h
+index 4eb85b4a6adc5..8ca6e7e8ae282 100644
+--- a/mm/vma.h
++++ b/mm/vma.h
+@@ -541,9 +541,11 @@ static inline bool vma_wants_manual_pte_write_upgrade(struct vm_area_struct *vma
+ }
+ 
+ #ifdef CONFIG_MMU
+-static inline pgprot_t vm_pgprot_modify(pgprot_t oldprot, vm_flags_t vm_flags)
++static inline pgprot_t vma_pgprot_modify(pgprot_t oldprot, vma_flags_t vma_flags)
+ {
+-	return pgprot_modify(oldprot, vm_get_page_prot(vm_flags));
++	const pgprot_t prot = vma_get_page_prot(vma_flags);
++
++	return pgprot_modify(oldprot, prot);
+ }
+ #endif
+ 
+-- 
+2.47.3
+

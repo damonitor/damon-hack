@@ -1,0 +1,197 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Mon, 13 Jul 2026 11:33:42 +0200
+Subject: [PATCH] mm/swap: use swap_ops to register swap device's methods
+
+This simplifies codes and makes logic clearer.  And also makes later any
+new swap device type being added easier to handle.
+
+Currently there are two types of swap devices: fs and bdev.
+
+[hch@lst.de: updated for the new submit and can_merge abstraction]
+Link: https://lore.kernel.org/20260713093350.2154226-6-hch@lst.de
+Signed-off-by: Baoquan He <baoquan.he@linux.dev>
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Suggested-by: Chris Li <chrisl@kernel.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/swap.h |  1 +
+ mm/page_io.c         | 68 ++++++++++++++++++++++++++++----------------
+ mm/swap.h            | 10 +++++++
+ mm/swapfile.c        |  4 +++
+ 4 files changed, 58 insertions(+), 25 deletions(-)
+
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 330a420fd6de3..8c15d0b16a3fe 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -276,6 +276,7 @@ struct swap_info_struct {
+ 	struct work_struct reclaim_work; /* reclaim worker */
+ 	struct list_head discard_clusters; /* discard clusters list */
+ 	struct plist_node avail_list;   /* entry in swap_avail_head */
++	const struct swap_ops *ops;
+ };
+ 
+ static inline swp_entry_t page_swap_entry(struct page *page)
+diff --git a/mm/page_io.c b/mm/page_io.c
+index 56f21e49572ef..c36b44ffe9471 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -334,21 +334,7 @@ static bool swap_can_merge(struct swap_io_ctx *ctx, struct folio *folio,
+ 
+ 	if (ctx->sis != sis)
+ 		return false;
+-
+-	if (sis->flags & SWP_FS_OPS) {
+-		if (swap_dev_pos(folio->swap) !=
+-		    swap_dev_pos(prev_folio->swap) + prev_folio_size)
+-			return false;
+-	} else {
+-		if (swap_folio_sector(folio) !=
+-		    swap_folio_sector(prev_folio) +
+-		    (prev_folio_size >> SECTOR_SHIFT))
+-			return false;
+-		if (rw == WRITE && !folio_blkg_can_merge(folio, prev_folio))
+-			return false;
+-	}
+-
+-	return true;
++	return sis->ops->can_merge(folio, prev_folio, prev_folio_size, rw);
+ }
+ 
+ static void swap_add_folio(struct swap_io_ctx *ctx, struct folio *folio, int rw)
+@@ -646,6 +632,23 @@ static void swap_bdev_submit_read(struct swap_io_ctx *ctx)
+ 	}
+ }
+ 
++static bool swap_bdev_can_merge(struct folio *folio, struct folio *prev_folio,
++		size_t prev_folio_size, int rw)
++{
++	if (swap_folio_sector(folio) !=
++	    swap_folio_sector(prev_folio) + (prev_folio_size >> SECTOR_SHIFT))
++		return false;
++	if (rw == WRITE && !folio_blkg_can_merge(folio, prev_folio))
++		return false;
++	return true;
++}
++
++const struct swap_ops swap_bdev_ops = {
++	.submit_write		= swap_bdev_submit_write,
++	.submit_read		= swap_bdev_submit_read,
++	.can_merge		= swap_bdev_can_merge,
++};
++
+ static void swap_fs_submit(struct swap_io_ctx *ctx, int rw)
+ {
+ 	struct swap_iocb *sio = ctx->sio;
+@@ -666,15 +669,34 @@ static void swap_fs_submit(struct swap_io_ctx *ctx, int rw)
+ 		sio->iocb.ki_complete(&sio->iocb, ret);
+ }
+ 
++static void swap_fs_submit_write(struct swap_io_ctx *ctx)
++{
++	swap_fs_submit(ctx, WRITE);
++}
++
++static void swap_fs_submit_read(struct swap_io_ctx *ctx)
++{
++	swap_fs_submit(ctx, READ);
++}
++
++static bool swap_fs_can_merge(struct folio *folio, struct folio *prev_folio,
++		size_t prev_folio_size, int rw)
++{
++	return swap_dev_pos(folio->swap) ==
++		swap_dev_pos(prev_folio->swap) + prev_folio_size;
++}
++
++const struct swap_ops swap_fs_ops = {
++	.submit_write		= swap_fs_submit_write,
++	.submit_read		= swap_fs_submit_read,
++	.can_merge		= swap_fs_can_merge,
++};
++
+ void swap_write_submit(struct swap_io_ctx *ctx)
+ {
+ 	if (!ctx->sio)
+ 		return;
+-
+-	if (ctx->sis->flags & SWP_FS_OPS)
+-		swap_fs_submit(ctx, WRITE);
+-	else
+-		swap_bdev_submit_write(ctx);
++	ctx->sis->ops->submit_write(ctx);
+ 	ctx->sio = NULL;
+ 	ctx->sis = NULL;
+ }
+@@ -683,11 +705,7 @@ void swap_read_submit(struct swap_io_ctx *ctx)
+ {
+ 	if (!ctx->sio)
+ 		return;
+-
+-	if (ctx->sis->flags & SWP_FS_OPS)
+-		swap_fs_submit(ctx, READ);
+-	else
+-		swap_bdev_submit_read(ctx);
++	ctx->sis->ops->submit_read(ctx);
+ 	ctx->sio = NULL;
+ 	ctx->sis = NULL;
+ }
+diff --git a/mm/swap.h b/mm/swap.h
+index 1d169bf96d1de..33a258c77064e 100644
+--- a/mm/swap.h
++++ b/mm/swap.h
+@@ -82,6 +82,13 @@ struct swap_io_ctx {
+ 	struct swap_info_struct	*sis;
+ };
+ 
++struct swap_ops {
++	bool (*can_merge)(struct folio *folio, struct folio *prev_folio,
++			size_t prev_folio_size, int rw);
++	void (*submit_write)(struct swap_io_ctx *ctx);
++	void (*submit_read)(struct swap_io_ctx *ctx);
++};
++
+ #ifdef CONFIG_SWAP
+ #include <linux/swapops.h> /* for swp_offset */
+ #include <linux/blk_types.h> /* for bio_end_io_t */
+@@ -469,6 +476,9 @@ static inline unsigned int folio_swap_flags(struct folio *folio)
+ 
+ #endif /* CONFIG_SWAP */
+ 
++extern const struct swap_ops swap_bdev_ops;
++extern const struct swap_ops swap_fs_ops;
++
+ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
+ 		struct list_head *folio_list);
+ 
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 881511fb7a467..c6b3e4278045e 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -2950,6 +2950,8 @@ static int setup_swap_extents(struct swap_info_struct *sis,
+ 	if (ret)
+ 		return ret;
+ 
++	sis->ops = &swap_bdev_ops;
++
+ 	if (S_ISBLK(inode->i_mode)) {
+ 		ret = add_swap_extent(sis, 0, sis->max, 0);
+ 		*span = sis->pages;
+@@ -2960,6 +2962,8 @@ static int setup_swap_extents(struct swap_info_struct *sis,
+ 		ret = mapping->a_ops->swap_activate(sis, swap_file, span);
+ 		if (ret < 0)
+ 			return ret;
++		if (sis->flags & SWP_FS_OPS)
++			sis->ops = &swap_fs_ops;
+ 		sis->flags |= SWP_ACTIVATED;
+ 		return ret;
+ 	}
+-- 
+2.47.3
+

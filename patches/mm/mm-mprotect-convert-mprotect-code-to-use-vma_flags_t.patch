@@ -1,0 +1,113 @@
+From: Lorenzo Stoakes <ljs@kernel.org>
+Date: Sat, 11 Jul 2026 19:45:09 +0100
+Subject: [PATCH] mm/mprotect: convert mprotect code to use vma_flags_t
+
+Replace use of the legacy vm_flags_t flags with vma_flags_t values
+throughout the mprotect logic.
+
+Note that we retain the legacy vm_flags_t bit shifting code in
+do_mprotect_pkey(), deferring a vma_flags_t approach to this for the time
+being.
+
+Additionally update comments to reflect the changes to be consistent.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260711-b4-vma-flags-mm-v2-12-0fa2357d5431@kernel.org
+Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jani Nikula <jani.nikula@intel.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mprotect.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index dc27bbc1712fd..2888ee638d872 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -40,7 +40,7 @@
+ 
+ static bool maybe_change_pte_writable(struct vm_area_struct *vma, pte_t pte)
+ {
+-	if (WARN_ON_ONCE(!(vma->vm_flags & VM_WRITE)))
++	if (WARN_ON_ONCE(!vma_test(vma, VMA_WRITE_BIT)))
+ 		return false;
+ 
+ 	/* Don't touch entries that are not even readable. */
+@@ -97,7 +97,7 @@ static bool can_change_shared_pte_writable(struct vm_area_struct *vma,
+ bool can_change_pte_writable(struct vm_area_struct *vma, unsigned long addr,
+ 			     pte_t pte)
+ {
+-	if (!(vma->vm_flags & VM_SHARED))
++	if (!vma_test(vma, VMA_SHARED_BIT))
+ 		return can_change_private_pte_writable(vma, addr, pte);
+ 
+ 	return can_change_shared_pte_writable(vma, pte);
+@@ -194,7 +194,7 @@ static __always_inline void set_write_prot_commit_flush_ptes(struct vm_area_stru
+ {
+ 	bool set_write;
+ 
+-	if (vma->vm_flags & VM_SHARED) {
++	if (vma_test(vma, VMA_SHARED_BIT)) {
+ 		set_write = can_change_shared_pte_writable(vma, ptent);
+ 		prot_commit_flush_ptes(vma, addr, ptep, oldpte, ptent, nr_ptes,
+ 				       /* idx = */ 0, set_write, tlb);
+@@ -846,8 +846,8 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
+ 		vm_unacct_memory(nrpages);
+ 
+ 	/*
+-	 * Private VM_LOCKED VMA becoming writable: trigger COW to avoid major
+-	 * fault on access.
++	 * Private VMA_LOCKED_BIT VMA becoming writable: trigger COW to avoid
++	 * major fault on access.
+ 	 */
+ 	if (vma_flags_test(&new_vma_flags, VMA_WRITE_BIT) &&
+ 	    vma_flags_test(&old_vma_flags, VMA_LOCKED_BIT) &&
+@@ -921,7 +921,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
+ 			goto out;
+ 		start = vma->vm_start;
+ 		error = -EINVAL;
+-		if (!(vma->vm_flags & VM_GROWSDOWN))
++		if (!vma_test(vma, VMA_GROWSDOWN_BIT))
+ 			goto out;
+ 	} else {
+ 		if (vma->vm_start > start)
+@@ -929,7 +929,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
+ 		if (unlikely(grows & PROT_GROWSUP)) {
+ 			end = vma->vm_end;
+ 			error = -EINVAL;
+-			if (!(vma->vm_flags & VM_GROWSUP))
++			if (!vma_test_single_mask(vma, VMA_GROWSUP))
+ 				goto out;
+ 		}
+ 	}
+@@ -953,7 +953,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
+ 		}
+ 
+ 		/* Does the application expect PROT_READ to imply PROT_EXEC */
+-		if (rier && (vma->vm_flags & VM_MAYEXEC))
++		if (rier && vma_test(vma, VMA_MAYEXEC_BIT))
+ 			prot |= PROT_EXEC;
+ 
+ 		/*
+-- 
+2.47.3
+
