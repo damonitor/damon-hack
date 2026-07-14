@@ -1,0 +1,111 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Sat, 23 May 2026 13:43:27 -0700
+Subject: [PATCH 06/10] mm/damon/core: hide private damos fields
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260714143544.101305-7-sj@kernel.org>
+
+'core_filters', 'ops_filters', 'last_applied' and 'list' fields of damos
+are intended to be used by only the DAMON core layer.  However, those
+are mistakenly not marked as private.  Mark as private.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h | 52 ++++++++++++++++++++++---------------------
+ 1 file changed, 27 insertions(+), 25 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 15517be3e4960..907d65f03d083 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -522,12 +522,8 @@ struct damos_migrate_dests {
+  * @wmarks:		Watermarks for automated (in)activation of this scheme.
+  * @migrate_dests:	Destination nodes if @action is "migrate_{hot,cold}".
+  * @target_nid:		Destination node if @action is "migrate_{hot,cold}".
+- * @core_filters:	Additional set of &struct damos_filter for &action.
+- * @ops_filters:	ops layer handling &struct damos_filter objects list.
+- * @last_applied:	Last @action applied ops-managing entity.
+  * @stat:		Statistics of this scheme.
+  * @max_nr_snapshots:	Upper limit of nr_snapshots stat.
+- * @list:		List head for siblings.
+  *
+  * For each @apply_interval_us, DAMON finds regions which fit in the
+  * &pattern and applies &action to those. To avoid consuming too much
+@@ -549,16 +545,7 @@ struct damos_migrate_dests {
+  *
+  * Before applying the &action to a memory region, &struct damon_operations
+  * implementation could check pages of the region and skip &action to respect
+- * &core_filters
+- *
+- * The minimum entity that @action can be applied depends on the underlying
+- * &struct damon_operations.  Since it may not be aligned with the core layer
+- * abstract, namely &struct damon_region, &struct damon_operations could apply
+- * @action to same entity multiple times.  Large folios that underlying on
+- * multiple &struct damon region objects could be such examples.  The &struct
+- * damon_operations can use @last_applied to avoid that.  DAMOS core logic
+- * unsets @last_applied when each regions walking for applying the scheme is
+- * finished.
++ * &struct damos_filter.
+  *
+  * After applying the &action to each region, &stat is updated.
+  *
+@@ -569,6 +556,16 @@ struct damos {
+ 	struct damos_access_pattern pattern;
+ 	enum damos_action action;
+ 	unsigned long apply_interval_us;
++	struct damos_quota quota;
++	struct damos_watermarks wmarks;
++	union {
++		struct {
++			int target_nid;
++			struct damos_migrate_dests migrate_dests;
++		};
++	};
++	struct damos_stat stat;
++	unsigned long max_nr_snapshots;
+ /* private: internal use only */
+ 	/*
+ 	 * number of sample intervals that should be passed before applying
+@@ -585,20 +582,25 @@ struct damos {
+ 	/* whether to reject core/ops filters umatched regions */
+ 	bool core_filters_default_reject;
+ 	bool ops_filters_default_reject;
+-/* public: */
+-	struct damos_quota quota;
+-	struct damos_watermarks wmarks;
+-	union {
+-		struct {
+-			int target_nid;
+-			struct damos_migrate_dests migrate_dests;
+-		};
+-	};
++	/* Additional set of &struct damos_filter for &action. */
+ 	struct list_head core_filters;
++	/* ops layer handling &struct damos_filter objects list. */
+ 	struct list_head ops_filters;
++	/*
++	 * Last @action applied ops-managing entity.
++	 *
++	 * The minimum entity that @action can be applied depends on the
++	 * underlying &struct damon_operations.  Since it may not be aligned
++	 * with the core layer abstract, namely &struct damon_region, &struct
++	 * damon_operations could apply @action to same entity multiple times.
++	 * Large folios that underlying on multiple &struct damon region
++	 * objects could be such examples.  The &struct damon_operations can
++	 * use @last_applied to avoid that.  DAMOS core logic unsets
++	 * @last_applied when each regions walking for applying the scheme is
++	 * finished.
++	 */
+ 	void *last_applied;
+-	struct damos_stat stat;
+-	unsigned long max_nr_snapshots;
++	/* List head for siblings. */
+ 	struct list_head list;
+ };
+ 
+-- 
+2.47.3
