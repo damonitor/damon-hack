@@ -1,0 +1,68 @@
+From: Jiahui Zhang <jiahuitry@outlook.com>
+Date: Tue, 14 Jul 2026 03:38:17 -0700
+Subject: [PATCH] mm/damon/ops-common: prevent migration fallback to non-target
+ nodes
+
+DAMOS_MIGRATE_{HOT,COLD} passes a target NUMA node to migrate_pages().
+But alloc_migration_target() only treats mtc->nid as a preferred node
+unless __GFP_THISNODE is set.  Hence target allocation can fall back
+to another node, and migrate_pages() can report success without placing
+the folio on the requested target node.
+
+Consider a two-node tiered system where node 0 is a fast tier and node 1
+is a CPU-less slow tier such as CXL memory, and the user wants to promote
+hot regions from node 1 to node 0 with a command like:
+
+  sudo damo start --ops vaddr --target_pid ${workload_pid} \
+      --damos_action migrate_hot 0 \
+      --damos_access_rate 70% max
+
+Without the __GFP_THISNODE flag, when the memory allocator finds that
+node 0 is nearly full, it can fall back to node 1 without waking up
+kswapd.  Then the pages allocated for migrate_pages() are still on node 1,
+and the regions that are expected to be promoted to node 0 are only moved
+to different physical pages on node 1.
+
+Meanwhile, both the mm_migrate_pages tracepoint and DAMOS's own
+sz_applied statistics (reported via the damos_stat_after_apply_interval
+tracepoint) show the migrations as successful, which makes the failure
+practically invisible and hard to investigate.
+
+Running a demotion-purpose DAMOS scheme alongside the promotion scheme
+does not fully avoid this either. If demotion cannot keep up with the
+promotion rate, allocation can still fall back to node 1 during
+promotion, and the same misleading statistics show up.
+
+Make DAMON's migration target allocation strict by setting
+__GFP_THISNODE, so that a failed allocation on the target node is
+reported as a failure instead of silently landing on a different node.
+This is consistent with alloc_misplaced_dst_folio(), alloc_demote_folio(),
+and with do_move_pages_to_node(), which all use __GFP_THISNODE for
+migrations to an explicit destination node.
+
+Link: https://lore.kernel.org/ <MN2PR02MB665479119535A1235D69F125B5F92@MN2PR02MB6654.namprd02.prod.outlook.com>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Honggyu Kim <honggyu.kim@sk.com>
+Signed-off-by: Jiahui Zhang <jiahuitry@outlook.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/ops-common.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index bc1d9127a88cc..39c3c4c725cf2 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -311,7 +311,7 @@ static unsigned int __damon_migrate_folio_list(
+ 		 * instead of migrated.
+ 		 */
+ 		.gfp_mask = (GFP_HIGHUSER_MOVABLE & ~__GFP_RECLAIM) |
+-			__GFP_NOMEMALLOC | GFP_NOWAIT,
++			__GFP_NOMEMALLOC | GFP_NOWAIT | __GFP_THISNODE,
+ 		.nid = target_nid,
+ 	};
+ 
+-- 
+2.47.3
+
