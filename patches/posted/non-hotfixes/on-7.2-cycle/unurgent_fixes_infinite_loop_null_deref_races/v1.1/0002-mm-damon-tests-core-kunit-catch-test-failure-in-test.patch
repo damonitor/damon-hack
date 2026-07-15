@@ -1,0 +1,61 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Fri, 10 Jul 2026 18:02:56 -0700
+Subject: [PATCH v1.1 2/6] mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of()
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@davidgow.net>
+Cc: SJ Park <sj@kernel.org>
+Cc: SeongJae Park <sjpark@amazon.de>
+Cc: damon@lists.linux.dev
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260715031002.108504-3-sj@kernel.org>
+
+KUNIT_EXPECT_EQ() does not abort the execution of test code when the
+expectation is not met.  But damon_test_merge_regions_of() code after
+its initial KUNIT_EXPECT_EQ() call assumes the expectation is met.  It
+does a per-region test with a hard-coded number of regions that is
+correct only if the expectation was met.  As a result, __nth_region_of()
+could return NULL, and the test code can dereference NULL pointers.  Fix
+the issue by catching the expectation failure and skip the per-region
+tests.
+
+The user impact on realistic setups should be negligible, as it is a
+unit test.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260710144937.26981-1-sj@kernel.org
+
+Fixes: 17ccae8bb5c9 ("mm/damon: add kunit tests")
+Cc: <stable@vger.kernel.org> # 5.15.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 485472ddebd19..eba643762132f 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -260,11 +260,14 @@ static void damon_test_merge_regions_of(struct kunit *test)
+ 	damon_merge_regions_of(t, 9, 9999, ctx, true);
+ 	/* 0-112, 114-130, 130-156, 156-170, 170-230, 230-10170 */
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 6u);
++	if (damon_nr_regions(t) != 6)
++		goto out;
+ 	for (i = 0; i < 6; i++) {
+ 		r = __nth_region_of(t, i);
+ 		KUNIT_EXPECT_EQ(test, r->ar.start, saddrs[i]);
+ 		KUNIT_EXPECT_EQ(test, r->ar.end, eaddrs[i]);
+ 	}
++out:
+ 	damon_free_target(t);
+ 	damon_destroy_ctx(ctx);
+ }
+-- 
+2.47.3
