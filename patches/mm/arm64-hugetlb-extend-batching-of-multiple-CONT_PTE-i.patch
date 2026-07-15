@@ -1,10 +1,10 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Thu, 9 Jul 2026 15:38:18 +0800
+Date: Wed, 15 Jul 2026 20:08:07 +0800
 Subject: [PATCH] arm64/hugetlb: extend batching of multiple CONT_PTE in a
  single PTE setup
 
 Patch series "mm/vmalloc: Speed up ioremap, vmalloc and vmap with
-contiguous memory", v6.
+contiguous memory", v7.
 
 This patchset accelerates ioremap, vmalloc, and vmap when the memory is
 physically fully or partially contiguous.  Two techniques are used:
@@ -21,23 +21,26 @@ Patches 1-2 extend ARM64 vmalloc CONT-PTE mapping to support multiple
 CONT-PTE regions instead of just one.
 
 Patch 3 extracts a common helper vmap_set_ptes() that consolidates PTE
-mapping logic between the ioremap and vmalloc/vmap paths, handling both
-CONT_PTE and regular PTE mappings.  This prepares for the next patch.
+mapping logic for the ioremap and vmalloc/vmap paths, handling both
+CONT_PTE and regular PTE mappings. This prepares for the next patch.
 
-Patch 4 extends the page table walk path to support page shifts other than
-PAGE_SHIFT and eliminates the page table rewalk for huge vmalloc mappings.
-The function is renamed from vmap_small_pages_range_noflush() to
-vmap_pages_range_noflush_walk().
+Patch 4 extends the page table walk path to support page shifts other
+than PAGE_SHIFT and eliminates the page table rewalk for huge vmalloc
+mappings. The function is renamed from vmap_small_pages_range_noflush()
+to vmap_pages_range_noflush_walk().
 
-Patches 5-6 add huge vmap support for contiguous pages, including support
-for non-compound pages with pfn alignment verification.
+Patch 5 extracts vm_shift() to consolidate vmalloc mapping shift
+selection for reuse in the batching path.
 
-On the RK3588 8-core ARM64 SoC, with tasks pinned to a little core and the
-performance CPUfreq policy enabled, benchmark results:
+Patches 6-7 add huge vmap support for contiguous pages, including
+support for non-compound pages with pfn alignment verification.
+
+On the RK3588 8-core ARM64 SoC, with tasks pinned to a little core and
+the performance CPUfreq policy enabled, benchmark results:
 
 * ioremap(1 MB): 1.35x faster (3407 ns -> 2526 ns)
 * vmalloc(1 MB) mapping time (excluding allocation) with
-  VM_ALLOW_HUGE_VMAP: 1.42x faster (5.00 us -> 3.53us)
+  VM_ALLOW_HUGE_VMAP: 1.42x faster (5.00 us -> 3.53 us)
 * vmap(100MB) with order-8 pages: 8.3x faster (1235 us -> 149 us)
 
 Many thanks to Xueyuan Chen for his testing efforts on RK3588 boards.
@@ -47,14 +50,14 @@ units, including TRBE and SPE.  These units use the CPU page tables for
 address translation when writing trace data to DRAM, so using larger
 vmap() mapping granules can reduce TLB pressure on the trace writer.
 
-The TRBE test used a 1G CoreSight ETM AUX buffer.  Across five runs on an
+The TRBE test used a 1G CoreSight ETM AUX buffer. Across five runs on an
 isolated CPU, the average results were:
 
 * dtlb_walk:       68.4 -> 59.4 (-13.16%)
 * l1d_tlb_refill: 155.8 -> 119.6 (-23.23%)
 * l2d_tlb_refill: 161435.8 -> 495.0 (-99.69%)
 
-The SPE test used a 512M ARM SPE AUX buffer.  Across five runs on an
+The SPE test used a 512M ARM SPE AUX buffer. Across five runs on an
 isolated CPU, the average results were:
 
 * dtlb_walk:       1710.4 -> 1315.6 (-23.08%)
@@ -67,13 +70,16 @@ reduce page table walks and TLB refills for large trace buffers.
 Many thanks to Leo Yan for his testing efforts on ARM trace buffers.
 
 
-This patch (of 6):
+This patch (of 7):
 
 For sizes aligned to CONT_PTE_SIZE and smaller than PMD_SIZE, we can
 handle CONT_PTE_SIZE groups together.
 
-Link: https://lore.kernel.org/20260709073823.6643-1-jiangwen6@xiaomi.com
-Link: https://lore.kernel.org/20260709073823.6643-2-jiangwen6@xiaomi.com
+These additional sizes are mapping spans used by non-hugetlbfs(vmalloc) mm
+code, not new HugeTLB hstate sizes.
+
+Link: https://lore.kernel.org/20260715120813.3609949-1-jiangwen6@xiaomi.com
+Link: https://lore.kernel.org/20260715120813.3609949-2-jiangwen6@xiaomi.com
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Wen Jiang <jiangwen6@xiaomi.com>
 Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
@@ -90,14 +96,26 @@ Cc: Will Deacon <will@kernel.org>
 Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- arch/arm64/mm/hugetlbpage.c | 10 ++++++++++
- 1 file changed, 10 insertions(+)
+ arch/arm64/mm/hugetlbpage.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
 
 diff --git a/arch/arm64/mm/hugetlbpage.c b/arch/arm64/mm/hugetlbpage.c
-index 8e799c1fe0aa6..25f04d01aabe9 100644
+index 8e799c1fe0aa6..8429d220660b8 100644
 --- a/arch/arm64/mm/hugetlbpage.c
 +++ b/arch/arm64/mm/hugetlbpage.c
-@@ -110,6 +110,12 @@ static inline int num_contig_ptes(unsigned long size, size_t *pgsize)
+@@ -94,6 +94,11 @@ static int find_num_contig(struct mm_struct *mm, unsigned long addr,
+ 	return CONT_PTES;
+ }
+ 
++/*
++ * num_contig_ptes(), set_huge_pte_at() and arch_make_huge_pte() can be
++ * used by non-hugetlbfs(vmalloc) mm code to set multiple huge mappings
++ * at the PTE level.
++ */
+ static inline int num_contig_ptes(unsigned long size, size_t *pgsize)
+ {
+ 	int contig_ptes = 1;
+@@ -110,6 +115,12 @@ static inline int num_contig_ptes(unsigned long size, size_t *pgsize)
  		contig_ptes = CONT_PTES;
  		break;
  	default:
@@ -110,7 +128,7 @@ index 8e799c1fe0aa6..25f04d01aabe9 100644
  		WARN_ON(!__hugetlb_valid_size(size));
  	}
  
-@@ -359,6 +365,10 @@ pte_t arch_make_huge_pte(pte_t entry, unsigned int shift, vm_flags_t flags)
+@@ -359,6 +370,10 @@ pte_t arch_make_huge_pte(pte_t entry, unsigned int shift, vm_flags_t flags)
  	case CONT_PTE_SIZE:
  		return pte_mkcont(entry);
  	default:

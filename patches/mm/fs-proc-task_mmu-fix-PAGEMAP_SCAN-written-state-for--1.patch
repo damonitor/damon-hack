@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Mon, 13 Jul 2026 10:17:10 +0100
+Date: Wed, 15 Jul 2026 15:42:33 +0100
 Subject: [PATCH] fs/proc/task_mmu: fix PAGEMAP_SCAN written state for PMD
  holes
 
@@ -9,14 +9,19 @@ pagemap_scan_pte_hole() tests p->cur_vma_category, which never carries
 PAGE_IS_WRITTEN, so the hole is neither reported nor (under
 PM_SCAN_WP_MATCHING) armed.
 
-MADV_DONTNEED has fill-with-zeros semantics: it changes the contents of
-the range to zeroes (a subsequent read maps the zero page), which write
-tracking must report as written.  An anonymous THP is write-protected in
-place as a huge PMD, so a full-PMD MADV_DONTNEED clears it to pmd_none --
-a hole -- and the zeroing goes unreported.  A write-tracking
-checkpoint/migration tool (e.g.  CRIU) then treats the range as unchanged
-and keeps its previous contents, so after restore or live migration the
-process reads stale data instead of zeroes -- data corruption.
+In a uffd-wp VMA, WP_UNPOPULATED installs uffd-wp markers when protecting
+a range, allocating page tables as needed, so an unpopulated slot is
+treated as written -- see the pte_none() handling in
+pagemap_page_category().  A missing marker therefore means the range was
+zapped, e.g.  via MADV_DONTNEED.  This applies to anon and shmem VMAs.
+
+An anonymous THP is write-protected in place as a huge PMD, so a full-PMD
+MADV_DONTNEED clears it to pmd_none -- a hole with no page table -- and
+pagemap_scan_pte_hole() misses it.  For a MAP_PRIVATE|MAP_ANON mapping
+MADV_DONTNEED has fill-with-zeros semantics, so a write-tracking
+checkpoint/migration tool (e.g.  CRIU) treats the range as unchanged and
+keeps its previous contents; after restore or live migration the process
+reads stale data instead of zeroes -- data corruption.
 
 Report a hole in a non-hugetlb uffd-wp VMA as written, matching the
 pte_none handling in pagemap_page_category(); the existing
@@ -29,14 +34,12 @@ hugetlb slot only when it has no page table; keeping that not-written
 matches how an allocated-but-empty hugetlb entry reads, so the hole and
 the empty-entry cases agree within the VMA.
 
-Add a pagemap_ioctl selftest covering the anon-THP PMD-hole case.
-
-Link: https://lore.kernel.org/20260713091710.206548-1-kirill@shutemov.name
+Link: https://lore.kernel.org/20260715144234.442721-2-kirill@shutemov.name
 Fixes: 2bad466cc9d9 ("mm/uffd: UFFD_FEATURE_WP_UNPOPULATED")
 Signed-off-by: Kiryl Shutsemau <kas@kernel.org>
 Reported-by: Sashiko AI review <sashiko-bot@kernel.org>
 Closes: https://sashiko.dev/#/patchset/20260707151349.92143-1-kirill@shutemov.name
-Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
 Cc: Peter Xu <peterx@redhat.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Jann Horn <jannh@google.com>
@@ -44,24 +47,23 @@ Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Muhammad Usama Anjum <usama.anjum@collabora.com>
 Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zenghui Yu <zenghui.yu@linux.dev>
 Assisted-by: Claude:claude-fable-5
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- fs/proc/task_mmu.c                         | 27 +++++++++-
- tools/testing/selftests/mm/pagemap_ioctl.c | 57 +++++++++++++++++++++-
- 2 files changed, 81 insertions(+), 3 deletions(-)
+ fs/proc/task_mmu.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
 
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
-index d45c729ab6bb3..03ead4184546e 100644
+index d45c729ab6bb3..229d1fc3d7f1c 100644
 --- a/fs/proc/task_mmu.c
 +++ b/fs/proc/task_mmu.c
-@@ -3049,12 +3049,35 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
+@@ -3049,12 +3049,28 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
  {
  	struct pagemap_scan_private *p = walk->private;
  	struct vm_area_struct *vma = walk->vma;
@@ -73,19 +75,12 @@ index d45c729ab6bb3..03ead4184546e 100644
 +		return 0;
 +
 +	/*
-+	 * An unpopulated range with no page table -- e.g. a 2MB anon THP
-+	 * dropped via MADV_DONTNEED, which pagemap_page_category() never sees
-+	 * -- reads as written on a uffd-wp VMA, matching the pte_none case
-+	 * there. Reporting it also lets the PM_SCAN_WP_MATCHING arming below
-+	 * install markers (uffd_wp_range() allocates the page table under
-+	 * WP_UNPOPULATED), so the next scan sees it clean until re-written.
++	 * In a uffd-wp VMA an unpopulated range is treated as written:
++	 * uffd-wp registration populates page tables and installs markers
++	 * with WP_UNPOPULATED, so a missing marker means the range was
++	 * zapped. See the pte_none() handling in pagemap_page_category().
 +	 *
-+	 * hugetlb is excluded: pagemap_hugetlb_category() reports an empty
-+	 * hugetlb entry (huge_pte_none) as not-written, unlike
-+	 * pagemap_page_category(), which reports pte_none as written. This
-+	 * path fires for a hugetlb slot only when it has no page table;
-+	 * keeping that not-written matches how an allocated-but-empty
-+	 * hugetlb entry reads, so the two agree within the VMA.
++	 * hugetlb differs, see pagemap_hugetlb_category().
 +	 */
 +	categories = p->cur_vma_category;
 +	if (userfaultfd_wp(vma) && !is_vm_hugetlb_page(vma))
@@ -99,95 +94,6 @@ index d45c729ab6bb3..03ead4184546e 100644
  	if (addr == end)
  		return ret;
  
-diff --git a/tools/testing/selftests/mm/pagemap_ioctl.c b/tools/testing/selftests/mm/pagemap_ioctl.c
-index f9bcff8e78fab..1c069c077898d 100644
---- a/tools/testing/selftests/mm/pagemap_ioctl.c
-+++ b/tools/testing/selftests/mm/pagemap_ioctl.c
-@@ -8,6 +8,7 @@
- #include <errno.h>
- #include <malloc.h>
- #include <linux/types.h>
-+#include <linux/mman.h>
- #include <linux/memfd.h>
- #include <linux/userfaultfd.h>
- #include <linux/fs.h>
-@@ -1102,6 +1103,59 @@ static void unpopulated_scan_test(void)
- 	munmap(mem, mem_size);
- }
- 
-+/*
-+ * A 2MB anon THP dropped with MADV_DONTNEED leaves a pmd_none hole with no
-+ * page table, which pagemap_page_category() never sees. PAGEMAP_SCAN must
-+ * still report it as written on a uffd-wp VMA, via pagemap_scan_pte_hole().
-+ */
-+static void unpopulated_thp_hole_test(void)
-+{
-+	long npages, written = 0, ret, i;
-+	struct page_region regions[16];
-+	char *area, *mem;
-+
-+	if (!hpage_size) {
-+		ksft_test_result_skip("%s THP not supported\n", __func__);
-+		return;
-+	}
-+	npages = hpage_size / page_size;
-+
-+	/* Get a PMD-aligned range so the range can be a single THP. */
-+	area = mmap(NULL, 2 * hpage_size, PROT_READ | PROT_WRITE,
-+		    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-+	if (area == MAP_FAILED)
-+		ksft_exit_fail_msg("%s mmap failed\n", __func__);
-+	mem = (char *)(((unsigned long)area + hpage_size - 1) & ~(hpage_size - 1));
-+
-+	memset(mem, 1, hpage_size);
-+	if (madvise(mem, hpage_size, MADV_COLLAPSE) ||
-+	    !check_huge_anon(mem, 1, hpage_size)) {
-+		ksft_test_result_skip("%s could not form a THP\n", __func__);
-+		munmap(area, 2 * hpage_size);
-+		return;
-+	}
-+
-+	wp_init(mem, hpage_size);
-+
-+	/* Drop the whole PMD: it is cleared to a pmd_none hole. */
-+	if (madvise(mem, hpage_size, MADV_DONTNEED))
-+		ksft_exit_fail_msg("%s MADV_DONTNEED failed\n", __func__);
-+
-+	ret = pagemap_ioctl(mem, hpage_size, regions, 16, 0, 0,
-+			    PAGE_IS_WRITTEN, 0, 0, PAGE_IS_WRITTEN);
-+	if (ret < 0)
-+		ksft_exit_fail_msg("%s scan failed\n", __func__);
-+	for (i = 0; i < ret; i++)
-+		written += LEN(regions[i]);
-+
-+	ksft_test_result(written == npages,
-+			 "%s pmd-hole reported written (%ld of %ld)\n",
-+			 __func__, written, npages);
-+
-+	wp_free(mem, hpage_size);
-+	munmap(area, 2 * hpage_size);
-+}
-+
- int sanity_tests(void)
- {
- 	unsigned long long mem_size, vec_size;
-@@ -1610,7 +1664,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
- 	if (!hugetlb_setup_default(4))
- 		ksft_print_msg("HugeTLB test will be skipped\n");
- 
--	ksft_set_plan(118);
-+	ksft_set_plan(119);
- 
- 	page_size = getpagesize();
- 	hpage_size = read_pmd_pagesize();
-@@ -1790,6 +1844,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
- 
- 	/* 18. Unpopulated pte scan-path consistency */
- 	unpopulated_scan_test();
-+	unpopulated_thp_hole_test();
- 
- 	close(pagemap_fd);
- 	ksft_finished();
 -- 
 2.47.3
 

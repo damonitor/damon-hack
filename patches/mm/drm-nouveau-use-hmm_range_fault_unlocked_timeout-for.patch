@@ -1,5 +1,5 @@
 From: Stanislav Kinsburskii <skinsburskii@gmail.com>
-Date: Fri, 10 Jul 2026 14:26:58 -0700
+Date: Wed, 15 Jul 2026 11:16:30 -0700
 Subject: [PATCH] drm/nouveau: use hmm_range_fault_unlocked_timeout() for SVM
  faults
 
@@ -17,7 +17,7 @@ caused by mmu_interval_read_retry() do not reset the overall retry budget.
 Nouveau still validates the interval notifier sequence while holding
 svmm->mutex before programming the GPU mapping.
 
-Link: https://lore.kernel.org/178371881847.900500.8789369230260725500.stgit@skinsburskii
+Link: https://lore.kernel.org/178413939024.1155966.6246787744253724390.stgit@skinsburskii
 Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
 Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
 Cc: Danilo Krummrich <dakr@kernel.org>
@@ -47,14 +47,28 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- drivers/gpu/drm/nouveau/nouveau_svm.c | 12 ++++--------
- 1 file changed, 4 insertions(+), 8 deletions(-)
+ drivers/gpu/drm/nouveau/nouveau_svm.c | 20 +++++++++++---------
+ 1 file changed, 11 insertions(+), 9 deletions(-)
 
 diff --git a/drivers/gpu/drm/nouveau/nouveau_svm.c b/drivers/gpu/drm/nouveau/nouveau_svm.c
-index dcc92131488ea..4cfb6eb7c7715 100644
+index dcc92131488ea..58735446d7832 100644
 --- a/drivers/gpu/drm/nouveau/nouveau_svm.c
 +++ b/drivers/gpu/drm/nouveau/nouveau_svm.c
-@@ -683,15 +683,11 @@ static int nouveau_range_fault(struct nouveau_svmm *svmm,
+@@ -678,20 +678,22 @@ static int nouveau_range_fault(struct nouveau_svmm *svmm,
+ 	range.end = notifier->notifier.interval_tree.last + 1;
+ 
+ 	while (true) {
+-		if (time_after(jiffies, timeout)) {
++		long remaining = timeout - jiffies;
++
++		/*
++		 * The HMM timeout only bounds retries while HMM is walking and
++		 * faulting the range. This fault is handled by a kernel worker,
++		 * so fatal signals from the faulting process cannot stop an
++		 * endless stream of invalidations here.
++		 */
++		if (time_after_eq(jiffies, timeout)) {
+ 			ret = -EBUSY;
  			goto out;
  		}
  
@@ -65,9 +79,7 @@ index dcc92131488ea..4cfb6eb7c7715 100644
 -		if (ret) {
 -			if (ret == -EBUSY)
 -				continue;
-+		ret = hmm_range_fault_unlocked_timeout(&range,
-+						       max(timeout - jiffies,
-+							   1L));
++		ret = hmm_range_fault_unlocked_timeout(&range, remaining);
 +		if (ret)
  			goto out;
 -		}

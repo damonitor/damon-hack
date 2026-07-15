@@ -1,5 +1,5 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Thu, 9 Jul 2026 15:38:22 +0800
+Date: Wed, 15 Jul 2026 20:08:12 +0800
 Subject: [PATCH] mm/vmalloc: map contiguous pages in batches for vmap() if
  possible
 MIME-Version: 1.0
@@ -26,7 +26,7 @@ As users typically allocate memory in descending orders (e.g.  8 → 4 →
 0), once an order-0 page is encountered, we stop scanning for contiguous
 pages since subsequent pages are likely order-0 as well.
 
-Link: https://lore.kernel.org/20260709073823.6643-6-jiangwen6@xiaomi.com
+Link: https://lore.kernel.org/20260715120813.3609949-7-jiangwen6@xiaomi.com
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Co-developed-by: Dev Jain <dev.jain@arm.com>
 Signed-off-by: Dev Jain <dev.jain@arm.com>
@@ -45,28 +45,21 @@ Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
 Cc: Will Deacon <will@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/vmalloc.c | 87 ++++++++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 85 insertions(+), 2 deletions(-)
+ mm/vmalloc.c | 82 ++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 80 insertions(+), 2 deletions(-)
 
 diff --git a/mm/vmalloc.c b/mm/vmalloc.c
-index 7dd09bdb97a03..49b7f55000b52 100644
+index 5b5b13a9fe4e6..24b3f1aa24766 100644
 --- a/mm/vmalloc.c
 +++ b/mm/vmalloc.c
-@@ -3572,6 +3572,89 @@ void vunmap(const void *addr)
+@@ -3585,6 +3585,84 @@ static inline unsigned int vm_shift(pgprot_t prot, unsigned long size)
+ 	return arch_vmap_pte_supported_shift(size);
  }
- EXPORT_SYMBOL(vunmap);
  
-+static inline unsigned int vm_shift(pgprot_t prot, unsigned long size)
-+{
-+	if (arch_vmap_pmd_supported(prot) && size >= PMD_SIZE)
-+		return PMD_SHIFT;
-+
-+	return arch_vmap_pte_supported_shift(size);
-+}
-+
 +static inline int get_vmap_batch_order(struct page **pages,
 +		pgprot_t prot, unsigned int max_steps, unsigned int idx)
 +{
++	unsigned long pfn;
 +	unsigned int nr_contig;
 +	int order;
 +
@@ -78,9 +71,11 @@ index 7dd09bdb97a03..49b7f55000b52 100644
 +		return 0;
 +
 +	order = ilog2(nr_contig);
++	pfn = page_to_pfn(pages[idx]);
 +
 +	/* Limit order by pfn alignment */
-+	order = min_t(int, order, __ffs(page_to_pfn(pages[idx])));
++	if (pfn > 0)
++		order = min_t(int, order, __ffs(pfn));
 +
 +	if (vm_shift(prot, PAGE_SIZE << order) == PAGE_SHIFT)
 +		return 0;
@@ -97,7 +92,7 @@ index 7dd09bdb97a03..49b7f55000b52 100644
 +	int err;
 +
 +	err = kmsan_vmap_pages_range_noflush(addr, end, prot, pages,
-+						PAGE_SHIFT, GFP_KERNEL);
++					     PAGE_SHIFT, GFP_KERNEL);
 +	if (err)
 +		goto out;
 +
@@ -142,7 +137,7 @@ index 7dd09bdb97a03..49b7f55000b52 100644
  /**
   * vmap - map an array of pages into virtually contiguous space
   * @pages: array of page pointers
-@@ -3615,8 +3698,8 @@ void *vmap(struct page **pages, unsigned int count,
+@@ -3628,8 +3706,8 @@ void *vmap(struct page **pages, unsigned int count,
  		return NULL;
  
  	addr = (unsigned long)area->addr;

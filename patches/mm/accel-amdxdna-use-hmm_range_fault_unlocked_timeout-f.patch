@@ -1,22 +1,28 @@
 From: Stanislav Kinsburskii <skinsburskii@gmail.com>
-Date: Fri, 10 Jul 2026 14:27:12 -0700
+Date: Wed, 15 Jul 2026 11:16:44 -0700
 Subject: [PATCH] accel/amdxdna: use hmm_range_fault_unlocked_timeout() for
  range population
 
 aie2_populate_range() takes mmap_read_lock() only around
-hmm_range_fault().  It keeps a single HMM_RANGE_DEFAULT_TIMEOUT deadline
-for the populate pass and retries -EBUSY until that deadline expires.
+hmm_range_fault().  It also open-codes the mmu interval sequence setup
+before each HMM walk and retries -EBUSY until HMM_RANGE_DEFAULT_TIMEOUT
+expires.
 
 Use hmm_range_fault_unlocked_timeout() instead.  The HMM helper now owns
 the mmap lock and refreshes mapp->range.notifier_seq for its internal
-retries.  Pass the remaining jiffies from the existing deadline to HMM,
-while preserving the driver's existing outer loop for interval
-invalidation retries and for selecting the next invalid mapping.
+retries, so the driver only needs to call the helper and then validate the
+sequence before marking the mapping populated.
 
-Keep returning -ETIME when the retry budget expires, matching the driver's
-existing timeout error convention.
+Pass HMM_RANGE_DEFAULT_TIMEOUT as the helper retry budget for each HMM
+population attempt.  This scopes the timeout to repeated HMM notifier
+retries while preserving the existing outer loop that moves between
+invalid mappings and restarts when the interval is invalidated before the
+driver updates its mapping state.
 
-Link: https://lore.kernel.org/178371883276.900500.12789147320642521200.stgit@skinsburskii
+Keep returning -ETIME when the HMM retry budget expires, matching the
+driver's existing timeout error convention.
+
+Link: https://lore.kernel.org/178413940486.1155966.10368807598827608499.stgit@skinsburskii
 Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
 Reviewed-by: Jason Gunthorpe <jgg@nvidia.com>
 Cc: Danilo Krummrich <dakr@kernel.org>
@@ -46,14 +52,23 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Liu <wei.liu@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- drivers/accel/amdxdna/aie2_ctx.c | 17 +++--------------
- 1 file changed, 3 insertions(+), 14 deletions(-)
+ drivers/accel/amdxdna/aie2_ctx.c | 23 ++++-------------------
+ 1 file changed, 4 insertions(+), 19 deletions(-)
 
 diff --git a/drivers/accel/amdxdna/aie2_ctx.c b/drivers/accel/amdxdna/aie2_ctx.c
-index 54486960cbf5e..a16b8d7deaeae 100644
+index 54486960cbf5e..b5b4ca263002d 100644
 --- a/drivers/accel/amdxdna/aie2_ctx.c
 +++ b/drivers/accel/amdxdna/aie2_ctx.c
-@@ -1061,22 +1061,11 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+@@ -1034,7 +1034,7 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+ 	bool found;
+ 	int ret;
+ 
+-	timeout = jiffies + msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
++	timeout = msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
+ again:
+ 	found = false;
+ 	down_write(&xdna->notifier_lock);
+@@ -1061,24 +1061,9 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
  		return -EFAULT;
  	}
  
@@ -61,12 +76,9 @@ index 54486960cbf5e..a16b8d7deaeae 100644
 -	mmap_read_lock(mm);
 -	ret = hmm_range_fault(&mapp->range);
 -	mmap_read_unlock(mm);
-+	ret = hmm_range_fault_unlocked_timeout(&mapp->range,
-+			max_t(long, timeout - jiffies, 1));
- 	if (ret) {
+-	if (ret) {
 -		if (time_after(jiffies, timeout)) {
-+		if (ret == -EBUSY)
- 			ret = -ETIME;
+-			ret = -ETIME;
 -			goto put_mm;
 -		}
 -
@@ -76,9 +88,22 @@ index 54486960cbf5e..a16b8d7deaeae 100644
 -			goto again;
 -		}
 -
++	ret = hmm_range_fault_unlocked_timeout(&mapp->range, timeout);
++	if (ret)
  		goto put_mm;
- 	}
+-	}
  
+ 	down_write(&xdna->notifier_lock);
+ 	if (mmu_interval_read_retry(&mapp->notifier, mapp->range.notifier_seq)) {
+@@ -1096,7 +1081,7 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+ put_mm:
+ 	amdxdna_umap_put(mapp);
+ 	mmput(mm);
+-	return ret;
++	return ret == -EBUSY ? -ETIME : ret;
+ }
+ 
+ int aie2_cmd_submit(struct amdxdna_hwctx *hwctx, struct amdxdna_sched_job *job, u64 *seq)
 -- 
 2.47.3
 
