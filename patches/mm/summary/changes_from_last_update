@@ -7,114 +7,102 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 91 -> 111 commits
-  - series: 13 (89) -> 14 (109)
+- mm-unstable: 111 -> 117 commits
+  - series: 14 (109) -> 15 (113)
     - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 15 -> 15 commits (no change)
-    - reviewer, maintainer: 0 -> 1 commits
-    - maintainer, nobody: 69 -> 88 commits
+    - no role, maintainer: 15 -> 20 commits
+    - reviewer, maintainer: 1 -> 1 commits (no change)
+    - maintainer, nobody: 88 -> 89 commits
     - maintainer, no role : 6 -> 6 commits (no change)
-  - changed commits
-    - series "mm/damon: introduce data attributes only monitoring". (19)
-      - c476b0de588e "mm/damon/core: introduce damon_probe->weight (0/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260710134651.18084-2-sj@kernel.org
-        - Link: https://github.com/damonitor/damo [1]
-        - Link: https://lore.kernel.org/20260525225208.1179-1-sj@kernel.org/ [2]
-      - c057415102c7 "mm/damon/core: ask apply_probes() ops callback to set sampling address (1/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-3-sj@kernel.org
-      - 51522693ec41 "mm/damon/paddr: set samples in apply_probes() if requested (2/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-4-sj@kernel.org
-      - 2da7e8432347 "mm/damon/core: ask apply_probe() to return max probe hits weighted sum (3/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-5-sj@kernel.org
-      - 763061a146b5 "mm/damon/core: implement damon_probe_hits_wsum() (4/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-6-sj@kernel.org
-      - 49a511e2d8d5 "mm/damon/paddr: respect return_max_wsum (5/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-7-sj@kernel.org
-      - d3b868251e23 "mm/damon/core: use abs_diff() instead of abs() (6/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-8-sj@kernel.org
-        - Link: https://lore.kernel.org/20260705213817.100841-1-sj@kernel.org/ [1]
-      - 0d1db2323fd4 "mm/damon/core: extend merge function to work with probe hits (7/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-9-sj@kernel.org
-      - ff141a540e08 "mm/damon/core: disallow probe_hits overflow on attrs only monitoring (8/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-10-sj@kernel.org
-      - b323889f6bba "mm/damon/core: validate params for probe hits weighted sum overflow (9/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-11-sj@kernel.org
-      - 31e28bd30882 "mm/damon/core: disable access monitoring when probe weights are set (10/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-12-sj@kernel.org
-      - 6ec54c79d7ef "mm/damon/core: set samples in apply_probes() if probe weights are set (11/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-13-sj@kernel.org
-      - 843f9ce5c745 "mm/damon/core: s/max_nr_accesses/max_merge_score/ in kdamond_fn() (12/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-14-sj@kernel.org
-      - 704bd862f034 "mm/damon/core: get merge threshold from probe hits when weights are set (13/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-15-sj@kernel.org
-      - 6f4b9a7b3060 "mm/damon/core: implement damon_has_probe_weight() (14/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-16-sj@kernel.org
-      - 353bc0732d26 "mm/damon/sysfs: implement probe/weight file (15/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-17-sj@kernel.org
-      - c90ceb74b971 "Docs/mm/damon/design: document attrs-only monitoring (16/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-18-sj@kernel.org
-      - 5110a92720fa "Docs/admin-guide/mm/damon/usage: document weight sysfs file (17/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-19-sj@kernel.org
-      - 827d2988e488 "Docs/ABI/damon: document probe weight file (18/19)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710134651.18084-20-sj@kernel.org
-    - series "mm: make VMA page offset handling more consistent", v2. (33)
-      - 45b4f55b973e "mm/vma: use vma_start_pgoff(), linear_page_index() in mm code (17/33)"
-        - Authored by a reviewer, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-18-2a5aa403d977@kernel.org
-- mm-new: 20 -> 2 commits
-  - series: 1 (20) -> 0 (0)
-    - no role, maintainer: 0 -> 1 commits
-    - reviewer, maintainer: 1 -> 0 commits
-    - maintainer, nobody: 19 -> 1 commits
   - new commits
-    - b7f1fc1a971f "mm/damon/tests/core-kunit: test damon_nr_accesses_mvsum()"
+    - series "Docs/ABI/damon: sysfs ABI document fixes and additions", v2. (4)
+      - c2628c59e039 "Docs/ABI/damon: fix typo in intervals_goal sysfs path (0/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260714140117.94147-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714140117.94147-2-sj@kernel.org
+      - 7d13343aeab7 "Docs/ABI/damon: fix typos (1/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260714140117.94147-3-sj@kernel.org
+      - 8d095841acb6 "Docs/ABI/damon: document update_tuned_intervals state command (2/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260714140117.94147-4-sj@kernel.org
+      - 7081238c5ca2 "Docs/ABI/damon: document tried_regions probe hits (3/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260714140117.94147-5-sj@kernel.org
+  - changed commits
+    - fee84227a4b0 "mm/damon/tests/core-kunit: test damon_nr_accesses_mvsum()"
       - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
       - Link: https://lore.kernel.org/20260713094648.897239-1-husong@kylinos.cn
-    - 203a24d78eb0 "mm/damon/core: skip aging from repeated aggressive merging"
+    - 723cda526e25 "mm/damon/core: skip aging from repeated aggressive merging"
       - Authored by a maintainer, reviewed by nobody
+      - branch: mm-new -> mm-unstable
       - Link: https://lore.kernel.org/20260712165432.87609-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260621203548.10718-1-sj@kernel.org [1]
       - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [2]
+- mm-new: 2 -> 16 commits
+  - series: 0 (0) -> 2 (16)
+    - no role, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 1 -> 16 commits
+  - new commits
+    - series "mm/damon/core: hide core-private struct fields". (10)
+      - eac86b0dcbda "mm/damon/core: hide private damon_region fields (0/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714143544.101305-2-sj@kernel.org
+      - e0661d2e51c0 "mm/damon/core: hide private damon_target fields (1/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-3-sj@kernel.org
+      - 81ca054fd002 "mm/damon/core: hide private damos_quota_goal fields (2/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-4-sj@kernel.org
+      - b88d12079789 "mm/damon/core: hide private damos_quota fields (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-5-sj@kernel.org
+      - 954284f65fb6 "mm/damon/core: hide private damos_filter fields (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-6-sj@kernel.org
+      - 2135771056ee "mm/damon/core: hide private damos fields (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-7-sj@kernel.org
+      - 61017038c8cc "mm/damon/core: hide private damon_filter fields (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-8-sj@kernel.org
+      - f1ca14dc4f89 "mm/damon/core: hide private damon_probe fields (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-9-sj@kernel.org
+      - 349917d595d9 "mm/damon/sysfs: do not directly access damon_ctx->ops (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-10-sj@kernel.org
+      - 70aa5708ac93 "mm/damon/core: hide core-private damon_ctx fields (9/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260714143544.101305-11-sj@kernel.org
+    - series "mm/damon: unurgent fixes for infinite loop, NULL de-ref and races", v1.1. (6)
+      - a38f4fb8e8d3 "mm/damon/core: avoid infinite kdamond_merge_regions() internal loop (0/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260715031002.108504-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [1]
+      - 717b24b4e445 "mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of() (1/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260710144937.26981-1-sj@kernel.org [1]
+      - c643ad41a0cb "mm/damon/vaddr: drop last same folio access check optimization (2/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - 190672632dce "mm/damon/paddr: drop last same folio access check reuse optimization (3/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - f713fbdb2ffc "mm/damon/sysfs: read addr_unit only once in damon_sysfs_apply_inputs() (4/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142950.100711-1-sj@kernel.org [1]
+      - 54e94cb4a832 "mm/damon/sysfs: read ops_id only once in damon_sysfs_apply_inputs() (5/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260715031002.108504-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260703172417.95426-1-sj@kernel.org [1]
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

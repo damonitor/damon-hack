@@ -1,0 +1,172 @@
+From: Petr Tesarik <ptesarik@suse.com>
+Date: Tue, 14 Jul 2026 15:23:00 +0200
+Subject: [PATCH] mm: let node_reclaim() return the number of pages reclaimed
+
+There is only one caller, get_page_from_freelist(), and it does not make
+any use of the reason for skipping the reclaim, nor does it make any
+distinction between a full and partially successful reclaim.
+
+Therefore, node_reclaim() can simply return the number of pages that have
+been reclaimed, same as __node_reclaim(), and the NODE_RECLAIM_xxx macros
+can be removed.
+
+There is one small change of behavior when __node_reclaim() was attempted
+but returned zero.  The allocation now skips the zone immediately; before
+this patch, the zone watermarks were checked first.  I believe it was an
+oversight rather than intention, because the chances that zone watermark
+is OK after __node_reclaim() did not reclaim any pages are very close to
+zero.
+
+Originally, I was looking for occurences of NODE_RECLAIM_SOME and
+NODE_RECLAIM_SUCCESS, but I couldn't find any.  That's because they are
+typecast from the result of a relational operator.  This seemed a bit
+fragile, so I dug a bit deeper and came up with this proposed cleanup.
+
+Link: https://lore.kernel.org/20260714132300.2136018-1-ptesarik@suse.com
+Signed-off-by: Petr Tesarik <ptesarik@suse.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <jackmanb@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h   | 14 +++++---------
+ mm/page_alloc.c | 19 ++++---------------
+ mm/vmscan.c     | 16 ++++++++--------
+ 3 files changed, 17 insertions(+), 32 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 874be94cf2570..f26423de4ca28 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1098,23 +1098,19 @@ static inline void mlock_drain_local(void) { }
+ static inline void mlock_drain_remote(int cpu) { }
+ #endif /* !CONFIG_MMU */
+ 
+-#define NODE_RECLAIM_NOSCAN	-2
+-#define NODE_RECLAIM_FULL	-1
+-#define NODE_RECLAIM_SOME	0
+-#define NODE_RECLAIM_SUCCESS	1
+-
+ #ifdef CONFIG_NUMA
+ extern int node_reclaim_mode;
+ 
+-extern int node_reclaim(struct pglist_data *, gfp_t, unsigned int);
++extern unsigned long node_reclaim(struct pglist_data *pgdat,
++				  gfp_t gfp_mask, unsigned int order);
+ extern int find_next_best_node(int node, nodemask_t *used_node_mask);
+ #else
+ #define node_reclaim_mode 0
+ 
+-static inline int node_reclaim(struct pglist_data *pgdat, gfp_t mask,
+-				unsigned int order)
++static inline unsigned long node_reclaim(struct pglist_data *pgdat,
++					 gfp_t mask, unsigned int order)
+ {
+-	return NODE_RECLAIM_NOSCAN;
++	return 0;
+ }
+ static inline int find_next_best_node(int node, nodemask_t *used_node_mask)
+ {
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 9c97a86da2b9f..af63558391345 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -3908,8 +3908,6 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
+ 		if (!zone_watermark_fast(zone, order, mark,
+ 				       ac->highest_zoneidx, alloc_flags,
+ 				       gfp_mask)) {
+-			int ret;
+-
+ 			if (cond_accept_memory(zone, order, alloc_flags))
+ 				goto try_this_zone;
+ 
+@@ -3930,22 +3928,13 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
+ 			    !zone_allows_reclaim(zonelist_zone(ac->preferred_zoneref), zone))
+ 				continue;
+ 
+-			ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);
+-			switch (ret) {
+-			case NODE_RECLAIM_NOSCAN:
+-				/* did not scan */
+-				continue;
+-			case NODE_RECLAIM_FULL:
+-				/* scanned but unreclaimable */
++			if (!node_reclaim(zone->zone_pgdat, gfp_mask, order))
+ 				continue;
+-			default:
+-				/* did we reclaim enough */
+-				if (zone_watermark_ok(zone, order, mark,
+-					ac->highest_zoneidx, alloc_flags))
+-					goto try_this_zone;
+ 
++			/* did we reclaim enough */
++			if (!zone_watermark_ok(zone, order, mark,
++					       ac->highest_zoneidx, alloc_flags))
+ 				continue;
+-			}
+ 		}
+ 
+ try_this_zone:
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 4357a44ee8767..b7ef032e78a0b 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7768,9 +7768,9 @@ static unsigned long __node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask,
+ 	return sc->nr_reclaimed;
+ }
+ 
+-int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
++unsigned long node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
+ {
+-	int ret;
++	unsigned long ret;
+ 	/* Minimum pages needed in order to stay on node */
+ 	const unsigned long nr_pages = 1 << order;
+ 	struct scan_control sc = {
+@@ -7797,13 +7797,13 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
+ 	if (node_pagecache_reclaimable(pgdat) <= pgdat->min_unmapped_pages &&
+ 	    node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) <=
+ 	    pgdat->min_slab_pages)
+-		return NODE_RECLAIM_FULL;
++		return 0;
+ 
+ 	/*
+ 	 * Do not scan if the allocation should not be delayed.
+ 	 */
+ 	if (!gfpflags_allow_blocking(gfp_mask) || (current->flags & PF_MEMALLOC))
+-		return NODE_RECLAIM_NOSCAN;
++		return 0;
+ 
+ 	/*
+ 	 * Only run node reclaim on the local node or on nodes that do not
+@@ -7812,15 +7812,15 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
+ 	 * as wide as possible.
+ 	 */
+ 	if (node_state(pgdat->node_id, N_CPU) && pgdat->node_id != numa_node_id())
+-		return NODE_RECLAIM_NOSCAN;
++		return 0;
+ 
+ 	if (test_and_set_bit_lock(PGDAT_RECLAIM_LOCKED, &pgdat->flags))
+-		return NODE_RECLAIM_NOSCAN;
++		return 0;
+ 
+-	ret = __node_reclaim(pgdat, gfp_mask, nr_pages, &sc) >= nr_pages;
++	ret = __node_reclaim(pgdat, gfp_mask, nr_pages, &sc);
+ 	clear_bit_unlock(PGDAT_RECLAIM_LOCKED, &pgdat->flags);
+ 
+-	if (ret)
++	if (ret >= nr_pages)
+ 		count_vm_event(PGSCAN_ZONE_RECLAIM_SUCCESS);
+ 	else
+ 		count_vm_event(PGSCAN_ZONE_RECLAIM_FAILED);
+-- 
+2.47.3
+

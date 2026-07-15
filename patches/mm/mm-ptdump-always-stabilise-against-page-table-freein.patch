@@ -1,51 +1,36 @@
 From: Lorenzo Stoakes <ljs@kernel.org>
-Date: Sun, 12 Jul 2026 11:42:26 +0100
+Date: Tue, 14 Jul 2026 18:24:25 +0100
 Subject: [PATCH] mm/ptdump: always stabilise against page table freeing using
  init_mm
 
-x86 and arm64 invoke ptdump_walk_pgd() with non-init_mm mm whilst still
-walking kernel page table ranges.
+Previous commits have established the invariant that kernel page table
+freeing is performed while an mmap read lock on init_mm is held, which
+fixes races between ptdump and kernel page table freeing over init_mm.
 
-For x86 this is done in ptdump_curknl_show() and ptdump_efi_show(), the
-first passing current->mm, and the second passing efi_mm (we reach kernel
-mappings that init_mm protects for current->mm due to x86 cloning shared
-kernel page tables for arbitrary mm's).
+However, x86 and arm64 can perform a ptdump over an mm other than init_mm
+via ptdump_walk_pgd() and since kernel memory ranges are shared across
+non-kernel mm's, this means that the race still exists for these cases.
 
-arm64 does so via ptdump_debugfs_register(), configured by efi_ptdump_info
-for efi ranges against efi_mm.
+Fix this by acquiring a nested mmap write lock for init_mm in
+ptdump_walk_pgd().
 
-The init_mm mmap lock is used to stabilise page table freeing against
-ptdump, so take a nested lock on init_mm to ensure that we are correctly
-stabilised.
-
-We take this after mmap write locking the non-init_mm mm.  Nothing
+This is safe as we take this after mmap write locking the mm, and nothing
 acquires the init_mm lock first before locking an arbitrary mm, so no
 deadlock is possible.
 
-The preceding patches in this series updated the two cases which can cause
-races with ptdump in init_mm ranges - vmap and x86 CPA huge page
-promotion.
+Also update walk_page_range_debug() to assert that init_mm is write locked,
+add a comment explaining why and remove some redundant code, and eliminate
+the unnecessary and confusing invocation of walk_kernel_page_table_range().
 
-For arm64, commit fa93b45fd397 ("arm64: Enable vmalloc-huge with ptdump")
-already provides exclusion against init_mm for the vmap case, which this
-patch also pairs with.
+We can safely remove the non-NULL check for walk.mm, as the mmap lock
+asserts would NULL pointer deref if it was (and of course no callers do
+this).
 
 The first point at which ptdump can race kernel page table freeing is
 commit b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page
 table"), so we target this in the Fixes tag.
 
-Also update walk_page_range_debug() to assert that init_mm is write
-locked, add a comment explaining why and remove some redundant code.
-
-We do not need to check for walk.mm being non-NULL, as the mmap lock
-asserts would NULL pointer deref if it was (and of course no callers do
-this).
-
-The rest of this code is exactly as it would be if invoking
-walk_kernel_page_table_range(), only now it's far clearer that that's the
-case.
-
-Link: https://lore.kernel.org/20260712-series-vmap-race-fix-v2-3-ad134cc3a12a@kernel.org
+Link: https://lore.kernel.org/20260714-series-vmap-race-fix-v3-3-b812eccfa0f9@kernel.org
 Fixes: b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page table")
 Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
@@ -67,6 +52,7 @@ Cc: Toshi Kani <toshi.kani@hpe.com>
 Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Will Deacon <will@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---

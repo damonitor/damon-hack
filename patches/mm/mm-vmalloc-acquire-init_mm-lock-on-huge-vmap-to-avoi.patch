@@ -1,10 +1,10 @@
 From: Lorenzo Stoakes <ljs@kernel.org>
-Date: Sun, 12 Jul 2026 11:42:24 +0100
+Date: Tue, 14 Jul 2026 18:24:23 +0100
 Subject: [PATCH] mm/vmalloc: acquire init_mm lock on huge vmap to avoid ptdump
  UAF
 
 Patch series "mm: fix UAF caused by race between ptdump and vmap pgtable
-freeing", v2.
+freeing", v3.
 
 Kernel page table walkers fall into two broad categories - those ranges
 where no exclusion is required via walk_kernel_page_table_range_lockless()
@@ -84,72 +84,37 @@ fixes are in place).
 This patch (of 4):
 
 Currently there is a nasty race between ptdump and vmap when attempting to
-map a huge P4D, PMD or PUD entry.
+map a huge P4D, PMD or PUD entry:
 
-ptdump is invoked by arch code to walk kernel or EFI page tables, either
-to output it for debugging purposes, or to assert that there are no W+X
-(i.e.  executable writable pages) exposed in these ranges.
+* ptdump walks kernel page table ranges it doesn't own.
 
-The feature is enabled generally via CONFIG_PTDUMP (whose implementation
-is in mm/ptdump.c), and expose a debugfs interface for it if
-CONFIG_PTDUMP_DEBUGFS is defined.
+* When vmap maps ranges it tries to promotes existing ones to huge page
+  tables in vmap_try_huge_[p4d,pud,pmd]() at P4D, PUD and PMD level,
+  freeing the lower page table in [p4d,pud,pmd]_free_[pud,pmd,pte]_page()
+  when it succeeds.
 
-If CONFIG_PTDUMP is enabled, then /sys/kernel/debug/check_wx_pages is
-enabled which checks kernel ranges to perform the W+X check.  If
-CONFIG_DEBUG_WX is enabled, this is done on boot.
+Both of these things can happen at the same time and as a result ptdump
+can access a freed page table, resulting in a use-after-free and memory
+corruption.
 
-(Note that arm32 implements its own page table walker and uses
-CONFIG_ARM_DEBUG_WX and CONFIG_ARM_PTDUMP_DEBUGFS for this.)
+This is possible because while ptdump_walk_pgd() holds both the mem
+hotplug lock and the mmap write lock before invoking
+walk_page_range_debug(), vmap takes no relevant locks at all.
 
-The EFI implementations vary by architecture, but are not relevant to the
-bug, as the issue is when kernel page ranges are walked.
+Fix this by holding the mmap read lock in vmap_try_huge_*() when freeing
+page tables.
 
-ptdump_walk_pgd() holds both the mem hotplug lock and the mmap write lock
-before invoking walk_page_range_debug(), however this runs into an issue
-with vmalloc ranges.
+We also hold the lock while assigning the huge page table entry, which
+means page table walkers observe only the huge or non-huge page table
+entry.
 
-When vmap maps a P4D, PUD or a PMD sized range and encounters an existing
-P4d/PUD/PMD entry pointing to a PUD/PMD/PTE page table, it invokes
-vmap_try_huge_[p4d,pud,pmd]() to try to convert it to a huge page table
-mapping if possible.
-
-However, when it does this, it holds no meaningful locks against other
-kernel page table walkers, invoking
-[p4d,pud,pmd]_free_[pud,pmd,pte]_page() which calls pagetable_free() and
-pagetable_free_kernel() in turn (pte_fragment_free() for powerpc).
-
-This means that a use-after-free becomes possible if the ptdump page table
-walker happens to be walking a PUD, PMD or PTE page table after it has
-been freed.
-
-Since commit 5ba2f0a15564 ("mm: introduce deferred freeing for kernel page
-tables"), if CONFIG_ASYNC_KERNEL_PGTABLE_FREE is set,
-pagetable_free_kernel() will batch the page table freeing operation,
-otherwise it frees the page table directly.
-
-While the KASAN report that syzbot highlighted indicated that the issue
-arose in a workqueue introduced by this change, this is coincidental and
-the commit did not alter the race which has existed for quite some time.
-
-This patch resolves the issue by simply having
-vmap_try_huge_[p4d,pud,pmd]() hold the mmap read lock on init_mm while
-invoking [p4d,pud,pmd]_free_[pud,pmd,pte]_page() and
-[p4d,pud,pmd]_set_huge().
-
-This way, page table walkers either observe a newly promoted huge
-P4D/PUD/PMD leaf entry or the prior PUD/PMD/PTE entry and never get passed
-a dangling pointer, whether the page is freed asynchronously or not.
+We use a trylock to prevent ptdump from blocking vmap making forward
+progress.  This is fine because it's an optimisation in any case, and thus
+the vmap can safely proceed regardless.
 
 All other kernel page table walkers that touch vmalloc ranges either
 exclusively own the memory walked or acquire the mmap lock, so this
 correctly excludes those walkers.
-
-We acquire the mmap read lock as a trylock, as this is an optimisation
-that is permitted not to succeed, a race is very unlikely, and doing so
-eliminates latency sleeping on the lock would have otherwise caused.
-
-We also define a guard class for mmap_read_trylock() so we can use
-cleanup.h to make the scope handling cleaner in the implementation.
 
 One wrinkle here is commit fa93b45fd397 ("arm64: Enable vmalloc-huge with
 ptdump"), which addresses the issue for arm64 only by explicitly acquiring
@@ -180,10 +145,13 @@ mappings") for huge vmalloc.
 Since the former is the earlier of the two we choose that for our Fixes
 tag.
 
+We also define a guard class for mmap_read_trylock() so we can use
+cleanup.h to make the scope handling cleaner in the implementation.
+
 This patch is based on work by David Carlier (linked), with gratitude!
 
-Link: https://lore.kernel.org/20260712-series-vmap-race-fix-v2-0-ad134cc3a12a@kernel.org
-Link: https://lore.kernel.org/20260712-series-vmap-race-fix-v2-1-ad134cc3a12a@kernel.org
+Link: https://lore.kernel.org/20260714-series-vmap-race-fix-v3-0-b812eccfa0f9@kernel.org
+Link: https://lore.kernel.org/20260714-series-vmap-race-fix-v3-1-b812eccfa0f9@kernel.org
 Fixes: b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page table")
 Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
 Reported-by: syzbot+fd95a72470f5a44e464c@syzkaller.appspotmail.com
@@ -199,7 +167,6 @@ Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Ingo Molnar <mingo@redhat.com>
 Cc: Kiryl Shutsemau <kas@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Peter Zijlstra <peterz@infradead.org>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
@@ -209,6 +176,7 @@ Cc: Toshi Kani <toshi.kani@hpe.com>
 Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Will Deacon <will@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---

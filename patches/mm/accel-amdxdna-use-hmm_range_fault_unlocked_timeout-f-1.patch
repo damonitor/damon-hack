@@ -1,0 +1,93 @@
+From: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Date: Tue, 14 Jul 2026 15:21:42 -0700
+Subject: [PATCH] 
+ accel-amdxdna-use-hmm_range_fault_unlocked_timeout-for-range-population-fix
+
+aie2_populate_range() now uses hmm_range_fault_unlocked_timeout() to let
+HMM own mmap_lock acquisition and retry handling while populating an
+invalid user mapping.  The timeout passed to that helper is a relative HMM
+retry budget, not an absolute deadline.
+
+Pass HMM_RANGE_DEFAULT_TIMEOUT directly to the HMM helper instead of
+computing the remaining time from a local absolute deadline.  The broader
+command submission path still keeps its existing timeout around repeated
+range population attempts, while each HMM fault attempt receives a fresh
+retry budget for HMM's internal mmu-notifier retries.
+
+Keep the existing driver-visible timeout errno by translating -EBUSY from
+hmm_range_fault_unlocked_timeout() to -ETIME on return.
+
+Link: https://lore.kernel.org/178406770278.1106335.17232929459598625570.stgit@skinsburskii
+Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
+Cc: Danilo Krummrich <dakr@kernel.org>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Jason Gunthorpe <jgg@nvidia.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kees Cook <kees@kernel.org>
+Cc: K. Y. Srinivasan <kys@microsoft.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lizhi Hou <lizhi.hou@amd.com>
+Cc: Long Li <longli@microsoft.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Lyude <lyude@redhat.com>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Oded Gabbay <ogabbay@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Thomas Zimemrmann <tzimmermann@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Liu <wei.liu@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/accel/amdxdna/aie2_ctx.c | 12 ++++--------
+ 1 file changed, 4 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/accel/amdxdna/aie2_ctx.c b/drivers/accel/amdxdna/aie2_ctx.c
+index a16b8d7deaeae..b5b4ca263002d 100644
+--- a/drivers/accel/amdxdna/aie2_ctx.c
++++ b/drivers/accel/amdxdna/aie2_ctx.c
+@@ -1034,7 +1034,7 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+ 	bool found;
+ 	int ret;
+ 
+-	timeout = jiffies + msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
++	timeout = msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
+ again:
+ 	found = false;
+ 	down_write(&xdna->notifier_lock);
+@@ -1061,13 +1061,9 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+ 		return -EFAULT;
+ 	}
+ 
+-	ret = hmm_range_fault_unlocked_timeout(&mapp->range,
+-			max_t(long, timeout - jiffies, 1));
+-	if (ret) {
+-		if (ret == -EBUSY)
+-			ret = -ETIME;
++	ret = hmm_range_fault_unlocked_timeout(&mapp->range, timeout);
++	if (ret)
+ 		goto put_mm;
+-	}
+ 
+ 	down_write(&xdna->notifier_lock);
+ 	if (mmu_interval_read_retry(&mapp->notifier, mapp->range.notifier_seq)) {
+@@ -1085,7 +1081,7 @@ static int aie2_populate_range(struct amdxdna_gem_obj *abo)
+ put_mm:
+ 	amdxdna_umap_put(mapp);
+ 	mmput(mm);
+-	return ret;
++	return ret == -EBUSY ? -ETIME : ret;
+ }
+ 
+ int aie2_cmd_submit(struct amdxdna_hwctx *hwctx, struct amdxdna_sched_job *job, u64 *seq)
+-- 
+2.47.3
+
