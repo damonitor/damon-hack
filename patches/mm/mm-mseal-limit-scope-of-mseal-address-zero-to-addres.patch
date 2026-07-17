@@ -1,0 +1,163 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 16 Jul 2026 14:43:10 +0100
+Subject: [PATCH] mm/mseal: limit scope of mseal address zero to address zero
+
+Commit 44f65d900698 ("binfmt_elf: mseal address zero") unconditionally
+provided do_mseal() to any internal kernel caller in order to address a
+corner case slated for possible removal.
+
+It also incorrectly attempts to mseal() without checking to see whether
+the mapping even succeeded.
+
+Restrict the scope to the corner case by providing mseal_mmap_page_zero()
+which asserts the MMAP_PAGE_ZERO personality.
+
+Avoid unnecessary checks in the start, end range by abstracting the actual
+mseal()'ing to mseal() and have mseal_mmap_page_zero() call that instead.
+
+Only try to seal the VMA if we mapped the VMA.
+
+Link: https://lore.kernel.org/20260716-mseal-fixups-v1-2-3a9609bf041b@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/binfmt_elf.c    |  7 ++-----
+ include/linux/mm.h |  8 ++------
+ mm/mseal.c         | 48 +++++++++++++++++++++++++++++++++-------------
+ 3 files changed, 39 insertions(+), 24 deletions(-)
+
+diff --git a/fs/binfmt_elf.c b/fs/binfmt_elf.c
+index 16a56b6b3f6ca..e3131a3119959 100644
+--- a/fs/binfmt_elf.c
++++ b/fs/binfmt_elf.c
+@@ -1353,11 +1353,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
+ 		   emulate the SVr4 behavior. Sigh. */
+ 		error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
+ 				MAP_FIXED | MAP_PRIVATE, 0);
+-
+-		retval = do_mseal(0, PAGE_SIZE, 0);
+-		if (retval)
+-			pr_warn_ratelimited("pid=%d, couldn't seal address 0, ret=%d.\n",
+-					    task_pid_nr(current), retval);
++		if (!error)
++			mseal_mmap_page_zero();
+ 	}
+ 
+ 	regs = current_pt_regs();
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 550fb92957d18..87feaa5a2b780 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -5291,13 +5291,9 @@ int reserve_mem_find_by_name(const char *name, phys_addr_t *start, phys_addr_t *
+ int reserve_mem_release_by_name(const char *name);
+ 
+ #ifdef CONFIG_64BIT
+-int do_mseal(unsigned long start, size_t len_in, unsigned long flags);
++void mseal_mmap_page_zero(void);
+ #else
+-static inline int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
+-{
+-	/* noop on 32 bit */
+-	return 0;
+-}
++static inline void mseal_mmap_page_zero(void) {}
+ #endif
+ 
+ /*
+diff --git a/mm/mseal.c b/mm/mseal.c
+index 207fea89c61e1..5930551d84f28 100644
+--- a/mm/mseal.c
++++ b/mm/mseal.c
+@@ -32,7 +32,7 @@ static bool range_contains_unmapped(unsigned long start, unsigned long end)
+ 	return prev_end < end;
+ }
+ 
+-static int mseal_apply(unsigned long start, unsigned long end)
++static int __mseal(unsigned long start, unsigned long end)
+ {
+ 	struct vm_area_struct *vma, *prev;
+ 	VMA_ITERATOR(vmi, current->mm, start);
+@@ -66,6 +66,38 @@ static int mseal_apply(unsigned long start, unsigned long end)
+ 	return 0;
+ }
+ 
++static int mseal(unsigned long start, unsigned long end)
++{
++	int err;
++
++	err = mmap_write_lock_killable(current->mm);
++	if (err)
++		return err;
++	if (range_contains_unmapped(start, end))
++		err = -ENOMEM;
++	else
++		err = __mseal(start, end);
++	mmap_write_unlock(current->mm);
++	return err;
++}
++
++/**
++ * mseal_mmap_page_zero() - If the MMAP_PAGE_ZERO personality is set, mseal()
++ * the page mapped at address zero.
++ */
++void mseal_mmap_page_zero(void)
++{
++	int err;
++
++	if (WARN_ON_ONCE(!(current->personality & MMAP_PAGE_ZERO)))
++		return;
++
++	err = mseal(0, PAGE_SIZE);
++	if (err)
++		pr_warn_ratelimited("pid=%d, couldn't seal address 0, ret=%d.\n",
++				    task_pid_nr(current), err);
++}
++
+ /*
+  * mseal(2) seals the VM's meta data from
+  * selected syscalls.
+@@ -118,10 +150,9 @@ static int mseal_apply(unsigned long start, unsigned long end)
+  *
+  *  unseal() is not supported.
+  */
+-int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
++static int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
+ {
+ 	size_t len;
+-	int ret = 0;
+ 	unsigned long end;
+ 
+ 	/* Verify flags not set. */
+@@ -144,16 +175,7 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
+ 	if (end == start)
+ 		return 0;
+ 
+-	if (mmap_write_lock_killable(current->mm))
+-		return -EINTR;
+-
+-	if (range_contains_unmapped(start, end))
+-		ret = -ENOMEM;
+-	else
+-		ret = mseal_apply(start, end);
+-
+-	mmap_write_unlock(current->mm);
+-	return ret;
++	return mseal(start, end);
+ }
+ 
+ SYSCALL_DEFINE3(mseal, unsigned long, start, size_t, len, unsigned long,
+-- 
+2.47.3
+

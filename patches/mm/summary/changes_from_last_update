@@ -7,24 +7,91 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 117 -> 117 commits (no change)
-  - series: 15 (113) -> 15 (113) (no change)
+- mm-unstable: 117 -> 133 commits
+  - series: 15 (113) -> 17 (129)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 20 -> 20 commits (no change)
     - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 89 -> 89 commits (no change)
+    - maintainer, nobody: 89 -> 105 commits
     - maintainer, no role : 6 -> 6 commits (no change)
   - changed commits
-    - series "mm: make VMA page offset handling more consistent", v2. (33)
-      - 8fe7717600ae "mm/vma: use vma_start_pgoff(), linear_page_index() in mm code (17/33)"
-        - Authored by a reviewer, reviewed by a maintainer
-        - added "Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>"
-        - added "Cc: Liam R. Howlett (Oracle) <liam@infradead.org>"
-        - dropped "Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>"
-        - Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-18-2a5aa403d977@kernel.org
-- mm-new: 16 -> 16 commits (no change)
-  - series: 2 (16) -> 2 (16) (no change)
-    - maintainer, nobody: 16 -> 16 commits (no change)
+    - series "mm/damon/core: hide core-private struct fields". (10)
+      - 7a02f5458fa8 "mm/damon/core: hide private damon_region fields (0/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714143544.101305-2-sj@kernel.org
+      - bcd03f94b26d "mm/damon/core: hide private damon_target fields (1/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-3-sj@kernel.org
+      - 57fe5209ccdb "mm/damon/core: hide private damos_quota_goal fields (2/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-4-sj@kernel.org
+      - e7eda3b49496 "mm/damon/core: hide private damos_quota fields (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-5-sj@kernel.org
+      - 47e0fd857ff0 "mm/damon/core: hide private damos_filter fields (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-6-sj@kernel.org
+      - 6216fd3b619d "mm/damon/core: hide private damos fields (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-7-sj@kernel.org
+      - 93cb3555fa64 "mm/damon/core: hide private damon_filter fields (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-8-sj@kernel.org
+      - 06d0910d4e8c "mm/damon/core: hide private damon_probe fields (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-9-sj@kernel.org
+      - b32b36f85ec7 "mm/damon/sysfs: do not directly access damon_ctx->ops (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-10-sj@kernel.org
+      - b4f6c29b0c8f "mm/damon/core: hide core-private damon_ctx fields (9/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260714143544.101305-11-sj@kernel.org
+    - series "mm/damon: unurgent fixes for infinite loop, NULL de-ref and races", v1.1. (6)
+      - f5dd88a62d34 "mm/damon/core: avoid infinite kdamond_merge_regions() internal loop (0/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260715031002.108504-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [1]
+      - fadbfb074edf "mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of() (1/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260710144937.26981-1-sj@kernel.org [1]
+      - 039c6fc0d2c3 "mm/damon/vaddr: drop last same folio access check optimization (2/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - 8429a67b2e10 "mm/damon/paddr: drop last same folio access check reuse optimization (3/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - bd0a550f9d65 "mm/damon/sysfs: read addr_unit only once in damon_sysfs_apply_inputs() (4/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142950.100711-1-sj@kernel.org [1]
+      - e54922136540 "mm/damon/sysfs: read ops_id only once in damon_sysfs_apply_inputs() (5/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260715031002.108504-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260703172417.95426-1-sj@kernel.org [1]
+- mm-new: 16 -> 0 commits
+  - series: 2 (16) -> 0 (0)
+    - maintainer, nobody: 16 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

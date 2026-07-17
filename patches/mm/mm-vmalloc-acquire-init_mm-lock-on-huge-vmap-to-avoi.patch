@@ -1,10 +1,10 @@
-From: Lorenzo Stoakes <ljs@kernel.org>
-Date: Tue, 14 Jul 2026 18:24:23 +0100
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 16 Jul 2026 22:31:12 +0100
 Subject: [PATCH] mm/vmalloc: acquire init_mm lock on huge vmap to avoid ptdump
  UAF
 
 Patch series "mm: fix UAF caused by race between ptdump and vmap pgtable
-freeing", v3.
+freeing", v4.
 
 Kernel page table walkers fall into two broad categories - those ranges
 where no exclusion is required via walk_kernel_page_table_range_lockless()
@@ -64,12 +64,16 @@ lock in vmap logic, then partially reverting commit fa93b45fd397 ("arm64:
 Enable vmalloc-huge with ptdump"), keeping the enablement of huge vmap
 support, and removing the ifdeffery with the partial revert patch.
 
-There are two related issues that we also address in this series:
+There are related issues that we also address in this series:
 
 * x86 page attribute logic, specifically Change Page Attributes (CPA),
   implements a feature whereby huge ranges can be collapsed into huge leaf
-  entries. This can similarly cause a UAF when done in parallel with a
+  entries.  This can similarly cause a UAF when done in parallel with a
   ptdump walk, so similarly acquire the init_mm mmap lock to avoid this.
+
+* The CPA logic also previously allowed concurrent CPA collapse which
+  could result in memory corruption.  Take the mmap write lock in this
+  code path across the whole operation to prevent this.
 
 * x86 and arm64 permit walks of non-kernel mm's (both allowing efi mm
   walks, and in intel's case arbitrary mm's), so we ensure kernel mappings
@@ -84,7 +88,7 @@ fixes are in place).
 This patch (of 4):
 
 Currently there is a nasty race between ptdump and vmap when attempting to
-map a huge P4D, PMD or PUD entry:
+map a huge P4D, PUD or PMD entry:
 
 * ptdump walks kernel page table ranges it doesn't own.
 
@@ -155,22 +159,22 @@ cleanup.h to make the scope handling cleaner in the implementation.
 
 This patch is based on work by David Carlier (linked), with gratitude!
 
-Link: https://lore.kernel.org/20260714-series-vmap-race-fix-v3-0-b812eccfa0f9@kernel.org
-Link: https://lore.kernel.org/20260714-series-vmap-race-fix-v3-1-b812eccfa0f9@kernel.org
+Link: https://lore.kernel.org/20260716-series-vmap-race-fix-v4-0-8c108c4317df@kernel.org
+Link: https://lore.kernel.org/20260716-series-vmap-race-fix-v4-1-8c108c4317df@kernel.org
 Fixes: b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page table")
-Signed-off-by: Lorenzo Stoakes <ljs@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Reported-by: syzbot+fd95a72470f5a44e464c@syzkaller.appspotmail.com
 Closes: https://lore.kernel.org/all/6a287988.39669fcc.33b062.00a0.GAE@google.com/T/
 Link: https://lore.kernel.org/linux-mm/20260706203128.162335-1-devnexen@gmail.com/
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Reviewed-by: Dev Jain <dev.jain@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Kiryl Shutsemau <kas@kernel.org>
 Cc: Andy Lutomirski <luto@kernel.org>
 Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Ingo Molnar <mingo@redhat.com>
-Cc: Kiryl Shutsemau <kas@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Peter Zijlstra <peterz@infradead.org>
@@ -186,9 +190,9 @@ Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/mmap_lock.h |  1 +
- mm/pagewalk.c             | 22 +++++++++--------
- mm/vmalloc.c              | 50 ++++++++++++++++++++++++++++++++-------
- 3 files changed, 54 insertions(+), 19 deletions(-)
+ mm/pagewalk.c             | 22 ++++++++++--------
+ mm/vmalloc.c              | 49 ++++++++++++++++++++++++++++++++-------
+ 3 files changed, 53 insertions(+), 19 deletions(-)
 
 diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
 index 04b8f61ece5d8..6b5c2390cc301 100644
@@ -250,7 +254,7 @@ index 3ae2586ff45b4..bbcfd68d0907d 100644
  }
  
 diff --git a/mm/vmalloc.c b/mm/vmalloc.c
-index 1afca3568b9b6..1fa9ac6e43d4f 100644
+index 1afca3568b9b6..d5c4d2bb770bf 100644
 --- a/mm/vmalloc.c
 +++ b/mm/vmalloc.c
 @@ -43,6 +43,7 @@
@@ -261,7 +265,7 @@ index 1afca3568b9b6..1fa9ac6e43d4f 100644
  
  #define CREATE_TRACE_POINTS
  #include <trace/events/vmalloc.h>
-@@ -158,10 +159,25 @@ static int vmap_try_huge_pmd(pmd_t *pmd, unsigned long addr, unsigned long end,
+@@ -158,10 +159,24 @@ static int vmap_try_huge_pmd(pmd_t *pmd, unsigned long addr, unsigned long end,
  	if (!IS_ALIGNED(phys_addr, PMD_SIZE))
  		return 0;
  
@@ -272,12 +276,11 @@ index 1afca3568b9b6..1fa9ac6e43d4f 100644
  
 -	return pmd_set_huge(pmd, phys_addr, prot);
 +	/*
-+	 * Kernel page table walkers either walk ranges they own exclusively or
-+	 * hold the mmap write lock on init_mm (ptdump being the motivating
-+	 * case).
++	 * Acquire the mmap read lock to exclude ptdump, which walks
++	 * kernel page tables it does not own under the mmap write lock.
 +	 *
-+	 * Therefore, acquire the mmap read lock to prevent use-after-free when
-+	 * freeing page tables.
++	 * Concurrent read lock holders are safe: each exclusively owns
++	 * the range it operates on and cannot reach this page table.
 +	 */
 +#ifndef CONFIG_ARM64
 +	scoped_cond_guard(mmap_read_lock_try, return 0, &init_mm)
@@ -290,7 +293,7 @@ index 1afca3568b9b6..1fa9ac6e43d4f 100644
  }
  
  static int vmap_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
-@@ -210,10 +226,18 @@ static int vmap_try_huge_pud(pud_t *pud, unsigned long addr, unsigned long end,
+@@ -210,10 +225,18 @@ static int vmap_try_huge_pud(pud_t *pud, unsigned long addr, unsigned long end,
  	if (!IS_ALIGNED(phys_addr, PUD_SIZE))
  		return 0;
  
@@ -312,7 +315,7 @@ index 1afca3568b9b6..1fa9ac6e43d4f 100644
  }
  
  static int vmap_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
-@@ -262,10 +286,18 @@ static int vmap_try_huge_p4d(p4d_t *p4d, unsigned long addr, unsigned long end,
+@@ -262,10 +285,18 @@ static int vmap_try_huge_p4d(p4d_t *p4d, unsigned long addr, unsigned long end,
  	if (!IS_ALIGNED(phys_addr, P4D_SIZE))
  		return 0;
  
