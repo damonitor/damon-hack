@@ -1,0 +1,124 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Fri, 17 Jul 2026 19:32:58 +0800
+Subject: [PATCH] mm/vmscan: fix anon-only reclaim evicting file pages when
+ swappiness=max
+
+Patch series "mm/vmscan: fix swappiness=max and clean up per-node
+proactive reclaim".
+
+Two fixes and one cleanup.
+
+Patch 1 fixes "swappiness=max": the anon-only test in get_scan_count()
+sat after the "cannot reclaim anon" check, so when no anon was
+reclaimable the request fell back to SCAN_FILE and evicted page cache
+instead.
+
+Patch 2 fixes reclaim_store() collapsing every error into -EAGAIN, so
+callers can no longer tell an invalid argument from a busy interface;
+propagate the real error code, matching the memcg path.
+
+Patch 3 drops the now-unused gfp_mask parameter from __node_reclaim().
+
+
+This patch (of 3):
+
+As Qi mentioned [1], when swappiness=max (SWAPPINESS_ANON_ONLY) is set,
+the reclaim logic is expected to reclaim anonymous pages exclusively.
+However, due to the current ordering of checks in get_scan_count(), file
+pages may still be evicted if can_reclaim_anon_pages() returns false,
+which contradicts the semantics of SWAPPINESS_ANON_ONLY.
+
+Reproducer in a cgroup holding 64M of file cache, with no swap configured:
+
+  Before (file cache is wrongly evicted):
+    # cat memory.stat
+    anon 196608
+    file 67178496
+    pgscan_proactive 0
+    # echo "64M swappiness=max" > memory.reclaim
+    # cat memory.stat
+    anon 208896
+    file 4096                 <- page cache evicted
+    pgsteal_proactive 16400
+    pgscan_proactive 16400
+
+  After (file cache is left intact):
+    # cat memory.stat
+    anon 200704
+    file 67178496
+    pgscan_proactive 0
+    # echo "64M swappiness=max" > memory.reclaim
+    -bash: echo: write error: Resource temporarily unavailable
+    # cat memory.stat
+    anon 208896
+    file 67178496             <- page cache untouched
+    pgsteal_proactive 0
+    pgscan_proactive 0
+
+Fix this by bailing out early when SWAPPINESS_ANON_ONLY is set and no
+anonymous pages are reclaimable, before falling back to file reclaim.
+
+Link: https://lore.kernel.org/20260717113300.214717-1-ridong.chen@linux.dev
+Link: https://lore.kernel.org/20260717113300.214717-2-ridong.chen@linux.dev
+Link: https://lore.kernel.org/cgroups/7ddf3eee-5fe2-45f7-8614-c8936a039e04@linux.dev/ [1]
+Fixes: 68a1436bde00 ("mm: add swappiness=max arg to memory.reclaim for only anon reclaim")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Suggested-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zhongkun He <hezhongkun.hzk@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index b7ef032e78a0b..7385daab1ede2 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2492,6 +2492,17 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 	enum scan_balance scan_balance;
+ 	enum lru_list lru;
+ 
++	/* Proactive reclaim initiated by userspace for anonymous memory only */
++	if (swappiness == SWAPPINESS_ANON_ONLY) {
++		WARN_ON_ONCE(!sc->proactive);
++		if (!can_reclaim_anon_pages(memcg, pgdat->node_id, sc)) {
++			memset(nr, 0, sizeof(*nr) * NR_LRU_LISTS);
++			return;
++		}
++		scan_balance = SCAN_ANON;
++		goto out;
++	}
++
+ 	/* If we have no swap space, do not bother scanning anon folios. */
+ 	if (!sc->may_swap || !can_reclaim_anon_pages(memcg, pgdat->node_id, sc)) {
+ 		scan_balance = SCAN_FILE;
+@@ -2510,13 +2521,6 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 		goto out;
+ 	}
+ 
+-	/* Proactive reclaim initiated by userspace for anonymous memory only */
+-	if (swappiness == SWAPPINESS_ANON_ONLY) {
+-		WARN_ON_ONCE(!sc->proactive);
+-		scan_balance = SCAN_ANON;
+-		goto out;
+-	}
+-
+ 	/*
+ 	 * Do not apply any pressure balancing cleverness when the
+ 	 * system is close to OOM, scan both anon and file equally
+-- 
+2.47.3
+

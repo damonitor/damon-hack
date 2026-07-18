@@ -1,9 +1,9 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Thu, 16 Jul 2026 14:43:09 +0100
+Date: Fri, 17 Jul 2026 18:27:09 +0100
 Subject: [PATCH] mm/mseal: remove superfluous comments, fix confusion around
  mm
 
-Patch series "mm/mseal: further cleanups", v3.
+Patch series "mm/mseal: further cleanups", v2.
 
 The mseal implementation is still rather confusing, so tighten things up a
 little.
@@ -12,7 +12,7 @@ The only user of do_mseal() outside of the system call is the
 MMAP_PAGE_ZERO process personality - retain better control over how mseal
 is utilised by providing mseal_mmap_page_zero() for this instead.
 
-The comments are overly long and confusing, so cut them down so they're a
+The comments are overly long and confusion, so cut them down so they're a
 lot clearer.
 
 Remove confusing mm_struct params (mseal can not be used on remote mm's)
@@ -22,20 +22,22 @@ and wrap the actual system call logic into the system call declaration.
 This patch (of 3):
 
 Remove comment blocks that don't add value and eliminate any confusion
-about whether or not we permit mseal()'ing of remote mm's by explicitly
-referencing current->mm consistently.
+about whether or not we permit mseal()'ing of remote mm's by not passing
+through an mm parameter but rather referencing current->mm in each
+function.
 
-Also avoid ugly goto by using an else branch.
+Also while we're here, avoid an ugly goto by using an else branch, and
+move local parameters declarations into reverse xmas tree order.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20260716-mseal-fixups-v1-0-3a9609bf041b@kernel.org
-Link: https://lore.kernel.org/20260716-mseal-fixups-v1-1-3a9609bf041b@kernel.org
+Link: https://lore.kernel.org/20260717-mseal-fixups-v2-0-0daa0014b813@kernel.org
+Link: https://lore.kernel.org/20260717-mseal-fixups-v2-1-0daa0014b813@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Reviewed-by: Pedro Falcato <pfalcato@suse.de>
 Cc: Al Viro <viro@zeniv.linux.org.uk>
 Cc: Christian Brauner <brauner@kernel.org>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Jan Kara <jack@suse.cz>
 Cc: Jann Horn <jannh@google.com>
 Cc: Kees Cook <kees@kernel.org>
@@ -46,14 +48,14 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/mseal.c | 48 ++++++++----------------------------------------
- 1 file changed, 8 insertions(+), 40 deletions(-)
+ mm/mseal.c | 53 +++++++++++------------------------------------------
+ 1 file changed, 11 insertions(+), 42 deletions(-)
 
 diff --git a/mm/mseal.c b/mm/mseal.c
-index 9781647483d19..207fea89c61e1 100644
+index 9781647483d19..430a252a6da41 100644
 --- a/mm/mseal.c
 +++ b/mm/mseal.c
-@@ -16,28 +16,7 @@
+@@ -16,32 +16,11 @@
  #include <linux/sched.h>
  #include "internal.h"
  
@@ -81,8 +83,14 @@ index 9781647483d19..207fea89c61e1 100644
 -		unsigned long start, unsigned long end)
 +static bool range_contains_unmapped(unsigned long start, unsigned long end)
  {
- 	struct vm_area_struct *vma;
- 	unsigned long prev_end = start;
+-	struct vm_area_struct *vma;
+-	unsigned long prev_end = start;
+ 	VMA_ITERATOR(vmi, current->mm, start);
++	unsigned long prev_end = start;
++	struct vm_area_struct *vma;
+ 
+ 	for_each_vma_range(vmi, vma, end) {
+ 		if (vma->vm_start > prev_end)
 @@ -53,11 +32,10 @@ static bool range_contains_unmapped(struct mm_struct *mm,
  	return prev_end < end;
  }
@@ -91,26 +99,28 @@ index 9781647483d19..207fea89c61e1 100644
 -		unsigned long start, unsigned long end)
 +static int mseal_apply(unsigned long start, unsigned long end)
  {
++	VMA_ITERATOR(vmi, current->mm, start);
  	struct vm_area_struct *vma, *prev;
 -	VMA_ITERATOR(vmi, mm, start);
-+	VMA_ITERATOR(vmi, current->mm, start);
  
  	/* We know there are no gaps so this will be non-NULL. */
  	vma = vma_iter_load(&vmi);
-@@ -145,7 +123,6 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
- 	size_t len;
- 	int ret = 0;
- 	unsigned long end;
--	struct mm_struct *mm = current->mm;
+@@ -142,10 +120,10 @@ static int mseal_apply(struct mm_struct *mm,
+  */
+ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
+ {
+-	size_t len;
+-	int ret = 0;
+-	unsigned long end;
+ 	struct mm_struct *mm = current->mm;
++	unsigned long end;
++	int ret = 0;
++	size_t len;
  
  	/* Verify flags not set. */
  	if (flags)
-@@ -167,24 +144,15 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
- 	if (end == start)
- 		return 0;
- 
--	if (mmap_write_lock_killable(mm))
-+	if (mmap_write_lock_killable(current->mm))
+@@ -170,20 +148,11 @@ int do_mseal(unsigned long start, size_t len_in, unsigned long flags)
+ 	if (mmap_write_lock_killable(mm))
  		return -EINTR;
  
 -	if (range_contains_unmapped(mm, start, end)) {
@@ -130,11 +140,9 @@ index 9781647483d19..207fea89c61e1 100644
 +		ret = mseal_apply(start, end);
  
 -out:
--	mmap_write_unlock(mm);
-+	mmap_write_unlock(current->mm);
+ 	mmap_write_unlock(mm);
  	return ret;
  }
- 
 -- 
 2.47.3
 

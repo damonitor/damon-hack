@@ -1,10 +1,10 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Thu, 16 Jul 2026 22:31:12 +0100
+Date: Fri, 17 Jul 2026 18:30:07 +0100
 Subject: [PATCH] mm/vmalloc: acquire init_mm lock on huge vmap to avoid ptdump
  UAF
 
 Patch series "mm: fix UAF caused by race between ptdump and vmap pgtable
-freeing", v4.
+freeing", v5.
 
 Kernel page table walkers fall into two broad categories - those ranges
 where no exclusion is required via walk_kernel_page_table_range_lockless()
@@ -68,12 +68,14 @@ There are related issues that we also address in this series:
 
 * x86 page attribute logic, specifically Change Page Attributes (CPA),
   implements a feature whereby huge ranges can be collapsed into huge leaf
-  entries.  This can similarly cause a UAF when done in parallel with a
+  entries. This can similarly cause a UAF when done in parallel with a
   ptdump walk, so similarly acquire the init_mm mmap lock to avoid this.
 
-* The CPA logic also previously allowed concurrent CPA collapse which
-  could result in memory corruption.  Take the mmap write lock in this
-  code path across the whole operation to prevent this.
+* The CPA logic allows concurrent page table manipulation and CPA
+  collapse, meaning the former risks accessing a page table the latter
+  frees. Fix this by acquiring mmap write lock on init_mm across the
+  whole CPA collapse operation and read lock on the page table
+  manipulation.
 
 * x86 and arm64 permit walks of non-kernel mm's (both allowing efi mm
   walks, and in intel's case arbitrary mm's), so we ensure kernel mappings
@@ -85,7 +87,7 @@ and logical ones (the non-kernel mm fix only makes sense once the vmap/CPA
 fixes are in place).
 
 
-This patch (of 4):
+This patch (of 5):
 
 Currently there is a nasty race between ptdump and vmap when attempting to
 map a huge P4D, PUD or PMD entry:
@@ -159,8 +161,8 @@ cleanup.h to make the scope handling cleaner in the implementation.
 
 This patch is based on work by David Carlier (linked), with gratitude!
 
-Link: https://lore.kernel.org/20260716-series-vmap-race-fix-v4-0-8c108c4317df@kernel.org
-Link: https://lore.kernel.org/20260716-series-vmap-race-fix-v4-1-8c108c4317df@kernel.org
+Link: https://lore.kernel.org/20260717-series-vmap-race-fix-v5-0-606a0ac6d3e5@kernel.org
+Link: https://lore.kernel.org/20260717-series-vmap-race-fix-v5-1-606a0ac6d3e5@kernel.org
 Fixes: b6bdb7517c3d ("mm/vmalloc: add interfaces to free unmapped page table")
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Reported-by: syzbot+fd95a72470f5a44e464c@syzkaller.appspotmail.com
@@ -173,6 +175,7 @@ Reviewed-by: Kiryl Shutsemau <kas@kernel.org>
 Cc: Andy Lutomirski <luto@kernel.org>
 Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
 Cc: "H. Peter Anvin" <hpa@zytor.com>
 Cc: Ingo Molnar <mingo@redhat.com>
 Cc: Liam R. Howlett <liam@infradead.org>
@@ -185,6 +188,7 @@ Cc: Toshi Kani <toshi.kani@hpe.com>
 Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Will Deacon <will@kernel.org>
+Cc: David Carlier <devnexen@gmail.com>
 Cc: Dave Hansen <dave.hansen@linux.intel.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>

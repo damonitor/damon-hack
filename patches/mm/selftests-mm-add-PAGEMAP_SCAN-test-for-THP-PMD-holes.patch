@@ -5,14 +5,17 @@ Subject: [PATCH] selftests/mm: add PAGEMAP_SCAN test for THP PMD holes
 Add coverage for the PMD-hole case fixed by "fs/proc/task_mmu: fix
 PAGEMAP_SCAN written state for PMD holes": a MAP_PRIVATE|MAP_ANON THP that
 is uffd-wp'd and then dropped with MADV_DONTNEED leaves a pmd_none hole
-with no page table, which PAGEMAP_SCAN must still report as written --
-checked via both the fast and generic query paths, mirroring
-unpopulated_scan_test().
+with no page table, which PAGEMAP_SCAN must still report as written.
+
+Factor the populate/drop/scan-both-paths sequence out of
+unpopulated_scan_test() into a helper, and add unpopulated_thp_scan_test()
+that reuses it with a THP.
 
 Include <linux/mman.h> for MADV_COLLAPSE; <sys/mman.h> lacks it on older
-glibc (e.g.  2.34).  Same approach as commit fd5295afae91 ("selftests/mm:
+glibc (e.g. 2.34). Same approach as commit fd5295afae91 ("selftests/mm:
 hmm-tests: include linux/mman.h to access MADV_COLLAPSE").
 
+Link: https://lore.kernel.org/aljWYfPRCVc6IB2b@thinkstation
 Link: https://lore.kernel.org/20260715144234.442721-3-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau <kas@kernel.org>
 Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
@@ -31,11 +34,11 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Assisted-by: Claude:claude-fable-5
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/pagemap_ioctl.c | 66 +++++++++++++++++++++-
- 1 file changed, 65 insertions(+), 1 deletion(-)
+ tools/testing/selftests/mm/pagemap_ioctl.c | 102 +++++++++++++++------
+ 1 file changed, 75 insertions(+), 27 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/pagemap_ioctl.c b/tools/testing/selftests/mm/pagemap_ioctl.c
-index f9bcff8e78fab..f9dfe977f5cbd 100644
+index f9bcff8e78fab..f6ab626a90b4e 100644
 --- a/tools/testing/selftests/mm/pagemap_ioctl.c
 +++ b/tools/testing/selftests/mm/pagemap_ioctl.c
 @@ -8,6 +8,7 @@
@@ -46,28 +49,112 @@ index f9bcff8e78fab..f9dfe977f5cbd 100644
  #include <linux/memfd.h>
  #include <linux/userfaultfd.h>
  #include <linux/fs.h>
-@@ -1102,6 +1103,68 @@ static void unpopulated_scan_test(void)
+@@ -1058,50 +1059,96 @@ static void test_simple(void)
+  * the generic path (reached e.g. via category_anyof_mask) must report every
+  * page written.
+  */
+-static void unpopulated_scan_test(void)
++/*
++ * Populate @mem (optionally collapsing it into a THP first), drop it with
++ * MADV_DONTNEED, then check PAGEMAP_SCAN reports the whole range written via
++ * both the fast and generic query paths. A dropped THP leaves a pmd_none hole
++ * with no page table, exercising pagemap_scan_pte_hole(); a base-page range
++ * leaves pte_none entries.
++ */
++static void unpopulated_written_test(const char *name, char *mem, long size,
++				     bool use_thp)
+ {
+-	int npages = 16, i;
+-	long mem_size = npages * page_size;
++	long npages = size / page_size, fast = 0, slow = 0, ret;
+ 	struct page_region regions[16];
+-	long fast = 0, slow = 0, ret;
+-	char *mem;
+-
+-	mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
+-		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-	if (mem == MAP_FAILED)
+-		ksft_exit_fail_msg("%s mmap failed\n", __func__);
++	int i;
+ 
+-	wp_init(mem, mem_size);
++	wp_init(mem, size);
+ 
+-	/* Populate, then drop: the ptes become pte_none without a marker. */
+-	memset(mem, 1, mem_size);
+-	if (madvise(mem, mem_size, MADV_DONTNEED))
+-		ksft_exit_fail_msg("%s MADV_DONTNEED failed\n", __func__);
++	/* Populate, optionally collapse to a THP, then drop it. */
++	memset(mem, 1, size);
++	if (use_thp &&
++	    (madvise(mem, size, MADV_COLLAPSE) ||
++	     !check_huge_anon(mem, size / hpage_size, hpage_size))) {
++		ksft_test_result_skip("%s could not form a THP\n", name);
++		goto out;
++	}
++	if (madvise(mem, size, MADV_DONTNEED)) {
++		ksft_test_result_fail("%s MADV_DONTNEED failed\n", name);
++		goto out;
++	}
+ 
+ 	/* Fast path: category_mask == return_mask == PAGE_IS_WRITTEN. */
+-	ret = pagemap_ioctl(mem, mem_size, regions, npages, 0, 0,
++	ret = pagemap_ioctl(mem, size, regions, ARRAY_SIZE(regions), 0, 0,
+ 			    PAGE_IS_WRITTEN, 0, 0, PAGE_IS_WRITTEN);
+-	if (ret < 0)
+-		ksft_exit_fail_msg("%s fast scan failed\n", __func__);
+-	for (i = 0; i < ret; i++)
++	for (i = 0; ret > 0 && i < ret; i++)
+ 		fast += LEN(regions[i]);
+ 
+ 	/* Generic path: same query expressed via category_anyof_mask. */
+-	ret = pagemap_ioctl(mem, mem_size, regions, npages, 0, 0,
++	ret = pagemap_ioctl(mem, size, regions, ARRAY_SIZE(regions), 0, 0,
+ 			    0, PAGE_IS_WRITTEN, 0, PAGE_IS_WRITTEN);
+-	if (ret < 0)
+-		ksft_exit_fail_msg("%s generic scan failed\n", __func__);
+-	for (i = 0; i < ret; i++)
++	for (i = 0; ret > 0 && i < ret; i++)
+ 		slow += LEN(regions[i]);
+ 
+ 	ksft_test_result(fast == npages && slow == npages,
+-			 "%s unpopulated ptes reported written by both paths (%ld, %ld of %d)\n",
+-			 __func__, fast, slow, npages);
++			 "%s unpopulated range reported written by both paths (%ld, %ld of %ld)\n",
++			 name, fast, slow, npages);
++out:
++	wp_free(mem, size);
++}
+ 
+-	wp_free(mem, mem_size);
++static void unpopulated_scan_test(void)
++{
++	long mem_size = 16 * page_size;
++	char *mem;
++
++	mem = mmap(NULL, mem_size, PROT_READ | PROT_WRITE,
++		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++	if (mem == MAP_FAILED) {
++		ksft_test_result_skip("%s mmap failed\n", __func__);
++		return;
++	}
++
++	unpopulated_written_test(__func__, mem, mem_size, false);
  	munmap(mem, mem_size);
  }
  
 +/*
-+ * Like unpopulated_scan_test(), but the range is a MAP_PRIVATE|MAP_ANON THP
-+ * that is uffd-wp'd and then dropped with MADV_DONTNEED. That leaves a
-+ * pmd_none hole with no page table, which pagemap_page_category() never sees;
-+ * PAGEMAP_SCAN must still report it written via pagemap_scan_pte_hole().
++ * Same as unpopulated_scan_test(), but the range is a THP: a full-PMD
++ * MADV_DONTNEED leaves a pmd_none hole with no page table.
 + */
 +static void unpopulated_thp_scan_test(void)
 +{
-+	struct page_region regions[16];
-+	long fast = 0, slow = 0, ret;
-+	int npages, i;
 +	char *area, *mem;
 +
 +	if (!hpage_size) {
 +		ksft_test_result_skip("%s THP not supported\n", __func__);
 +		return;
 +	}
-+	npages = hpage_size / page_size;
 +
 +	/* Over-allocate so a PMD-aligned, THP-sized range fits inside. */
 +	area = mmap(NULL, 2 * hpage_size, PROT_READ | PROT_WRITE,
@@ -78,44 +165,14 @@ index f9bcff8e78fab..f9dfe977f5cbd 100644
 +	}
 +	mem = (char *)(((unsigned long)area + hpage_size - 1) & ~(hpage_size - 1));
 +
-+	wp_init(mem, hpage_size);
-+
-+	/* Populate, collapse to a THP, then drop: a pmd_none hole, no marker. */
-+	memset(mem, 1, hpage_size);
-+	if (madvise(mem, hpage_size, MADV_COLLAPSE) ||
-+	    !check_huge_anon(mem, 1, hpage_size)) {
-+		ksft_test_result_skip("%s could not form a THP\n", __func__);
-+		goto out;
-+	}
-+	if (madvise(mem, hpage_size, MADV_DONTNEED)) {
-+		ksft_test_result_skip("%s MADV_DONTNEED failed\n", __func__);
-+		goto out;
-+	}
-+
-+	/* Fast path: category_mask == return_mask == PAGE_IS_WRITTEN. */
-+	ret = pagemap_ioctl(mem, hpage_size, regions, ARRAY_SIZE(regions), 0, 0,
-+			    PAGE_IS_WRITTEN, 0, 0, PAGE_IS_WRITTEN);
-+	for (i = 0; ret > 0 && i < ret; i++)
-+		fast += LEN(regions[i]);
-+
-+	/* Generic path: same query expressed via category_anyof_mask. */
-+	ret = pagemap_ioctl(mem, hpage_size, regions, ARRAY_SIZE(regions), 0, 0,
-+			    0, PAGE_IS_WRITTEN, 0, PAGE_IS_WRITTEN);
-+	for (i = 0; ret > 0 && i < ret; i++)
-+		slow += LEN(regions[i]);
-+
-+	ksft_test_result(fast == npages && slow == npages,
-+			 "%s pmd-hole reported written by both paths (%ld, %ld of %d)\n",
-+			 __func__, fast, slow, npages);
-+out:
-+	wp_free(mem, hpage_size);
++	unpopulated_written_test(__func__, mem, hpage_size, true);
 +	munmap(area, 2 * hpage_size);
 +}
 +
  int sanity_tests(void)
  {
  	unsigned long long mem_size, vec_size;
-@@ -1610,7 +1673,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
+@@ -1610,7 +1657,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
  	if (!hugetlb_setup_default(4))
  		ksft_print_msg("HugeTLB test will be skipped\n");
  
@@ -124,7 +181,7 @@ index f9bcff8e78fab..f9dfe977f5cbd 100644
  
  	page_size = getpagesize();
  	hpage_size = read_pmd_pagesize();
-@@ -1790,6 +1853,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
+@@ -1790,6 +1837,7 @@ int main(int __attribute__((unused)) argc, char *argv[])
  
  	/* 18. Unpopulated pte scan-path consistency */
  	unpopulated_scan_test();

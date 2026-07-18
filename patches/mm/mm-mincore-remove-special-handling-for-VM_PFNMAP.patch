@@ -1,0 +1,79 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Fri, 17 Jul 2026 17:13:43 +0800
+Subject: [PATCH] mm: mincore: remove special handling for VM_PFNMAP
+
+As David pointed out, "it's hard to believe that someone depends on pages
+in VM_PFNMAP to *not* be present", so remove the historical behavior that
+always reports VM_PFNMAP pages as non-resident.
+
+Adding mincore_pud_range() allows the page table walker to traverse the
+full page table hierarchy without splitting a huge PUD, enabling much more
+precise identification of resident pages in PFNMAP VMAs.
+
+Link: https://lore.kernel.org/linux-mm/0e619d71-1c3d-4534-8376-2982c7348c31@kernel.org/
+Link: https://lore.kernel.org/20260717091347.1144789-3-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mincore.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/mm/mincore.c b/mm/mincore.c
+index 53b9828037713..3fccaa5c96f89 100644
+--- a/mm/mincore.c
++++ b/mm/mincore.c
+@@ -160,6 +160,21 @@ static int mincore_unmapped_range(unsigned long addr, unsigned long end,
+ 	return 0;
+ }
+ 
++static int mincore_pud_range(pud_t *pudp, unsigned long addr, unsigned long end,
++		struct mm_walk *walk)
++{
++	if (pud_is_huge(pudp_get(pudp))) {
++		int nr = (end - addr) >> PAGE_SHIFT;
++		unsigned char *vec = walk->private;
++
++		memset(vec, 1, nr);
++		walk->action = ACTION_CONTINUE;
++		walk->private += nr;
++	}
++
++	return 0;
++}
++
+ static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+ 			struct mm_walk *walk)
+ {
+@@ -232,6 +247,7 @@ static inline bool can_do_mincore(struct vm_area_struct *vma)
+ }
+ 
+ static const struct mm_walk_ops mincore_walk_ops = {
++	.pud_entry		= mincore_pud_range,
+ 	.pmd_entry		= mincore_pte_range,
+ 	.pte_hole		= mincore_unmapped_range,
+ 	.hugetlb_entry		= mincore_hugetlb,
+@@ -259,14 +275,6 @@ static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *v
+ 		return pages;
+ 	}
+ 
+-	/*
+-	 * mincore historically reports PFNMAP mappings as non-resident.
+-	 */
+-	if (vma->vm_flags & VM_PFNMAP) {
+-		__mincore_unmapped_range(addr, end, vma, vec);
+-		return (end - addr) >> PAGE_SHIFT;
+-	}
+-
+ 	err = walk_page_range_vma(vma, addr, end, &mincore_walk_ops, vec);
+ 	if (err < 0)
+ 		return err;
+-- 
+2.47.3
+

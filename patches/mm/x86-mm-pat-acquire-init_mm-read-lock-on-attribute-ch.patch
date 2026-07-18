@@ -1,0 +1,102 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Fri, 17 Jul 2026 18:30:09 +0100
+Subject: [PATCH] x86/mm/pat: acquire init_mm read lock on attribute change to
+ avoid UAF
+
+A previous commit protected us against races between ptdump and CPA
+collapse, however one still exists between attribute changes and collapse
+as reported by Denis V.  Lunev (linked).
+
+When an attribute change arises, a lockless page table walker obtains a
+PTE entry, which is later written to via set_pte_atomic():
+
+...
+-> change_page_attr_set_clr()
+-> __change_page_attr_set_clr()
+-> __change_page_attr()
+	-> _lookup_address_cpa()
+	-> lookup_address_in_pgd_attr()
+	-> [ lockless page table walker ]
+-> set_pte_atomic()
+
+There is nothing preventing a concurrent CPA collapse which can free the
+PTE that was retrieved here, resulting in a use-after-free.
+
+With the mmap write lock taken on init_mm over CPA collapse, we can now
+resolve this race by acquiring an mmap read lock on init_mm over
+__change_page_attr_set_clr().
+
+This locks across the whole operation over which the walk and the PTE
+entry write occurs, solving the race.
+
+It is safe to do this here, as no spinlocks are held upon entry to
+__change_page_attr_set_clr().
+
+The CPA_COLLAPSE flag is only set by set_memory_rox(), which exclusively
+operates upon vmalloc ranges, and on x86 only within the module mapping
+space.
+
+This is important, because some callers directly invoke
+__change_page_attr_set_clr(), bypassing this lock.  However, none of these
+operate within the module mapping space.
+
+* cpa_process_alias() - a recursive helper called by
+  __change_page_attr_set_clr().
+* __set_memory_enc_pgtable() - operates on the direct mapping and (via
+  __vmbus_establish_gpadl()) the vmalloc mapping space.
+* __set_pages_[n]p() - called by set_direct_map_[invalid, default,
+  valid]_noflush(), __kernel_map_pages() - operates on the direct map.
+* kernel_[un]map_pages_in_pgd() - operates on EFI ranges.
+
+This work is based upon Denis V.  Lunev's excellent analysis of the bug
+with gratitude.
+
+Link: https://lore.kernel.org/all/20260626163213.2284080-1-den@openvz.org/
+Link: https://lore.kernel.org/20260717-series-vmap-race-fix-v5-3-606a0ac6d3e5@kernel.org
+Fixes: 41d88484c71c ("x86/mm/pat: restore large ROX pages after fragmentation")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Carlier <devnexen@gmail.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Toshi Kani <toshi.kani@hpe.com>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/mm/pat/set_memory.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/mm/pat/set_memory.c b/arch/x86/mm/pat/set_memory.c
+index d1e63f7d267ff..301fb9e77d91b 100644
+--- a/arch/x86/mm/pat/set_memory.c
++++ b/arch/x86/mm/pat/set_memory.c
+@@ -2122,7 +2122,9 @@ static int change_page_attr_set_clr(unsigned long *addr, int numpages,
+ 	cpa.curpage = 0;
+ 	cpa.force_split = force_split;
+ 
+-	ret = __change_page_attr_set_clr(&cpa, 1);
++	/* Avoid race with concurrent CPA collapse. */
++	scoped_guard(mmap_read_lock, &init_mm)
++		ret = __change_page_attr_set_clr(&cpa, 1);
+ 
+ 	/*
+ 	 * Check whether we really changed something:
+-- 
+2.47.3
+
