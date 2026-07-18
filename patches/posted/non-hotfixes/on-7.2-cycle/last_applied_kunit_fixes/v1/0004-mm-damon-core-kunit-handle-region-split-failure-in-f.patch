@@ -1,0 +1,70 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Thu, 16 Jul 2026 07:14:54 -0700
+Subject: [PATCH 4/7] mm/damon/core-kunit: handle region split failure in filter_out()
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@davidgow.net>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260718001442.87129-5-sj@kernel.org>
+
+dasmon_test_filter_out() test checks if damos_filter_match() of an
+address filter splits the region as expected under a given condition.
+But, the test continued regardless of the split successes.  As a result,
+the later part of the test could dereference invalid pointers that
+returned from damon_next_region().  Further, it could corrupt memory
+from damon_destroy_region().
+
+The consequent user impact (memory corruption) is quite bad.  The
+realistic user impact would be limited, though.  It would affect only
+test run setups.
+
+Fix it by exiting early for the number of regions test failure.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org
+
+Fixes: 26713c890875 ("mm/damon/core-test: add a unit test for __damos_filter_out()")
+Cc: <stable@vger.kernel.org> # 6.6.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 322a295ac2cec..eddf3a0484583 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -1365,6 +1365,8 @@ static void damos_test_filter_out(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, r->ar.start, 1);
+ 	KUNIT_EXPECT_EQ(test, r->ar.end, 2);
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 2);
++	if (damon_nr_regions(t) != 2)
++		goto out;
+ 	r2 = damon_next_region(r);
+ 	KUNIT_EXPECT_EQ(test, r2->ar.start, 2);
+ 	KUNIT_EXPECT_EQ(test, r2->ar.end, 4);
+@@ -1379,11 +1381,14 @@ static void damos_test_filter_out(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, r->ar.start, 2);
+ 	KUNIT_EXPECT_EQ(test, r->ar.end, 6);
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 2);
++	if (damon_nr_regions(t) != 2)
++		goto out;
+ 	r2 = damon_next_region(r);
+ 	KUNIT_EXPECT_EQ(test, r2->ar.start, 6);
+ 	KUNIT_EXPECT_EQ(test, r2->ar.end, 8);
+ 	damon_destroy_region(r2, t);
+ 
++out:
+ 	damon_free_target(t);
+ 	damos_free_filter(f);
+ }
+-- 
+2.47.3
