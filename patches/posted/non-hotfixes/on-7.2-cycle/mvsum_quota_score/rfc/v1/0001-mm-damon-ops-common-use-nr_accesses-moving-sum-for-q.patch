@@ -1,0 +1,55 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Mon, 13 Jul 2026 20:11:56 -0700
+Subject: [RFC PATCH] mm/damon/ops-common: use nr_accesses moving sum for quota score
+Cc: <stable@vger.kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260718180121.94759-1-sj@kernel.org>
+
+Since commit 42f994b71404 ("mm/damon/core: implement scheme-specific
+apply interval"), DAMOS scheme can be applied at any time.  At that
+time, nr_accesses may not be fully aggregated.  But the quota
+prioritization score is calculated using the not fully aggregated count.
+As a result, the performance of DAMOS could be degraded.  Fix by using
+damon_nr_accesses_mvsum() instead.
+
+The user impact is suboptimum DAMOS performance under certain setups.
+The issue was there from the beginning of the setup availability.  Hence
+it was the baseline for the setup.  Probably that's why people didn't
+notice the suboptimality so far.
+
+Fixes: 42f994b71404 ("mm/damon/core: implement scheme-specific apply interval")
+Cc: <stable@vger.kernel.org> # 6.7.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+Given the user impact, this is not an urgent hotfix in my opinion.  This
+is rather a good improvement that is better to eventually be merged into
+stable kernels, though.
+
+ mm/damon/ops-common.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index de9a104e88321..e59f77eca83b2 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -111,8 +111,9 @@ int damon_hot_score(struct damon_ctx *c, struct damon_region *r,
+ 	unsigned int age_weight = s->quota.weight_age;
+ 	int hotness;
+ 
+-	freq_subscore = r->nr_accesses * DAMON_MAX_SUBSCORE /
+-		damon_nr_samples_per_aggr(&c->attrs);
++	freq_subscore = mult_frac(damon_nr_accesses_mvsum(r, c),
++			DAMON_MAX_SUBSCORE,
++			damon_nr_samples_per_aggr(&c->attrs));
+ 
+ 	age_in_sec = (unsigned long)r->age * c->attrs.aggr_interval / 1000000;
+ 	if (age_in_sec)
+
+base-commit: 6f1af14da2daf85f73375ffcabcf82255970e2b5
+-- 
+2.47.3
