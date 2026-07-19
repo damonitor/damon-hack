@@ -1,0 +1,100 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 19 Jul 2026 12:33:47 -0700
+Subject: [PATCH] mm/damon: change pgidle probe filter type to pgidle_unset
+
+The meaning is little bit confusing for pages that idleness cannot be
+confirmed.  Make it more specific.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ Documentation/mm/damon/design.rst | 7 ++++---
+ include/linux/damon.h             | 8 ++++----
+ mm/damon/paddr.c                  | 6 +++---
+ mm/damon/sysfs.c                  | 4 ++--
+ 4 files changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/Documentation/mm/damon/design.rst b/Documentation/mm/damon/design.rst
+index 3f34abb45464d..c5560538c18de 100644
+--- a/Documentation/mm/damon/design.rst
++++ b/Documentation/mm/damon/design.rst
+@@ -375,7 +375,8 @@ filter types.  Currently below fitler types are supported.
+ 
+ - ``anon``: Same to that for DAMOS filters.
+ - ``memcg``: Same to that for DAMOS filters.
+-- ``pgidle``: Matches if the page for the memory is marked as access-idle.
++- ``pgidle_unset``: Matches if the page for the memory is marked as not
++  access-idle.
+   Matches if the memory is not backed by pages that DAMON can idnetify
+   idleness.
+ 
+@@ -392,8 +393,8 @@ Users can optionally register probing preparation actions per probe.  If such
+ actions are registered, DAMON applies the actions to each region's sampling
+ memory before starting the next sampling interval.  Currently only one action,
+ ``set_pgidle`` is supported.  The action marks the page for the probing target
+-memory as access-idle.  This can be useful to be used together with ``pgidle``
+-probe filter.
++memory as access-idle.  This can be useful to be used together with
++``pgidle_unset`` probe filter.
+ 
+ This is a sampling based mechanism.  Hence, it is lightweight but the output
+ may include some measurement errors.  The output should be used with good
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index ca5ce0b2fa6ad..bab62670d6bd9 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -825,14 +825,14 @@ struct damon_prep {
+ /**
+  * enum damon_filter_type - Type of &struct damon_filter
+  *
+- * @DAMON_FILTER_TYPE_ANON:	Anonymous pages.
+- * @DAMON_FILTER_TYPE_MEMCG:	Specific memcg's pages.
+- * @DAMON_FILTER_TYPE_PGIDLE:	Idle pages.
++ * @DAMON_FILTER_TYPE_ANON:		Anonymous pages.
++ * @DAMON_FILTER_TYPE_MEMCG:		Specific memcg's pages.
++ * @DAMON_FILTER_TYPE_PGIDLE_UNSET:	Pgidle is unset.
+  */
+ enum damon_filter_type {
+ 	DAMON_FILTER_TYPE_ANON,
+ 	DAMON_FILTER_TYPE_MEMCG,
+-	DAMON_FILTER_TYPE_PGIDLE,
++	DAMON_FILTER_TYPE_PGIDLE_UNSET,
+ };
+ 
+ /**
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 74bd653949385..9a60a095a2d61 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -231,11 +231,11 @@ static bool damon_pa_filter_match(struct damon_filter *filter,
+ 			matched = filter->memcg_id == mem_cgroup_id(memcg);
+ 		rcu_read_unlock();
+ 		break;
+-	case DAMON_FILTER_TYPE_PGIDLE:
++	case DAMON_FILTER_TYPE_PGIDLE_UNSET:
+ 		if (!folio)
+-			matched = true;
++			matched = false;
+ 		else
+-			matched = !damon_folio_young(folio);
++			matched = damon_folio_young(folio);
+ 		break;
+ 	default:
+ 		break;
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index 89abbb55fa4ab..92b28e4baaba9 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -996,8 +996,8 @@ damon_sysfs_filter_type_names[] = {
+ 		.name = "memcg",
+ 	},
+ 	{
+-		.type = DAMON_FILTER_TYPE_PGIDLE,
+-		.name = "pgidle",
++		.type = DAMON_FILTER_TYPE_PGIDLE_UNSET,
++		.name = "pgidle_unset",
+ 	},
+ };
+ 
+-- 
+2.47.3
+
