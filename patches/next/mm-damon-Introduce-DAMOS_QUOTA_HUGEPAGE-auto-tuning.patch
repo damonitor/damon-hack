@@ -1,0 +1,86 @@
+From: Asier Gutierrez <gutierrez.asier@huawei-partners.com>
+Date: Mon, 20 Jul 2026 12:01:38 +0000
+Subject: [PATCH] mm/damon: Introduce DAMOS_QUOTA_HUGEPAGE auto tuning
+
+Introduce DAMOS_QUOTA_HUGEPAGE_MEM_BP auto tuning. Add a new
+DAMOS quota goal metric to measure the amount of huge page
+consumption to total memory consumption ratio.
+
+Vmstat may lag, which in some cases may lead to NR_FREE_PAGES
+being equal to the amount of RAM in the system. A guard is added
+to avoid the extremely unlikely case of a division by 0.[1] In that
+we return INT_MAX, which should be enough not to apply any DAMOS
+action until the NR_FREE_PAGES is updated.
+
+[1] https://lore.kernel.org/all/20260715151615.99767-1-sj@kernel.org/
+
+Signed-off-by: Asier Gutierrez <gutierrez.asier@huawei-partners.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 21 +++++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index bab62670d6bd9..aab95df796fdd 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -187,6 +187,7 @@ enum damos_action {
+  * @DAMOS_QUOTA_INACTIVE_MEM_BP:	Inactive to total LRU memory ratio.
+  * @DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP:	Scheme-eligible memory ratio of a
+  *					node in basis points (0-10000).
++ * @DAMOS_QUOTA_HUGEPAGE_MEM_BP:	Huge page to total used memory ratio.
+  * @NR_DAMOS_QUOTA_GOAL_METRICS:	Number of DAMOS quota goal metrics.
+  *
+  * Metrics equal to larger than @NR_DAMOS_QUOTA_GOAL_METRICS are unsupported.
+@@ -201,6 +202,7 @@ enum damos_quota_goal_metric {
+ 	DAMOS_QUOTA_ACTIVE_MEM_BP,
+ 	DAMOS_QUOTA_INACTIVE_MEM_BP,
+ 	DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP,
++	DAMOS_QUOTA_HUGEPAGE_MEM_BP,
+ 	NR_DAMOS_QUOTA_GOAL_METRICS,
+ };
+ 
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index a612072fb5e82..2eb698385c2e8 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3350,6 +3350,24 @@ static unsigned int damos_get_in_active_mem_bp(bool active_ratio)
+ 	return mult_frac(inactive, 10000, total);
+ }
+ 
++static unsigned int damos_hugepage_mem_bp(void)
++{
++	unsigned long thp, total;
++
++	thp = global_node_page_state(NR_ANON_THPS) +
++				global_node_page_state(NR_SHMEM_THPS) +
++				global_node_page_state(NR_FILE_THPS);
++	total = totalram_pages() - global_zone_page_state(NR_FREE_PAGES);
++
++	/*
++	 * vmstat may lag in idle systems and lead to free pages equaling to
++	 * the total RAM in the system.
++	 */
++	if (!total)
++		return INT_MAX;
++	return mult_frac(thp, 10000, total);
++}
++
+ static void damos_set_quota_goal_current_value(struct damon_ctx *c,
+ 		struct damos *s, struct damos_quota_goal *goal)
+ {
+@@ -3382,6 +3400,9 @@ static void damos_set_quota_goal_current_value(struct damon_ctx *c,
+ 		goal->current_value = damos_get_node_eligible_mem_bp(c, s,
+ 				goal->nid);
+ 		break;
++	case DAMOS_QUOTA_HUGEPAGE_MEM_BP:
++		goal->current_value = damos_hugepage_mem_bp();
++		break;
+ 	default:
+ 		break;
+ 	}
+-- 
+2.47.3
+
