@@ -1,0 +1,184 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Mon, 20 Jul 2026 06:55:06 +0000
+Subject: [PATCH] mm/memory: batch set uffd-wp markers during zapping
+
+Enable batch setting of uffd-wp PTE markers.
+
+The code paths passing nr > 1 to zap_install_uffd_wp_if_needed() produce
+that nr through either folio_pte_batch() or swap_pte_batch(), therefore
+batching is correct:
+
+1) All PTEs belong to the same type of VMA: anonymous or non-anonymous,
+   wp-armed or non-wp-armed.
+
+2) All PTEs are either marked with uffd-wp or not marked with uffd-wp;
+   the same applies to the pte_swp_uffd_any() check.
+
+3) uffd_supports_wp_marker() is independent of the function parameters.
+
+Use set_pte_at() in a loop instead of set_ptes(), because set_ptes()
+cannot handle nonpresent to nonpresent conversion for nr_pages > 1.
+
+Rename the helper to cond_install_uffd_wp_ptes().
+
+Link: https://lore.kernel.org/20260720065508.2695106-3-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h |  5 +++--
+ mm/memory.c   | 61 +++++++++++++++++++++------------------------------
+ mm/rmap.c     |  2 +-
+ 3 files changed, 29 insertions(+), 39 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 36427f566da93..51ee4c1310908 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -280,8 +280,9 @@ void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap);
+ 
+ #ifdef CONFIG_MMU
+ 
+-bool pte_install_uffd_wp_if_needed(struct vm_area_struct *vma,
+-		unsigned long addr, pte_t *ptep, pte_t pte);
++bool cond_install_uffd_wp_ptes(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, pte_t pte,
++		unsigned long nr_ptes);
+ 
+ static inline void get_anon_vma(struct anon_vma *anon_vma)
+ {
+diff --git a/mm/memory.c b/mm/memory.c
+index 2e1428975189d..a620d425ec95e 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1678,27 +1678,29 @@ static inline bool zap_drop_markers(struct zap_details *details)
+ }
+ 
+ /**
+- * pte_install_uffd_wp_if_needed - install uffd-wp marker after clearing a PTE
+- * @vma: The VMA the page is mapped into.
+- * @addr: Address the page is mapped at.
+- * @ptep: Page table pointer for this entry.
++ * cond_install_uffd_wp_ptes - install uffd-wp markers after clearing PTEs
++ * @vma: The VMA the pages are mapped into.
++ * @addr: Address the first page of this batch is mapped at.
++ * @ptep: Page table pointer for the first entry of this batch.
+  * @pte: Old value of the entry pointed to by @ptep.
++ * @nr_ptes: Number of entries to install.
+  *
+- * If the PTE was write-protected by uffd-wp in any form, arm a special PTE
+- * to replace a none PTE. NOTE! This should only be called when the PTE is
++ * If the PTEs were write-protected by uffd-wp in any form, arm special PTEs
++ * to replace none PTEs. NOTE! This should only be called when the PTEs are
+  * already cleared so we will never accidentally replace something valuable.
+- * Meanwhile none PTEs also mean we are not demoting the PTE so a TLB flush is
+- * not needed. E.g., when the PTE was cleared, the caller should have taken care
+- * of the TLB flush.
++ * Meanwhile none PTEs also mean we are not demoting the PTEs so a TLB flush is
++ * not needed. E.g., when the PTEs were cleared, the caller should have taken
++ * care of the TLB flush.
+  *
+  * Must be called with the page table lock held so that no thread will see the
+- * none PTE, and if they see it, they'll fault and serialize at the page table
++ * none PTEs, and if they see them, they'll fault and serialize at the page table
+  * lock.
+  *
+- * Returns true if an uffd-wp PTE was installed, false otherwise.
++ * Returns true if uffd-wp PTEs were installed, false otherwise.
+  */
+-bool pte_install_uffd_wp_if_needed(struct vm_area_struct *vma,
+-		unsigned long addr, pte_t *ptep, pte_t pte)
++bool cond_install_uffd_wp_ptes(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, pte_t pte,
++		unsigned long nr_ptes)
+ {
+ 	bool arm_uffd_pte = false;
+ 
+@@ -1728,13 +1730,19 @@ bool pte_install_uffd_wp_if_needed(struct vm_area_struct *vma,
+ 	if (unlikely(pte_swp_uffd_any(pte)))
+ 		arm_uffd_pte = true;
+ 
+-	if (unlikely(arm_uffd_pte)) {
++	if (likely(!arm_uffd_pte))
++		return false;
++
++	for (;;) {
+ 		set_pte_at(vma->vm_mm, addr, ptep,
+ 			   make_pte_marker(PTE_MARKER_UFFD_WP));
+-		return true;
++		if (--nr_ptes == 0)
++			break;
++		ptep++;
++		addr += PAGE_SIZE;
+ 	}
+ 
+-	return false;
++	return true;
+ }
+ 
+ /*
+@@ -1748,29 +1756,10 @@ zap_install_uffd_wp_if_needed(struct vm_area_struct *vma,
+ 			      unsigned long addr, pte_t *pte, int nr,
+ 			      struct zap_details *details, pte_t pteval)
+ {
+-	bool was_installed = false;
+-
+-	if (!uffd_supports_wp_marker())
+-		return false;
+-
+-	/* Zap on anonymous always means dropping everything */
+-	if (vma_is_anonymous(vma))
+-		return false;
+-
+ 	if (zap_drop_markers(details))
+ 		return false;
+ 
+-	for (;;) {
+-		/* the PFN in the PTE is irrelevant. */
+-		if (pte_install_uffd_wp_if_needed(vma, addr, pte, pteval))
+-			was_installed = true;
+-		if (--nr == 0)
+-			break;
+-		pte++;
+-		addr += PAGE_SIZE;
+-	}
+-
+-	return was_installed;
++	return cond_install_uffd_wp_ptes(vma, addr, pte, pteval, nr);
+ }
+ 
+ static __always_inline void zap_present_folio_ptes(struct mmu_gather *tlb,
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 58e3c5f7d9ab9..b9ee1fb1fa481 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -2351,7 +2351,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 		 * we may want to replace a none pte with a marker pte if
+ 		 * it's file-backed, so we don't lose the tracking info.
+ 		 */
+-		pte_install_uffd_wp_if_needed(vma, address, pvmw.pte, pteval);
++		cond_install_uffd_wp_ptes(vma, address, pvmw.pte, pteval, 1);
+ 
+ 		/* Update high watermark before we lower rss */
+ 		update_hiwater_rss(mm);
+-- 
+2.47.3
+

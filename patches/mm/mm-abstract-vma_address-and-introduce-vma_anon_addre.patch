@@ -1,0 +1,134 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 20 Jul 2026 15:38:29 +0100
+Subject: [PATCH] mm: abstract vma_address() and introduce vma_anon_address()
+
+Introduce __vma_address() which abstracts the VMA start page offset field
+as pgoff_start, then update vma_address() to use it.
+
+Then introduce vma_anon_address() which does the equivalent of
+vma_address(), only using the virtual page offset of the VMA rather than
+the file-backed one.
+
+Also add an assert to ensure that the function is not called for mappings
+which are file-backed but not MAP_PRIVATE to ensure it is only used in the
+correct places.
+
+This will be necessary for determining the address of a folio's index
+within a VMA when the folio belongs to a MAP_PRIVATE file-backed VMA but
+has been CoW'd, and thus is anonymous, once the anonymous VMA page offset
+field is used for the reverse mapping.
+
+No callers are updated, so no functional change intended.
+
+Link: https://lore.kernel.org/20260720-b4-scalable-cow-virt-pgoff-v2-3-2d549757a76f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h | 49 +++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 37 insertions(+), 12 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index f26423de4ca28..04acfeffa066f 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1005,19 +1005,9 @@ void mlock_drain_remote(int cpu);
+ 
+ extern pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma);
+ 
+-/**
+- * vma_address - Find the virtual address a page range is mapped at
+- * @vma: The vma which maps this object.
+- * @pgoff: The page offset within its object.
+- * @nr_pages: The number of pages to consider.
+- *
+- * If any page in this range is mapped by this VMA, return the first address
+- * where any of these pages appear.  Otherwise, return -EFAULT.
+- */
+-static inline unsigned long vma_address(const struct vm_area_struct *vma,
+-		pgoff_t pgoff, unsigned long nr_pages)
++static inline unsigned long __vma_address(const struct vm_area_struct *vma,
++		pgoff_t pgoff, pgoff_t pgoff_start, unsigned long nr_pages)
+ {
+-	const pgoff_t pgoff_start = vma_start_pgoff(vma);
+ 	unsigned long address;
+ 
+ 	if (pgoff >= pgoff_start) {
+@@ -1035,6 +1025,41 @@ static inline unsigned long vma_address(const struct vm_area_struct *vma,
+ 	return address;
+ }
+ 
++/**
++ * vma_address - Find the virtual address a page range is mapped at.
++ * @vma: The vma which maps this object.
++ * @pgoff: The page offset within its object.
++ * @nr_pages: The number of pages to consider.
++ *
++ * If any page in this range is mapped by this VMA, return the first address
++ * where any of these pages appear.  Otherwise, return -EFAULT.
++ */
++static inline unsigned long vma_address(const struct vm_area_struct *vma,
++		pgoff_t pgoff, unsigned long nr_pages)
++{
++	return __vma_address(vma, pgoff, vma_start_pgoff(vma), nr_pages);
++}
++
++/**
++ * vma_anon_address - Find the address an anonymous folio with index @pgoff_virt
++ * is mapped at.
++ * @vma: The vma which maps this object.
++ * @pgoff_virt: The virtual page index belonging to the folio.
++ * @nr_pages: The number of pages to consider.
++ *
++ * This is only valid for anonymous or MAP_PRIVATE-mapped file-backed VMAs.
++ *
++ * Returns: If any page in this range is mapped by this VMA, return the first address
++ * where any of these pages appear. Otherwise, return -EFAULT.
++ */
++static inline unsigned long vma_anon_address(const struct vm_area_struct *vma,
++		pgoff_t pgoff_virt, unsigned long nr_pages)
++{
++	VM_WARN_ON_ONCE(!vma_is_anonymous(vma) && vma_test(vma, VMA_SHARED_BIT));
++
++	return __vma_address(vma, pgoff_virt, vma_start_virt_pgoff(vma), nr_pages);
++}
++
+ /*
+  * Then at what user virtual address will none of the range be found in vma?
+  * Assumes that vma_address() already returned a good starting address.
+-- 
+2.47.3
+

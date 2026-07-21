@@ -1,0 +1,99 @@
+From: Jinjiang Tu <tujinjiang@huawei.com>
+Date: Mon, 20 Jul 2026 11:30:20 +0800
+Subject: [PATCH] fs: stable_page_flags(): use folio_test_*() helpers
+
+Since commit 304daa8132a9 ("maps4: add /proc/kpageflags interface"),
+/proc/kpageflags directly operates on page->flags to determine page
+status.  Later, commit 177975495914 ("proc: export more page flags in
+/proc/kpageflags") started using page helper functions when exposing new
+flags, leading to a mix of both approaches.
+
+For tail pages, the original code did not return corresponding status.
+commit 0a71649cb724 ("/proc/kpageflags: return KPF_SLAB for slab tail
+pages") and commit 832fc1de01ae ("/proc/kpageflags: return KPF_BUDDY for
+"tail" buddy pages") made tail slab/buddy pages also return corresponding
+status.  Then commit dee3d0bef2b0 ("proc: rewrite stable_page_flags()")
+made all tail pages return the same status as their head page, except for
+hwpoison and mapped flags.  It also cached the folio's flags and operate
+on the flags directly to avoid concurrency issues if using folio_test_*()
+helpers.
+
+Since commit 476d87d6a061 ("fs: stable_page_flags(): use
+snapshot_page()"), we can now safely switch to folio_test_*() helpers
+instead of directly operating on flags, which is more readable and
+consistent with the rest of the kernel.  Only convert cfolio-specific
+flags (i.e., anon, ksm, swapcache) to folio_test_*() helpers, which
+reduces redundant code.  Keep others unchanged due to they aren't
+folio-specific flags or coverting them doesn't cleanup.
+
+No functional change is intended.
+
+Link: https://lore.kernel.org/20260720033021.4091944-3-tujinjiang@huawei.com
+Signed-off-by: Jinjiang Tu <tujinjiang@huawei.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Luiz Capitulino <luizcap@redhat.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Svetly Todorov <svetly.todorov@memverge.com>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/proc/page.c | 14 ++++----------
+ 1 file changed, 4 insertions(+), 10 deletions(-)
+
+diff --git a/fs/proc/page.c b/fs/proc/page.c
+index ee39b321f1c6b..b3c1d7a7604d1 100644
+--- a/fs/proc/page.c
++++ b/fs/proc/page.c
+@@ -148,8 +148,6 @@ u64 stable_page_flags(const struct page *page)
+ 	const struct folio *folio;
+ 	struct page_snapshot ps;
+ 	unsigned long k;
+-	unsigned long mapping;
+-	bool is_anon;
+ 	u64 u = 0;
+ 
+ 	/*
+@@ -161,19 +159,16 @@ u64 stable_page_flags(const struct page *page)
+ 
+ 	snapshot_page(&ps, page);
+ 	folio = &ps.folio_snapshot;
+-
+ 	k = folio->flags.f;
+-	mapping = (unsigned long)folio->mapping;
+-	is_anon = mapping & FOLIO_MAPPING_ANON;
+ 
+ 	/*
+ 	 * pseudo flags for the well known (anonymous) memory mapped pages
+ 	 */
+ 	if (folio_mapped(folio))
+ 		u |= BIT_ULL(KPF_MMAP);
+-	if (is_anon) {
++	if (folio_test_anon(folio)) {
+ 		u |= BIT_ULL(KPF_ANON);
+-		if ((mapping & FOLIO_MAPPING_FLAGS) == FOLIO_MAPPING_KSM)
++		if (folio_test_ksm(folio))
+ 			u |= BIT_ULL(KPF_KSM);
+ 	}
+ 
+@@ -225,11 +220,10 @@ u64 stable_page_flags(const struct page *page)
+ 	u |= kpf_copy_bit(k, KPF_ACTIVE,	PG_active);
+ 	u |= kpf_copy_bit(k, KPF_RECLAIM,	PG_reclaim);
+ 
+-#define SWAPCACHE ((1 << PG_swapbacked) | (1 << PG_swapcache))
+-	if ((k & SWAPCACHE) == SWAPCACHE)
++	if (folio_test_swapcache(folio))
+ 		u |= BIT_ULL(KPF_SWAPCACHE);
+-	u |= kpf_copy_bit(k, KPF_SWAPBACKED,	PG_swapbacked);
+ 
++	u |= kpf_copy_bit(k, KPF_SWAPBACKED,	PG_swapbacked);
+ 	u |= kpf_copy_bit(k, KPF_UNEVICTABLE,	PG_unevictable);
+ 	u |= kpf_copy_bit(k, KPF_MLOCKED,	PG_mlocked);
+ 
+-- 
+2.47.3
+

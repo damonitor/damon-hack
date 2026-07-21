@@ -1,0 +1,76 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Mon, 20 Jul 2026 06:55:07 +0000
+Subject: [PATCH] mm/rmap: batch unmap file folios belonging to uffd-wp VMAs
+
+Commit a67fe41e214f ("mm: rmap: support batched unmapping for file large
+folios") extended batched unmapping for file folios.  That also required
+making pte_install_uffd_wp_if_needed() support batching, but that was left
+out for the time being.  Correctness was maintained by stopping batching
+if the VMA the folio belongs to is marked uffd-wp.
+
+Now that cond_install_uffd_wp_ptes() supports batching, call it with the
+full batch length and allow folio_unmap_pte_batch() to batch file folios
+belonging to uffd-wp VMAs.
+
+For file folios, if the uffd-wp bit is set, unmapping converts present
+PTEs into uffd-wp markers.  We must ensure that the same PTE range is not
+reprocessed by the try_to_unmap_one() loop.
+
+The page_vma_mapped_walk API ensures this: check_pte() only returns true
+if any PFN in [pvmw->pfn, pvmw->pfn + nr_pages) is mapped by the PTE.
+There is no PFN underlying a uffd-wp marker PTE, so check_pte() returns
+false and the walk skips ahead until it reaches a present entry again.
+
+Link: https://lore.kernel.org/20260720065508.2695106-4-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/rmap.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/mm/rmap.c b/mm/rmap.c
+index b9ee1fb1fa481..b7ead3e9f0641 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1971,9 +1971,6 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
+ 	if (pte_unused(pte))
+ 		return 1;
+ 
+-	if (userfaultfd_protected(vma))
+-		return 1;
+-
+ 	/*
+ 	 * If unmap fails, we need to restore the ptes. To avoid accidentally
+ 	 * upgrading write permissions for ptes that were not originally
+@@ -2351,7 +2348,8 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 		 * we may want to replace a none pte with a marker pte if
+ 		 * it's file-backed, so we don't lose the tracking info.
+ 		 */
+-		cond_install_uffd_wp_ptes(vma, address, pvmw.pte, pteval, 1);
++		cond_install_uffd_wp_ptes(vma, address, pvmw.pte, pteval,
++					  nr_pages);
+ 
+ 		/* Update high watermark before we lower rss */
+ 		update_hiwater_rss(mm);
+-- 
+2.47.3
+

@@ -1,0 +1,118 @@
+From: Sarthak Sharma <sarthak.sharma@arm.com>
+Date: Mon, 20 Jul 2026 16:01:05 +0530
+Subject: [PATCH] selftests/mm: transhuge-stress: check duration inside page
+ loop
+
+transhuge-stress.c currently scans memory equal to RAM by default, in
+jumps of hugepage size, trying to allocate and split a THP at each step.
+After the entire range is covered, it checks whether elapsed time is
+greater than the duration.  But it is possible that the THP work it does
+takes time more than the duration itself, causing the test to exceed the
+CI timeout.
+
+Check the elapsed time after each THP operation.  If the duration has
+elapsed, break and end the test.  Adjust the statistics calculations to
+accommodate partially completed passes.  Also, reject sizes which are
+smaller than a huge page.
+
+Link: https://lore.kernel.org/20260720103105.169955-1-sarthak.sharma@arm.com
+Signed-off-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Reported-by: Aishwarya TCV <aishwarya.tcv@arm.com>
+Suggested-by: Dev Jain <dev.jain@arm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/transhuge-stress.c | 30 ++++++++++++++-----
+ 1 file changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/transhuge-stress.c b/tools/testing/selftests/mm/transhuge-stress.c
+index 8eb0c5630e7e3..a0f9fc9003601 100644
+--- a/tools/testing/selftests/mm/transhuge-stress.c
++++ b/tools/testing/selftests/mm/transhuge-stress.c
+@@ -35,6 +35,7 @@ int main(int argc, char **argv)
+ 	size_t map_len;
+ 	int pagemap_fd;
+ 	int duration = 0;
++	double elapsed = 0;
+ 
+ 	ksft_print_header();
+ 
+@@ -60,8 +61,6 @@ int main(int argc, char **argv)
+ 			len = atoll(argv[i]) << 20;
+ 	}
+ 
+-	ksft_set_plan(1);
+-
+ 	if (name) {
+ 		backing_fd = open(name, O_RDWR);
+ 		if (backing_fd == -1)
+@@ -78,6 +77,10 @@ int main(int argc, char **argv)
+ 		ksft_exit_fail_msg("open pagemap\n");
+ 
+ 	len -= len % HPAGE_SIZE;
++	if (len == 0)
++		ksft_exit_fail_msg("len must be at least %d MiB\n",
++			HPAGE_SIZE >> 20);
++
+ 	ptr = mmap(NULL, len + HPAGE_SIZE, PROT_RW, mmap_flags, backing_fd, 0);
+ 	if (ptr == MAP_FAILED)
+ 		ksft_exit_fail_msg("initial mmap");
+@@ -91,6 +94,7 @@ int main(int argc, char **argv)
+ 	if (!map)
+ 		ksft_exit_fail_msg("map malloc\n");
+ 
++	ksft_set_plan(1);
+ 	clock_gettime(CLOCK_MONOTONIC, &start);
+ 
+ 	while (1) {
+@@ -125,16 +129,28 @@ int main(int argc, char **argv)
+ 			/* split transhuge page, keep last page */
+ 			if (madvise(p, HPAGE_SIZE - psize(), MADV_DONTNEED))
+ 				ksft_exit_fail_msg("MADV_DONTNEED");
++
++			if (duration > 0) {
++				clock_gettime(CLOCK_MONOTONIC, &b);
++				elapsed = b.tv_sec - start.tv_sec +
++					(b.tv_nsec - start.tv_nsec) / 1000000000.;
++				if (elapsed >= duration)
++					break;
++			}
+ 		}
+ 		clock_gettime(CLOCK_MONOTONIC, &b);
+ 		s = b.tv_sec - a.tv_sec + (b.tv_nsec - a.tv_nsec) / 1000000000.;
+ 
+ 		ksft_print_msg("%.3f s/loop, %.3f ms/page, %10.3f MiB/s\t"
+-			       "%4d succeed, %4d failed, %4d different pages\n",
+-			       s, s * 1000 / (len >> HPAGE_SHIFT), len / s / (1 << 20),
+-			       nr_succeed, nr_failed, nr_pages);
+-
+-		if (duration > 0 && b.tv_sec - start.tv_sec >= duration) {
++				"%4d succeed, %4d failed, %4d different pages\n",
++				s, s * 1000 / (nr_failed + nr_succeed),
++				s > 0 ?
++					(double)(nr_failed + nr_succeed) *
++					(HPAGE_SIZE >> 20) / s :
++					0.0,
++				nr_succeed, nr_failed, nr_pages);
++
++		if (duration > 0 && elapsed >= duration) {
+ 			ksft_test_result_pass("Completed\n");
+ 			ksft_finished();
+ 		}
+-- 
+2.47.3
+

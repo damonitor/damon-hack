@@ -1,0 +1,137 @@
+From: Jinjiang Tu <tujinjiang@huawei.com>
+Date: Mon, 20 Jul 2026 11:30:19 +0800
+Subject: [PATCH] fs: stable_page_flags(): use BIT_ULL() for KPF flags
+
+Patch series "cleanup for stable_page_flags()", v2.
+
+This series cleans up stable_page_flags(), see the details in the commit
+messages.
+
+
+This patch (of 3):
+
+The stable_page_flags() function currently sets page flag bits using "1 <<
+KPF_xxx" for various KPF_* definitions.  KPF_* may be larger than 32,
+which will trigger -Wshift-count-overflow warning.  All KPF_* values
+currently used in "1 << KPF_xxx" are smaller than 33, so no warning is
+triggered with current code.
+
+Replace all occurrences of "1 << KPF_*" with the BIT_ULL() macro to ensure
+all shifts are performed on a 64-bit unsigned type.  This makes the code
+robust, and safe for future extension.
+
+No functional change is intended.
+
+Link: https://lore.kernel.org/20260720033021.4091944-1-tujinjiang@huawei.com
+Link: https://lore.kernel.org/20260720033021.4091944-2-tujinjiang@huawei.com
+Signed-off-by: Jinjiang Tu <tujinjiang@huawei.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Luiz Capitulino <luizcap@redhat.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: Svetly Todorov <svetly.todorov@memverge.com>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/proc/page.c | 34 +++++++++++++++++-----------------
+ 1 file changed, 17 insertions(+), 17 deletions(-)
+
+diff --git a/fs/proc/page.c b/fs/proc/page.c
+index 7d93871434357..ee39b321f1c6b 100644
+--- a/fs/proc/page.c
++++ b/fs/proc/page.c
+@@ -157,7 +157,7 @@ u64 stable_page_flags(const struct page *page)
+ 	 * it differentiates a memory hole from a page with no flags
+ 	 */
+ 	if (!page)
+-		return 1 << KPF_NOPAGE;
++		return BIT_ULL(KPF_NOPAGE);
+ 
+ 	snapshot_page(&ps, page);
+ 	folio = &ps.folio_snapshot;
+@@ -170,11 +170,11 @@ u64 stable_page_flags(const struct page *page)
+ 	 * pseudo flags for the well known (anonymous) memory mapped pages
+ 	 */
+ 	if (folio_mapped(folio))
+-		u |= 1 << KPF_MMAP;
++		u |= BIT_ULL(KPF_MMAP);
+ 	if (is_anon) {
+-		u |= 1 << KPF_ANON;
++		u |= BIT_ULL(KPF_ANON);
+ 		if ((mapping & FOLIO_MAPPING_FLAGS) == FOLIO_MAPPING_KSM)
+-			u |= 1 << KPF_KSM;
++			u |= BIT_ULL(KPF_KSM);
+ 	}
+ 
+ 	/*
+@@ -184,35 +184,35 @@ u64 stable_page_flags(const struct page *page)
+ 	if (ps.idx == 0)
+ 		u |= kpf_copy_bit(k, KPF_COMPOUND_HEAD, PG_head);
+ 	else
+-		u |= 1 << KPF_COMPOUND_TAIL;
++		u |= BIT_ULL(KPF_COMPOUND_TAIL);
+ 	if (folio_test_hugetlb(folio))
+-		u |= 1 << KPF_HUGE;
++		u |= BIT_ULL(KPF_HUGE);
+ 	else if (folio_test_large(folio) &&
+ 	         folio_test_large_rmappable(folio)) {
+ 		/* Note: we indicate any THPs here, not just PMD-sized ones */
+-		u |= 1 << KPF_THP;
++		u |= BIT_ULL(KPF_THP);
+ 	} else if (is_huge_zero_pfn(ps.pfn)) {
+-		u |= 1 << KPF_ZERO_PAGE;
+-		u |= 1 << KPF_THP;
++		u |= BIT_ULL(KPF_ZERO_PAGE);
++		u |= BIT_ULL(KPF_THP);
+ 	} else if (is_zero_pfn(ps.pfn)) {
+-		u |= 1 << KPF_ZERO_PAGE;
++		u |= BIT_ULL(KPF_ZERO_PAGE);
+ 	}
+ 
+ 	if (ps.flags & PAGE_SNAPSHOT_PG_BUDDY)
+-		u |= 1 << KPF_BUDDY;
++		u |= BIT_ULL(KPF_BUDDY);
+ 
+ 	if (folio_test_offline(folio))
+-		u |= 1 << KPF_OFFLINE;
++		u |= BIT_ULL(KPF_OFFLINE);
+ 	if (folio_test_pgtable(folio))
+-		u |= 1 << KPF_PGTABLE;
++		u |= BIT_ULL(KPF_PGTABLE);
+ 	if (folio_test_slab(folio))
+-		u |= 1 << KPF_SLAB;
++		u |= BIT_ULL(KPF_SLAB);
+ 
+ #if defined(CONFIG_PAGE_IDLE_FLAG) && defined(CONFIG_64BIT)
+ 	u |= kpf_copy_bit(k, KPF_IDLE,          PG_idle);
+ #else
+ 	if (ps.flags & PAGE_SNAPSHOT_PG_IDLE)
+-		u |= 1 << KPF_IDLE;
++		u |= BIT_ULL(KPF_IDLE);
+ #endif
+ 
+ 	u |= kpf_copy_bit(k, KPF_LOCKED,	PG_locked);
+@@ -227,14 +227,14 @@ u64 stable_page_flags(const struct page *page)
+ 
+ #define SWAPCACHE ((1 << PG_swapbacked) | (1 << PG_swapcache))
+ 	if ((k & SWAPCACHE) == SWAPCACHE)
+-		u |= 1 << KPF_SWAPCACHE;
++		u |= BIT_ULL(KPF_SWAPCACHE);
+ 	u |= kpf_copy_bit(k, KPF_SWAPBACKED,	PG_swapbacked);
+ 
+ 	u |= kpf_copy_bit(k, KPF_UNEVICTABLE,	PG_unevictable);
+ 	u |= kpf_copy_bit(k, KPF_MLOCKED,	PG_mlocked);
+ 
+ #ifdef CONFIG_MEMORY_FAILURE
+-	if (u & (1 << KPF_HUGE))
++	if (u & BIT_ULL(KPF_HUGE))
+ 		u |= kpf_copy_bit(k, KPF_HWPOISON,	PG_hwpoison);
+ 	else
+ 		u |= kpf_copy_bit(ps.page_snapshot.flags.f, KPF_HWPOISON, PG_hwpoison);
+-- 
+2.47.3
+

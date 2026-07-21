@@ -1,0 +1,48 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 19 Jul 2026 09:11:33 -0700
+Subject: [PATCH] mm/damon/ops-common: use nr_accesses moving sum for quota
+ score
+
+Since commit 42f994b71404 ("mm/damon/core: implement scheme-specific apply
+interval"), DAMOS scheme can be applied at any time.  At that time,
+nr_accesses may not be fully aggregated.  But the quota prioritization
+score is calculated using the not fully aggregated count.  As a result,
+the performance of DAMOS could be degraded.  Fix by using
+damon_nr_accesses_mvsum() instead.
+
+The user impact of the issue is suboptimum DAMOS performance under certain
+setups.  Nonetheless, the bug was there from the beginning of the setup
+availability.  In other words, the suboptimum performance is the baseline
+of the setup and hence it didn't cause regression.  Also the extent of the
+suboptimality was not big enough to be found from users and testers.
+Still, this is a clear bug that is better to be fixed, and can be easily
+fixed.
+
+Link: https://lore.kernel.org/20260719161136.90191-1-sj@kernel.org
+Fixes: 42f994b71404 ("mm/damon/core: implement scheme-specific apply interval")
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: <stable@vger.kernel.org> # 6.7.x
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/ops-common.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index e59f5268d503c..d7d7f100389b0 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -111,8 +111,9 @@ int damon_hot_score(struct damon_ctx *c, struct damon_region *r,
+ 	unsigned int age_weight = s->quota.weight_age;
+ 	int hotness;
+ 
+-	freq_subscore = r->nr_accesses * DAMON_MAX_SUBSCORE /
+-		damon_nr_samples_per_aggr(&c->attrs);
++	freq_subscore = mult_frac(damon_nr_accesses_mvsum(r, c),
++			DAMON_MAX_SUBSCORE,
++			damon_nr_samples_per_aggr(&c->attrs));
+ 
+ 	age_in_sec = (unsigned long)r->age * c->attrs.aggr_interval / 1000000;
+ 	if (age_in_sec)
+-- 
+2.47.3
+

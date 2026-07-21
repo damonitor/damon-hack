@@ -1,0 +1,129 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 20 Jul 2026 10:27:29 +0100
+Subject: [PATCH] x86/mm/pat: allocate split page tables as kernel page tables
+
+When splitting a large page in CPA in __split_large_page() we allocate a
+PTE directly without going through the standard page table allocation
+routines such as pte_alloc_one_kernel().
+
+This means the page table constructor is never called nor is the page
+table marked as a kernel page table.
+
+The former results in the folio associated with the page table not being
+marked as a page table (__pagetable_ctor() is never called thus neither is
+__folio_set_pgtable()) nor are statistics updated to reflect it
+(lruvec_stat_add_folio() is never called).
+
+The latter issue of failing to mark the page table as a kernel page table
+(ptdesc_set_kernel() is never called) is far more problematic.
+
+Since commit 5ba2f0a15564 ("mm: introduce deferred freeing for kernel page
+tables") kernel page table freeing has been batched and since the
+subsequent commit e37d5a2d60a3 ("iommu/sva: invalidate stale IOTLB entries
+for kernel address space") IOTLB cache entries for kernel page tables have
+been invalidated upon being freed.
+
+Since split page tables are freed without this invalidation, the IOTLB can
+contain stale entries for them.
+
+Resolve the issue by using the ordinary PTE allocation API at split time.
+
+This results in these kernel page tables invoking a page table
+constructor, and thus requires a page table destructor.
+
+Since we cannot assume one is always present (early allocated direct map
+page tables are not marked as such), we conditionally call
+pagetable_dtor_free() if the PG_table folio flag for the ptdesc is set,
+otherwise we free the page table via pagetable_free().
+
+Regardless of which path is taken page tables marked as kernel page
+tables, which now includes split page tables, take the correct route
+through pagetable_free_kernel().
+
+There is a user-visible side effect in that split page tables will appear
+in nr_page_table_pages in /proc/vmstat (as do other kernel page tables
+allocated after early boot), however this is a positive change.
+
+This issue started being markedly problematic after commit 5ba2f0a15564
+("mm: introduce deferred freeing for kernel page tables") so choose this
+as the Fixes target.
+
+Link: https://lore.kernel.org/20260720-fix-cpa-kernel-pagetables-v1-1-0766e782cefe@kernel.org
+Fixes: 5ba2f0a15564 ("mm: introduce deferred freeing for kernel page tables")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: Baolu Lu <baolu.lu@linux.intel.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Kevin Tian <kevin.tian@intel.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/mm/pat/set_memory.c | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/arch/x86/mm/pat/set_memory.c b/arch/x86/mm/pat/set_memory.c
+index 301fb9e77d91b..a67ca33b9dd12 100644
+--- a/arch/x86/mm/pat/set_memory.c
++++ b/arch/x86/mm/pat/set_memory.c
+@@ -439,7 +439,11 @@ static void __cpa_collapse_large_pages(struct cpa_data *cpa)
+ 
+ 	list_for_each_entry_safe(ptdesc, tmp, &pgtables, pt_list) {
+ 		list_del(&ptdesc->pt_list);
+-		pagetable_free(ptdesc);
++
++		if (folio_test_pgtable(ptdesc_folio(ptdesc)))
++			pagetable_dtor_free(ptdesc);
++		else
++			pagetable_free(ptdesc);
+ 	}
+ }
+ 
+@@ -1138,11 +1142,10 @@ static void split_set_pte(struct cpa_data *cpa, pte_t *pte, unsigned long pfn,
+ 
+ static int
+ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
+-		   struct ptdesc *ptdesc)
++		   pte_t *pbase)
+ {
+ 	unsigned long lpaddr, lpinc, ref_pfn, pfn, pfninc = 1;
+-	struct page *base = ptdesc_page(ptdesc);
+-	pte_t *pbase = (pte_t *)page_address(base);
++	struct page *base = virt_to_page(pbase);
+ 	unsigned int i, level;
+ 	pgprot_t ref_prot;
+ 	bool nx, rw;
+@@ -1246,18 +1249,18 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
+ static int split_large_page(struct cpa_data *cpa, pte_t *kpte,
+ 			    unsigned long address)
+ {
+-	struct ptdesc *ptdesc;
++	pte_t *pte;
+ 
+ 	if (!debug_pagealloc_enabled())
+ 		spin_unlock(&cpa_lock);
+-	ptdesc = pagetable_alloc(GFP_KERNEL, 0);
++	pte = pte_alloc_one_kernel(&init_mm);
+ 	if (!debug_pagealloc_enabled())
+ 		spin_lock(&cpa_lock);
+-	if (!ptdesc)
++	if (!pte)
+ 		return -ENOMEM;
+ 
+-	if (__split_large_page(cpa, kpte, address, ptdesc))
+-		pagetable_free(ptdesc);
++	if (__split_large_page(cpa, kpte, address, pte))
++		pte_free_kernel(&init_mm, pte);
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

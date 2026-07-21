@@ -1,0 +1,148 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 20 Jul 2026 15:38:34 +0100
+Subject: [PATCH] mm: introduce and use linear_folio_page_index()
+
+This function is, for now, a placeholder; it will be used in future to
+determine whether to use the virtual page index or not, based on whether
+the folio is anonymous or not.
+
+Currently it simply wraps linear_page_index(), so this does not change
+behaviour.
+
+We update callers that will, once the change is introduced to track
+anonymous folios by virtual page offset if MAP_PRIVATE file-backed, need
+to determine which index to use based on folio type.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260720-b4-scalable-cow-virt-pgoff-v2-8-2d549757a76f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/pagemap.h | 18 ++++++++++++++++++
+ mm/huge_memory.c        |  3 ++-
+ mm/migrate.c            |  6 ++++--
+ mm/userfaultfd.c        |  6 ++++--
+ 4 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index c9c65ba60ab38..c635c3237f524 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -1143,6 +1143,24 @@ static inline pgoff_t linear_virt_page_index(const struct vm_area_struct *vma,
+ 	return pgoff;
+ }
+ 
++/**
++ * linear_folio_page_index() - Determine the absolute page offset of
++ * @address within @vma from @folio.
++ * @folio: The folio whose linear page index is sought.
++ * @vma: The VMA in which @address resides.
++ * @address: The address whose absolute page offset is required.
++ *
++ * For compatibility, currently identical to linear_page_index().
++ *
++ * Returns: The absolute page offset of @address within @vma.
++ */
++static inline pgoff_t linear_folio_page_index(const struct folio *folio,
++					      const struct vm_area_struct *vma,
++					      const unsigned long address)
++{
++	return linear_page_index(vma, address);
++}
++
+ struct wait_page_key {
+ 	struct folio *folio;
+ 	int bit_nr;
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 5bd8d4f59a7b8..04e8a6b553435 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2887,7 +2887,8 @@ int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pm
+ 		}
+ 
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_folio_page_index(src_folio, dst_vma,
++							   dst_addr);
+ 
+ 		_dst_pmd = folio_mk_pmd(src_folio, dst_vma->vm_page_prot);
+ 		/* Follow mremap() behavior and treat the entry dirty after the move */
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 60355be9f652c..ab15a4dddd047 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -363,8 +363,10 @@ static bool remove_migration_pte(struct folio *folio,
+ 		unsigned long idx = 0;
+ 
+ 		/* pgoff is invalid for ksm pages, but they are never large */
+-		if (folio_test_large(folio) && !folio_test_hugetlb(folio))
+-			idx = linear_page_index(vma, pvmw.address) - pvmw.pgoff;
++		if (folio_test_large(folio) && !folio_test_hugetlb(folio)) {
++			idx += linear_folio_page_index(folio, vma, pvmw.address);
++			idx -= pvmw.pgoff;
++		}
+ 		new = folio_page(folio, idx);
+ 
+ #ifdef CONFIG_ARCH_HAS_PMD_SOFTLEAVES
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 8fd24c8b428e1..258b03182a780 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1352,7 +1352,8 @@ static long move_present_ptes(struct mm_struct *mm,
+ 		}
+ 
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_folio_page_index(src_folio, dst_vma,
++							   dst_addr);
+ 
+ 		orig_dst_pte = folio_mk_pte(src_folio, dst_vma->vm_page_prot);
+ 		/* Set soft dirty bit so userspace can notice the pte was moved */
+@@ -1428,7 +1429,8 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
+ 	 */
+ 	if (src_folio) {
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_folio_page_index(src_folio, dst_vma,
++							   dst_addr);
+ 	} else {
+ 		/*
+ 		 * Check if the swap entry is cached after acquiring the src_pte
+-- 
+2.47.3
+

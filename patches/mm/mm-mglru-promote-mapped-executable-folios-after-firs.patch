@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 17 Jul 2026 18:05:34 +0800
+Date: Mon, 20 Jul 2026 19:12:02 +0800
 Subject: [PATCH] mm: mglru: promote mapped executable folios after first usage
 
 Classical LRU protects mapped executable file folios through commit
@@ -27,10 +27,7 @@ On my 32-core Arm machine, with the memcg limit set to 2G, running 'make
 base			patched
 9248.543s		7861.579s
 
-While we are at it, introduce a new helper to check mapped executable file
-folios.
-
-Link: https://lore.kernel.org/7db4d1975cf04e3e48157f98bdf398565ee189a4.1784268206.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/f57d94b1d85bb3d620d89bb739128f0d929bf9c6.1784509721.git.baolin.wang@linux.alibaba.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
 Reviewed-by: Axel Rasmussen <axelrasmussen@google.com>
@@ -48,30 +45,16 @@ Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
-
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/vmscan.c | 47 +++++++++++++++++++++++++++++++----------------
- 1 file changed, 31 insertions(+), 16 deletions(-)
+ mm/vmscan.c | 43 +++++++++++++++++++++++++++----------------
+ 1 file changed, 27 insertions(+), 16 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index d726046e6b968..61d26437bebfb 100644
+index ce796b0309594..206144c9922ed 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -268,6 +268,12 @@ static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
- }
- #endif
- 
-+static inline bool is_exec_file_folio(const struct folio *folio,
-+		const vma_flags_t *vma_flags)
-+{
-+	return vma_flags_test(vma_flags, VMA_EXEC_BIT) && folio_is_file_lru(folio);
-+}
-+
- static void set_task_reclaim_state(struct task_struct *task,
- 				   struct reclaim_state *rs)
- {
-@@ -835,11 +841,15 @@ enum folio_references {
+@@ -841,10 +841,16 @@ enum folio_references {
   * with PG_active set. In contrast, the aging (page table walk) path uses
   * folio_update_gen().
   */
@@ -80,15 +63,16 @@ index d726046e6b968..61d26437bebfb 100644
  {
  	/* see the comment on LRU_REFS_FLAGS */
  	if (!folio_test_referenced(folio) && !folio_test_workingset(folio)) {
- 		set_mask_bits(&folio->flags.f, LRU_REFS_MASK, BIT(PG_referenced));
 +		/* Activate file-backed executable folios after first usage. */
-+		if (is_exec_file_folio(folio, vma_flags))
++		if (is_exec_file_folio(folio, vma_flags)) {
++			set_mask_bits(&folio->flags.f, LRU_REFS_FLAGS, BIT(PG_workingset));
 +			return true;
++		}
 +
+ 		set_mask_bits(&folio->flags.f, LRU_REFS_MASK, BIT(PG_referenced));
  		return false;
  	}
- 
-@@ -851,7 +861,7 @@ static bool lru_gen_set_refs(struct folio *folio)
+@@ -857,7 +863,7 @@ static bool lru_gen_set_refs(struct folio *folio)
  	return true;
  }
  #else
@@ -97,7 +81,7 @@ index d726046e6b968..61d26437bebfb 100644
  {
  	return false;
  }
-@@ -886,7 +896,7 @@ static enum folio_references folio_check_references(struct folio *folio,
+@@ -892,7 +898,7 @@ static enum folio_references folio_check_references(struct folio *folio,
  		if (!referenced_ptes)
  			return FOLIOREF_RECLAIM;
  
@@ -106,25 +90,7 @@ index d726046e6b968..61d26437bebfb 100644
  	}
  
  	referenced_folio = folio_test_clear_referenced(folio);
-@@ -914,7 +924,7 @@ static enum folio_references folio_check_references(struct folio *folio,
- 		/*
- 		 * Activate file-backed executable folios after first usage.
- 		 */
--		if (vma_flags_test(&vma_flags, VMA_EXEC_BIT) && folio_is_file_lru(folio))
-+		if (is_exec_file_folio(folio, &vma_flags))
- 			return FOLIOREF_ACTIVATE;
- 
- 		return FOLIOREF_KEEP;
-@@ -2117,7 +2127,7 @@ static void shrink_active_list(unsigned long nr_to_scan,
- 			 * IO, plus JVM can create lots of anon VM_EXEC folios,
- 			 * so we ignore them here.
- 			 */
--			if (vma_flags_test(&vma_flags, VMA_EXEC_BIT) && folio_is_file_lru(folio)) {
-+			if (is_exec_file_folio(folio, &vma_flags)) {
- 				nr_rotated += folio_nr_pages(folio);
- 				list_add(&folio->lru, &l_active);
- 				continue;
-@@ -3190,7 +3200,7 @@ static bool positive_ctrl_err(struct ctrl_pos *sp, struct ctrl_pos *pv)
+@@ -3196,14 +3202,19 @@ static bool positive_ctrl_err(struct ctrl_pos *sp, struct ctrl_pos *pv)
   ******************************************************************************/
  
  /* promote pages accessed through page tables */
@@ -133,23 +99,21 @@ index d726046e6b968..61d26437bebfb 100644
  {
  	unsigned long new_flags, old_flags = READ_ONCE(folio->flags.f);
  
-@@ -3198,10 +3208,15 @@ static int folio_update_gen(struct folio *folio, int gen)
+ 	VM_WARN_ON_ONCE(gen >= MAX_NR_GENS);
  
- 	/* see the comment on LRU_REFS_FLAGS */
- 	if (!folio_test_referenced(folio) && !folio_test_workingset(folio)) {
-+		/* Activate file-backed executable folios after first usage. */
-+		if (is_exec_file_folio(folio, vma_flags))
-+			goto promote;
-+
+-	/* see the comment on LRU_REFS_FLAGS */
+-	if (!folio_test_referenced(folio) && !folio_test_workingset(folio)) {
++	/*
++	 * See the comment on LRU_REFS_FLAGS, and activate file-backed
++	 * executable folios after first usage to avoid typical IO
++	 * thrashing from reclaiming.
++	 */
++	if (!folio_test_referenced(folio) && !folio_test_workingset(folio) &&
++	    !is_exec_file_folio(folio, vma_flags)) {
  		set_mask_bits(&folio->flags.f, LRU_REFS_MASK, BIT(PG_referenced));
  		return -1;
  	}
- 
-+promote:
- 	do {
- 		/* lru_gen_del_folio() has isolated this page? */
- 		if (!(old_flags & LRU_GEN_MASK))
-@@ -3430,8 +3445,8 @@ static bool suitable_to_scan(int total, int young)
+@@ -3436,8 +3447,8 @@ static bool suitable_to_scan(int total, int young)
  	return young * n >= total;
  }
  
@@ -160,7 +124,7 @@ index d726046e6b968..61d26437bebfb 100644
  {
  	int old_gen;
  
-@@ -3444,10 +3459,10 @@ static void walk_update_folio(struct lru_gen_mm_walk *walk, struct folio *folio,
+@@ -3450,10 +3461,10 @@ static void walk_update_folio(struct lru_gen_mm_walk *walk, struct folio *folio,
  		folio_mark_dirty(folio);
  
  	if (walk) {
@@ -173,7 +137,7 @@ index d726046e6b968..61d26437bebfb 100644
  		old_gen = folio_lru_gen(folio);
  		if (old_gen >= 0 && old_gen != new_gen)
  			folio_activate(folio);
-@@ -3520,7 +3535,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+@@ -3526,7 +3537,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
  			continue;
  
  		if (last != folio) {
@@ -182,7 +146,7 @@ index d726046e6b968..61d26437bebfb 100644
  
  			last = folio;
  			dirty = false;
-@@ -3533,7 +3548,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
+@@ -3539,7 +3550,7 @@ static bool walk_pte_range(pmd_t *pmd, unsigned long start, unsigned long end,
  		walk->mm_stats[MM_LEAF_YOUNG] += nr;
  	}
  
@@ -191,7 +155,7 @@ index d726046e6b968..61d26437bebfb 100644
  	last = NULL;
  
  	if (i < PTRS_PER_PTE && get_next_vma(PMD_MASK, PAGE_SIZE, args, &start, &end))
-@@ -3611,7 +3626,7 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
+@@ -3617,7 +3628,7 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
  			goto next;
  
  		if (last != folio) {
@@ -200,7 +164,7 @@ index d726046e6b968..61d26437bebfb 100644
  
  			last = folio;
  			dirty = false;
-@@ -3625,7 +3640,7 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
+@@ -3631,7 +3642,7 @@ static void walk_pmd_range_locked(pud_t *pud, unsigned long addr, struct vm_area
  		i = i > MIN_LRU_BATCH ? 0 : find_next_bit(bitmap, MIN_LRU_BATCH, i) + 1;
  	} while (i <= MIN_LRU_BATCH);
  
@@ -209,7 +173,7 @@ index d726046e6b968..61d26437bebfb 100644
  
  	lazy_mmu_mode_disable();
  	spin_unlock(ptl);
-@@ -4260,7 +4275,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
+@@ -4266,7 +4277,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
  			continue;
  
  		if (last != folio) {
@@ -218,7 +182,7 @@ index d726046e6b968..61d26437bebfb 100644
  
  			last = folio;
  			dirty = false;
-@@ -4272,7 +4287,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
+@@ -4278,7 +4289,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
  		young += nr;
  	}
  

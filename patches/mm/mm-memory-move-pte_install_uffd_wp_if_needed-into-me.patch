@@ -1,0 +1,222 @@
+From: Dev Jain <dev.jain@arm.com>
+Date: Mon, 20 Jul 2026 06:55:05 +0000
+Subject: [PATCH] mm/memory: move pte_install_uffd_wp_if_needed() into memory.c
+
+Patch series "Batch unmap of uffd-wp file folios", v2.
+
+Currently, batched unmapping is supported if:
+
+1) folio is a file folio, not belonging to uffd-wp VMA
+2) folio is anonymous and not swapbacked (lazyfree), not belonging to
+   uffd-wp VMA
+
+So the cases which are not supported are
+
+1) folio belonging to uffd-wp VMA
+2) folio is anonymous and swapbacked
+
+It is easy to see that this adds a lot of cognitive load while reading
+try_to_unmap_one - we need to remember throughout whether nr_pages == 1 or
+> 1.
+
+The uffd-wp handling in try_to_unmap_one is regarding preserving the
+uffd-wp state for file folios via pte_install_uffd_wp_if_needed (for anon
+folio, we handle that while constructing the swap pte).
+
+Stop special casing on uffd-wp VMAs by simply adding batching support to
+pte_install_uffd_wp_if_needed.
+
+
+This patch (of 3):
+
+pte_install_uffd_wp_if_needed() has grown too large for mm_inline.h.  Move
+it to memory.c.
+
+This helper is only used inside mm/, so declare it in mm/internal.h
+instead of a public header.
+
+While at it, convert the comment to kerneldoc and rename the local
+arguments from pte/pteval to ptep/pte so the pointer and PTE value are
+easier to distinguish.
+
+Link: https://lore.kernel.org/20260720065508.2695106-1-dev.jain@arm.com
+Link: https://lore.kernel.org/20260720065508.2695106-2-dev.jain@arm.com
+Signed-off-by: Dev Jain <dev.jain@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_inline.h | 53 ----------------------------------
+ mm/internal.h             |  3 ++
+ mm/memory.c               | 60 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+), 53 deletions(-)
+
+diff --git a/include/linux/mm_inline.h b/include/linux/mm_inline.h
+index b5c4dc0f3fe32..621c8653d8f7e 100644
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -566,59 +566,6 @@ static inline pte_marker copy_pte_marker(
+ 	return dstm;
+ }
+ 
+-/*
+- * If this pte is wr-protected by uffd-wp in any form, arm the special pte to
+- * replace a none pte.  NOTE!  This should only be called when *pte is already
+- * cleared so we will never accidentally replace something valuable.  Meanwhile
+- * none pte also means we are not demoting the pte so tlb flushed is not needed.
+- * E.g., when pte cleared the caller should have taken care of the tlb flush.
+- *
+- * Must be called with pgtable lock held so that no thread will see the none
+- * pte, and if they see it, they'll fault and serialize at the pgtable lock.
+- *
+- * Returns true if an uffd-wp pte was installed, false otherwise.
+- */
+-static inline bool
+-pte_install_uffd_wp_if_needed(struct vm_area_struct *vma, unsigned long addr,
+-			      pte_t *pte, pte_t pteval)
+-{
+-	bool arm_uffd_pte = false;
+-
+-	if (!uffd_supports_wp_marker())
+-		return false;
+-
+-	/* The current status of the pte should be "cleared" before calling */
+-	WARN_ON_ONCE(!pte_none(ptep_get(pte)));
+-
+-	/*
+-	 * NOTE: userfaultfd_wp_unpopulated() doesn't need this whole
+-	 * thing, because when zapping either it means it's dropping the
+-	 * page, or in TTU where the present pte will be quickly replaced
+-	 * with a swap pte.  There's no way of leaking the bit.
+-	 */
+-	if (vma_is_anonymous(vma) || !userfaultfd_wp(vma))
+-		return false;
+-
+-	/* A uffd-wp wr-protected normal pte */
+-	if (unlikely(pte_present(pteval) && pte_uffd(pteval)))
+-		arm_uffd_pte = true;
+-
+-	/*
+-	 * A uffd-wp wr-protected swap pte.  Note: this should even cover an
+-	 * existing pte marker with uffd-wp bit set.
+-	 */
+-	if (unlikely(pte_swp_uffd_any(pteval)))
+-		arm_uffd_pte = true;
+-
+-	if (unlikely(arm_uffd_pte)) {
+-		set_pte_at(vma->vm_mm, addr, pte,
+-			   make_pte_marker(PTE_MARKER_UFFD_WP));
+-		return true;
+-	}
+-
+-	return false;
+-}
+-
+ static inline bool vma_has_recency(const struct vm_area_struct *vma)
+ {
+ 	if (vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))
+diff --git a/mm/internal.h b/mm/internal.h
+index 41561fdeb56d0..36427f566da93 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -280,6 +280,9 @@ void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap);
+ 
+ #ifdef CONFIG_MMU
+ 
++bool pte_install_uffd_wp_if_needed(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, pte_t pte);
++
+ static inline void get_anon_vma(struct anon_vma *anon_vma)
+ {
+ 	atomic_inc(&anon_vma->refcount);
+diff --git a/mm/memory.c b/mm/memory.c
+index 56b244552f139..2e1428975189d 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1677,6 +1677,66 @@ static inline bool zap_drop_markers(struct zap_details *details)
+ 	return details->zap_flags & ZAP_FLAG_DROP_MARKER;
+ }
+ 
++/**
++ * pte_install_uffd_wp_if_needed - install uffd-wp marker after clearing a PTE
++ * @vma: The VMA the page is mapped into.
++ * @addr: Address the page is mapped at.
++ * @ptep: Page table pointer for this entry.
++ * @pte: Old value of the entry pointed to by @ptep.
++ *
++ * If the PTE was write-protected by uffd-wp in any form, arm a special PTE
++ * to replace a none PTE. NOTE! This should only be called when the PTE is
++ * already cleared so we will never accidentally replace something valuable.
++ * Meanwhile none PTEs also mean we are not demoting the PTE so a TLB flush is
++ * not needed. E.g., when the PTE was cleared, the caller should have taken care
++ * of the TLB flush.
++ *
++ * Must be called with the page table lock held so that no thread will see the
++ * none PTE, and if they see it, they'll fault and serialize at the page table
++ * lock.
++ *
++ * Returns true if an uffd-wp PTE was installed, false otherwise.
++ */
++bool pte_install_uffd_wp_if_needed(struct vm_area_struct *vma,
++		unsigned long addr, pte_t *ptep, pte_t pte)
++{
++	bool arm_uffd_pte = false;
++
++	if (!uffd_supports_wp_marker())
++		return false;
++
++	/* The current status of the pte should be "cleared" before calling */
++	WARN_ON_ONCE(!pte_none(ptep_get(ptep)));
++
++	/*
++	 * NOTE: userfaultfd_wp_unpopulated() doesn't need this whole
++	 * thing, because when zapping either it means it's dropping the
++	 * page, or in TTU where the present pte will be quickly replaced
++	 * with a swap pte.  There's no way of leaking the bit.
++	 */
++	if (vma_is_anonymous(vma) || !userfaultfd_wp(vma))
++		return false;
++
++	/* A uffd-wp wr-protected normal pte */
++	if (unlikely(pte_present(pte) && pte_uffd(pte)))
++		arm_uffd_pte = true;
++
++	/*
++	 * A uffd-wp wr-protected swap pte.  Note: this should even cover an
++	 * existing pte marker with uffd-wp bit set.
++	 */
++	if (unlikely(pte_swp_uffd_any(pte)))
++		arm_uffd_pte = true;
++
++	if (unlikely(arm_uffd_pte)) {
++		set_pte_at(vma->vm_mm, addr, ptep,
++			   make_pte_marker(PTE_MARKER_UFFD_WP));
++		return true;
++	}
++
++	return false;
++}
++
+ /*
+  * This function makes sure that we'll replace the none pte with an uffd-wp
+  * swap special pte marker when necessary. Must be with the pgtable lock held.
+-- 
+2.47.3
+

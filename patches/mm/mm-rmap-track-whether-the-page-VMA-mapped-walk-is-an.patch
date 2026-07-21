@@ -1,0 +1,135 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 20 Jul 2026 15:38:33 +0100
+Subject: [PATCH] mm/rmap: track whether the page VMA mapped walk is anonymous
+
+Update the page_vma_mapped_walk structure to track whether the walk is
+over an anonymous folio or not.
+
+This is necessary in order to determine the correct VMA page offset
+(virtual or not) in vma_address_end() ready for a subsequent change which
+adjusts which page offset to use depending on this parameter, and update
+the comment slightly.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260720-b4-scalable-cow-virt-pgoff-v2-7-2d549757a76f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/rmap.h |  2 ++
+ mm/internal.h        | 13 ++++++++-----
+ mm/rmap.c            |  2 ++
+ 3 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/rmap.h b/include/linux/rmap.h
+index 8dc0871e5f001..a48ae9575bd26 100644
+--- a/include/linux/rmap.h
++++ b/include/linux/rmap.h
+@@ -871,6 +871,7 @@ struct page_vma_mapped_walk {
+ 	pte_t *pte;
+ 	spinlock_t *ptl;
+ 	unsigned int flags;
++	bool is_anon_walk;
+ };
+ 
+ #define DEFINE_FOLIO_VMA_WALK(name, _folio, _vma, _address, _flags)	\
+@@ -881,6 +882,7 @@ struct page_vma_mapped_walk {
+ 		.vma = _vma,						\
+ 		.address = _address,					\
+ 		.flags = _flags,					\
++		.is_anon_walk = folio_test_anon(_folio),		\
+ 	}
+ 
+ static inline void page_vma_mapped_walk_done(struct page_vma_mapped_walk *pvmw)
+diff --git a/mm/internal.h b/mm/internal.h
+index 73f90aaa979df..7ed8bde7890df 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1079,22 +1079,25 @@ static inline unsigned long vma_anon_address(const struct vm_area_struct *vma,
+ }
+ 
+ /*
+- * Then at what user virtual address will none of the range be found in vma?
++ * At what user virtual address will none of the range be found in vma?
+  * Assumes that vma_address() already returned a good starting address.
+  */
+ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
+ {
+-	struct vm_area_struct *vma = pvmw->vma;
+-	pgoff_t pgoff;
++	const struct vm_area_struct *vma = pvmw->vma;
++	const pgoff_t pgoff = pvmw->pgoff;
++	pgoff_t pgoff_vma_start;
+ 	unsigned long address;
++	pgoff_t pgoff_end;
+ 
+ 	/* Common case, plus ->pgoff is invalid for KSM */
+ 	if (pvmw->nr_pages == 1)
+ 		return pvmw->address + PAGE_SIZE;
+ 
+-	pgoff = pvmw->pgoff + pvmw->nr_pages;
++	pgoff_vma_start = vma_start_pgoff(vma);
++	pgoff_end = pgoff + pvmw->nr_pages;
+ 	address = vma->vm_start +
+-		((pgoff - vma_start_pgoff(vma)) << PAGE_SHIFT);
++		((pgoff_end - pgoff_vma_start) << PAGE_SHIFT);
+ 	/* Check for address beyond vma (or wrapped through 0?) */
+ 	if (address < vma->vm_start || address > vma->vm_end)
+ 		address = vma->vm_end;
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 5798427d007f0..04b657eefb3c4 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -1240,6 +1240,7 @@ static bool mapping_wrprotect_range_one(struct folio *folio,
+ 		.vma		= vma,
+ 		.address	= address,
+ 		.flags		= PVMW_SYNC,
++		.is_anon_walk   = false,
+ 	};
+ 
+ 	state->cleaned += page_vma_mkclean_one(&pvmw);
+@@ -1317,6 +1318,7 @@ int pfn_mkclean_range(unsigned long pfn, unsigned long nr_pages, pgoff_t pgoff,
+ 		.pgoff		= pgoff,
+ 		.vma		= vma,
+ 		.flags		= PVMW_SYNC,
++		.is_anon_walk   = false,
+ 	};
+ 
+ 	if (invalid_mkclean_vma(vma, NULL))
+-- 
+2.47.3
+

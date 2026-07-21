@@ -1,23 +1,84 @@
-- baseline: v7.2-rc2-22-g0e35b9b6ec0ff -> v7.2-rc2-22-g0e35b9b6ec0ff (no change)
-- mm-hotfixes-stable: 3 -> 3 commits (no change)
+- baseline: v7.2-rc2-22-g0e35b9b6ec0ff -> v7.2-rc4-15-gb95f03f04d475
+- mm-hotfixes-stable: 3 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - maintainer, nobody: 2 -> 2 commits (no change)
-    - maintainer, no role : 1 -> 1 commits (no change)
+    - maintainer, nobody: 2 -> 0 commits
+    - maintainer, no role : 1 -> 0 commits
+  - dropped commits
+    - 14afcf67dc2c "MAINTAINERS: s/SeongJae/SJ/"
+      - Authored by a maintainer, reviewed by no role player
+      - Link: https://lore.kernel.org/20260630013820.143366-1-sj@kernel.org
+    - 1292c0ecb1ca "mm/damon/core: validate ranges in damon_set_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260630035221.146458-1-sj@kernel.org
+    - 954157679ec3 "mm/damon/core: disallow overlapping input ranges for damon_set_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260703165610.92894-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260630041806.151124-1-sj@kernel.org [1]
 - mm-hotfixes-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 133 -> 133 commits (no change)
-  - series: 17 (129) -> 17 (129) (no change)
+- mm-unstable: 133 -> 141 commits
+  - series: 17 (129) -> 18 (136)
     - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 20 -> 20 commits (no change)
+    - no role, maintainer: 20 -> 21 commits
     - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 105 -> 105 commits (no change)
+    - maintainer, nobody: 105 -> 112 commits
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-new: 8 -> 8 commits (no change)
-  - series: 1 (7) -> 1 (7) (no change)
-    - no role, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 7 -> 7 commits (no change)
+  - changed commits
+    - series "mm/damon: fix uninitialized DAMOS field and kunit exec expectation bugs". (7)
+      - 865b87ce8e0d "mm/damon/core: initialize damos->last_applied (0/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260718001442.87129-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714055436.120034-1-sj@kernel.org [1]
+      - 9586a8b933bc "mm/damon/core-kunit: check region count before testing in split_at() (1/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
+      - 6d115f5b3f63 "mm/damon/vaddr-kunit: check region count in three_regions test (2/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - e5b60ecf83bc "mm/damon/core-kunit: handle region split failure in filter_out() (3/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
+      - 52c1d33e923b "mm/damon/core-kunit: skip wrong dest walk in commit_dests_for() (4/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - 335d42591610 "mm/damon/core-kunit: skip wrong quota goal walk in commit_quota_goals() (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - 8fd97d5a0b55 "mm/damon/core-kunit: skip wrong region walk in commit_target_regions() (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260718001442.87129-8-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+    - 505f6bc5c6c6 "mm/damon/ops-common: remove redundant local variable in damon_migrate_folio_list()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20260718002125.637104-1-lienze@kylinos.cn
+- mm-new: 8 -> 2 commits
+  - series: 1 (7) -> 0 (0)
+    - no role, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 7 -> 2 commits
+  - new commits
+    - a9f426f317ca "mm/damon/ops-common: use nr_accesses moving sum for quota score"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260719161136.90191-1-sj@kernel.org
+    - e7628aa717df "mm/damon/core: handle region split failure in apply_min_nr_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260719155442.88794-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260717011834.120715-1-sj@kernel.org [1]
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

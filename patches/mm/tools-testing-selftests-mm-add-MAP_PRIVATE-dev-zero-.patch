@@ -1,0 +1,175 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 20 Jul 2026 15:38:41 +0100
+Subject: [PATCH] tools/testing/selftests/mm: add MAP_PRIVATE-/dev/zero merge
+ tests
+
+Assert that MAP_PRIVATE-mapped /dev/zero mappings behave like they are
+anonymous.
+
+We test both unfaulted and faulted/unfaulted merges - each with the
+regions having page offset of 0, which would not merge if the mappings
+were treated as if they were file-backed.
+
+With the recent change that makes them behave as pure anonymous mappings,
+the merges should succeed as their page offsets are equal to their virtual
+page offsets.
+
+Link: https://lore.kernel.org/20260720-b4-scalable-cow-virt-pgoff-v2-15-2d549757a76f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/merge.c | 104 +++++++++++++++++++++++++++++
+ 1 file changed, 104 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/merge.c b/tools/testing/selftests/mm/merge.c
+index c093e27d0aea3..edfbd39ae58eb 100644
+--- a/tools/testing/selftests/mm/merge.c
++++ b/tools/testing/selftests/mm/merge.c
+@@ -1362,6 +1362,110 @@ TEST_F(merge, virt_and_page_offset_mismatch_memfd)
+ 	ASSERT_EQ(procmap->query.vma_end, (unsigned long)ptr + 5 * page_size);
+ }
+ 
++TEST_F(merge, merge_map_private_dev_zero_unfaulted)
++{
++	struct procmap_fd *procmap = &self->procmap;
++	unsigned int page_size = self->page_size;
++	char *carveout = self->carveout;
++	char *ptr, *ptr2;
++	int fd_zero;
++
++	if (access("/dev/zero", F_OK))
++		SKIP(return, "No /dev/zero.");
++	fd_zero = open("/dev/zero", O_RDWR);
++	ASSERT_NE(fd_zero, -1);
++
++	/*
++	 * Map two MAP_PRIVATE-/dev/zero VMAs next to one another with offset 0
++	 * each.
++	 *
++	 * With these being made truly anonymous upon mapping, they will
++	 * merge. If they were file-backed VMAs the page offsets would prevent
++	 * merge:
++	 *
++	 * |-----||------|    |-------------|
++	 * | ptr || ptr2 | -> |     ptr     |
++	 * |-----||------|    |-------------|
++	 */
++	ptr = mmap(carveout, 5 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_FIXED | MAP_PRIVATE, fd_zero, 0);
++	if (ptr == MAP_FAILED) {
++		close(fd_zero);
++		ASSERT_TRUE(false);
++	}
++	ptr2 = mmap(&carveout[5 * page_size], 5 * page_size,
++		   PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE, fd_zero, 0);
++	if (ptr2 == MAP_FAILED) {
++		close(fd_zero);
++		ASSERT_TRUE(false);
++	}
++	close(fd_zero);
++
++	/* Assert that they merged. */
++	ASSERT_TRUE(find_vma_procmap(procmap, ptr));
++	ASSERT_EQ(procmap->query.vma_start, (unsigned long)ptr);
++	ASSERT_EQ(procmap->query.vma_end, (unsigned long)ptr + 10 * page_size);
++}
++
++TEST_F(merge, merge_map_private_dev_zero_faulted_unfaulted)
++{
++	struct procmap_fd *procmap = &self->procmap;
++	unsigned int page_size = self->page_size;
++	char *carveout = self->carveout;
++	char *ptr, *ptr2;
++	int fd_zero;
++
++	if (access("/dev/zero", F_OK))
++		SKIP(return, "No /dev/zero.");
++	fd_zero = open("/dev/zero", O_RDWR);
++	ASSERT_NE(fd_zero, -1);
++
++	/*
++	 * Map a MAP_PRIVATE mapping of /dev/zero with page offset 0, then fault
++	 * it in:
++	 *
++	 * |-------------------------------|
++	 * |           faulted             |
++	 * |-------------------------------|
++	 */
++	ptr = mmap(carveout, 15 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_FIXED | MAP_PRIVATE, fd_zero, 0);
++	if (ptr == MAP_FAILED) {
++		close(fd_zero);
++		ASSERT_TRUE(false);
++	}
++	memset(ptr, 'x', 15 * page_size);
++
++	/*
++	 * Unmap the middle:
++	 *
++	 * |---------|           |---------|
++	 * | faulted |           | faulted |
++	 * |---------|           |---------|
++	 */
++	ASSERT_EQ(munmap(&ptr[5 * page_size], 5 * page_size), 0);
++
++	/*
++	 * Map in a new unfaulted mapping in the middle with page offset 0 -
++	 * this should merge and would not if it were treated as a file rather
++	 * than pure anon:
++	 *
++	 * |---------|-----------|---------|
++	 * | faulted | unfaulted | faulted |
++	 * |---------|-----------|---------|
++	 */
++	ptr2 = mmap(&carveout[5 * page_size], 5 * page_size,
++		    PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE,
++		    fd_zero, 0);
++	close(fd_zero);
++	ASSERT_NE(ptr2, MAP_FAILED);
++
++	/* Assert that they merged. */
++	ASSERT_TRUE(find_vma_procmap(procmap, ptr));
++	ASSERT_EQ(procmap->query.vma_start, (unsigned long)ptr);
++	ASSERT_EQ(procmap->query.vma_end, (unsigned long)ptr + 15 * page_size);
++}
++
+ TEST_F(merge_with_fork, mremap_faulted_to_unfaulted_prev)
+ {
+ 	struct procmap_fd *procmap = &self->procmap;
+-- 
+2.47.3
+

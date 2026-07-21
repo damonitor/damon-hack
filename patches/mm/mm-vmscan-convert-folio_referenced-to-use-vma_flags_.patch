@@ -1,9 +1,9 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 17 Jul 2026 18:05:33 +0800
+Date: Mon, 20 Jul 2026 19:12:00 +0800
 Subject: [PATCH] mm: vmscan: convert folio_referenced() to use vma_flags_t
 
 Patch series "promote mapped executable folios after first usage for
-MGLRU", v3.
+MGLRU", v4.
 
 Now MGLRU's protection of mapped executable file folios is less reliable.
 Follow the classical LRU's logic, promoting mapped executable file folios
@@ -11,7 +11,7 @@ after their first usage to give executable code a better chance to stay in
 memory and improve workload performance (See patch 2 for more details).
 
 
-This patch (of 2):
+This patch (of 3):
 
 Replace use of the legacy vm_flags_t flags with vma_flags_t values for
 folio_referenced() and related logic.  This is also a preparation for the
@@ -19,14 +19,14 @@ following changes.
 
 No functional changes.
 
-Link: https://lore.kernel.org/cover.1784268206.git.baolin.wang@linux.alibaba.com
-Link: https://lore.kernel.org/b9ef058305d1b5d6b811114830d17dd05980cef2.1784268206.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/cover.1784509721.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/2bd39e16ec19e3e3c4716aa9a1a25775c26cac57.1784509721.git.baolin.wang@linux.alibaba.com
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
-Reviewed-by: Axel Rasmussen <axelrasmussen@google.com>
 Reviewed-by: Barry Song <baohua@kernel.org>
 Reviewed-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Harry Yoo <harry@kernel.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Lance Yang <lance.yang@linux.dev>
@@ -46,7 +46,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  3 files changed, 21 insertions(+), 19 deletions(-)
 
 diff --git a/include/linux/rmap.h b/include/linux/rmap.h
-index 8dc0871e5f001..e090aa09825d5 100644
+index a48ae9575bd26..a174758f77775 100644
 --- a/include/linux/rmap.h
 +++ b/include/linux/rmap.h
 @@ -843,7 +843,7 @@ static inline int folio_try_share_anon_rmap_pmd(struct folio *folio,
@@ -58,7 +58,7 @@ index 8dc0871e5f001..e090aa09825d5 100644
  
  void try_to_migrate(struct folio *folio, enum ttu_flags flags);
  void try_to_unmap(struct folio *, enum ttu_flags flags);
-@@ -975,10 +975,9 @@ struct anon_vma *folio_lock_anon_vma_read(const struct folio *folio,
+@@ -977,10 +977,9 @@ struct anon_vma *folio_lock_anon_vma_read(const struct folio *folio,
  #define anon_vma_prepare(vma)	(0)
  
  static inline int folio_referenced(struct folio *folio, int is_locked,
@@ -72,10 +72,10 @@ index 8dc0871e5f001..e090aa09825d5 100644
  }
  
 diff --git a/mm/rmap.c b/mm/rmap.c
-index ad820fe86f7d8..73c2fe2d19462 100644
+index 5ad11ff5482b4..58e3c5f7d9ab9 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
-@@ -907,7 +907,7 @@ pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address)
+@@ -908,7 +908,7 @@ pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address)
  struct folio_referenced_arg {
  	int mapcount;
  	int referenced;
@@ -84,7 +84,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  	struct mem_cgroup *memcg;
  };
  
-@@ -926,7 +926,7 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -927,7 +927,7 @@ static bool folio_referenced_one(struct folio *folio,
  		address = pvmw.address;
  		nr = 1;
  
@@ -93,7 +93,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  			ptes++;
  			pra->mapcount--;
  
-@@ -947,7 +947,7 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -948,7 +948,7 @@ static bool folio_referenced_one(struct folio *folio,
  			/* Restore the mlock which got missed */
  			mlock_vma_folio(folio, vma);
  			page_vma_mapped_walk_done(&pvmw);
@@ -102,7 +102,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  			return false; /* To break the loop */
  		}
  
-@@ -1015,8 +1015,11 @@ static bool folio_referenced_one(struct folio *folio,
+@@ -1016,8 +1016,11 @@ static bool folio_referenced_one(struct folio *folio,
  		referenced++;
  
  	if (referenced) {
@@ -115,7 +115,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  	}
  
  	if (!pra->mapcount)
-@@ -1054,7 +1057,7 @@ static bool invalid_folio_referenced_vma(struct vm_area_struct *vma, void *arg)
+@@ -1055,7 +1058,7 @@ static bool invalid_folio_referenced_vma(struct vm_area_struct *vma, void *arg)
   * @folio: The folio to test.
   * @is_locked: Caller holds lock on the folio.
   * @memcg: target memory cgroup
@@ -124,7 +124,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
   *
   * Quick test_and_clear_referenced for all mappings of a folio,
   *
-@@ -1062,7 +1065,7 @@ static bool invalid_folio_referenced_vma(struct vm_area_struct *vma, void *arg)
+@@ -1063,7 +1066,7 @@ static bool invalid_folio_referenced_vma(struct vm_area_struct *vma, void *arg)
   * the function bailed out due to rmap lock contention.
   */
  int folio_referenced(struct folio *folio, int is_locked,
@@ -133,7 +133,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  {
  	bool we_locked = false;
  	struct folio_referenced_arg pra = {
-@@ -1078,7 +1081,7 @@ int folio_referenced(struct folio *folio, int is_locked,
+@@ -1079,7 +1082,7 @@ int folio_referenced(struct folio *folio, int is_locked,
  	};
  
  	VM_WARN_ON_ONCE_FOLIO(folio_is_zone_device(folio), folio);
@@ -142,7 +142,7 @@ index ad820fe86f7d8..73c2fe2d19462 100644
  	if (!pra.mapcount)
  		return 0;
  
-@@ -1092,7 +1095,7 @@ int folio_referenced(struct folio *folio, int is_locked,
+@@ -1093,7 +1096,7 @@ int folio_referenced(struct folio *folio, int is_locked,
  	}
  
  	rmap_walk(folio, &rwc);
