@@ -1,0 +1,48 @@
+From: Yichong Chen <chenyichong@uniontech.com>
+Date: Tue, 21 Jul 2026 11:52:07 +0800
+Subject: [PATCH] hugetlb: evaluate subpool free state while locked
+
+unlock_or_release_subpool() drops spool->lock before calling
+subpool_is_free().  However, subpool_is_free() reads fields that are
+updated under spool->lock, including count, used_hpages and rsv_hpages.
+
+Keep the free-state evaluation under the same lock that protects those
+fields.  The reservation accounting and kfree() calls still happen after
+dropping spool->lock.
+
+Link: https://lore.kernel.org/20260721035207.1437935-1-chenyichong@uniontech.com
+Signed-off-by: Yichong Chen <chenyichong@uniontech.com>
+Reviewed-by: Joshua Hahn <joshua.hahnjy@gmail.com>
+Reviewed-by: Jane Chu <jane.chu@oracle.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 5a7346f05be92..566ce53c154f9 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -141,12 +141,14 @@ static inline bool subpool_is_free(struct hugepage_subpool *spool)
+ static inline void unlock_or_release_subpool(struct hugepage_subpool *spool,
+ 						unsigned long irq_flags)
+ {
+-	spin_unlock_irqrestore(&spool->lock, irq_flags);
++	bool free_subpool = subpool_is_free(spool);
+ 
+ 	/* If no pages are used, and no other handles to the subpool
+ 	 * remain, give up any reservations based on minimum size and
+ 	 * free the subpool */
+-	if (subpool_is_free(spool)) {
++	spin_unlock_irqrestore(&spool->lock, irq_flags);
++
++	if (free_subpool) {
+ 		if (spool->min_hpages != -1)
+ 			hugetlb_acct_memory(spool->hstate,
+ 						-spool->min_hpages);
+-- 
+2.47.3
+

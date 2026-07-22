@@ -2,517 +2,526 @@
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 141 total, 18 (136) series, 5 non-series commits
+- mm-unstable: 143 total, 18 (136) series, 7 non-series commits
   - author/reviewer role stat
     - no role, no role : 1 commits
     - no role, maintainer: 21 commits
     - reviewer, maintainer: 1 commits
-    - maintainer, nobody: 112 commits
+    - maintainer, nobody: 114 commits
     - maintainer, no role : 6 commits
   - full commits list
-    - a4112ee80e54 "mm/damon/core: reduce kernel stack usage"
+    - ebfddb48b828 "mm/damon/core: reduce kernel stack usage"
       - Authored by no role player, reviewed by no role player
       - Link: https://lore.kernel.org/20260611125704.3386176-1-arnd@kernel.org
     - series "samples/damon: handle damon_{start,stop}() failures". (6 commits)
-      - 8d1b98eadfaf "samples/damon/wsse: handle damon_start() failure" (0/6)
+      - e0eb6eba1cbf "samples/damon/wsse: handle damon_start() failure" (0/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260609145814.70163-1-sj@kernel.org [1]
-      - 0fbe841dda09 "samples/damon/prcl: handle damon_start() failure" (1/6)
+      - cff3e92d0afd "samples/damon/prcl: handle damon_start() failure" (1/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260609145814.70163-1-sj@kernel.org [1]
-      - 7d03b48e4df9 "samples/damon/mtier: handle damon_start() failure" (2/6)
+      - 85517b3f2684 "samples/damon/mtier: handle damon_start() failure" (2/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-4-sj@kernel.org
         - Link: https://lore.kernel.org/20260608112455.274231F00893@smtp.kernel.org [1]
-      - 6787cc666b35 "samples/damon/mtier: handle damon_stop() failure" (3/6)
+      - 16371618effc "samples/damon/mtier: handle damon_stop() failure" (3/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-5-sj@kernel.org
         - Link: https://lore.kernel.org/20260609014219.3013-1-sj@kernel.org [1]
-      - 13981fc2b4ba "samples/damon/wsse: stop and free damon ctx when damon_call() fails" (4/6)
+      - 7c34dd0f7b09 "samples/damon/wsse: stop and free damon ctx when damon_call() fails" (4/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-6-sj@kernel.org
         - Link: https://lore.kernel.org/20260610034828.4632-1-sj@kernel.org [1]
-      - 154ce47e509f "samples/damon/prcl: stop and free damon ctx when damon_call() fails" (5/6)
+      - d8b7c1c24a46 "samples/damon/prcl: stop and free damon ctx when damon_call() fails" (5/6)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260628215447.96166-7-sj@kernel.org
         - Link: https://lore.kernel.org/20260610035214.4850-1-sj@kernel.org [1]
     - series "mm/damon/sysfs: kobject_del() directories that users can create/remove". (11 commits)
-      - 3aa91a8d7d01 "mm/damon/sysfs: kobject_del() target (normal), context and kdamond dirs" (0/11)
+      - 1a74d3eeb24f "mm/damon/sysfs: kobject_del() target (normal), context and kdamond dirs" (0/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260628220121.97360-2-sj@kernel.org
-      - 494b73ab3ca9 "mm/damon/sysfs: kobject_del() region and target (error) dirs" (1/11)
+      - 70327a56a2f4 "mm/damon/sysfs: kobject_del() region and target (error) dirs" (1/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-3-sj@kernel.org
-      - 55efba728827 "mm/damon/sysfs-schemes: kobject_del() scheme dirs" (2/11)
+      - 5b0f1c21fb27 "mm/damon/sysfs-schemes: kobject_del() scheme dirs" (2/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-4-sj@kernel.org
-      - 05837c2323ea "mm/damon/sysfs-schemes: kobject_del() scheme region dirs" (3/11)
+      - 65a98e11d194 "mm/damon/sysfs-schemes: kobject_del() scheme region dirs" (3/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-5-sj@kernel.org
         - Link: https://lore.kernel.org/20260517205828.6204-1-sj@kernel.org [1]
-      - ce953c3e7b1a "mm/damon/sysfs-schemes: kobject_del() scheme filter dirs" (4/11)
+      - 18e71ba64400 "mm/damon/sysfs-schemes: kobject_del() scheme filter dirs" (4/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-6-sj@kernel.org
-      - 1689b961fc48 "mm/damon/sysfs-schemes: kobject_del() scheme quota goal dirs" (5/11)
+      - ebb7505741e1 "mm/damon/sysfs-schemes: kobject_del() scheme quota goal dirs" (5/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-7-sj@kernel.org
-      - a9308049f14c "mm/damon/sysfs-schemes: kobject_del() scheme action destination dirs" (6/11)
+      - b4f4a4f3e498 "mm/damon/sysfs-schemes: kobject_del() scheme action destination dirs" (6/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-8-sj@kernel.org
-      - b3a4e96fec51 "mm/damon/sysfs: kobject_del() probe dirs" (7/11)
+      - e0c424adf898 "mm/damon/sysfs: kobject_del() probe dirs" (7/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-9-sj@kernel.org
-      - f8244198d284 "mm/damon/sysfs: kobject_del() probe filter dirs" (8/11)
+      - 5f0825c52b06 "mm/damon/sysfs: kobject_del() probe filter dirs" (8/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-10-sj@kernel.org
-      - d0dc0ee8abaf "mm/damon/sysfs: kobject_del() probe dirs in probes_addd_dir error path" (9/11)
+      - 89ccf3c6cae9 "mm/damon/sysfs: kobject_del() probe dirs in probes_addd_dir error path" (9/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-11-sj@kernel.org
-      - f62128f46102 "mm/damon/sysfs-schemes: kobject_del() region for populate_region error" (10/11)
+      - 4e8ef34e712d "mm/damon/sysfs-schemes: kobject_del() region for populate_region error" (10/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260628220121.97360-12-sj@kernel.org
     - series "selftests/damon: misc fixes for test bugs", v3. (3 commits)
-      - 6cf3de30b339 "selftests/damon: prevent cross-context state pollution in DamonCtx" (0/3)
+      - 96fbfb96c123 "selftests/damon: prevent cross-context state pollution in DamonCtx" (0/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629144648.134092-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260601032314.424013-2-kunwu.chan@linux.dev
         - Link: https://lore.kernel.org/20260629144648.134092-2-sj@kernel.org
-      - 4ac8778dfaea "selftests/damon/damos_tried_regions: fix expectation output and join TypeError" (1/3)
+      - 920661194102 "selftests/damon/damos_tried_regions: fix expectation output and join TypeError" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260601032314.424013-3-kunwu.chan@linux.dev
         - Link: https://lore.kernel.org/20260629144648.134092-3-sj@kernel.org
-      - 5673bbf38947 "selftests/damon: fix dead code, skipped checks, and broken lookups" (2/3)
+      - 092d4799992a "selftests/damon: fix dead code, skipped checks, and broken lookups" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260601032314.424013-4-kunwu.chan@linux.dev
         - Link: https://lore.kernel.org/20260629144648.134092-4-sj@kernel.org
     - series "selftests/damon: fix memcg_path staging handling", v5. (2 commits)
-      - 36ae8b6e160b "selftests/damon/_damon_sysfs.py: fix memcg_path assignment" (0/2)
+      - e407f9e83e01 "selftests/damon/_damon_sysfs.py: fix memcg_path assignment" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629144812.134159-1-sj@kernel.org
         - Link: https://lore.kernel.org/464AE12D4BC6B6F4+20260601090519.240482-1-niecheng1@uniontech.com
         - Link: https://lore.kernel.org/20260629144812.134159-2-sj@kernel.org
-      - abb7882f3c0f "selftests/damon/sysfs.py: validate memcg_path staging readback" (1/2)
+      - 998e36d63c85 "selftests/damon/sysfs.py: validate memcg_path staging readback" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/D2B37130D38E09AC+20260601090634.241864-1-niecheng1@uniontech.com
         - Link: https://lore.kernel.org/20260629144812.134159-3-sj@kernel.org
     - series "selftests/damon: test kdamond refresh_ms", v2. (2 commits)
-      - a53d4427a4f0 "selftests/damon/_damon_sysfs: support kdamond refresh_ms" (0/2)
+      - 7575bdcc1f9a "selftests/damon/_damon_sysfs: support kdamond refresh_ms" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260602131217.2210912-2-linuxoid@gmail.com
         - Link: https://lore.kernel.org/20260629144927.134237-2-sj@kernel.org
-      - 3d4210d3851b "selftests/damon/sysfs_refresh: test kdamond refresh_ms" (1/2)
+      - 86c3e77597d1 "selftests/damon/sysfs_refresh: test kdamond refresh_ms" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260602131217.2210912-3-linuxoid@gmail.com
         - Link: https://lore.kernel.org/20260629144927.134237-3-sj@kernel.org
     - series "mm/damon: five misc fixups" (5 commits)
-      - 573bd7a1ae23 "mm/damon/core: use kvmalloc for target regions array" (0/5)
+      - fe27e466d479 "mm/damon/core: use kvmalloc for target regions array" (0/5)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629145538.134832-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260629145538.134832-2-sj@kernel.org
-      - 710b17f2d659 "mm/damon/stat: use secs_to_jiffies() instead of msecs_to_jiffies()" (1/5)
+      - 653523a50b3c "mm/damon/stat: use secs_to_jiffies() instead of msecs_to_jiffies()" (1/5)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629145538.134832-3-sj@kernel.org
-      - adbfda2ca66d "Docs/{admin-guide,mm}/damon: fix DAMON documentation details" (2/5)
+      - 10eb7904f4cf "Docs/{admin-guide,mm}/damon: fix DAMON documentation details" (2/5)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629145538.134832-4-sj@kernel.org
-      - 29b0dc945108 "samples/damon: fix typos in Kconfig help text" (3/5)
+      - a5fa14303254 "samples/damon: fix typos in Kconfig help text" (3/5)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629145538.134832-5-sj@kernel.org
-      - 68162d424e1e "mm/damon/tests/core-kunit: add KUnit test for walk_control_obsolete behavior" (4/5)
+      - 87ffc2115e03 "mm/damon/tests/core-kunit: add KUnit test for walk_control_obsolete behavior" (4/5)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://patch.msgid.link/20260612062337.2459-1-saileshnandanavanam@gmail.com
         - Link: https://lore.kernel.org/20260629145538.134832-6-sj@kernel.org
     - series "mm/damon/core: detect internal variation above max_nr_regions/2", v3. (2 commits)
-      - 4dd1bcd66fd2 "mm/damon/core: split a fraction of regions when nr_regions exceeds max/2" (0/2)
+      - cb89e24f53b0 "mm/damon/core: split a fraction of regions when nr_regions exceeds max/2" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260629145630.134891-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260626085851.70754-2-jiayuan.chen@linux.dev
         - Link: https://lore.kernel.org/20260629145630.134891-2-sj@kernel.org
-      - b49d7c1c66dc "mm/damon/tests/core-kunit: test split above max_nr_regions/2" (1/2)
+      - 324034f58681 "mm/damon/tests/core-kunit: test split above max_nr_regions/2" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260626085851.70754-3-jiayuan.chen@linux.dev
         - Link: https://lore.kernel.org/20260629145630.134891-3-sj@kernel.org
     - series "mm/damon: update, optimize, and clean up doc, tests, and code". (11 commits)
-      - 83ae50d8c0fc "Docs/mm/damon/design: update for DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP" (0/11)
+      - 369ef823f31c "Docs/mm/damon/design: update for DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP" (0/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260630141726.92246-2-sj@kernel.org
-      - 49fbfce60c83 "Docs/ABI/damon: document probe files" (1/11)
+      - 293565563520 "Docs/ABI/damon: document probe files" (1/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-3-sj@kernel.org
-      - c3654ac36df5 "mm/damon/tests/core-kunit: test damon_rand()" (2/11)
+      - 8440f493a7aa "mm/damon/tests/core-kunit: test damon_rand()" (2/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-4-sj@kernel.org
-      - ee27afed42f8 "selftests/damon/sysfs.sh: test multiple probe dirs creation" (3/11)
+      - 287f9757e2e2 "selftests/damon/sysfs.sh: test multiple probe dirs creation" (3/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-5-sj@kernel.org
-      - bc6fbeec86fb "selftests/damon/sysfs.sh: test {core,ops}_filters/ directories" (4/11)
+      - 184a93a6b628 "selftests/damon/sysfs.sh: test {core,ops}_filters/ directories" (4/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-6-sj@kernel.org
-      - 49eeb911b826 "selftests/damon/sysfs.sh: test dests dir" (5/11)
+      - 0b1b934104b3 "selftests/damon/sysfs.sh: test dests dir" (5/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-7-sj@kernel.org
-      - 13bce3b5f657 "selftests/damon/sysfs.sh: test all files in quota goal dir" (6/11)
+      - 1d5e43242b88 "selftests/damon/sysfs.sh: test all files in quota goal dir" (6/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-8-sj@kernel.org
-      - f4329ced1597 "mm/damon/core: reduce range setup in damon_commit_target_regions()" (7/11)
+      - 3b4db34b8d9c "mm/damon/core: reduce range setup in damon_commit_target_regions()" (7/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-9-sj@kernel.org
         - Link: https://lore.kernel.org/20260603112306.58490-1-akinobu.mita@gmail.com [1]
-      - 26f8b55ef152 "mm/damon/sysfs: split probe setup function out" (8/11)
+      - 9f0c8c9a7e20 "mm/damon/sysfs: split probe setup function out" (8/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-10-sj@kernel.org
-      - 680d78d5bd69 "mm/damon/sysfs: split out filters setup function" (9/11)
+      - c0b8c12d2361 "mm/damon/sysfs: split out filters setup function" (9/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-11-sj@kernel.org
-      - 7e06d4a4049a "mm/damon/sysfs: fix typos in probe_{add,rm}_dirs: s/attr/probe/" (10/11)
+      - aae4bfeb5b85 "mm/damon/sysfs: fix typos in probe_{add,rm}_dirs: s/attr/probe/" (10/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630141726.92246-12-sj@kernel.org
     - series "mm/damon: optimize out nr_accesses_bp". (18 commits)
-      - 923f79db6797 "mm/damon/core: introduce damon_nr_accesses_mvsum()" (0/18)
+      - 425bb3e5fdf7 "mm/damon/core: introduce damon_nr_accesses_mvsum()" (0/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260630040812.149729-2-sj@kernel.org
-      - 2f166de8f7b1 "mm/damon/tests/core-kunit: test damon_mvsum()" (1/18)
+      - 8c3d03172bad "mm/damon/tests/core-kunit: test damon_mvsum()" (1/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-3-sj@kernel.org
-      - 23565070b9f9 "mm/damon/core: always update ->last_nr_accesses for intervals change" (2/18)
+      - 65f8fb4e2ddd "mm/damon/core: always update ->last_nr_accesses for intervals change" (2/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-4-sj@kernel.org
-      - 3cb66b1b41e5 "mm/damon/core: handle unreset nr_accesses in damon_nr_accesses_mvsum()" (3/18)
+      - 4e529b514c92 "mm/damon/core: handle unreset nr_accesses in damon_nr_accesses_mvsum()" (3/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-5-sj@kernel.org
-      - 12308d1042a8 "mm/damon/core: use damon_nr_accesses_mvsum() in __damos_valid_target()" (4/18)
+      - e6da92051ed9 "mm/damon/core: use damon_nr_accesses_mvsum() in __damos_valid_target()" (4/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-6-sj@kernel.org
-      - 873b07c5ff92 "mm/damon/core: use damon_nr_accesses_mvsum() for damos region tracing" (5/18)
+      - 4cdfad86c0de "mm/damon/core: use damon_nr_accesses_mvsum() for damos region tracing" (5/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-7-sj@kernel.org
-      - 9e532df499b5 "mm/damon/sysfs-schemes: use damon_nr_accesses_mvsum() for damo regions" (6/18)
+      - e0cf8033e8bc "mm/damon/sysfs-schemes: use damon_nr_accesses_mvsum() for damo regions" (6/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-8-sj@kernel.org
-      - 46509824955c "mm/damon/core: remove damon_warn_fix_nr_accesses_corruption()" (7/18)
+      - 8901b3e5283d "mm/damon/core: remove damon_warn_fix_nr_accesses_corruption()" (7/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-9-sj@kernel.org
-      - 35db65841180 "mm/damon/core: remove damon_verify_reset_aggregated()" (8/18)
+      - 6fd39b76264a "mm/damon/core: remove damon_verify_reset_aggregated()" (8/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-10-sj@kernel.org
-      - f422995df061 "mm/damon/core: remove damon_verify_merge_regions_of()" (9/18)
+      - 876f61041786 "mm/damon/core: remove damon_verify_merge_regions_of()" (9/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-11-sj@kernel.org
-      - b9fff665e354 "mm/damon/tests/core-kunit: remove nr_accesses_bp setup and tests" (10/18)
+      - 022d0c860d52 "mm/damon/tests/core-kunit: remove nr_accesses_bp setup and tests" (10/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-12-sj@kernel.org
-      - 36aa5fc13474 "selftests/damon/drgn_dump_damon_status: do not dump nr_accesses_bp" (11/18)
+      - 2c17a7d9720f "selftests/damon/drgn_dump_damon_status: do not dump nr_accesses_bp" (11/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-13-sj@kernel.org
-      - 73803ce8aac8 "mm/damon/core: remove nr_accesses_bp setups and updates" (12/18)
+      - 876978b069bd "mm/damon/core: remove nr_accesses_bp setups and updates" (12/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-14-sj@kernel.org
-      - 63c352daccbb "mm/damon/core: remove attrs param from damon_update_region_access_rate()" (13/18)
+      - 565a4efc1b1b "mm/damon/core: remove attrs param from damon_update_region_access_rate()" (13/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-15-sj@kernel.org
-      - 6be6009b4d51 "mm/damon/paddr: remove attrs param from __damon_pa_check_access()" (14/18)
+      - 7dc73220da57 "mm/damon/paddr: remove attrs param from __damon_pa_check_access()" (14/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-16-sj@kernel.org
-      - 41a7bff7424e "mm/damon/vaddr: remove attrs param from __damon_va_check_access()" (15/18)
+      - a92d91abc07a "mm/damon/vaddr: remove attrs param from __damon_va_check_access()" (15/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-17-sj@kernel.org
-      - b95aa7d9c2b5 "mm/damon/core: remove damon_moving_sum() and its unit test" (16/18)
+      - d32f5c09287e "mm/damon/core: remove damon_moving_sum() and its unit test" (16/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-18-sj@kernel.org
-      - 61376ff88484 "mm/damon/core: remove damon_region->nr_accesses_bp" (17/18)
+      - c11ba10dd71f "mm/damon/core: remove damon_region->nr_accesses_bp" (17/18)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260630040812.149729-19-sj@kernel.org
     - series "mm/damon: provide pseudo moving sum probe_hits". (3 commits)
-      - e6cca04da045 "mm/damon: add damon_region->last_probe_hits" (0/3)
+      - 8b8dba4da60e "mm/damon: add damon_region->last_probe_hits" (0/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260703170605.94472-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260703170605.94472-2-sj@kernel.org
-      - f4e27b51a6d8 "mm/damon/core: introduce damon_probe_hits_mvsum()" (1/3)
+      - 0011c72b8728 "mm/damon/core: introduce damon_probe_hits_mvsum()" (1/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260703170605.94472-3-sj@kernel.org
-      - 1fb8139929b2 "mm/damon/sysfs-schemes: set probe hits as pseudo moving sums" (2/3)
+      - 4f46f9adc2c2 "mm/damon/sysfs-schemes: set probe hits as pseudo moving sums" (2/3)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260703170605.94472-4-sj@kernel.org
     - series "mm/damon: validate all parameters in the core". (8 commits)
-      - 650f4f7d8e84 "mm/damon/core: safely validate src on damon_commit_ctx()" (0/8)
+      - 1669ab7f5564 "mm/damon/core: safely validate src on damon_commit_ctx()" (0/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260705155600.96555-2-sj@kernel.org
-      - e76a3bebfe8e "mm/damon/core: do parameter testing commit on damon_start()" (1/8)
+      - 63b2e53cb7ae "mm/damon/core: do parameter testing commit on damon_start()" (1/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-3-sj@kernel.org
-      - 133631c241ff "mm/damon/sysfs: remove duplicated commit input validity check" (2/8)
+      - 31636dcdc3d9 "mm/damon/sysfs: remove duplicated commit input validity check" (2/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-4-sj@kernel.org
-      - 543f5d692d27 "mm/damon/reclaim: remove duplicated min_region_sz power of 2 check" (3/8)
+      - 0d274f079c0f "mm/damon/reclaim: remove duplicated min_region_sz power of 2 check" (3/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-5-sj@kernel.org
-      - c2f4455d180b "mm/damon/lru_sort: remove duplicated min_region_sz power_of_2() check" (4/8)
+      - 99d47e4d7e0f "mm/damon/lru_sort: remove duplicated min_region_sz power_of_2() check" (4/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-6-sj@kernel.org
-      - 8dab69f99393 "mm/damon: document region size validation in damon_set_regions()" (5/8)
+      - 49bf675a5c6d "mm/damon: document region size validation in damon_set_regions()" (5/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-7-sj@kernel.org
-      - 7dc0256e01a2 "mm/damon/core: remove start, end check in damon_set_region_system_rams()" (6/8)
+      - d76b74f01c53 "mm/damon/core: remove start, end check in damon_set_region_system_rams()" (6/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-8-sj@kernel.org
-      - fb1afe9f8338 "mm/damon/sysfs: remove region size validation" (7/8)
+      - 0be2fd54a53b "mm/damon/sysfs: remove region size validation" (7/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260705155600.96555-9-sj@kernel.org
-    - 965299c6d4ad "selftests/damon: check correct path in ensure_file() not_exist case"
+    - 97a2254d84fb "selftests/damon: check correct path in ensure_file() not_exist case"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lore.kernel.org/20260706134305.5224-1-a929244872@163.com
     - series "mm/damon: refactor damon_{start,stop,commit}() for simple error handling". (11 commits)
-      - 3bd417d871f5 "mm/damon/core: stop ctxs in damon_start() before returning an error" (0/11)
+      - 58c611b3af44 "mm/damon/core: stop ctxs in damon_start() before returning an error" (0/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260706140628.87414-2-sj@kernel.org
-      - 44823197e08e "samples/damon/mtier: do not stop first context for damon_start() failure" (1/11)
+      - d107029ed171 "samples/damon/mtier: do not stop first context for damon_start() failure" (1/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-3-sj@kernel.org
-      - 96ba87e56e7e "mm/damon/core: make damon_stop() never fail" (2/11)
+      - d9dd7fe1100d "mm/damon/core: make damon_stop() never fail" (2/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-4-sj@kernel.org
-      - d313d3259a5a "mm/damon/sysfs: ignore damon_stop() return value" (3/11)
+      - 1f23465c865b "mm/damon/sysfs: ignore damon_stop() return value" (3/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-5-sj@kernel.org
-      - 6f70dc1d247b "mm/damon/reclaim: ignore damon_stop() return value" (4/11)
+      - 4c4542e73952 "mm/damon/reclaim: ignore damon_stop() return value" (4/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-6-sj@kernel.org
-      - 768e95682f84 "mm/damon/lru_sort: ignore damon_stop() return value" (5/11)
+      - 9337a51468ff "mm/damon/lru_sort: ignore damon_stop() return value" (5/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-7-sj@kernel.org
-      - 215fa98d2071 "mm/damon/core: change damon_stop() return type to void" (6/11)
+      - 912e220e6691 "mm/damon/core: change damon_stop() return type to void" (6/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-8-sj@kernel.org
-      - 22389d4d8a8b "samples/damon/mtier: stop all contexts with single damon_stop() call" (7/11)
+      - 86b4f17ce1d2 "samples/damon/mtier: stop all contexts with single damon_stop() call" (7/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-9-sj@kernel.org
-      - 2cd34c029139 "mm/damon/core: wait ctx stop in damon_call() before reruning an error" (8/11)
+      - 0b4755a78697 "mm/damon/core: wait ctx stop in damon_call() before reruning an error" (8/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-10-sj@kernel.org
-      - d2877cfd1214 "samples/damon/wsse: do not stop ctx for damon_call() failure" (9/11)
+      - 23ce66031dd7 "samples/damon/wsse: do not stop ctx for damon_call() failure" (9/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-11-sj@kernel.org
-      - 4a030d4735ac "samples/damon/prcl: do not stop DAMON for damon_call() failure" (10/11)
+      - 8b8f981ac384 "samples/damon/prcl: do not stop DAMON for damon_call() failure" (10/11)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260706140628.87414-12-sj@kernel.org
     - series "mm/damon: update probe hits for runtime parameter commits". (7 commits)
-      - fff898d9f209 "mm/damon/core: remove comment and test for nr_to_bp() divide-by-zero" (0/7)
+      - aa5d11e925cf "mm/damon/core: remove comment and test for nr_to_bp() divide-by-zero" (0/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260708135359.122587-2-sj@kernel.org
-      - c4e667c28e74 "mm/damon/core: s/damon_max_nr_accesses()/damon_nr_samples_per_aggr()/" (1/7)
+      - dd5d4eed0dfa "mm/damon/core: s/damon_max_nr_accesses()/damon_nr_samples_per_aggr()/" (1/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-3-sj@kernel.org
-      - 6c7ff93e75a2 "mm/damon/core: s/accesses_bp_to_nr_accesses/sample_bp_to_count/" (2/7)
+      - a12b8333e71d "mm/damon/core: s/accesses_bp_to_nr_accesses/sample_bp_to_count/" (2/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-4-sj@kernel.org
-      - 427ee1aff5d7 "mm/damon/core: s/nr_accesses_to_accesses_bp/sample_count_to_bp/" (3/7)
+      - 86cdc10c33d8 "mm/damon/core: s/nr_accesses_to_accesses_bp/sample_count_to_bp/" (3/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-5-sj@kernel.org
-      - 91961a1dc353 "mm/damon/core: s/nr_accesses_for_new_attrs/nr_samples_for_new_attrs/" (4/7)
+      - 80971be1c5f9 "mm/damon/core: s/nr_accesses_for_new_attrs/nr_samples_for_new_attrs/" (4/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-6-sj@kernel.org
-      - 08b87fda17f0 "mm/damon/core: update probe hits for new parameter commit" (5/7)
+      - a2829e29acc2 "mm/damon/core: update probe hits for new parameter commit" (5/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-7-sj@kernel.org
-      - 5f8eac7e1828 "mm/damon/core: handle unreset probe_hits in probe_hits_mvsum()" (6/7)
+      - bee2b381b0ba "mm/damon/core: handle unreset probe_hits in probe_hits_mvsum()" (6/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260708135359.122587-8-sj@kernel.org
     - series "mm/damon: introduce data attributes only monitoring". (19 commits)
-      - 5e2c627b4f23 "mm/damon/core: introduce damon_probe->weight" (0/19)
+      - 36e0bde0ceba "mm/damon/core: introduce damon_probe->weight" (0/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260710134651.18084-2-sj@kernel.org
         - Link: https://github.com/damonitor/damo [1]
         - Link: https://lore.kernel.org/20260525225208.1179-1-sj@kernel.org/ [2]
-      - 93b594351188 "mm/damon/core: ask apply_probes() ops callback to set sampling address" (1/19)
+      - a499910bbdad "mm/damon/core: ask apply_probes() ops callback to set sampling address" (1/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-3-sj@kernel.org
-      - 45dc0e0bb4e7 "mm/damon/paddr: set samples in apply_probes() if requested" (2/19)
+      - 53944b0210fa "mm/damon/paddr: set samples in apply_probes() if requested" (2/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-4-sj@kernel.org
-      - 7fa673726f44 "mm/damon/core: ask apply_probe() to return max probe hits weighted sum" (3/19)
+      - f484c0368adb "mm/damon/core: ask apply_probe() to return max probe hits weighted sum" (3/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-5-sj@kernel.org
-      - 1ed13a995c07 "mm/damon/core: implement damon_probe_hits_wsum()" (4/19)
+      - 03b425edb84b "mm/damon/core: implement damon_probe_hits_wsum()" (4/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-6-sj@kernel.org
-      - 24519496b415 "mm/damon/paddr: respect return_max_wsum" (5/19)
+      - 87ca41f58e0b "mm/damon/paddr: respect return_max_wsum" (5/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-7-sj@kernel.org
-      - ebb68e3eacfd "mm/damon/core: use abs_diff() instead of abs()" (6/19)
+      - c5da89e58115 "mm/damon/core: use abs_diff() instead of abs()" (6/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-8-sj@kernel.org
         - Link: https://lore.kernel.org/20260705213817.100841-1-sj@kernel.org/ [1]
-      - d8afa4ed1846 "mm/damon/core: extend merge function to work with probe hits" (7/19)
+      - abcb6e41a712 "mm/damon/core: extend merge function to work with probe hits" (7/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-9-sj@kernel.org
-      - 4b4601431ea8 "mm/damon/core: disallow probe_hits overflow on attrs only monitoring" (8/19)
+      - 65abd2794bdd "mm/damon/core: disallow probe_hits overflow on attrs only monitoring" (8/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-10-sj@kernel.org
-      - 24aafd374287 "mm/damon/core: validate params for probe hits weighted sum overflow" (9/19)
+      - 0bd772177c26 "mm/damon/core: validate params for probe hits weighted sum overflow" (9/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-11-sj@kernel.org
-      - a19c8b37855d "mm/damon/core: disable access monitoring when probe weights are set" (10/19)
+      - f3213e013a4f "mm/damon/core: disable access monitoring when probe weights are set" (10/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-12-sj@kernel.org
-      - 421f76d05098 "mm/damon/core: set samples in apply_probes() if probe weights are set" (11/19)
+      - 07867afd61a5 "mm/damon/core: set samples in apply_probes() if probe weights are set" (11/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-13-sj@kernel.org
-      - 097251af9772 "mm/damon/core: s/max_nr_accesses/max_merge_score/ in kdamond_fn()" (12/19)
+      - 955e1aa1b04e "mm/damon/core: s/max_nr_accesses/max_merge_score/ in kdamond_fn()" (12/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-14-sj@kernel.org
-      - 18868d46d4c0 "mm/damon/core: get merge threshold from probe hits when weights are set" (13/19)
+      - 74860f8fc105 "mm/damon/core: get merge threshold from probe hits when weights are set" (13/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-15-sj@kernel.org
-      - 1f59e6942dab "mm/damon/core: implement damon_has_probe_weight()" (14/19)
+      - 8c54e1bc89e9 "mm/damon/core: implement damon_has_probe_weight()" (14/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-16-sj@kernel.org
-      - a92ba6c4650d "mm/damon/sysfs: implement probe/weight file" (15/19)
+      - c7743b677b8f "mm/damon/sysfs: implement probe/weight file" (15/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-17-sj@kernel.org
-      - f2263c074580 "Docs/mm/damon/design: document attrs-only monitoring" (16/19)
+      - 22fd757fd7d2 "Docs/mm/damon/design: document attrs-only monitoring" (16/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-18-sj@kernel.org
-      - c6fd3087f539 "Docs/admin-guide/mm/damon/usage: document weight sysfs file" (17/19)
+      - 2b0cf2e803af "Docs/admin-guide/mm/damon/usage: document weight sysfs file" (17/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-19-sj@kernel.org
-      - aa4052e3f3c0 "Docs/ABI/damon: document probe weight file" (18/19)
+      - d5e15e4644a1 "Docs/ABI/damon: document probe weight file" (18/19)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260710134651.18084-20-sj@kernel.org
-      - 72adcbedf082 "mm/vma: use vma_start_pgoff(), linear_page_index() in mm code" (17/33)
+      - 607483fed73e "mm/vma: use vma_start_pgoff(), linear_page_index() in mm code" (17/33)
         - Authored by a reviewer, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-18-2a5aa403d977@kernel.org
-    - a05d1fcabf5c "mm/damon/tests/core-kunit: test damon_nr_accesses_mvsum()"
+    - f1e0e13d9758 "mm/damon/tests/core-kunit: test damon_nr_accesses_mvsum()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lore.kernel.org/20260713094648.897239-1-husong@kylinos.cn
-    - 7d8a2d035f91 "mm/damon/core: skip aging from repeated aggressive merging"
+    - 558997025c05 "mm/damon/core: skip aging from repeated aggressive merging"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260712165432.87609-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260621203548.10718-1-sj@kernel.org [1]
       - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [2]
     - series "Docs/ABI/damon: sysfs ABI document fixes and additions", v2. (4 commits)
-      - b2026799eb6c "Docs/ABI/damon: fix typo in intervals_goal sysfs path" (0/4)
+      - b77983846843 "Docs/ABI/damon: fix typo in intervals_goal sysfs path" (0/4)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260714140117.94147-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260714140117.94147-2-sj@kernel.org
-      - aeddee23101f "Docs/ABI/damon: fix typos" (1/4)
+      - d907ff025ca9 "Docs/ABI/damon: fix typos" (1/4)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260714140117.94147-3-sj@kernel.org
-      - b305d4d27f86 "Docs/ABI/damon: document update_tuned_intervals state command" (2/4)
+      - 25ef9117e2f8 "Docs/ABI/damon: document update_tuned_intervals state command" (2/4)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260714140117.94147-4-sj@kernel.org
-      - cf2081abd7db "Docs/ABI/damon: document tried_regions probe hits" (3/4)
+      - 13c9c8da5b39 "Docs/ABI/damon: document tried_regions probe hits" (3/4)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260714140117.94147-5-sj@kernel.org
     - series "mm/damon/core: hide core-private struct fields". (10 commits)
-      - 9c3901e55062 "mm/damon/core: hide private damon_region fields" (0/10)
+      - 83c40bd0cdf9 "mm/damon/core: hide private damon_region fields" (0/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260714143544.101305-2-sj@kernel.org
-      - b34203eb4a22 "mm/damon/core: hide private damon_target fields" (1/10)
+      - c3a9bd998300 "mm/damon/core: hide private damon_target fields" (1/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-3-sj@kernel.org
-      - 3e20a6e4cb0e "mm/damon/core: hide private damos_quota_goal fields" (2/10)
+      - 53fafdd580f5 "mm/damon/core: hide private damos_quota_goal fields" (2/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-4-sj@kernel.org
-      - 5bc634bfa591 "mm/damon/core: hide private damos_quota fields" (3/10)
+      - 2cbb0cda4959 "mm/damon/core: hide private damos_quota fields" (3/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-5-sj@kernel.org
-      - 894aa7628b08 "mm/damon/core: hide private damos_filter fields" (4/10)
+      - 77ac160edc1e "mm/damon/core: hide private damos_filter fields" (4/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-6-sj@kernel.org
-      - a0e95a47bae2 "mm/damon/core: hide private damos fields" (5/10)
+      - 5aa63f7328c0 "mm/damon/core: hide private damos fields" (5/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-7-sj@kernel.org
-      - 35769bb15a99 "mm/damon/core: hide private damon_filter fields" (6/10)
+      - 1794ca73cc3c "mm/damon/core: hide private damon_filter fields" (6/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-8-sj@kernel.org
-      - 7a64d1ea9c19 "mm/damon/core: hide private damon_probe fields" (7/10)
+      - 25de3f860776 "mm/damon/core: hide private damon_probe fields" (7/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-9-sj@kernel.org
-      - 2cba65e6ddfe "mm/damon/sysfs: do not directly access damon_ctx->ops" (8/10)
+      - e19a4ae5c968 "mm/damon/sysfs: do not directly access damon_ctx->ops" (8/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-10-sj@kernel.org
-      - bab03bc6705b "mm/damon/core: hide core-private damon_ctx fields" (9/10)
+      - 9249a885970b "mm/damon/core: hide core-private damon_ctx fields" (9/10)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260714143544.101305-11-sj@kernel.org
     - series "mm/damon: unurgent fixes for infinite loop, NULL de-ref and races", v1.1. (6 commits)
-      - de7622c2dfe5 "mm/damon/core: avoid infinite kdamond_merge_regions() internal loop" (0/6)
+      - 3a897b4dc9ed "mm/damon/core: avoid infinite kdamond_merge_regions() internal loop" (0/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260715031002.108504-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [1]
-      - a7d83ac34968 "mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of()" (1/6)
+      - 98278251982d "mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of()" (1/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260710144937.26981-1-sj@kernel.org [1]
-      - 8a0b19f29eb6 "mm/damon/vaddr: drop last same folio access check optimization" (2/6)
+      - fe76693663be "mm/damon/vaddr: drop last same folio access check optimization" (2/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-4-sj@kernel.org
         - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
-      - 31932d96bd02 "mm/damon/paddr: drop last same folio access check reuse optimization" (3/6)
+      - a208c10de20a "mm/damon/paddr: drop last same folio access check reuse optimization" (3/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-5-sj@kernel.org
         - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
-      - 2fcad183dbcd "mm/damon/sysfs: read addr_unit only once in damon_sysfs_apply_inputs()" (4/6)
+      - 34c43dc5410d "mm/damon/sysfs: read addr_unit only once in damon_sysfs_apply_inputs()" (4/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-6-sj@kernel.org
         - Link: https://lore.kernel.org/20260714142950.100711-1-sj@kernel.org [1]
-      - 4703179c46e3 "mm/damon/sysfs: read ops_id only once in damon_sysfs_apply_inputs()" (5/6)
+      - 3f25adb2c6dd "mm/damon/sysfs: read ops_id only once in damon_sysfs_apply_inputs()" (5/6)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260715031002.108504-7-sj@kernel.org
         - Link: https://lore.kernel.org/20260703172417.95426-1-sj@kernel.org [1]
     - series "mm/damon: fix uninitialized DAMOS field and kunit exec expectation bugs". (7 commits)
-      - 865b87ce8e0d "mm/damon/core: initialize damos->last_applied" (0/7)
+      - 6c125e9a57f1 "mm/damon/core: initialize damos->last_applied" (0/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260718001442.87129-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260714055436.120034-1-sj@kernel.org [1]
-      - 9586a8b933bc "mm/damon/core-kunit: check region count before testing in split_at()" (1/7)
+      - 2d961db6b4ed "mm/damon/core-kunit: check region count before testing in split_at()" (1/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-3-sj@kernel.org
         - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
-      - 6d115f5b3f63 "mm/damon/vaddr-kunit: check region count in three_regions test" (2/7)
+      - fe869e9263f6 "mm/damon/vaddr-kunit: check region count in three_regions test" (2/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-4-sj@kernel.org
         - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
-      - e5b60ecf83bc "mm/damon/core-kunit: handle region split failure in filter_out()" (3/7)
+      - 2a81725156ef "mm/damon/core-kunit: handle region split failure in filter_out()" (3/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-5-sj@kernel.org
         - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
-      - 52c1d33e923b "mm/damon/core-kunit: skip wrong dest walk in commit_dests_for()" (4/7)
+      - b80d7844478a "mm/damon/core-kunit: skip wrong dest walk in commit_dests_for()" (4/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-6-sj@kernel.org
         - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
-      - 335d42591610 "mm/damon/core-kunit: skip wrong quota goal walk in commit_quota_goals()" (5/7)
+      - 9340e7a7376e "mm/damon/core-kunit: skip wrong quota goal walk in commit_quota_goals()" (5/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-7-sj@kernel.org
         - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
-      - 8fd97d5a0b55 "mm/damon/core-kunit: skip wrong region walk in commit_target_regions()" (6/7)
+      - b6a2200a20ca "mm/damon/core-kunit: skip wrong region walk in commit_target_regions()" (6/7)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260718001442.87129-8-sj@kernel.org
         - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
-    - 505f6bc5c6c6 "mm/damon/ops-common: remove redundant local variable in damon_migrate_folio_list()"
+    - ebb7662c1728 "mm/damon/ops-common: remove redundant local variable in damon_migrate_folio_list()"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lore.kernel.org/20260718002125.637104-1-lienze@kylinos.cn
-- mm-new: 2 total, 0 (0) series, 2 non-series commits
-  - author/reviewer role stat
-    - maintainer, nobody: 2 commits
-  - full commits list
-    - a9f426f317ca "mm/damon/ops-common: use nr_accesses moving sum for quota score"
+    - 921fc2b7fe81 "mm/damon/ops-common: use nr_accesses moving sum for quota score"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260719161136.90191-1-sj@kernel.org
-    - e7628aa717df "mm/damon/core: handle region split failure in apply_min_nr_regions()"
+    - f30d5e351144 "mm/damon/core: handle region split failure in apply_min_nr_regions()"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260719155442.88794-1-sj@kernel.org
       - Link: https://lore.kernel.org/20260717011834.120715-1-sj@kernel.org [1]
+- mm-new: 3 total, 0 (0) series, 3 non-series commits
+  - author/reviewer role stat
+    - no role, maintainer: 3 commits
+  - full commits list
+    - 68f078351922 "mm/damon: update outdated comment about DAMOS filter handling"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260721140011.269802-1-sj@kernel.org
+    - 5de3e12ea935 "mm/damon/ops-common: prevent migration fallback to non-target nodes"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260721135607.251869-1-sj@kernel.org
+    - 27edb38b837a "mm/damon: remove trailing semicolons after function definitions"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260721135333.241106-1-sj@kernel.org
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits
