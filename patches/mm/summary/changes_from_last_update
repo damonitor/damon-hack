@@ -5,37 +5,16 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 141 -> 143 commits
+- mm-unstable: 143 -> 143 commits (no change)
   - series: 18 (136) -> 18 (136) (no change)
     - no role, no role : 1 -> 1 commits (no change)
     - no role, maintainer: 21 -> 21 commits (no change)
     - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 112 -> 114 commits
+    - maintainer, nobody: 114 -> 114 commits (no change)
     - maintainer, no role : 6 -> 6 commits (no change)
-  - changed commits
-    - 921fc2b7fe81 "mm/damon/ops-common: use nr_accesses moving sum for quota score"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260719161136.90191-1-sj@kernel.org
-    - f30d5e351144 "mm/damon/core: handle region split failure in apply_min_nr_regions()"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260719155442.88794-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260717011834.120715-1-sj@kernel.org [1]
-- mm-new: 2 -> 3 commits
+- mm-new: 3 -> 3 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 0 -> 3 commits
-    - maintainer, nobody: 2 -> 0 commits
-  - new commits
-    - 68f078351922 "mm/damon: update outdated comment about DAMOS filter handling"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260721140011.269802-1-sj@kernel.org
-    - 5de3e12ea935 "mm/damon/ops-common: prevent migration fallback to non-target nodes"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260721135607.251869-1-sj@kernel.org
-    - 27edb38b837a "mm/damon: remove trailing semicolons after function definitions"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260721135333.241106-1-sj@kernel.org
+    - no role, maintainer: 3 -> 3 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

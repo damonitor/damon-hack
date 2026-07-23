@@ -1,5 +1,5 @@
 From: Stanislav Kinsburskii <skinsburskii@gmail.com>
-Date: Wed, 15 Jul 2026 11:16:05 -0700
+Date: Wed, 22 Jul 2026 14:44:24 -0700
 Subject: [PATCH] mm/hmm: add hmm_range_fault_unlocked_timeout() for mmap
  lock-drop support
 
@@ -16,7 +16,9 @@ takes mmap_read_lock_killable() internally, calls the common HMM fault
 implementation, and releases the lock before returning if it is still
 held.  The timeout is specified in jiffies; passing 0 retries
 indefinitely, while a non-zero timeout makes the helper return -EBUSY when
-the retry budget expires.
+the retry budget expires.  The retry deadline is set before refreshing the
+notifier sequence and acquiring mmap_lock, so contended mmap_lock
+acquisition is included in the retry budget.
 
 When handle_mm_fault() drops mmap_lock, or when the range is invalidated,
 hmm_range_fault_unlocked_timeout() refreshes range->notifier_seq and
@@ -46,7 +48,7 @@ PTE- and PMD-level mappings; no special case is required.
 Documentation/mm/hmm.rst is updated with a description of the new API and
 the recommended caller pattern.
 
-Link: https://lore.kernel.org/178413936536.1155966.8918127042760531802.stgit@skinsburskii
+Link: https://lore.kernel.org/20260722-hmm-v10-v1-2-606464dd601a@gmail.com
 Signed-off-by: Stanislav Kinsburskii <skinsburskii@gmail.com>
 Cc: Danilo Krummrich <dakr@kernel.org>
 Cc: Dave Airlie <airlied@gmail.com>
@@ -55,7 +57,6 @@ Cc: Dexuan Cui <decui@microsoft.com>
 Cc: Haiyang Zhang <haiyangz@microsoft.com>
 Cc: Jason Gunthorpe <jgg@nvidia.com>
 Cc: Jonathan Corbet <corbet@lwn.net>
-Cc: Kees Cook <kees@kernel.org>
 Cc: K. Y. Srinivasan <kys@microsoft.com>
 Cc: Leon Romanovsky <leon@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
@@ -68,7 +69,6 @@ Cc: Maxime Ripard <mripard@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Oded Gabbay <ogabbay@kernel.org>
-Cc: Oleg Nesterov <oleg@redhat.com>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Thomas Zimemrmann <tzimmermann@suse.de>
@@ -78,8 +78,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  Documentation/mm/hmm.rst |  79 +++++++++++++------
  include/linux/hmm.h      |   2 +
- mm/hmm.c                 | 165 ++++++++++++++++++++++++++++++++-------
- 3 files changed, 194 insertions(+), 52 deletions(-)
+ mm/hmm.c                 | 162 ++++++++++++++++++++++++++++++++-------
+ 3 files changed, 191 insertions(+), 52 deletions(-)
 
 diff --git a/Documentation/mm/hmm.rst b/Documentation/mm/hmm.rst
 index 7d61b7a8b65b7..e021218ada58f 100644
@@ -231,7 +231,7 @@ index db75ffc949a7a..6f04e3932f5b0 100644
  /*
   * HMM_RANGE_DEFAULT_TIMEOUT - default timeout (ms) when waiting for a range
 diff --git a/mm/hmm.c b/mm/hmm.c
-index bc9361a715fad..fc2e1cd0cb22e 100644
+index bc9361a715fad..87952c1259c54 100644
 --- a/mm/hmm.c
 +++ b/mm/hmm.c
 @@ -32,6 +32,7 @@
@@ -364,7 +364,7 @@ index bc9361a715fad..fc2e1cd0cb22e 100644
  		/*
  		 * When -EBUSY is returned the loop restarts with
  		 * hmm_vma_walk.last set to an address that has not been stored
-@@ -715,8 +730,100 @@ int hmm_range_fault(struct hmm_range *range)
+@@ -715,8 +730,97 @@ int hmm_range_fault(struct hmm_range *range)
  	} while (ret == -EBUSY);
  	return ret;
  }
@@ -428,22 +428,14 @@ index bc9361a715fad..fc2e1cd0cb22e 100644
 +	int ret;
 +
 +	do {
-+		if (fatal_signal_pending(current))
-+			return -EINTR;
-+
-+		if (timeout) {
-+			/*
-+			 * If the previous fault dropped mmap_lock, then the fault
-+			 * handler made progress. Restart the retry timeout in that
-+			 * case, but keep the existing deadline for ordinary -EBUSY
-+			 * retries.
-+			 */
-+			if (!locked)
-+				deadline = jiffies + timeout;
-+
-+			if (time_after(jiffies, deadline))
-+				return -EBUSY;
-+		}
++		/*
++		 * If the previous fault dropped mmap_lock, then the fault
++		 * handler made progress. Restart the retry timeout in that
++		 * case, but keep the existing deadline for ordinary -EBUSY
++		 * retries.
++		 */
++		if (timeout && !locked)
++			deadline = jiffies + timeout;
 +
 +		range->notifier_seq =
 +			mmu_interval_read_begin(range->notifier);
@@ -451,6 +443,11 @@ index bc9361a715fad..fc2e1cd0cb22e 100644
 +		ret = mmap_read_lock_killable(mm);
 +		if (ret)
 +			return ret;
++
++		if (timeout && time_after(jiffies, deadline)) {
++			mmap_read_unlock(mm);
++			return -EBUSY;
++		}
 +
 +		locked = true;
 +		ret = hmm_range_fault_locked(range, &locked);

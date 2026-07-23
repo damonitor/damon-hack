@@ -1,0 +1,52 @@
+From: James Kim <james010kim@gmail.com>
+Date: Mon, 15 Jun 2026 16:05:30 +0900
+Subject: [PATCH] rapidio: mport_cdev: fix use-after-free in dma_req_free()
+
+dma_req_free() drops the mapping reference under buf_mutex and then
+dereferences req->map again to unlock the mutex.
+
+If kref_put() drops the last reference, mport_release_mapping() frees the
+mapping, and the subsequent mutex_unlock() dereferences a freed object.
+This is a use-after-free.
+
+Fix this by caching map and md before kref_put() and using the cached md
+for mutex unlocking.
+
+Link: https://lore.kernel.org/20260615070530.371640-1-james010kim@gmail.com
+Fixes: e8de370188d0 ("rapidio: add mport char device driver")
+Signed-off-by: James Kim <james010kim@gmail.com>
+Cc: Alexandre Bounine <alex.bou9@gmail.com>
+Cc: Dan Carpenter <error27@gmail.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Matt Porter <mporter@kernel.crashing.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/rapidio/devices/rio_mport_cdev.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/rapidio/devices/rio_mport_cdev.c b/drivers/rapidio/devices/rio_mport_cdev.c
+index 009b3b595bbf5..9b94c9b2fad0d 100644
+--- a/drivers/rapidio/devices/rio_mport_cdev.c
++++ b/drivers/rapidio/devices/rio_mport_cdev.c
+@@ -564,9 +564,14 @@ static void dma_req_free(struct kref *ref)
+ 	}
+ 
+ 	if (req->map) {
+-		mutex_lock(&req->map->md->buf_mutex);
+-		kref_put(&req->map->ref, mport_release_mapping);
+-		mutex_unlock(&req->map->md->buf_mutex);
++		struct rio_mport_mapping *map = req->map;
++		struct mport_dev *md = map->md;
++
++		mutex_lock(&md->buf_mutex);
++		kref_put(&map->ref, mport_release_mapping);
++		mutex_unlock(&md->buf_mutex);
++
++		req->map = NULL;
+ 	}
+ 
+ 	kref_put(&priv->dma_ref, mport_release_dma);
+-- 
+2.47.3
+
