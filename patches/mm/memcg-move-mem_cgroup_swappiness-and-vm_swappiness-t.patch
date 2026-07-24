@@ -1,9 +1,10 @@
 From: Ridong Chen <chenridong@xiaomi.com>
-Date: Thu, 16 Jul 2026 11:17:28 +0800
+Date: Thu, 23 Jul 2026 11:24:33 +0800
 Subject: [PATCH] memcg: move mem_cgroup_swappiness and vm_swappiness to
  mm/swap.h
 
-Patch series "mm: fix node reclaim swappiness handling", v2.
+Patch series "mm: vmscan: fix node reclaim ignoring swappiness parameter",
+v4.
 
 The per-node proactive reclaim interface
 (/sys/devices/system/node/nodeX/reclaim) accepts a swappiness parameter,
@@ -30,15 +31,17 @@ Both mem_cgroup_swappiness() and vm_swappiness are only used within mm/
 include/linux/swap.h into the mm-private mm/swap.h.  This keeps unrelated
 declarations out of include/linux/swap.h.
 
-Guard memcg->swappiness with CONFIG_MEMCG_V1 as well, so v2-only kernels
-drop the unused field.
+Guard memcg->swappiness with CONFIG_MEMCG_V1 as well, so v2-only
+kernels drop the unused field.
 
-Link: https://lore.kernel.org/20260716031729.1064007-1-ridong.chen@linux.dev
-Link: https://lore.kernel.org/20260716031729.1064007-2-ridong.chen@linux.dev
+No functional change for v1; v2-only kernels drop the unused field.
+
+Link: https://lore.kernel.org/20260723032434.2016749-1-ridong.chen@linux.dev
+Link: https://lore.kernel.org/20260723032434.2016749-2-ridong.chen@linux.dev
 Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
-Reviewed-by: Song Hu <husong@kylinos.cn>
-Reviewed-by: Barry Song <baohua@kernel.org>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Song Hu <husong@kylinos.cn>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Chris Li <chrisl@kernel.org>
@@ -60,8 +63,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  include/linux/memcontrol.h |  4 ++--
  include/linux/swap.h       | 19 -------------------
  mm/memcontrol.c            |  4 ++--
- mm/swap.h                  | 20 ++++++++++++++++++++
- 4 files changed, 24 insertions(+), 23 deletions(-)
+ mm/swap.h                  | 13 +++++++++++++
+ 4 files changed, 17 insertions(+), 23 deletions(-)
 
 diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
 index 9572606776781..e7a794dfb40e4 100644
@@ -149,7 +152,7 @@ index 8319ad8c5c23a..6864b76456fb3 100644
  		WRITE_ONCE(memcg->oom_kill_disable, READ_ONCE(parent->oom_kill_disable));
  		page_counter_init(&memcg->kmem, &parent->kmem, false);
 diff --git a/mm/swap.h b/mm/swap.h
-index abd26588abd22..0260f9b4c7eee 100644
+index abd26588abd22..d077e5893a42e 100644
 --- a/mm/swap.h
 +++ b/mm/swap.h
 @@ -4,6 +4,7 @@
@@ -160,7 +163,7 @@ index abd26588abd22..0260f9b4c7eee 100644
  
  struct mempolicy;
  struct swap_iocb;
-@@ -99,6 +100,25 @@ struct swap_ops {
+@@ -99,6 +100,18 @@ struct swap_ops {
  	void (*submit_read)(struct swap_io_ctx *ctx);
  };
  
@@ -169,18 +172,11 @@ index abd26588abd22..0260f9b4c7eee 100644
 +static inline int mem_cgroup_swappiness(struct mem_cgroup *memcg)
 +{
 +#ifdef CONFIG_MEMCG_V1
-+	/* Cgroup2 doesn't have per-cgroup swappiness */
-+	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-+		return READ_ONCE(vm_swappiness);
-+
-+	/* root ? */
-+	if (mem_cgroup_disabled() || mem_cgroup_is_root(memcg))
-+		return READ_ONCE(vm_swappiness);
-+
-+	return READ_ONCE(memcg->swappiness);
-+#else
-+	return READ_ONCE(vm_swappiness);
++	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys) &&
++	    !mem_cgroup_disabled() && !mem_cgroup_is_root(memcg))
++		return READ_ONCE(memcg->swappiness);
 +#endif
++	return READ_ONCE(vm_swappiness);
 +}
 +
  #ifdef CONFIG_SWAP

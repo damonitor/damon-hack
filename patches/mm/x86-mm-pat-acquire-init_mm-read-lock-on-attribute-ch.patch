@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Fri, 17 Jul 2026 18:30:09 +0100
+Date: Thu, 23 Jul 2026 16:16:33 +0100
 Subject: [PATCH] x86/mm/pat: acquire init_mm read lock on attribute change to
  avoid UAF
 
@@ -32,6 +32,32 @@ entry write occurs, solving the race.
 It is safe to do this here, as no spinlocks are held upon entry to
 __change_page_attr_set_clr().
 
+However, the lock must not be held over an allocation, as allocation can
+trigger reclaim and shrinkers may call into CPA recursively, making
+deadlocks possible (init_mm -> ...  -> fs_reclaim -> init_mm).
+
+A page table is allocated when a huge page needs to be split:
+
+-> change_page_attr_set_clr()
+-> __change_page_attr_set_clr()
+-> __change_page_attr()
+-> split_large_page()
+[ pagetable_alloc() ]
+-> __split_large_page()
+
+Avoid deadlocks by dropping the mmap lock across pagetable_alloc() in
+split_large_page() and track whether this is needed by adding a new
+'init_mm_read_locked' flag to struct cpa_data.
+
+This is safe as __split_large_page() (called with locks re-established)
+revalidates that the page table entry is the same as it was prior to the
+locks being dropped and __change_page_attr() repeats the entire page table
+walk whenever a split occurs, so concurrent split and collapse are
+accounted for.
+
+Concurrent ptdump is also safe as the lock is only dropped over page table
+allocation during which time the page table has not yet been modified.
+
 The CPA_COLLAPSE flag is only set by set_memory_rox(), which exclusively
 operates upon vmalloc ranges, and on x86 only within the module mapping
 space.
@@ -52,10 +78,12 @@ This work is based upon Denis V.  Lunev's excellent analysis of the bug
 with gratitude.
 
 Link: https://lore.kernel.org/all/20260626163213.2284080-1-den@openvz.org/
-Link: https://lore.kernel.org/20260717-series-vmap-race-fix-v5-3-606a0ac6d3e5@kernel.org
+Link: https://lore.kernel.org/20260723-series-vmap-race-fix-v6-3-8cc77dcc0018@kernel.org
 Fixes: 41d88484c71c ("x86/mm/pat: restore large ROX pages after fragmentation")
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: <stable@vger.kernel.org>
 Cc: Andy Lutomirski <luto@kernel.org>
+Cc: "Borah, Chaitanya Kumar" <chaitanya.kumar.borah@intel.com>
 Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
 Cc: Dave Hansen <dave.hansen@linux.intel.com>
@@ -76,24 +104,47 @@ Cc: Toshi Kani <toshi.kani@hpe.com>
 Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Will Deacon <will@kernel.org>
-Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- arch/x86/mm/pat/set_memory.c | 4 +++-
- 1 file changed, 3 insertions(+), 1 deletion(-)
+ arch/x86/mm/pat/set_memory.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
 
 diff --git a/arch/x86/mm/pat/set_memory.c b/arch/x86/mm/pat/set_memory.c
-index d1e63f7d267ff..301fb9e77d91b 100644
+index d1e63f7d267ff..618f72096480d 100644
 --- a/arch/x86/mm/pat/set_memory.c
 +++ b/arch/x86/mm/pat/set_memory.c
-@@ -2122,7 +2122,9 @@ static int change_page_attr_set_clr(unsigned long *addr, int numpages,
+@@ -50,7 +50,8 @@ struct cpa_data {
+ 	unsigned int	flags;
+ 	unsigned int	force_split		: 1,
+ 			force_static_prot	: 1,
+-			force_flush_all		: 1;
++			force_flush_all		: 1,
++			init_mm_read_locked	: 1;
+ 	struct page	**pages;
+ };
+ 
+@@ -1250,7 +1251,11 @@ static int split_large_page(struct cpa_data *cpa, pte_t *kpte,
+ 
+ 	if (!debug_pagealloc_enabled())
+ 		spin_unlock(&cpa_lock);
++	if (cpa->init_mm_read_locked)
++		mmap_read_unlock(&init_mm);
+ 	ptdesc = pagetable_alloc(GFP_KERNEL, 0);
++	if (cpa->init_mm_read_locked)
++		mmap_read_lock(&init_mm);
+ 	if (!debug_pagealloc_enabled())
+ 		spin_lock(&cpa_lock);
+ 	if (!ptdesc)
+@@ -2122,7 +2127,11 @@ static int change_page_attr_set_clr(unsigned long *addr, int numpages,
  	cpa.curpage = 0;
  	cpa.force_split = force_split;
  
 -	ret = __change_page_attr_set_clr(&cpa, 1);
 +	/* Avoid race with concurrent CPA collapse. */
++	cpa.init_mm_read_locked = true;
 +	scoped_guard(mmap_read_lock, &init_mm)
 +		ret = __change_page_attr_set_clr(&cpa, 1);
++	cpa.init_mm_read_locked = false;
  
  	/*
  	 * Check whether we really changed something:
