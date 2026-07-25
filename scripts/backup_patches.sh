@@ -71,3 +71,6 @@ echo "Done.  Diffstat is like below:"
 echo
 diff=$(git -C "$bindir" diff HEAD^.. --stat)
 echo "$diff"
+
+nr_series_lines=$(wc -l "$bindir/../patches/next/series" | awk '{print $1}')
+echo "nr_patches: $((nr_series_lines - 1))"
