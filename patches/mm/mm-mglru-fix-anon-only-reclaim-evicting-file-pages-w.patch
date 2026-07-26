@@ -1,0 +1,129 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Fri, 24 Jul 2026 11:34:35 +0800
+Subject: [PATCH] mm/mglru: fix anon-only reclaim evicting file pages when
+ swappiness=max
+
+The previous patch fixed this issue for the traditional LRU.  The same
+problem exists in MGLRU [1]: when swappiness=max (SWAPPINESS_ANON_ONLY) is
+set, reclaim is expected to evict anonymous pages exclusively, but file
+pages can still be reclaimed when anonymous pages cannot be reclaimed
+(e.g.  no swap and no demotion target).
+
+Fix it the same way as the traditional LRU: keep returning
+SWAPPINESS_ANON_ONLY in get_swappiness(), and return 0 from
+get_nr_to_scan() when SWAPPINESS_ANON_ONLY is set but anon pages cannot be
+reclaimed.  Since get_nr_to_scan() decides how much MGLRU scans, returning
+0 skips the scan entirely and avoids the useless scan work when there is
+nothing eligible to reclaim.
+
+The test result:
+Before fix:
+
+  # cat /sys/kernel/mm/lru_gen/enabled
+  0x0007
+  # cat memory.stat
+  anon 204800
+  file 67108864
+  ...
+  pgsteal_proactive 0
+  pgscan_proactive 0
+
+  # echo "64M swappiness=max" > memory.reclaim
+  # cat memory.stat
+  anon 208896
+  file 0
+  ...
+  pgsteal_proactive 16384
+  pgscan_proactive 16384
+
+After fix:
+
+  # cat memory.stat
+  anon 188416
+  file 67215360
+  kernel 1970176
+  ...
+  pgsteal_proactive 0
+  pgscan_proactive 0
+
+  # echo "64M swappiness=max" > memory.reclaim
+  -bash: echo: write error: Resource temporarily unavailable
+  # cat memory.stat
+  anon 204800
+  file 67215360
+  ...
+  pgsteal_proactive 0
+  pgscan_proactive 0
+
+Link: https://lore.kernel.org/20260724033435.2573323-5-ridong.chen@linux.dev
+Link: https://sashiko.dev/#/patchset/20260717113300.214717-1-ridong.chen@linux.dev [1]
+Fixes: 68a1436bde00 ("mm: add swappiness=max arg to memory.reclaim for only anon reclaim")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Reviewed-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Zhongkun He <hezhongkun.hzk@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 1b39957f99baa..0d6e2fb034a74 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2699,6 +2699,10 @@ static int get_swappiness(struct lruvec *lruvec, struct scan_control *sc)
+ {
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
++	int swappiness = sc_swappiness(sc, memcg);
++
++	if (swappiness == SWAPPINESS_ANON_ONLY)
++		return swappiness;
+ 
+ 	if (!sc->may_swap)
+ 		return 0;
+@@ -2707,7 +2711,7 @@ static int get_swappiness(struct lruvec *lruvec, struct scan_control *sc)
+ 	    mem_cgroup_get_nr_swap_pages(memcg) < MIN_LRU_BATCH)
+ 		return 0;
+ 
+-	return sc_swappiness(sc, memcg);
++	return swappiness;
+ }
+ 
+ static int get_nr_gens(struct lruvec *lruvec, int type)
+@@ -4909,6 +4913,20 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc,
+ 			   struct mem_cgroup *memcg, int swappiness)
+ {
+ 	unsigned long nr_to_scan, evictable;
++	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
++
++	/*
++	 * Proactive reclaim initiated by userspace for anonymous memory only.
++	 * SWAPPINESS_ANON_ONLY is set only on the proactive reclaim path, so
++	 * warn if it shows up elsewhere. When anon cannot be reclaimed (e.g.
++	 * no swap), return 0 to skip the scan entirely, avoiding useless scan
++	 * work when there is nothing eligible to reclaim.
++	 */
++	if (swappiness == SWAPPINESS_ANON_ONLY) {
++		WARN_ON_ONCE(!sc->proactive);
++		if (!can_reclaim_anon_pages(memcg, pgdat->node_id, sc))
++			return 0;
++	}
+ 
+ 	evictable = lruvec_evictable_size(lruvec, swappiness);
+ 
+-- 
+2.47.3
+

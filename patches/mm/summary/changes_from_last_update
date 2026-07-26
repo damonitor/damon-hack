@@ -5,16 +5,29 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 143 -> 143 commits (no change)
+- mm-unstable: 143 -> 146 commits
   - series: 18 (136) -> 18 (136) (no change)
     - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 21 -> 21 commits (no change)
+    - no role, maintainer: 21 -> 24 commits
     - reviewer, maintainer: 1 -> 1 commits (no change)
     - maintainer, nobody: 114 -> 114 commits (no change)
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-new: 3 -> 3 commits (no change)
+  - changed commits
+    - 2eeb572b7124 "mm/damon: update outdated comment about DAMOS filter handling"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20260721140011.269802-1-sj@kernel.org
+    - 6e30f7351368 "mm/damon/ops-common: prevent migration fallback to non-target nodes"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20260721135607.251869-1-sj@kernel.org
+    - b4247b7a66ea "mm/damon: remove trailing semicolons after function definitions"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20260721135333.241106-1-sj@kernel.org
+- mm-new: 3 -> 0 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 3 -> 3 commits (no change)
+    - no role, maintainer: 3 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
