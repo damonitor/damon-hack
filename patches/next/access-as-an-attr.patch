@@ -37,6 +37,110 @@ access monitoring mode.  To help 'pgidle_unset' probe action use case,
 exactly what the access monitoring was doing: clearing the page table
 accessed bits and setting the PG_idle flags.
 
+Tests
+=====
+
+I compared the access pattern monitoring results from the classic way
+and the probe based way.  As expected, the probe based way shows the
+results similar to that of the classic way.  More detailed test methods
+and results are below.
+
+First, do the access monitoring using the DAMON user-space tool [1] in
+the classic way.  The system is idle.  It shows no access as expected.
+
+    $ sudo ./damo/damo start
+    $ sudo ./damo report access
+    heatmap: 00000000000000000000000000000000000000000000000029300000000000002222222100019000
+    # min/max temperatures: -440,000,000, 0, column size: 99.800 MiB
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    0   addr 4.000 KiB    size 4.748 GiB   access 0 hz   age 4.400 s
+    1   addr 4.748 GiB    size 167.664 MiB access 0 hz   age 0 ns
+    2   addr 4.912 GiB    size 1.325 GiB   access 0 hz   age 4.400 s
+    3   addr 6.238 GiB    size 744.301 MiB access 0 hz   age 3.200 s
+    4   addr 6.964 GiB    size 438.594 MiB access 0 hz   age 4.400 s
+    5   addr 7.393 GiB    size 115.883 MiB access 0 hz   age 0 ns
+    6   addr 7.506 GiB    size 298.000 MiB access 0 hz   age 4.400 s
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+Start an artificial memory access generator [2] and show the monitoring
+results.  As expected, it captures accesses.
+
+    $ ./masim/masim ./masim/configs/zigzag.cfg
+    $ sudo ./damo report access
+    heatmap: 68888888888888888888888888888886222222210017788888888888888888888888899999998777
+    # min/max temperatures: -850,000,000, 40,000,500, column size: 99.800 MiB
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    0   addr 4.000 KiB    size 28.137 MiB  access 0 hz   age 4.200 s
+    1   addr 28.141 MiB   size 880.000 KiB access 170 hz age 0 ns
+    2   addr 29.000 MiB   size 4.000 MiB   access 0 hz   age 3.100 s
+    3   addr 33.000 MiB   size 500.000 KiB access 160 hz age 0 ns
+    4   addr 33.488 MiB   size 12.000 KiB  access 0 hz   age 1.700 s
+    5   addr 33.500 MiB   size 40.000 KiB  access 170 hz age 0 ns
+    6   addr 33.539 MiB   size 8.000 KiB   access 0 hz   age 900 ms
+    7   addr 33.547 MiB   size 80.000 KiB  access 170 hz age 0 ns
+    8   addr 33.625 MiB   size 32.000 KiB  access 0 hz   age 2.300 s
+    9   addr 33.656 MiB   size 68.000 KiB  access 170 hz age 0 ns
+    [...]
+    528 addr 7.437 GiB    size 368.586 MiB access 0 hz   age 900 ms
+    memory bw estimate: 28.521 GiB per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+After the artificial memory access generator is terminated, restart
+DAMON with the probe-based access monitoring.  Note that DAMON
+user-space tool [1] gained the support of probe-based access monitoring
+as an experimental feature, starting from v3.3.3.  As expected, it shows
+no access since the system is idle again.
+
+    $ sudo ./damo/damo start --probe_prep set_pgidle --probe_filter allow pgidle_unset
+    $ sudo ./damo report attrs
+    heatmap:
+    99999999999999999999899866666664000000000000000277777775333333333333333333333332
+    # min/max temperatures: -2,250,000,000, -1,690,000,000, column size:
+    99.800 MiB
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    #   addr         size         age           probe_hits
+    0   4.000 KiB    2.316 GiB    16.900 s      0
+    1   2.316 GiB    790.730 MiB  18.400 s      0
+    2   3.088 GiB    794.406 MiB  22.200 s      0
+    3   3.864 GiB    796.473 MiB  22.500 s      0
+    4   4.642 GiB    786.223 MiB  17.600 s      0
+    5   5.410 GiB    2.326 GiB    20.600 s      0
+    6   7.736 GiB    62.773 MiB   20.700 s      0
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+Start the artificial memory access generator [2] again and show the
+monitoring results.  As expected, it captures accesses similar to the
+classic monitoring mode.
+
+    $ ./masim/masim ./masim/configs/zigzag.cfg
+    $ sudo ./damo report attrs
+    heatmap:
+    88888888888888899999999888888888400000003888888888888888888888888888888888888888
+    # min/max temperatures: -2,100,000,000, 500, column size: 99.800 MiB
+    intervals: sample 5 ms aggr 100 ms (max access hz 200)
+    #   addr         size         age           probe_hits
+    0   4.000 KiB    23.414 MiB   3.500 s       0
+    1   23.418 MiB   35.121 MiB   3.500 s       1
+    2   58.539 MiB   264.000 KiB  1.600 s       19
+    3   58.797 MiB   16.000 KiB   0 ns          0
+    4   58.812 MiB   92.000 KiB   1.400 s       20
+    5   58.902 MiB   996.000 KiB  600 ms        0
+    6   59.875 MiB   32.000 KiB   1.600 s       20
+    7   59.906 MiB   24.000 KiB   6.900 s       0
+    8   59.930 MiB   72.000 KiB   1.600 s       20
+    9   60.000 MiB   160.000 KiB  0 ns          0
+    [...]
+    316 6.641 GiB    754.949 MiB  1.300 s       0
+    317 7.378 GiB    428.676 MiB  1.500 s       0
+    memory bw estimate: 11.633 GiB per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
 Patches Sequence
 ================
 
@@ -61,6 +165,9 @@ operations of the new sysfs files.  Final three patches (patches 15-17)
 respectively update design, usage and ABI documents for the new feature
 and its interface.
 
+[1] https://github.com/damonitor/damo
+[2] https://github.com/sjp38/masim
+
 Changelog
 =========
 
@@ -69,6 +176,8 @@ Changes from RFC v1
 - Fix wrong sample_addr setup condition.
 - Fix build warnings from sysfs part.
 - Fix typos.
+- Rebase to latest mm-new.
+- Add tests section to the cover letter.
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
