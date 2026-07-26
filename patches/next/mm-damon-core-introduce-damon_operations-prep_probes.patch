@@ -9,12 +9,12 @@ core executes it in the monitoring preparation time.
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- include/linux/damon.h |  4 ++++
- mm/damon/core.c       | 18 +++++++++++++++++-
- 2 files changed, 21 insertions(+), 1 deletion(-)
+ include/linux/damon.h |  5 +++++
+ mm/damon/core.c       | 20 +++++++++++++++++++-
+ 2 files changed, 24 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
-index b86744642c9d3..8aca54057dd59 100644
+index b86744642c9d3..c6cbf1edf331a 100644
 --- a/include/linux/damon.h
 +++ b/include/linux/damon.h
 @@ -629,6 +629,7 @@ enum damon_ops_id {
@@ -25,16 +25,17 @@ index b86744642c9d3..8aca54057dd59 100644
   * @apply_probes:		Apply probes for each region.
   * @get_scheme_score:		Get the score of a region for a scheme.
   * @apply_scheme:		Apply a DAMON-based operation scheme.
-@@ -656,6 +657,8 @@ enum damon_ops_id {
+@@ -656,6 +657,9 @@ enum damon_ops_id {
   * last preparation and update the number of observed accesses of each region.
   * It should also return max number of observed accesses that made as a result
   * of its update.  The value will be used for regions adjustment threshold.
 + * @prep_probes should execute required &struct damon_prep for next &struct
-+ * damon_probe applications to each region.
++ * damon_probe applications to each region.  It should also set
++ * &damon_region->sampling_addr of each region if ``set_samples`` is true.
   * @apply_probes should apply the data attribute probes to each region and
   * accordingly update the probe hits counter of the region.  It should also
   * set &damon_region->sampling_addr of each region if ``set_samples`` is true.
-@@ -678,6 +681,7 @@ struct damon_operations {
+@@ -678,6 +682,7 @@ struct damon_operations {
  	void (*update)(struct damon_ctx *context);
  	void (*prepare_access_checks)(struct damon_ctx *context);
  	unsigned int (*check_accesses)(struct damon_ctx *context);
@@ -43,7 +44,7 @@ index b86744642c9d3..8aca54057dd59 100644
  			bool set_samples, bool return_max_wsum);
  	int (*get_scheme_score)(struct damon_ctx *context,
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index c74dee56efee8..bd2dc702a9811 100644
+index c74dee56efee8..bbc3f231c1616 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -156,6 +156,18 @@ static struct damon_prep *damon_nth_prep(int n, struct damon_probe *p)
@@ -65,16 +66,19 @@ index c74dee56efee8..bd2dc702a9811 100644
  struct damon_filter *damon_new_filter(enum damon_filter_type type,
  		bool matching, bool allow)
  {
-@@ -3868,6 +3880,7 @@ static int kdamond_fn(void *data)
+@@ -3868,14 +3880,19 @@ static int kdamond_fn(void *data)
  		unsigned long next_ops_update_sis = ctx->next_ops_update_sis;
  		unsigned long sample_interval = ctx->attrs.sample_interval;
  		bool access_check_disabled = damon_has_probe_weights(ctx);
-+		bool do_prep = damon_has_prep(ctx) && ctx->ops.prep_probes;
++		bool do_prep;
  		unsigned int max_merge_score = 0, max_wsum;
  		bool get_max_wsum;
  
-@@ -3876,6 +3889,8 @@ static int kdamond_fn(void *data)
+ 		if (kdamond_wait_activation(ctx))
+ 			break;
  
++		do_prep = damon_has_prep(ctx) && ctx->ops.prep_probes;
++
  		if (!access_check_disabled && ctx->ops.prepare_access_checks)
  			ctx->ops.prepare_access_checks(ctx);
 +		if (do_prep)
@@ -82,7 +86,7 @@ index c74dee56efee8..bd2dc702a9811 100644
  
  		kdamond_usleep(sample_interval);
  		ctx->passed_sample_intervals++;
-@@ -3890,7 +3905,8 @@ static int kdamond_fn(void *data)
+@@ -3890,7 +3907,8 @@ static int kdamond_fn(void *data)
  			else
  				get_max_wsum = false;
  			max_wsum = ctx->ops.apply_probes(ctx,
