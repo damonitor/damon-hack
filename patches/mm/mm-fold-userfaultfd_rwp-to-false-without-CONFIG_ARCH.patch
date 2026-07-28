@@ -1,0 +1,65 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Mon, 27 Jul 2026 10:16:11 +0100
+Subject: [PATCH] mm: fold userfaultfd_rwp() to false without
+ CONFIG_ARCH_HAS_PTE_PROTNONE
+
+RWP tracks accesses by installing PAGE_NONE (protnone) PTEs, so its code
+paths are gated on userfaultfd_rwp().  Without
+CONFIG_ARCH_HAS_PTE_PROTNONE there is no PAGE_NONE -- <linux/pgtable.h>
+defines it to a BUILD_BUG() stub, relying on callers folding such paths to
+dead code via IS_ENABLED(CONFIG_ARCH_HAS_PTE_PROTNONE).
+
+userfaultfd_rwp() was not a compile-time constant, so the compiler could
+not fold those paths.  With an older compiler (gcc 8.5.0, sparc64) the
+PAGE_NONE reference in move_pages_huge_pmd() survived to codegen:
+
+  mm/huge_memory.c:2874: _dst_pmd = pmd_modify(_dst_pmd, PAGE_NONE);
+  compiler_types.h:702: error: call to '__compiletime_assert_501'
+    declared with attribute error: BUILD_BUG failed
+
+RWP cannot exist without protnone, so return a compile-time false when
+CONFIG_ARCH_HAS_PTE_PROTNONE is unset; every RWP path then folds away.
+
+Link: https://lore.kernel.org/amcitKvUvFYr8W38@thinkstation
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202607250853.VaJWGLeA-lkp@intel.com/
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam Howlett <liam.howlett@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/userfaultfd_k.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/include/linux/userfaultfd_k.h b/include/linux/userfaultfd_k.h
+index bfbd6a59909f0..a4351cffc60ce 100644
+--- a/include/linux/userfaultfd_k.h
++++ b/include/linux/userfaultfd_k.h
+@@ -221,6 +221,12 @@ static inline bool userfaultfd_minor(struct vm_area_struct *vma)
+ 
+ static inline bool userfaultfd_rwp(struct vm_area_struct *vma)
+ {
++	/*
++	 * Callers gate PAGE_NONE usage on this; PAGE_NONE is a BUILD_BUG()
++	 * without CONFIG_ARCH_HAS_PTE_PROTNONE, so fold to false.
++	 */
++	if (!IS_ENABLED(CONFIG_ARCH_HAS_PTE_PROTNONE))
++		return false;
+ 	return vma_test_single_mask(vma, VMA_UFFD_RWP);
+ }
+ 
+-- 
+2.47.3
+

@@ -1,22 +1,23 @@
 From: Sourav Panda <souravpanda@google.com>
-Date: Sun, 5 Jul 2026 17:51:19 +0000
-Subject: [PATCH] mm/hugetlb: fix null nodemask in alloc_fresh_hugetlb_folio
+Date: Sun, 26 Jul 2026 07:29:34 +0000
+Subject: [PATCH] mm/hugetlb_cma: dix null nodemask dereference in
+ hugetlb_cma_alloc_frozen_folio
 
 alloc_buddy_hugetlb_folio_with_mpol() can pass a NULL nodemask to
 alloc_fresh_hugetlb_folio() as a fallback to allocate from all nodes.  If
 order is gigantic, alloc_fresh_hugetlb_folio() propagates the NULL
-nodemask down to hugetlb_cma_alloc_frozen_folio() which blindly
-dereferences it in for_each_node_mask(), leading to a null pointer
-dereference.
+nodemask down to hugetlb_cma_alloc_frozen_folio() via
+alloc_gigantic_frozen_folio().
 
-Similarly, if the CMA allocation fails, the fallback
-alloc_contig_frozen_pages() is also called with a NULL nodemask, which may
-cause issues.
+hugetlb_cma_alloc_frozen_folio() blindly dereferences the nodemask in
+node_isset(nid, *nodemask) and for_each_node_mask(node, *nodemask),
+leading to a null pointer dereference kernel panic.
 
-Fix this by explicitly checking if nodemask is NULL in
-alloc_fresh_hugetlb_folio() and defaulting to cpuset_current_mems_allowed.
-This ensures that both the CMA and contiguous allocators receive a valid
-nodemask safely using a seqcount loop to prevent torn reads.
+Fix this by checking if nodemask is NULL in
+hugetlb_cma_alloc_frozen_folio() and defaulting it to
+node_states[N_MEMORY].  This allows hugetlb_cma allocations to fall back
+to any node with memory, keeping behavior consistent with
+alloc_contig_frozen_pages() and alloc_buddy_frozen_folio().
 
 From a userspace perspective, this bug allows an unprivileged user to
 crash the kernel (trigger a panic) by requesting a gigantic hugepage
@@ -51,59 +52,36 @@ This results in a NULL pointer dereference:
    alloc_hugetlb_folio+0x3c5/0x660
    hugetlb_no_page+0x3d9/0x650
 
-Additionally, this patch adds a missing node_isset(nid, *nodemask) check
-in hugetlb_cma_alloc_frozen_folio() to ensure the initial node allocation
-attempt respects the memory policy.
-
-Link: https://lore.kernel.org/20260705175119.440599-1-souravpanda@google.com
+Link: https://lore.kernel.org/20260726072935.3513996-1-souravpanda@google.com
 Fixes: eb02f14c4a2b ("mm/hugetlb: allow overcommitting gigantic hugepages")
 Signed-off-by: Sourav Panda <souravpanda@google.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Frank van der Linden <fvdl@google.com>
 Cc: Greg Thelen <gthelen@google.com>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Usama Arif <usamaarif642@gmail.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/hugetlb.c     | 12 ++++++++++++
- mm/hugetlb_cma.c |  2 +-
- 2 files changed, 13 insertions(+), 1 deletion(-)
+ mm/hugetlb_cma.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
 
-diff --git a/mm/hugetlb.c b/mm/hugetlb.c
-index e93c4d2456aa4..940b52ac17c49 100644
---- a/mm/hugetlb.c
-+++ b/mm/hugetlb.c
-@@ -1864,6 +1864,18 @@ static struct folio *alloc_fresh_hugetlb_folio(struct hstate *h,
- 		gfp_t gfp_mask, int nid, nodemask_t *nmask)
- {
- 	struct folio *folio;
-+	nodemask_t local_node_mask;
-+
-+	if (!nmask) {
-+		unsigned int cpuset_mems_cookie;
-+
-+		do {
-+			cpuset_mems_cookie = read_mems_allowed_begin();
-+			local_node_mask = cpuset_current_mems_allowed;
-+		} while (read_mems_allowed_retry(cpuset_mems_cookie));
-+
-+		nmask = &local_node_mask;
-+	}
- 
- 	folio = only_alloc_fresh_hugetlb_folio(h, gfp_mask, nid, nmask, NULL);
- 	if (folio)
 diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
-index 39344d6c78d84..79dbd0baafa3e 100644
+index 39344d6c78d84..5744de0ceeb73 100644
 --- a/mm/hugetlb_cma.c
 +++ b/mm/hugetlb_cma.c
-@@ -34,7 +34,7 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+@@ -34,7 +34,10 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
  	if (!hugetlb_cma_size)
  		return NULL;
  
 -	if (hugetlb_cma[nid])
++	if (!nodemask)
++		nodemask = &node_states[N_MEMORY];
++
 +	if (hugetlb_cma[nid] && node_isset(nid, *nodemask))
  		page = cma_alloc_frozen_compound(hugetlb_cma[nid], order);
  

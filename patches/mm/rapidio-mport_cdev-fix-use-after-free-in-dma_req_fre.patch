@@ -1,18 +1,22 @@
 From: James Kim <james010kim@gmail.com>
-Date: Mon, 15 Jun 2026 16:05:30 +0900
+Date: Fri, 24 Jul 2026 08:52:20 +0900
 Subject: [PATCH] rapidio: mport_cdev: fix use-after-free in dma_req_free()
 
-dma_req_free() drops the mapping reference under buf_mutex and then
-dereferences req->map again to unlock the mutex.
+dma_req_free() acquires buf_mutex through req->map, drops the mapping
+reference with kref_put(), and then dereferences req->map again to unlock
+the mutex.
 
 If kref_put() drops the last reference, mport_release_mapping() frees the
 mapping, and the subsequent mutex_unlock() dereferences a freed object.
 This is a use-after-free.
 
-Fix this by caching map and md before kref_put() and using the cached md
-for mutex unlocking.
+Fix this by caching map and md before kref_put(), clearing req->map while
+holding buf_mutex, and using the cached md for mutex unlocking.
 
-Link: https://lore.kernel.org/20260615070530.371640-1-james010kim@gmail.com
+The bug is reachable from userspace via the RapidIO mport character device
+interface.
+
+Link: https://lore.kernel.org/20260723235220.588424-1-james010kim@gmail.com
 Fixes: e8de370188d0 ("rapidio: add mport char device driver")
 Signed-off-by: James Kim <james010kim@gmail.com>
 Reviewed-by: Dan Carpenter <error27@gmail.com>
@@ -22,14 +26,14 @@ Cc: Matt Porter <mporter@kernel.crashing.org>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- drivers/rapidio/devices/rio_mport_cdev.c | 11 ++++++++---
- 1 file changed, 8 insertions(+), 3 deletions(-)
+ drivers/rapidio/devices/rio_mport_cdev.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
 
 diff --git a/drivers/rapidio/devices/rio_mport_cdev.c b/drivers/rapidio/devices/rio_mport_cdev.c
-index 009b3b595bbf5..9b94c9b2fad0d 100644
+index 009b3b595bbf5..ad82c2108a567 100644
 --- a/drivers/rapidio/devices/rio_mport_cdev.c
 +++ b/drivers/rapidio/devices/rio_mport_cdev.c
-@@ -564,9 +564,14 @@ static void dma_req_free(struct kref *ref)
+@@ -564,9 +564,13 @@ static void dma_req_free(struct kref *ref)
  	}
  
  	if (req->map) {
@@ -40,10 +44,9 @@ index 009b3b595bbf5..9b94c9b2fad0d 100644
 +		struct mport_dev *md = map->md;
 +
 +		mutex_lock(&md->buf_mutex);
++		req->map = NULL;
 +		kref_put(&map->ref, mport_release_mapping);
 +		mutex_unlock(&md->buf_mutex);
-+
-+		req->map = NULL;
  	}
  
  	kref_put(&priv->dma_ref, mport_release_dma);

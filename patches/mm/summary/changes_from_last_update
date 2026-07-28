@@ -1,8 +1,13 @@
-- baseline: v7.2-rc4-15-gb95f03f04d475 -> v7.2-rc4-15-gb95f03f04d475 (no change)
+- baseline: v7.2-rc4-15-gb95f03f04d475 -> v7.2-rc5-31-g62cc90241548d
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 0 commits (no change)
+- mm-hotfixes-unstable: 0 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 0 -> 1 commits
+  - new commits
+    - a0e378ee1dd6 "mm/damon/ops-common: putback folios on invalid migrate nid"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260726014815.1280757-1-dayou5941@163.com
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 146 -> 146 commits (no change)
