@@ -1,0 +1,68 @@
+From: Jiacheng Yu <yujiacheng3@huawei.com>
+Date: Tue, 28 Jul 2026 09:10:14 +0000
+Subject: [PATCH] mm/shmem: downgrade final i_blocks check in
+ shmem_evict_inode() to pr_warn()
+
+shmem_evict_inode() ends with WARN_ON(inode->i_blocks) as a final
+consistency check of shmem's block accounting.  When it fires, the
+inode-local counters die with the inode; what may linger is a small
+residue in accounting kept outside the inode, such as per-mount or
+per-user charges.  No data is lost, and no corruption follows.
+
+On kernels running with panic_on_warn=1, this accounting inconsistency
+escalates to a full machine panic, which is disproportionate to the
+impact.
+
+Downgrade the WARN_ON() to a pr_warn() that reports the inode together
+with its accounting counters (i_blocks, alloced, swapped, nrpages),
+keeping the inconsistency visible in the logs.
+
+The accounting bugs this check has caught over the years -- the swapout
+race described in commit 0f3c42f522dc ("tmpfs: change final i_blocks BUG
+to WARNING") and the error recovery race fixed in commit 267a4c76bbdb
+("tmpfs: fix shmem_evict_inode() warnings on i_blocks") -- are real and
+should still be fixed; this change only removes the disproportionate
+escalation.
+
+One way to hit this race: soft_offline_in_use_page()'s fast path drops a
+clean, unmapped shmem folio via mapping_evict_folio(), where the
+xas_store() and the nrpages decrement are not atomic against a concurrent
+shmem_evict_inode(); the final shmem_recalc_inode() can then read the
+pre-decrement nrpages, compute freed = 0, and leave one page charged.
+Same class as the races in 0f3c42f522dc and 267a4c76bbdb, this time in the
+under-count direction; reproduced on 7.2-rc4 with
+madvise(MADV_SOFT_OFFLINE) racing MAP_FIXED replacement of a
+shared-anonymous VMA.
+
+Link: https://lore.kernel.org/20260728091014.3876715-1-yujiacheng3@huawei.com
+Fixes: 0f3c42f522dc ("tmpfs: change final i_blocks BUG to WARNING")
+Signed-off-by: Jiacheng Yu <yujiacheng3@huawei.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Yongqiang Liu <liuyongqiang13@huawei.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 6641823bed16b..7bdd30da14cff 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -1440,7 +1440,11 @@ static void shmem_evict_inode(struct inode *inode)
+ 	simple_xattrs_free(&sbinfo->xa_cache, &info->xattrs, sbinfo->max_inodes ? &freed : NULL);
+ 
+ 	shmem_free_inode(inode->i_sb, freed);
+-	WARN_ON(inode->i_blocks);
++	if (inode->i_blocks)
++		pr_warn("%s: ino=%llu i_blocks=%llu alloced=%lu swapped=%lu nrpages=%lu\n",
++			__func__, (unsigned long long)inode->i_ino,
++			(unsigned long long)inode->i_blocks,
++			info->alloced, info->swapped, inode->i_mapping->nrpages);
+ 	clear_inode(inode);
+ #ifdef CONFIG_TMPFS_QUOTA
+ 	dquot_free_inode(inode);
+-- 
+2.47.3
+
