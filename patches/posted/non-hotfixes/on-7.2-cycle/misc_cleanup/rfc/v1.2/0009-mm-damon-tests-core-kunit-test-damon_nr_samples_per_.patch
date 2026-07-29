@@ -1,0 +1,69 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Tue, 7 Jul 2026 07:44:45 -0700
+Subject: [RFC PATCH v1.2 09/12] mm/damon/tests/core-kunit: test damon_nr_samples_per_aggr()
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@davidgow.net>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: kunit-dev@googlegroups.com
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-kselftest@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260729140253.87753-10-sj@kernel.org>
+
+damon_max_nr_accesses(), which is a previous version of
+damon_nr_samples_per_aggr() before the renaming, was wrongly returning
+zero or random overflowed values for extreme intervals setup.  Commit
+35d4a3cf70a8 ("mm/damon/ops-common: handle extreme intervals in
+damon_hot_score()") updated the function to return correct or more valid
+values.  Add a kunit test to ensure it is working as expected.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 252d81c30d6f1..c7bda8aadef3f 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -619,6 +619,27 @@ static void damon_test_set_regions(struct kunit *test)
+ 			(struct damon_addr_range[]){}, 0, -EINVAL);
+ }
+ 
++static void damon_test_nr_samples_per_aggr(struct kunit *test)
++{
++	struct damon_attrs attrs = {
++		.sample_interval = 0,
++		.aggr_interval = 0,
++	};
++
++	/* Zero aggregation interval doesn't cause division by zero */
++	KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs), 1);
++
++	/*
++	 * Too large aggregation interval on 64 bit system doesn't cause
++	 * overflow
++	 */
++	if (ULONG_MAX > UINT_MAX) {
++		attrs.aggr_interval = (unsigned long)UINT_MAX + 1;
++		KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs),
++				UINT_MAX);
++	}
++}
++
+ static void damon_test_update_monitoring_result(struct kunit *test)
+ {
+ 	struct damon_attrs old_attrs = {
+@@ -1670,6 +1691,7 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_split_above_half_progresses),
+ 	KUNIT_CASE(damon_test_ops_registration),
+ 	KUNIT_CASE(damon_test_set_regions),
++	KUNIT_CASE(damon_test_nr_samples_per_aggr),
+ 	KUNIT_CASE(damon_test_update_monitoring_result),
+ 	KUNIT_CASE(damon_test_set_attrs),
+ 	KUNIT_CASE(damon_test_mvsum),
+-- 
+2.47.3
