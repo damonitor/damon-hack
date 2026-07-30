@@ -1,25 +1,165 @@
 - baseline: v7.2-rc5-31-g62cc90241548d -> v7.2-rc5-31-g62cc90241548d (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 1 -> 2 commits
+- mm-hotfixes-unstable: 2 -> 2 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - d6ce242ab111 "mm/damon: adjust isolated pages stat for DAMOS_MIGRATE_{HOT,COLD}"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260728140404.94476-1-sj@kernel.org
-      - Link: https://github.com/damonitor/damo [1]
-      - Link: https://lore.kernel.org/20260726164356.87940-1-sj@kernel.org [2]
-- mm-stable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 146 -> 146 commits (no change)
-  - series: 18 (136) -> 18 (136) (no change)
-    - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 24 -> 24 commits (no change)
+    - maintainer, nobody: 1 -> 1 commits (no change)
+- mm-stable: 0 -> 25 commits
+  - series: 0 (0) -> 5 (24)
+    - no role, no role : 0 -> 1 commits
+    - no role, maintainer: 0 -> 7 commits
+    - maintainer, nobody: 0 -> 11 commits
+    - maintainer, no role : 0 -> 6 commits
+  - changed commits
+    - 5a00cae64de1 "mm/damon/core: reduce kernel stack usage"
+      - Authored by no role player, reviewed by no role player
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260611125704.3386176-1-arnd@kernel.org
+    - series "samples/damon: handle damon_{start,stop}() failures". (6)
+      - e4742be45ea4 "samples/damon/wsse: handle damon_start() failure (0/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260609145814.70163-1-sj@kernel.org [1]
+      - 8b724349229b "samples/damon/prcl: handle damon_start() failure (1/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260609145814.70163-1-sj@kernel.org [1]
+      - c7230d08ee79 "samples/damon/mtier: handle damon_start() failure (2/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260608112455.274231F00893@smtp.kernel.org [1]
+      - 9dc5b6d66fd5 "samples/damon/mtier: handle damon_stop() failure (3/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260609014219.3013-1-sj@kernel.org [1]
+      - a2c6fa6c23ad "samples/damon/wsse: stop and free damon ctx when damon_call() fails (4/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260610034828.4632-1-sj@kernel.org [1]
+      - a73fa45d3f0f "samples/damon/prcl: stop and free damon ctx when damon_call() fails (5/6)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628215447.96166-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260610035214.4850-1-sj@kernel.org [1]
+    - series "mm/damon/sysfs: kobject_del() directories that users can create/remove". (11)
+      - 263af33a72d1 "mm/damon/sysfs: kobject_del() target (normal), context and kdamond dirs (0/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260628220121.97360-2-sj@kernel.org
+      - 2603ef6f6ec3 "mm/damon/sysfs: kobject_del() region and target (error) dirs (1/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-3-sj@kernel.org
+      - 05fb6ac98c49 "mm/damon/sysfs-schemes: kobject_del() scheme dirs (2/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-4-sj@kernel.org
+      - f3ec32712107 "mm/damon/sysfs-schemes: kobject_del() scheme region dirs (3/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260517205828.6204-1-sj@kernel.org [1]
+      - 3c453bddacd4 "mm/damon/sysfs-schemes: kobject_del() scheme filter dirs (4/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-6-sj@kernel.org
+      - 0d4397ca921c "mm/damon/sysfs-schemes: kobject_del() scheme quota goal dirs (5/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-7-sj@kernel.org
+      - 286380c78bc5 "mm/damon/sysfs-schemes: kobject_del() scheme action destination dirs (6/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-8-sj@kernel.org
+      - c37dfd698297 "mm/damon/sysfs: kobject_del() probe dirs (7/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-9-sj@kernel.org
+      - 092a33667438 "mm/damon/sysfs: kobject_del() probe filter dirs (8/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-10-sj@kernel.org
+      - f5b4541b851a "mm/damon/sysfs: kobject_del() probe dirs in probes_addd_dir error path (9/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-11-sj@kernel.org
+      - 5f0ead7e66f5 "mm/damon/sysfs-schemes: kobject_del() region for populate_region error (10/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260628220121.97360-12-sj@kernel.org
+    - series "selftests/damon: misc fixes for test bugs", v3. (3)
+      - 8319dadcbd81 "selftests/damon: prevent cross-context state pollution in DamonCtx (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260629144648.134092-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260601032314.424013-2-kunwu.chan@linux.dev
+        - Link: https://lore.kernel.org/20260629144648.134092-2-sj@kernel.org
+      - 9ad3a4dbbc56 "selftests/damon/damos_tried_regions: fix expectation output and join TypeError (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260601032314.424013-3-kunwu.chan@linux.dev
+        - Link: https://lore.kernel.org/20260629144648.134092-3-sj@kernel.org
+      - 0185159faf9e "selftests/damon: fix dead code, skipped checks, and broken lookups (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260601032314.424013-4-kunwu.chan@linux.dev
+        - Link: https://lore.kernel.org/20260629144648.134092-4-sj@kernel.org
+    - series "selftests/damon: fix memcg_path staging handling", v5. (2)
+      - 477e99645fec "selftests/damon/_damon_sysfs.py: fix memcg_path assignment (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260629144812.134159-1-sj@kernel.org
+        - Link: https://lore.kernel.org/464AE12D4BC6B6F4+20260601090519.240482-1-niecheng1@uniontech.com
+        - Link: https://lore.kernel.org/20260629144812.134159-2-sj@kernel.org
+      - 9b413dff810a "selftests/damon/sysfs.py: validate memcg_path staging readback (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/D2B37130D38E09AC+20260601090634.241864-1-niecheng1@uniontech.com
+        - Link: https://lore.kernel.org/20260629144812.134159-3-sj@kernel.org
+    - series "selftests/damon: test kdamond refresh_ms", v2. (2)
+      - b1c254e60b6b "selftests/damon/_damon_sysfs: support kdamond refresh_ms (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260602131217.2210912-2-linuxoid@gmail.com
+        - Link: https://lore.kernel.org/20260629144927.134237-2-sj@kernel.org
+      - 99cea7eb5216 "selftests/damon/sysfs_refresh: test kdamond refresh_ms (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260602131217.2210912-3-linuxoid@gmail.com
+        - Link: https://lore.kernel.org/20260629144927.134237-3-sj@kernel.org
+- mm-unstable: 146 -> 121 commits
+  - series: 18 (136) -> 13 (112)
+    - no role, no role : 1 -> 0 commits
+    - no role, maintainer: 24 -> 17 commits
     - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 114 -> 114 commits (no change)
-    - maintainer, no role : 6 -> 6 commits (no change)
+    - maintainer, nobody: 114 -> 103 commits
+    - maintainer, no role : 6 -> 0 commits
+  - changed commits
+    - series "mm/damon: five misc fixups" (5)
+      - e71b1f0c6635 "mm/damon/stat: use secs_to_jiffies() instead of msecs_to_jiffies() (1/5)"
+        - Authored by no role player, reviewed by a maintainer
+        - dropped "Cc: SJ Park <sj@kkernel.org>"
+        - Link: https://lore.kernel.org/20260629145538.134832-3-sj@kernel.org
+      - 87269f4ed257 "Docs/{admin-guide,mm}/damon: fix DAMON documentation details (2/5)"
+        - Authored by no role player, reviewed by a maintainer
+        - dropped "Cc: SJ Park <sj@kkernel.org>"
+        - Link: https://lore.kernel.org/20260629145538.134832-4-sj@kernel.org
+      - 737ffebecf38 "samples/damon: fix typos in Kconfig help text (3/5)"
+        - Authored by no role player, reviewed by a maintainer
+        - dropped "Cc: SJ Park <sj@kkernel.org>"
+        - Link: https://lore.kernel.org/20260629145538.134832-5-sj@kernel.org
+      - d01e56ee9848 "mm/damon/tests/core-kunit: add KUnit test for walk_control_obsolete behavior (4/5)"
+        - Authored by no role player, reviewed by a maintainer
+        - dropped "Cc: SJ Park <sj@kkernel.org>"
+        - Link: https://patch.msgid.link/20260612062337.2459-1-saileshnandanavanam@gmail.com
+        - Link: https://lore.kernel.org/20260629145538.134832-6-sj@kernel.org
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)

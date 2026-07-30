@@ -1,10 +1,10 @@
 From: Sourav Panda <souravpanda@google.com>
-Date: Sun, 28 Jun 2026 19:01:55 +0000
+Date: Wed, 29 Jul 2026 16:31:48 +0000
 Subject: [PATCH] mm/hugetlb_cma: support percentage-based hugetlb_cma
  reservation
 
 Currently, hugetlb_cma reservation only supports absolute sizes (e.g.,
-hugetlb_cma=2G or hugetlb_cma=0:1G,1:1G). This can be restrictive in
+hugetlb_cma=2G or hugetlb_cma=0:1G,1:1G).  This can be restrictive in
 heterogeneous environments or when deploying common kernel command lines
 across machines with different memory capacities.
 
@@ -12,13 +12,11 @@ Add support for percentage-based hugetlb_cma reservation (e.g.,
 hugetlb_cma=20% or hugetlb_cma=0:20%,1:10%).
 
 The percentage is calculated against the total memory (for global
-settings) or against the node-specific memory (for node-specific
-settings) using memblock APIs during early boot.
+settings) or against the node-specific memory (for node-specific settings)
+using memblock APIs during early boot.
 
-Link: https://lore.kernel.org/20260628190155.3655895-1-souravpanda@google.com
+Link: https://lore.kernel.org/20260729163148.3271755-1-souravpanda@google.com
 Signed-off-by: Sourav Panda <souravpanda@google.com>
-Reported-by: kernel test robot <lkp@intel.com>
-Closes: https://lore.kernel.org/oe-kbuild-all/202606262023.IKUrn01I-lkp@intel.com/
 Cc: David Hildenbrand <david@kernel.org>
 Cc: David Rientjes <rientjes@google.com>
 Cc: Frank van der Linden <fvdl@google.com>
@@ -28,12 +26,12 @@ Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- .../admin-guide/kernel-parameters.txt         |  7 +-
- mm/hugetlb_cma.c                              | 96 ++++++++++++++++++-
- 2 files changed, 97 insertions(+), 6 deletions(-)
+ .../admin-guide/kernel-parameters.txt         |   7 +-
+ mm/hugetlb_cma.c                              | 128 ++++++++++++++++--
+ 2 files changed, 125 insertions(+), 10 deletions(-)
 
 diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
-index b5493a7f8f228..53f08950a6309 100644
+index 364c2dce8e70f..67b74c50355f6 100644
 --- a/Documentation/admin-guide/kernel-parameters.txt
 +++ b/Documentation/admin-guide/kernel-parameters.txt
 @@ -2064,8 +2064,11 @@ Kernel parameters
@@ -51,7 +49,7 @@ index b5493a7f8f228..53f08950a6309 100644
  			The size must be a multiple of the gigantic page size.
  			When using node format, this applies to each per-node size.
 diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
-index 7ff4e73496788..ad9646e30dc2a 100644
+index 7ff4e73496788..ca8d53f319457 100644
 --- a/mm/hugetlb_cma.c
 +++ b/mm/hugetlb_cma.c
 @@ -9,6 +9,9 @@
@@ -192,6 +190,59 @@ index 7ff4e73496788..ad9646e30dc2a 100644
  	if (!hugetlb_cma_size)
  		return;
  
+@@ -157,6 +245,20 @@ void __init hugetlb_cma_reserve(void)
+ 	VM_WARN_ON(order <= MAX_PAGE_ORDER);
+ 	gigantic_page_size = PAGE_SIZE << order;
+ 
++	if (hugetlb_cma_percent) {
++		hugetlb_cma_size = ALIGN_DOWN(hugetlb_cma_size, PAGE_SIZE << order);
++	} else if (has_node_specific_param) {
++		hugetlb_cma_size = 0;
++		for (nid = 0; nid < MAX_NUMNODES; nid++) {
++			if (hugetlb_cma_percent_in_node[nid]) {
++				hugetlb_cma_size_in_node[nid] =
++					ALIGN_DOWN(hugetlb_cma_size_in_node[nid],
++						   PAGE_SIZE << order);
++			}
++			hugetlb_cma_size += hugetlb_cma_size_in_node[nid];
++		}
++	}
++
+ 	hugetlb_bootmem_set_nodes();
+ 
+ 	for (nid = 0; nid < MAX_NUMNODES; nid++) {
+@@ -197,8 +299,14 @@ void __init hugetlb_cma_reserve(void)
+ 		per_node = DIV_ROUND_UP(hugetlb_cma_size,
+ 					nodes_weight(hugetlb_bootmem_nodes));
+ 		per_node = round_up(per_node, gigantic_page_size);
+-		pr_info("hugetlb_cma: reserve %lu MiB, up to %lu MiB per node\n",
+-			hugetlb_cma_size / SZ_1M, per_node / SZ_1M);
++		if (hugetlb_cma_percent)
++			pr_info("hugetlb_cma: reserve %lu MiB (%u%%), up to %lu MiB per node\n",
++				hugetlb_cma_size / SZ_1M, hugetlb_cma_percent,
++				per_node / SZ_1M);
++		else
++			pr_info("hugetlb_cma: reserve %lu MiB, up to %lu MiB per node\n",
++				hugetlb_cma_size / SZ_1M,
++				per_node / SZ_1M);
+ 	}
+ 
+ 	reserved = 0;
+@@ -233,8 +341,12 @@ void __init hugetlb_cma_reserve(void)
+ 		}
+ 
+ 		reserved += size;
+-		pr_info("hugetlb_cma: reserved %lu MiB on node %d\n",
+-			size / SZ_1M, nid);
++		if (hugetlb_cma_percent_in_node[nid])
++			pr_info("hugetlb_cma: reserved %lu MiB (%u%%) on node %d\n",
++				size / SZ_1M, hugetlb_cma_percent_in_node[nid], nid);
++		else
++			pr_info("hugetlb_cma: reserved %lu MiB on node %d\n",
++				size / SZ_1M, nid);
+ 
+ 		if (reserved >= hugetlb_cma_size)
+ 			break;
 -- 
 2.47.3
 
