@@ -5,10 +5,14 @@ Subject: [PATCH] mm/damon/core: initialize damos_quota_goal->last_psi_total
 When DAMOS_QUOTA_SOME_MEM_PSI_US metric damos quota goal is set, the PSI
 delta for the feedback loop is calculated using
 damos_quota_goal->last_psi_total.  It is not initialized at the
-beginning.  So the first loop of the feedback loop uses the
-uninitialized value and make the starting point wrong.
+beginning.  So the first iteration of the feedback loop uses the
+uninitialized value and make an unexpected starting point quota.
+Initialize the value at the beginning of kdamond.
 
-/* need more fixup: should initialize at the beginning of kdamond ... */
+The user impact would be trivial because the issue impacts only the
+initial iteration of the feedback loop.  The feedback loop also has
+internal cap of the quota adjustment.  The wrong adjustment will soon be
+corrected over a few iterations.
 
 The issue was discovered [1] by Sashiko.
 
@@ -18,20 +22,38 @@ Fixes: 2dbb60f789cb ("mm/damon/core: implement PSI metric DAMOS quota goal")
 Cc: <stable@vger.kernel.org> # 6.9.x
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 2 ++
- 1 file changed, 2 insertions(+)
+ mm/damon/core.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 6019b6cc2ad67..98c613efd1bad 100644
+index 6019b6cc2ad67..7d7ed9fa7e55d 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -697,6 +697,8 @@ struct damos_quota_goal *damos_new_quota_goal(
- 	goal->metric = metric;
- 	goal->target_value = target_value;
- 	INIT_LIST_HEAD(&goal->list);
-+	if (goal->metric == DAMOS_QUOTA_SOME_MEM_PSI_US)
-+		goal->last_psi_total = 0;
- 	return goal;
+@@ -3825,6 +3825,18 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+ 	return -EBUSY;
+ }
+ 
++static void damos_init_quota_goal_last_psi(struct damos *s)
++{
++	struct damos_quota_goal *goal;
++
++	damos_for_each_quota_goal(goal, &s->quota)
++	{
++		if (goal->metric != DAMOS_QUOTA_SOME_MEM_PSI_US)
++			continue;
++		goal->last_psi_total = damos_get_some_mem_psi_total();
++	}
++}
++
+ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ {
+ 	unsigned long sample_interval = ctx->attrs.sample_interval ?
+@@ -3841,6 +3853,7 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+ 	damon_for_each_scheme(scheme, ctx) {
+ 		damos_set_next_apply_sis(scheme, ctx);
+ 		damos_set_filters_default_reject(scheme);
++		damos_init_quota_goal_last_psi(scheme);
+ 	}
  }
  
 -- 
