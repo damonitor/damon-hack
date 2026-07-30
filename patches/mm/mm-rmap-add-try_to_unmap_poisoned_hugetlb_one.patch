@@ -1,9 +1,9 @@
 From: Dev Jain <dev.jain@arm.com>
-Date: Mon, 13 Jul 2026 05:00:45 +0000
-Subject: [PATCH] mm/rmap: add try_to_unmap_hugetlb_one
+Date: Thu, 30 Jul 2026 09:45:53 +0000
+Subject: [PATCH] mm/rmap: add try_to_unmap_poisoned_hugetlb_one
 
 Simplify try_to_unmap_one() by separating the hugetlb parts into
-try_to_unmap_hugetlb_one().
+try_to_unmap_poisoned_hugetlb_one().
 
 To understand the correctness of the refactoring, the following points
 are noted:
@@ -44,11 +44,11 @@ While at it:
 
 Except the above 4 points, no functional change intended.
 
-Link: https://lore.kernel.org/20260713050050.1017741-3-dev.jain@arm.com
+Link: https://lore.kernel.org/20260730094559.418003-3-dev.jain@arm.com
 Signed-off-by: Dev Jain <dev.jain@arm.com>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
-Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Cc: Anshuman Khandual <anshuman.khandual@arm.com>
 Cc: Harry Yoo <harry@kernel.org>
 Cc: Jann Horn <jannh@google.com>
@@ -62,8 +62,8 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  include/linux/hugetlb.h |   1 +
- mm/rmap.c               | 183 +++++++++++++++++++++-------------------
- 2 files changed, 98 insertions(+), 86 deletions(-)
+ mm/rmap.c               | 180 ++++++++++++++++++++++------------------
+ 2 files changed, 98 insertions(+), 83 deletions(-)
 
 diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
 index 6ca232a616436..16c4c4caa126c 100644
@@ -78,14 +78,14 @@ index 6ca232a616436..16c4c4caa126c 100644
  static inline pte_t huge_ptep_clear_flush(struct vm_area_struct *vma,
  					  unsigned long addr, pte_t *ptep)
 diff --git a/mm/rmap.c b/mm/rmap.c
-index 4c0d3d5381e74..b4ee354f484fb 100644
+index 77be9fcffa99a..9cb496d7b3751 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
 @@ -1978,6 +1978,96 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
  				     FPB_RESPECT_WRITE | FPB_RESPECT_SOFT_DIRTY);
  }
  
-+static bool try_to_unmap_hugetlb_one(struct folio *folio,
++static bool try_to_unmap_poisoned_hugetlb_one(struct folio *folio,
 +		struct vm_area_struct *vma, unsigned long address, void *arg)
 +{
 +	DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
@@ -100,7 +100,7 @@ index 4c0d3d5381e74..b4ee354f484fb 100644
 +	 * The try_to_unmap() is only passed a hugetlb folio in the case
 +	 * where the hugetlb folio is poisoned.
 +	 */
-+	VM_WARN_ON_FOLIO(!folio_test_hwpoison(folio), folio);
++	VM_WARN_ON_ONCE_FOLIO(!folio_test_hwpoison(folio), folio);
 +	VM_WARN_ON_ONCE(!(flags & TTU_HWPOISON));
 +
 +	range.end = vma_address_end(&pvmw);
@@ -138,7 +138,7 @@ index 4c0d3d5381e74..b4ee354f484fb 100644
 +	if (!folio_test_anon(folio)) {
 +		struct mmu_gather tlb;
 +
-+		VM_WARN_ON(!(flags & TTU_RMAP_LOCKED));
++		VM_WARN_ON_ONCE(!(flags & TTU_RMAP_LOCKED));
 +		if (!hugetlb_vma_trylock_write(vma)) {
 +			ret = false;
 +			goto walk_done;
@@ -281,15 +281,12 @@ index 4c0d3d5381e74..b4ee354f484fb 100644
  			nr_pages = folio_unmap_pte_batch(folio, &pvmw, flags, pteval);
  			end_addr = address + nr_pages * PAGE_SIZE;
  			flush_cache_range(vma, address, end_addr);
-@@ -2205,20 +2228,11 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+@@ -2205,17 +2228,11 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
  		/* Update high watermark before we lower rss */
  		update_hiwater_rss(mm);
  
--		/*
--		 * With TTU_HWPOISON, we only expect small folios or hugetlb
--		 * folios here for now.
--		 */
-+		/* With TTU_HWPOISON, we only expect small folios here. */
+-		/* unmap_poisoned_folio() only refs order-0 or hugetlb folios */
++		/* unmap_poisoned_folio() only refs order-0 folios */
  		if (folio_test_hwpoison(folio) && (flags & TTU_HWPOISON)) {
  			pteval = swp_entry_to_pte(make_hwpoison_entry(subpage));
 -			if (folio_test_hugetlb(folio)) {
@@ -305,7 +302,7 @@ index 4c0d3d5381e74..b4ee354f484fb 100644
  		} else if (likely(pte_present(pteval)) && pte_unused(pteval) &&
  			   !userfaultfd_armed(vma)) {
  			/*
-@@ -2346,11 +2360,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+@@ -2343,11 +2360,7 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
  			add_mm_counter(mm, mm_counter_file(folio), -nr_pages);
  		}
  discard:
@@ -318,13 +315,13 @@ index 4c0d3d5381e74..b4ee354f484fb 100644
  		if (vma->vm_flags & VM_LOCKED)
  			mlock_drain_local();
  		folio_put_refs(folio, nr_pages);
-@@ -2398,7 +2408,8 @@ static int folio_not_mapped(struct folio *folio)
+@@ -2395,7 +2408,8 @@ static int folio_not_mapped(struct folio *folio)
  void try_to_unmap(struct folio *folio, enum ttu_flags flags)
  {
  	struct rmap_walk_control rwc = {
 -		.rmap_one = try_to_unmap_one,
 +		.rmap_one = folio_test_hugetlb(folio) ?
-+				try_to_unmap_hugetlb_one : try_to_unmap_one,
++				try_to_unmap_poisoned_hugetlb_one : try_to_unmap_one,
  		.arg = (void *)flags,
  		.done = folio_not_mapped,
  		.anon_lock = folio_lock_anon_vma_read,

@@ -1,0 +1,81 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Thu, 30 Jul 2026 16:51:46 +0900
+Subject: [PATCH] Documentation: zram: correct algo parameters configuration
+ documentation
+
+zram has always reset all previously set parameters for the given
+algorithm in comp_params_store().  Make documentation more clear and
+explicitly state that all relevant/necessary parameters should be set in
+one configuration write.
+
+Link: https://lore.kernel.org/20260730075158.1339787-1-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/blockdev/zram.rst | 34 ++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/admin-guide/blockdev/zram.rst b/Documentation/admin-guide/blockdev/zram.rst
+index 2f6bbfd991fe0..148b7cf3b924d 100644
+--- a/Documentation/admin-guide/blockdev/zram.rst
++++ b/Documentation/admin-guide/blockdev/zram.rst
+@@ -109,14 +109,41 @@ path to the `dict` along with other parameters::
+ 	#pass path to pre-trained zstd dictionary
+ 	echo "algo=zstd dict=/etc/dictionary" > /sys/block/zram0/algorithm_params
+ 
++	#pass path to pre-trained zstd dictionary and compression level
++	echo "algo=zstd level=8 dict=/etc/dictionary" > \
++		/sys/block/zram0/algorithm_params
++
+ 	#same, but using algorithm priority
++	echo "algo=zstd priority=1" > /sys/block/zram0/recomp_algorithm
+ 	echo "priority=1 dict=/etc/dictionary" > \
+ 		/sys/block/zram0/algorithm_params
+ 
+-	#pass path to pre-trained zstd dictionary and compression level
++Each write to `algorithm_params` replaces the entire set of parameters of
++the corresponding algorithm, parameters that are not listed in the write
++are reset to their default values.  Configure all of the parameters of an
++algorithm in one write::
++
++	#WRONG: the second write resets level back to its default value
++	echo "algo=zstd level=8" > /sys/block/zram0/algorithm_params
++	echo "algo=zstd dict=/etc/dictionary" > /sys/block/zram0/algorithm_params
++
++	#RIGHT
+ 	echo "algo=zstd level=8 dict=/etc/dictionary" > \
+ 		/sys/block/zram0/algorithm_params
+ 
++Select the compression algorithm before configuring its parameters.  The
++parameters of one algorithm are not necessarily valid for another one, so
++changing the algorithm of a particular priority resets that priority's
++parameters::
++
++	#WRONG: comp_algorithm write resets the previously configured level
++	echo "level=8" > /sys/block/zram0/algorithm_params
++	echo zstd > /sys/block/zram0/comp_algorithm
++
++	#RIGHT
++	echo zstd > /sys/block/zram0/comp_algorithm
++	echo "algo=zstd level=8" > /sys/block/zram0/algorithm_params
++
+ Parameters are algorithm specific: not all algorithms support pre-trained
+ dictionaries, not all algorithms support `level`. Furthermore, for certain
+ algorithms `level` controls the compression level (the higher the value the
+@@ -124,6 +151,11 @@ better the compression ratio, it even can take negatives values for some
+ algorithms), for other algorithms `level` is acceleration level (the higher
+ the value the lower the compression ratio).
+ 
++Parameters are handed over to the compression algorithm when the device is
++initialised, hence invalid parameters (or parameters that the selected
++algorithm does not support) are reported by the `disksize` write, and not
++by the `algorithm_params` write that has configured them.
++
+ Set Disksize
+ ============
+ 
+-- 
+2.47.3
+

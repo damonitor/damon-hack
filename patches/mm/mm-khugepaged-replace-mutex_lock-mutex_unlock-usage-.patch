@@ -1,5 +1,5 @@
 From: Jakov Novak <jakovnovak30@gmail.com>
-Date: Tue, 28 Jul 2026 22:46:37 +0200
+Date: Thu, 30 Jul 2026 22:47:24 +0200
 Subject: [PATCH] mm/khugepaged: replace mutex_lock/mutex_unlock usage with
  guard macro
 
@@ -10,7 +10,7 @@ guard macro.  This makes the code more readable (removing a goto
 statement) and makes it harder to introduce bugs in the future.  No
 functional changes introduced.
 
-Link: https://lore.kernel.org/20260728204636.20998-2-jakovnovak30@gmail.com
+Link: https://lore.kernel.org/20260730204724.16912-1-jakovnovak30@gmail.com
 Signed-off-by: Jakov Novak <jakovnovak30@gmail.com>
 Reviewed-by: Dev Jain <dev.jain@arm.com>
 Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
@@ -25,11 +25,11 @@ Cc: Nico Pache <npache@redhat.com>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 15 ++++++---------
- 1 file changed, 6 insertions(+), 9 deletions(-)
+ mm/khugepaged.c | 31 +++++++++++++++----------------
+ 1 file changed, 15 insertions(+), 16 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 27e8f3077e80f..13a692c470812 100644
+index 27e8f3077e80f..b237f6e7662a5 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -23,6 +23,7 @@
@@ -40,7 +40,7 @@ index 27e8f3077e80f..13a692c470812 100644
  
  #include <asm/tlb.h>
  #include "internal.h"
-@@ -3115,18 +3116,17 @@ void set_recommended_min_free_kbytes(void)
+@@ -3115,18 +3116,19 @@ void set_recommended_min_free_kbytes(void)
  
  int start_stop_khugepaged(void)
  {
@@ -49,20 +49,29 @@ index 27e8f3077e80f..13a692c470812 100644
 -	mutex_lock(&khugepaged_mutex);
 +	guard(mutex)(&khugepaged_mutex);
  	if (hugepage_enabled()) {
- 		if (!khugepaged_thread)
- 			khugepaged_thread = kthread_run(khugepaged, NULL,
- 							"khugepaged");
- 		if (IS_ERR(khugepaged_thread)) {
-+			int err;
- 			pr_err("khugepaged: kthread_run(khugepaged) failed\n");
- 			err = PTR_ERR(khugepaged_thread);
- 			khugepaged_thread = NULL;
+-		if (!khugepaged_thread)
+-			khugepaged_thread = kthread_run(khugepaged, NULL,
+-							"khugepaged");
+-		if (IS_ERR(khugepaged_thread)) {
+-			pr_err("khugepaged: kthread_run(khugepaged) failed\n");
+-			err = PTR_ERR(khugepaged_thread);
+-			khugepaged_thread = NULL;
 -			goto fail;
-+			return err;
++		if (!khugepaged_thread) {
++			struct task_struct *new_thread = kthread_run(khugepaged,
++								     NULL,
++								     "khugepaged");
++
++			if (IS_ERR(new_thread)) {
++				pr_err("khugepaged: kthread_run(khugepaged) failed\n");
++				return PTR_ERR(new_thread);
++			}
++
++			khugepaged_thread = new_thread;
  		}
  
  		if (!list_empty(&khugepaged_scan.mm_head))
-@@ -3136,17 +3136,14 @@ int start_stop_khugepaged(void)
+@@ -3136,17 +3138,14 @@ int start_stop_khugepaged(void)
  		khugepaged_thread = NULL;
  	}
  	set_recommended_min_free_kbytes();

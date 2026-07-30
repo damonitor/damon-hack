@@ -1,6 +1,40 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 28 Jul 2026 13:05:45 +0100
+Date: Thu, 30 Jul 2026 11:55:47 +0100
 Subject: [PATCH] mm/huge_memory: fix huge_zero_pfn race
+
+Patch series "mm/huge_memory: fix huge_zero_pfn race", v2.
+
+There is a subtle race in the reference-counted huge_zero_folio
+implementation.
+
+The fast path atomic logic fails to account for the fact that the shrinker
+(which drops the final huge_zero_refcount pin) can overwrite huge_zero_pfn
+with the ~0UL sentinel value in shrink_huge_zero_folio_scan() after a
+racing get_huge_zero_folio() installed a valid value there.
+
+This results in huge_zero_folio being correctly set but huge_zero_pfn
+being set incorrectly and thus is_huge_zero_pfn() and consequently
+is_huge_zero_pmd() will misidentify the huge zero folio as being an
+ordinary THP folio.
+
+This can result in the huge zero folio being split and otherwise treated
+incorrectly.
+
+The solution to this is very subtle as there is an atomic fast path, and
+thus ordering in weakly ordered architectures has to be treated very
+carefully.
+
+The first commit fixes the issue by introducing a spinlock around
+huge_zero_[pfn, folio, refcount] write, with careful consideration paid to
+load/store ordering in the fast path.  It is placed first and kept as
+small as possible so that it can be backported on its own.
+
+The second commit is a pure cleanup which reworks the
+CONFIG_PERSISTENT_HUGE_ZERO_FOLIO logic to better separate the persistent
+logic from the dynamically allocated one.
+
+
+This patch (of 2):
 
 If !CONFIG_PERSISTENT_HUGE_ZERO_FOLIO, the huge_zero_folio is refcounted
 by huge_zero_refcount and returned by mm_get_huge_zero_folio().
@@ -48,8 +82,7 @@ concurrent write of huge_zero_folio, huge_zero_pfn and huge_zero_refcount.
 There needs to be significant care taken here to ensure correctness:
 
 The fast path in get_huge_zero_folio() uses atomic_inc_not_zero(), which
-is outside of the critical section when
-!CONFIG_PERSISTENT_HUGE_ZERO_FOLIO, and means huge zero allocation is
+is outside of the critical section, and means huge zero allocation is
 gated on zero huge_zero_refcount.
 
 The fast path doesn't use huge_zero_lock, so the critical section is
@@ -70,19 +103,32 @@ So invariants are required - huge_zero_refcount MUST:
 
 Establish these by:
 
-* Only updating huge_zero_refcount in the huge_zero_lock critical section
-  in get_huge_zero_folio() and shrink_huge_zero_folio_scan().
+* Only setting huge_zero_refcount to zero or an absolute value in the
+  huge_zero_lock critical section in get_huge_zero_folio() and
+  shrink_huge_zero_folio_scan(), and always updating atomically there
+  and elsewhere.
 
 * Using atomic_set_release(&huge_zero_refcount) in get_huge_zero_folio()
   after huge_zero_[pfn, folio] are set. This is paired with
   atomic_inc_not_zero() to ensure atomic_inc_not_zero() only observes a
   non-zero value if huge_zero_[pfn, folio] are set.
 
-* Using atomic_cmpxchg() in shrink_huge_zero_folio_scan() to ensure that it
-  is set zero only when equal to 1 and set atomically.
+* Using atomic_cmpxchg() in shrink_huge_zero_folio_scan() (as before) to
+  ensure that it is set zero only when equal to 1 and set atomically.
 
 * atomic_cmpxchg() being fully ordered ensures this is done prior to
   huge_zero_[folio, pfn] being set to NULL and ~0UL respectively.
+
+Eliminate the retry loop in get_huge_zero_folio() as the atomic_cmpxchg()
+in shrink_huge_zero_folio_scan() is now performed under the lock, and
+replace with an equally locked atomic_inc() to set the reference count
+should the caller be raced on huge zero folio installation.
+
+folio_put() naturally implies a full memory barrier so its ordering is
+maintained correctly.
+
+The huge zero folio also cannot be released except when the shrinker does
+so as it is non-LRU and non-rmappable.
 
 Note that only the huge zero shrinker (via shrink_huge_zero_folio_scan())
 can actually set huge_zero_refcount to zero, which is the count of mm's
@@ -90,12 +136,14 @@ which have at least one huge zero folio installed plus one shrinker pin.
 
 Additionally convert a BUG_ON() to a VM_WARN_ON_ONCE().
 
-Link: https://lore.kernel.org/20260728-fix-refcounted-huge-zero-v1-2-3f261f5447b4@kernel.org
+Link: https://lore.kernel.org/20260730-fix-refcounted-huge-zero-v2-0-c5d8a41b317f@kernel.org
+Link: https://lore.kernel.org/20260730-fix-refcounted-huge-zero-v2-1-c5d8a41b317f@kernel.org
 Fixes: 3b77e8c8cde5 ("mm/thp: make is_huge_zero_pmd() safe and quicker")
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
-Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
 Reported-by: Hengbin Zhang <uqbarz@gmail.com>
 Closes: https://lore.kernel.org/linux-mm/20260727154001.4102341-1-uqbarz@gmail.com/
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
@@ -109,15 +157,14 @@ Cc: Pankaj Raghav <p.raghav@samsung.com>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Yang Shi <shy828301@gmail.com>
 Cc: Zi Yan <ziy@nvidia.com>
-Cc: Xueyuan Chen <xueyuan.chen@vivo.com>
-Cc: <stable@vger.kernel.org> # 6.18.x: dependent on prior commit
+Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/huge_memory.c | 42 ++++++++++++++++++++++++++++--------------
- 1 file changed, 28 insertions(+), 14 deletions(-)
+ mm/huge_memory.c | 43 +++++++++++++++++++++++++++++--------------
+ 1 file changed, 29 insertions(+), 14 deletions(-)
 
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 79100163ccd0a..ac108955299c1 100644
+index 8c1f35df0e919..bd9d01902562f 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
 @@ -41,6 +41,7 @@
@@ -128,15 +175,15 @@ index 79100163ccd0a..ac108955299c1 100644
  
  #include <asm/tlb.h>
  #include "internal.h"
-@@ -82,6 +83,7 @@ struct folio *huge_zero_folio __read_mostly;
- unsigned long huge_zero_pfn __read_mostly = HUGE_ZERO_UNSET_PFN;
- #ifndef CONFIG_PERSISTENT_HUGE_ZERO_FOLIO
+@@ -78,6 +79,7 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
+ static bool split_underused_thp = true;
+ 
  static atomic_t huge_zero_refcount;
 +static DEFINE_SPINLOCK(huge_zero_lock);
- static struct shrinker *huge_zero_folio_shrinker;
- #endif
- 
-@@ -270,7 +272,8 @@ void mm_put_huge_zero_folio(struct mm_struct *mm)
+ struct folio *huge_zero_folio __read_mostly;
+ unsigned long huge_zero_pfn __read_mostly = ~0UL;
+ unsigned long huge_anon_orders_always __read_mostly;
+@@ -224,7 +226,8 @@ unsigned long __thp_vma_allowable_orders(struct vm_area_struct *vma,
  static bool get_huge_zero_folio(void)
  {
  	struct folio *zero_folio;
@@ -146,13 +193,14 @@ index 79100163ccd0a..ac108955299c1 100644
  	if (likely(atomic_inc_not_zero(&huge_zero_refcount)))
  		return true;
  
-@@ -278,17 +281,21 @@ static bool get_huge_zero_folio(void)
- 	if (unlikely(!zero_folio))
- 		return false;
- 
+@@ -237,17 +240,22 @@ static bool get_huge_zero_folio(void)
+ 	}
+ 	/* Ensure zero folio won't have large_rmappable flag set. */
+ 	folio_clear_large_rmappable(zero_folio);
 -	preempt_disable();
 -	if (cmpxchg(&huge_zero_folio, NULL, zero_folio)) {
 -		preempt_enable();
++
 +	/* Paired with critical section in shrink_huge_zero_folio_scan(). */
 +	spin_lock(&huge_zero_lock);
 +	if (huge_zero_folio) {
@@ -175,7 +223,7 @@ index 79100163ccd0a..ac108955299c1 100644
  	count_vm_event(THP_ZERO_PAGE_ALLOC);
  	return true;
  }
-@@ -312,15 +319,22 @@ static unsigned long shrink_huge_zero_folio_count(struct shrinker *shrink,
+@@ -297,15 +305,22 @@ static unsigned long shrink_huge_zero_folio_count(struct shrinker *shrink,
  static unsigned long shrink_huge_zero_folio_scan(struct shrinker *shrink,
  						 struct shrink_control *sc)
  {
@@ -191,9 +239,9 @@ index 79100163ccd0a..ac108955299c1 100644
 +			return 0;
 +
 +		zero_folio = huge_zero_folio;
-+		VM_WARN_ON_ONCE(!huge_zero_folio);
++		VM_WARN_ON_ONCE(!zero_folio);
 +		WRITE_ONCE(huge_zero_folio, NULL);
- 		WRITE_ONCE(huge_zero_pfn, HUGE_ZERO_UNSET_PFN);
+ 		WRITE_ONCE(huge_zero_pfn, ~0UL);
 -		folio_put(zero_folio);
 -		return HPAGE_PMD_NR;
  	}
@@ -203,7 +251,7 @@ index 79100163ccd0a..ac108955299c1 100644
 +	return HPAGE_PMD_NR;
  }
  
- static int __init huge_zero_init(void)
+ static struct shrinker *huge_zero_folio_shrinker;
 -- 
 2.47.3
 
