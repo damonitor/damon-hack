@@ -1,0 +1,65 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 23 Jul 2026 07:41:01 -0700
+Subject: [PATCH] mm/damon/paddr: respect folio end for DAMOS actions except
+ STAT
+
+A few functions for applying DAMOS actions including pageout,
+lru_[de]prio and migrate_{hot,cold} in DAMON physical address space
+operation set (paddr) collect folios of the given region by getting the
+folio of region-internal addresses.  Then, those apply the action to the
+collected folios at once.  Those start from the region start address and
+advance the address by the size of the folio of the address until it
+becomes larger than the end address of the region.  If the start address
+is in the middle of a large folio, and if the next folios are small,
+some of the next folios could be missed.  Fix the issue by advancing the
+address to exactly the start address of the next folio.
+
+The user impact is that DAMOS action is unexpectedly applied to less
+memory.  Given the best effort nature of DAMON, it is no big problem,
+but it is clearly a bug that is better to be fixed.
+
+The issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260517234112.89245-1-sj@kernel.org
+
+Fixes: 3a06696305e7 ("mm/damon/ops: have damon_get_folio return folio even for tail pages")
+Cc: <stable@vger.kernel.org> # 6.15.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 8fb71183b76c0..e7a83fe102528 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -304,7 +304,7 @@ static unsigned long damon_pa_pageout(struct damon_region *r,
+ 		else
+ 			list_add(&folio->lru, &folio_list);
+ put_folio:
+-		addr += folio_size(folio);
++		addr = PFN_PHYS(folio_pfn(folio)) + folio_size(folio);
+ 		folio_put(folio);
+ 	}
+ 	if (install_young_filter)
+@@ -342,7 +342,7 @@ static inline unsigned long damon_pa_de_activate(
+ 			folio_deactivate(folio);
+ 		applied += folio_nr_pages(folio);
+ put_folio:
+-		addr += folio_size(folio);
++		addr = PFN_PHYS(folio_pfn(folio)) + folio_size(folio);
+ 		folio_put(folio);
+ 	}
+ 	s->last_applied = folio;
+@@ -390,7 +390,7 @@ static unsigned long damon_pa_migrate(struct damon_region *r,
+ 				folio_is_file_lru(folio));
+ 		list_add(&folio->lru, &folio_list);
+ put_folio:
+-		addr += folio_size(folio);
++		addr = PFN_PHYS(folio_pfn(folio)) + folio_size(folio);
+ 		folio_put(folio);
+ 	}
+ 	applied = damon_migrate_pages(&folio_list, s->target_nid);
+-- 
+2.47.3
+
