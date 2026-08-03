@@ -1,0 +1,68 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Sun, 2 Aug 2026 11:22:28 -0700
+Subject: [PATCH 1/2] mm/damon/reclaim: skip damon_call() if ctx has not started
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: <stable@vger.kernel.org>
+Cc: Liew Rui Yan <aethernet65535@gmail.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260803134646.16640-2-sj@kernel.org>
+
+DAMON_RECLAIM calls damon_call() for commit_inputs parameter user input
+if the DAMON context is initialized.  The context could be initialized,
+but not yet successfully started.  In the case, damon_call() could
+indefinitely hang.  Read the comment on damon_call() for more detail.
+Fix the problem by memorizing if the DAMON context has ever successfully
+started, and skip damon_call() if it has not.
+
+This issue can easily be reproduced by writing Y to commit_inputs on a
+system that DAMON_RECLAIM was not turned on before.
+
+Fixes: de3c60e1c831 ("mm/damon: add synchronous commit for commit_inputs")
+Cc: <stable@vger.kernel.org> # 7.2.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/reclaim.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/reclaim.c b/mm/damon/reclaim.c
+index 09e941d75f67d..45d5557cc575a 100644
+--- a/mm/damon/reclaim.c
++++ b/mm/damon/reclaim.c
+@@ -271,6 +271,8 @@ static int damon_reclaim_commit_inputs_fn(void *arg)
+ 	return damon_reclaim_apply_parameters();
+ }
+ 
++static bool damon_reclaim_damon_has_started;
++
+ static int damon_reclaim_commit_inputs_store(const char *val,
+ 					     const struct kernel_param *kp)
+ {
+@@ -291,11 +293,8 @@ static int damon_reclaim_commit_inputs_store(const char *val,
+ 	if (!commit_inputs_request)
+ 		return 0;
+ 
+-	/*
+-	 * Skip damon_call() if ctx is not initialized to avoid
+-	 * NULL pointer dereference.
+-	 */
+-	if (!ctx)
++	/* Skip damon_call() if ctx has not successfully started. */
++	if (!damon_reclaim_damon_has_started)
+ 		return -EINVAL;
+ 
+ 	err = damon_call(ctx, &control);
+@@ -344,6 +343,8 @@ static int damon_reclaim_turn(bool on)
+ 	err = damon_start(&ctx, 1, true);
+ 	if (err)
+ 		return err;
++	if (!damon_reclaim_damon_has_started)
++		damon_reclaim_damon_has_started = true;
+ 	return damon_call(ctx, &call_control);
+ }
+ 
+-- 
+2.47.3
