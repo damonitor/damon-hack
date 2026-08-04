@@ -1,10 +1,30 @@
 - baseline: v7.2-rc5-31-g62cc90241548d -> v7.2-rc5-31-g62cc90241548d (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 2 -> 2 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
+- mm-hotfixes-unstable: 2 -> 6 commits
+  - series: 0 (0) -> 2 (4)
     - no role, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 1 -> 1 commits (no change)
+    - maintainer, nobody: 1 -> 5 commits
+  - new commits
+    - series "mm/damon: avoid division by zero from damos_quota_score()". (2)
+      - 06386f7ab5cd "samples/damon/mtier: error out for zero quota goal target values (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260803134034.15217-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260803134034.15217-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260801202657.117135-1-sj@kernel.org [1]
+      - f489356fa8e4 "mm/damon/lru_sort: error out for >10000 active_mem_bp (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260803134034.15217-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260801213028.5127-1-sj@kernel.org [1]
+    - series "mm/damon/{reclaim,lru_sort}: fix commit_inputs infinite hang". (2)
+      - ac64d28c92cc "mm/damon/reclaim: skip damon_call() if ctx has not started (0/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260803134646.16640-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260803134646.16640-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260802173021.762-1-sj@kernel.org [1]
+      - c03820289b9f "mm/damon/lru_sort: skip damon_call() if ctx has not started (1/2)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260803134646.16640-3-sj@kernel.org
 - mm-stable: 72 -> 72 commits (no change)
   - series: 11 (71) -> 11 (71) (no change)
     - no role, no role : 1 -> 1 commits (no change)

@@ -1,0 +1,58 @@
+From: liyouhong <liyouhong@kylinos.cn>
+Date: Mon, 3 Aug 2026 14:00:01 +0800
+Subject: [PATCH] mm/memory-failure: fix refcount leak on soft-offline LBS
+ folio
+
+soft_offline_in_use_page() runs with a folio reference taken by
+get_hwpoison_page() (or by the caller when MF_COUNT_INCREASED is set, e.g.
+madvise(MADV_SOFT_OFFLINE)).
+
+made soft-offline skip splitting when min_order_for_split() is non-zero,
+so large-block-size folios stay intact.  That early return -EBUSY path
+never drops the reference.
+
+The other failure path is fine: try_to_split_thp_page(..., release=true)
+puts the page when the split itself fails.  memory_failure() also puts
+explicitly on its analogous unsplit path.
+
+Split the new_order != 0 case out and folio_put() before returning.
+
+Link: https://lore.kernel.org/20260803060001.800638-1-dayou5941@163.com
+Fixes: 689b8986776c ("mm/memory-failure: improve large block size folio handling")
+Signed-off-by: liyouhong <liyouhong@kylinos.cn>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory-failure.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index a8b03e2920ba8..de4cb75850a14 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -2870,9 +2870,19 @@ static int soft_offline_in_use_page(struct page *page)
+ 		 * NOTE: if minimizing the number of soft offline pages is
+ 		 * preferred, split it to non-zero new_order like it is done in
+ 		 * memory_failure().
++		 *
++		 * Drop the ref from get_hwpoison_page()/MF_COUNT_INCREASED;
++		 * try_to_split_thp_page(..., release=true) does that itself
++		 * when the split fails.
+ 		 */
+-		if (new_order || try_to_split_thp_page(page, /* new_order= */ 0,
+-						       /* release= */ true)) {
++		if (new_order) {
++			pr_info("%#lx: order-%d folio cannot soft offline\n",
++				pfn, new_order);
++			folio_put(folio);
++			return -EBUSY;
++		}
++		if (try_to_split_thp_page(page, /* new_order= */ 0,
++					 /* release= */ true)) {
+ 			pr_info("%#lx: thp split failed\n", pfn);
+ 			return -EBUSY;
+ 		}
+-- 
+2.47.3
+
