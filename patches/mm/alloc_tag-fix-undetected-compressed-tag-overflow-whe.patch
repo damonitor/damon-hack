@@ -1,5 +1,5 @@
 From: Hao Ge <hao.ge@linux.dev>
-Date: Tue, 4 Aug 2026 14:44:08 +0800
+Date: Wed, 5 Aug 2026 17:06:33 +0800
 Subject: [PATCH] alloc_tag: fix undetected compressed tag overflow when
  profiling is disabled
 
@@ -19,36 +19,48 @@ its position in the alloc_tag array.  update_page_tag_ref() masks it to
 alloc_tag_ref_mask before storing in page->flags.  Indices beyond the mask
 are truncated and idx_to_ref() resolves them to wrong tags.
 
+This silently corrupts /proc/allocinfo: allocated pages get attributed to
+the wrong call sites, so the statistics it reports are wrong.
+
 mem_alloc_profiling_enabled() and mem_profiling_compressed are
 independent.  Once compressed mode is established at boot, it stays active
 regardless of runtime toggles of mem_profiling.
 
-We therefore remove the mem_alloc_profiling_enabled() guard.
+Remove the mem_alloc_profiling_enabled() guard.  Also return an error
+after shutdown_mem_profiling() to skip vm_module_tags_populate(), as the
+mapped pages would never be reused - shutdown_mem_profiling() sets
+mem_profiling_support to false, so no future module load enters the
+codetag path.
 
-Link: https://lore.kernel.org/20260804064408.105033-1-hao.ge@linux.dev
+Link: https://lore.kernel.org/20260805090633.141001-1-hao.ge@linux.dev
 Fixes: 4835f747d3ed ("alloc_tag: support for page allocation tag compression")
 Signed-off-by: Hao Ge <hao.ge@linux.dev>
-Cc: Hao Ge <hao.ge@linux.dev>
-Cc: Abhishek Bapat <abhishekbapat@google.com>
+Acked-by: Suren Baghdasaryan <surenb@google.com>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/alloc_tag.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ mm/alloc_tag.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
 
 diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
-index 84c5c3783ca46..ae29e564bda9c 100644
+index 84c5c3783ca46..8f4da07d1a3f2 100644
 --- a/mm/alloc_tag.c
 +++ b/mm/alloc_tag.c
-@@ -904,7 +904,7 @@ static void *reserve_module_tags(struct module *mod, unsigned long size,
+@@ -904,10 +904,11 @@ static void *reserve_module_tags(struct module *mod, unsigned long size,
  		int grow_res;
  
  		module_tags.size = offset + size;
 -		if (mem_alloc_profiling_enabled() && !tags_addressable()) {
 +		if (!tags_addressable()) {
  			shutdown_mem_profiling(true);
- 			pr_warn("With module %s there are too many tags to fit in %d page flag bits. Memory allocation profiling is disabled!\n",
- 				mod->name, NR_UNUSED_PAGEFLAG_BITS);
+-			pr_warn("With module %s there are too many tags to fit in %d page flag bits. Memory allocation profiling is disabled!\n",
+-				mod->name, NR_UNUSED_PAGEFLAG_BITS);
++			pr_warn_once("With module %s there are too many tags to fit in %d page flag bits. Memory allocation profiling is disabled!\n",
++				     mod->name, NR_UNUSED_PAGEFLAG_BITS);
++			return ERR_PTR(-ENOMEM);
+ 		}
+ 
+ 		grow_res = vm_module_tags_populate();
 -- 
 2.47.3
 
