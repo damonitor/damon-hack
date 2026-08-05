@@ -1,12 +1,9 @@
 From: Usama Arif <usama.arif@linux.dev>
-Date: Mon, 20 Jul 2026 09:41:22 -0700
+Date: Mon, 27 Jul 2026 09:23:23 -0700
 Subject: [PATCH] mm/vmstat, mm/memcontrol: add _monotonic vmstat readers
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Patch series "mm/vmscan: reduce lru_lock contention via vmstat-derived
-scan-balance cost", v4.
+scan-balance cost", v5.
 
 The anon/file scan balance heuristic in get_scan_count() is fed by two
 scalars in struct lruvec (anon_cost, file_cost) that every reclaim
@@ -34,6 +31,16 @@ and aggregated through the memcg hierarchy.  Reclaim does not submit
 filesystem folios for writeback from this path, so pageout contributes
 only to anon cost.  WORKINGSET_RESTORE_* already captures the refault
 input.
+
+PGROTATE_* are also useful independently of scan balancing.  They are
+cumulative base-page events, not unique-page counts.  Classic inactive
+reclaim records scan work that does not produce immediate reclaim or
+demotion, while active reclaim records referenced executable file folios
+retained on the active list.  MGLRU records initially isolated pages that
+remain unreclaimed after its retry passes.  Read alongside pgscan_* and
+pgsteal_*, their deltas identify which LRU type is consuming reclaim CPU
+without producing immediate yield.  Unlike the existing pgrotated event,
+they do not imply a move to the inactive-list tail.
 
 prepare_scan_control() reads the raw cost signals without lru_lock:
 
@@ -117,78 +124,8 @@ in shrink_lruvec.
 
 The numbers above can be reproduced using the script in [1].
 
-== Series structure ==
 
-  1. mm/vmstat, mm/memcontrol: add _monotonic vmstat readers
-     Non-clamping siblings of lruvec_page_state() / node_page_state() /
-     global_node_page_state() for callers that snapshot a
-     monotonically-incremented counter and subtract two samples.
-     Unsigned modular subtraction on the raw wrapping value stays
-     correct across a signed-long overflow that the existing clamp
-     would otherwise turn into a huge spurious delta (a real hazard
-     on 32-bit).
-
-  2. mm/vmscan: reduce lru_lock contention via vmstat-derived
-     scan-balance cost
-     The optimization described above; samples PGROTATE_*,
-     NR_VMSCAN_WRITE (for anon) and WORKINGSET_RESTORE_* via
-     lruvec_page_state_monotonic() from patch 1. MGLRU also updates
-     PGROTATE_* so the counters remain meaningful with either reclaim
-     implementation, although MGLRU does not consume this cost signal.
-
-== Alternatives considered ==
-
-1. cost_lock for both producer and consumer (no vmstat indirection):
-   Keep the producer loop, just swap lru_lock for a new per-lruvec
-   cost_lock. Decouples cost from LRU manipulation, but producers
-   still synchronously contend on cost_lock, the parent_lruvec()
-   walk is still required (O(memcg-depth) acquisitions per recording,
-   now on cost_lock), and lru_reparent_memcg() still needs explicit
-   cost-splice. We can do much better and this series removes the
-   producer lock entirely and gets hierarchy propagation for "free"
-   via rstat.
-
-2. Attempt to switch to using MGLRU's scan model:
-   MGLRU has no anon_cost/file_cost at all. It replaces the cost
-   heuristic with generation-based aging: per-LRU sequence numbers
-   (min_seq/max_seq) age folios into generations, and the
-   older-generation type is the one to scan. So
-   lru_note_cost_unlock_irq() / lru_note_cost_refault() are simply
-   not called when lru_gen_enabled() — by design it sidesteps every
-   concern this patch addresses.
-   But MGLRU is not a substitute for fixing classic LRU:
-     - It relies on a lot of things including per-lruvec generation
-       lists, bloom filters, mm_struct walk infrastructure, working-set
-       protection tiers and a whole sysfs interface. Replacing
-       classic LRU's cost recording with the MGLRU model would
-       mean dragging in all of that.
-     - It changes scan-balance semantics, not just the locking, so
-       it's a heuristic change we would need to evaluate separately.
-       There are known regressions (database/anon-heavy workloads
-       sensitive to swappiness, or file-cache-dominated workloads
-       where MGLRU's bloom-filter protection differs from classic
-       refault tracking).
-   This series keeps classic LRU's scan-balance model and fixes where
-   its cost history is sampled and aged.
-
-3. Atomic cost counter:
-   lrusize/4 halving has no clean atomic form, and the parent
-   walk still has to run explicitly. Reusing vmstats gives per-CPU
-   aggregation AND rstat hierarchy propagation for free.
-
-4. Drop cost_lock from the existing patch and reuse lru_lock in the
-   consumer (prepare_scan_control()):
-   Saves 1 lock space per lruvec but re-couples the cost path to LRU
-   manipulation, though just from the consumer side this time.
-   prepare_scan_control() runs at the start of every shrink_lruvec()
-   cycle, so under sustained memory pressure it would take lru_lock
-   on the hot path and block isolate_lru_folios() /
-   move_folios_to_lru() / folio_add_lru() i.e. when reclaim is
-   in flight. A dedicated cost_lock is never taken by anyone except
-   the consumer cost calculation.
-
-
-This patch (of 2):
+This patch (of 3):
 
 lruvec_page_state(), node_page_state(), and global_node_page_state() all
 clamp negative reads to zero on CONFIG_SMP so that a transient per-CPU
@@ -219,18 +156,20 @@ The variants are only safe for monotonically-incremented counters.
 Non-monotonic page-count readers must keep using the existing clamped
 helpers so transient negative reads still present as zero.
 
-This is a prerequisite for the following patch which replaces the
-producer-side anon_cost/file_cost accumulators with a read-side
-accumulator in prepare_scan_control() that samples monotonic per-LRU
-vmstat counters (PGROTATE_*, PGRECLAIM_PAGEOUT_*, WORKINGSET_RESTORE_*)
-via lruvec_page_state_monotonic() and folds the unsigned modular delta
-into a per-lruvec cost_accum[].
+This is a prerequisite for a later patch which replaces the producer-side
+anon_cost/file_cost accumulators with a read-side accumulator in
+prepare_scan_control() that samples monotonic per-LRU vmstat counters
+(PGROTATE_*, NR_VMSCAN_WRITE, WORKINGSET_RESTORE_*) via
+lruvec_page_state_monotonic() and folds their unsigned modular deltas into
+lruvec->cost[].count.
 
-Link: https://lore.kernel.org/20260720164207.450685-2-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260727162550.2032-1-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260727162550.2032-2-usama.arif@linux.dev
 Link: https://gist.github.com/uarif1/a4eb33a86c5b2d7bbc55b42f0956e884 [1]
 Signed-off-by: Usama Arif <usama.arif@linux.dev>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
 Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Chris Li <chrisl@kernel.org>
@@ -245,7 +184,6 @@ Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
@@ -322,7 +260,7 @@ index 3c9c266cf782a..fb8c76289e024 100644
  {
  }
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
-index 6864b76456fb3..8472e37cbaf8b 100644
+index 6864b76456fb3..8a7bfcc8649f1 100644
 --- a/mm/memcontrol.c
 +++ b/mm/memcontrol.c
 @@ -508,6 +508,42 @@ unsigned long lruvec_page_state(struct lruvec *lruvec, enum node_stat_item idx)
@@ -344,9 +282,9 @@ index 6864b76456fb3..8472e37cbaf8b 100644
 + * Do NOT use for non-monotonic page-count reads where a transient negative
 + * reading from per-CPU delta skew must present as zero.
 + *
-+ * XXX: This helper (and its node/global peers) exists because we place
-+ * monotonically-incremented event counters (PGROTATE_*, PGRECLAIM_PAGEOUT_*)
-+ * into enum node_stat_item.
++ * XXX: This helper (and its node/global peers) exists because some
++ * monotonically-incremented event counters are stored in
++ * enum node_stat_item.
 + */
 +unsigned long lruvec_page_state_monotonic(struct lruvec *lruvec,
 +					  enum node_stat_item idx)

@@ -1,0 +1,54 @@
+From: Hao Ge <hao.ge@linux.dev>
+Date: Tue, 4 Aug 2026 14:44:08 +0800
+Subject: [PATCH] alloc_tag: fix undetected compressed tag overflow when
+ profiling is disabled
+
+In reserve_module_tags(), the tag overflow check is gated on
+mem_alloc_profiling_enabled():
+
+    if (mem_alloc_profiling_enabled() && !tags_addressable())
+
+If profiling is toggled off at runtime and a module is loaded whose tags
+exceed the compressed-mode limit, shutdown_mem_profiling() is skipped.
+vm_module_tags_populate() still maps memory for the tags and the module
+loads successfully, but the total tag count now exceeds what
+NR_UNUSED_PAGEFLAG_BITS can address.
+
+Once profiling is re-enabled, ref_to_idx() computes each tag's index as
+its position in the alloc_tag array.  update_page_tag_ref() masks it to
+alloc_tag_ref_mask before storing in page->flags.  Indices beyond the mask
+are truncated and idx_to_ref() resolves them to wrong tags.
+
+mem_alloc_profiling_enabled() and mem_profiling_compressed are
+independent.  Once compressed mode is established at boot, it stays active
+regardless of runtime toggles of mem_profiling.
+
+We therefore remove the mem_alloc_profiling_enabled() guard.
+
+Link: https://lore.kernel.org/20260804064408.105033-1-hao.ge@linux.dev
+Fixes: 4835f747d3ed ("alloc_tag: support for page allocation tag compression")
+Signed-off-by: Hao Ge <hao.ge@linux.dev>
+Cc: Hao Ge <hao.ge@linux.dev>
+Cc: Abhishek Bapat <abhishekbapat@google.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/alloc_tag.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index 84c5c3783ca46..ae29e564bda9c 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -904,7 +904,7 @@ static void *reserve_module_tags(struct module *mod, unsigned long size,
+ 		int grow_res;
+ 
+ 		module_tags.size = offset + size;
+-		if (mem_alloc_profiling_enabled() && !tags_addressable()) {
++		if (!tags_addressable()) {
+ 			shutdown_mem_profiling(true);
+ 			pr_warn("With module %s there are too many tags to fit in %d page flag bits. Memory allocation profiling is disabled!\n",
+ 				mod->name, NR_UNUSED_PAGEFLAG_BITS);
+-- 
+2.47.3
+

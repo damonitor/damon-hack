@@ -1,5 +1,5 @@
 From: Usama Arif <usama.arif@linux.dev>
-Date: Mon, 20 Jul 2026 09:41:23 -0700
+Date: Mon, 27 Jul 2026 09:23:25 -0700
 Subject: [PATCH] mm/vmscan: reduce lru_lock contention via vmstat-derived
  scan-balance cost
 
@@ -28,37 +28,19 @@ bumps and one comparison), but it contends with and causes contention for
 actual LRU manipulation.  The parent_lruvec() walk also multiplies
 cost-update overhead by memcg hierarchy depth.
 
-Replace the producer-side accumulators with a read-side accumulator fed
-from per-LRU vmstat counters.  The old producer formula was:
+The balance formula for anon and file, respectively, is this:
 
-  cost = nr_io * SWAP_CLUSTER_MAX + nr_rotated
+    cost = nr_io * SWAP_CLUSTER_MAX + nr_rotated
 
-Reuse NR_VMSCAN_WRITE for reclaim-driven anon pageout submissions.  It is
-already bumped by writeout() for the same successful outcome that fed
-reclaim_stat.nr_pageout.  Reclaim does not submit filesystem folios from
-this path, so there is no file pageout term.  Charge NR_VMSCAN_WRITE via
-lruvec_stat_mod_folio() and include it in memcg_node_stat_items so it can
-be sampled per lruvec and aggregated through the memcg hierarchy.
+Instead of recording cost and running averaging logic directly when these
+events occur, snapshot running vmstat counters once per reclaim cycle and
+derive the balance from event deltas since the last run.
 
-Add explicit PGROTATE_{ANON,FILE} node_stat counters for the remaining
-producer-local input.  They are bumped from shrink_inactive_list() by
-nr_scanned - nr_reclaimed and from shrink_active_list() by nr_rotated.
-WORKINGSET_RESTORE_{ANON,FILE} already captures the refault IO that
-lru_note_cost_refault() used to bill.
-
-Add a per-side struct lru_cost { count, last_rotated, last_io } to struct
-lruvec.  In prepare_scan_control() the two monotonic inputs are sampled
-separately - rotated from PGROTATE_ANON/FILE, io from
-WORKINGSET_RESTORE_BASE + f plus (for anon) NR_VMSCAN_WRITE - and the raw
-per-side deltas are computed against cost->last_rotated and cost->last_io
-before the SWAP_CLUSTER_MAX IO weighting is applied.  Extracting the
-deltas from the individual counters (rather than from a pre-weighted sum)
-keeps the unsigned modular subtraction bounded by the true per-counter
-growth, so a signed-long wraparound of any underlying vmstat still yields
-the correct delta on 32-bit.  The weighted delta is folded into
-cost->count.  Since one vmstat delta can cover many producer events
-between reclaim passes, halve cost->count on both sides until their sum is
-back within the lrusize/4 bound instead of halving only once.
+Use PGROTATE_* from the preceding patch for the rotation input.
+WORKINGSET_RESTORE_* and NR_VMSCAN_WRITE provide the remaining event
+counters.  Charge NR_VMSCAN_WRITE through lruvec stats so all inputs can
+be sampled per lruvec and aggregated through the memcg hierarchy.  This is
+overall cheaper and has fewer lock acquisition sites.
 
 Moving accumulation and decay to the reclaim side also improves the cost
 model across reclaim gaps.  With producer-side decay, events that happen
@@ -74,13 +56,6 @@ A dedicated per-lruvec spinlock, cost_lock, serialises the delta
 extraction, the cost->count update and the halving loop against concurrent
 reclaimers in the same memcg+node.
 
-Hierarchy aggregation is now implicit in the vmstat accounting.  The
-producer-side parent_lruvec() walk and lru_reparent_memcg() cost splice
-existed only because anon_cost/file_cost were private lruvec fields.  With
-the cost expressed as lruvec vmstats, rstat propagates the underlying
-counters through the memcg hierarchy and prepare_scan_control() consumes
-the same ratelimited rstat view as the surrounding reclaim heuristics.
-
 NR_VMSCAN_WRITE is accounted at writeout(), so reclaim_stat.nr_pageout is
 no longer needed and is removed.
 
@@ -95,13 +70,15 @@ prepare_scan_control() and get_scan_count() are short-circuited on the
 MGLRU paths, and MGLRU's own type/tier selection comes from
 read_ctrl_pos() on lrugen->{avg_refaulted,avg_total,refaulted,evicted},
 not from anon_cost/file_cost).  NR_VMSCAN_WRITE naturally covers writeout
-from either reclaim implementation, and PGROTATE_{ANON,FILE} are bumped
-from evict_folios() so per-memcg observability of rotation-driven reclaim
-work stays consistent across both implementations.
+from either reclaim implementation.  The preceding patch also bumps
+PGROTATE_{ANON,FILE} from evict_folios(), so rotation-driven reclaim work
+is accounted consistently across both implementations.
 
-Link: https://lore.kernel.org/20260720164207.450685-3-usama.arif@linux.dev
+Link: https://lore.kernel.org/20260727162550.2032-4-usama.arif@linux.dev
 Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
 Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Chris Li <chrisl@kernel.org>
@@ -115,39 +92,27 @@ Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Muchun Song <muchun.song@linux.dev>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Roman Gushchin <roman.gushchin@linux.dev>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/mmzone.h | 15 ++++++-
+ include/linux/mmzone.h | 13 +++++--
  include/linux/vmstat.h |  1 -
- mm/folio.c             | 69 -------------------------------
+ mm/folio.c             | 69 ------------------------------------
  mm/internal.h          |  3 --
- mm/memcontrol-v1.c     |  4 +-
- mm/memcontrol.c        |  5 ++-
+ mm/memcontrol-v1.c     |  4 +--
+ mm/memcontrol.c        |  1 +
  mm/mmzone.c            |  1 +
- mm/vmscan.c            | 93 +++++++++++++++++++++++++++++++++++-------
- mm/vmstat.c            |  2 +
+ mm/vmscan.c            | 79 +++++++++++++++++++++++++++++++++++-------
  mm/workingset.c        |  5 ---
- 10 files changed, 101 insertions(+), 97 deletions(-)
+ 9 files changed, 81 insertions(+), 95 deletions(-)
 
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
-index 0507193b3ae34..158c1fba23934 100644
+index 1cc5ea506b7c1..158c1fba23934 100644
 --- a/include/linux/mmzone.h
 +++ b/include/linux/mmzone.h
-@@ -323,6 +323,8 @@ enum node_stat_item {
- 	PGSCAN_PROACTIVE,
- 	PGSCAN_ANON,
- 	PGSCAN_FILE,
-+	PGROTATE_ANON,
-+	PGROTATE_FILE,
- 	PGREFILL,
- #ifdef CONFIG_HUGETLB_PAGE
- 	NR_HUGETLB,
-@@ -755,6 +757,12 @@ void lru_gen_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent,
+@@ -757,6 +757,12 @@ void lru_gen_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent,
  
  #endif /* CONFIG_LRU_GEN */
  
@@ -160,7 +125,7 @@ index 0507193b3ae34..158c1fba23934 100644
  struct lruvec {
  	struct list_head		lists[NR_LRU_LISTS];
  	/* per lruvec lru_lock for memcg */
-@@ -763,9 +771,12 @@ struct lruvec {
+@@ -765,9 +771,12 @@ struct lruvec {
  	 * These track the cost of reclaiming one LRU - file or anon -
  	 * over the other. As the observed cost of reclaiming one LRU
  	 * increases, the reclaim scan balance tips toward the other.
@@ -304,7 +269,7 @@ index 2dc599484d006..835fc8e511844 100644
  		seq_buf_printf(s, "anon_cost %lu\n", anon_cost);
  		seq_buf_printf(s, "file_cost %lu\n", file_cost);
 diff --git a/mm/memcontrol.c b/mm/memcontrol.c
-index 8472e37cbaf8b..6b3d3e14a2f5b 100644
+index 96158314297e9..ab50aae248bc8 100644
 --- a/mm/memcontrol.c
 +++ b/mm/memcontrol.c
 @@ -399,6 +399,7 @@ static const unsigned int memcg_node_stat_items[] = {
@@ -315,24 +280,6 @@ index 8472e37cbaf8b..6b3d3e14a2f5b 100644
  	NR_VMALLOC,
  	NR_KERNEL_STACK_KB,
  	NR_PAGETABLE,
-@@ -425,6 +426,8 @@ static const unsigned int memcg_node_stat_items[] = {
- 	PGSCAN_PROACTIVE,
- 	PGSCAN_ANON,
- 	PGSCAN_FILE,
-+	PGROTATE_ANON,
-+	PGROTATE_FILE,
- 	PGREFILL,
- #ifdef CONFIG_HUGETLB_PAGE
- 	NR_HUGETLB,
-@@ -524,7 +527,7 @@ unsigned long lruvec_page_state(struct lruvec *lruvec, enum node_stat_item idx)
-  * reading from per-CPU delta skew must present as zero.
-  *
-  * XXX: This helper (and its node/global peers) exists because we place
-- * monotonically-incremented event counters (PGROTATE_*, PGRECLAIM_PAGEOUT_*)
-+ * monotonically-incremented event counters (NR_VMSCAN_WRITE and PGROTATE_*)
-  * into enum node_stat_item.
-  */
- unsigned long lruvec_page_state_monotonic(struct lruvec *lruvec,
 diff --git a/mm/mmzone.c b/mm/mmzone.c
 index 59dc3f2076a6d..9cc9ef588580d 100644
 --- a/mm/mmzone.c
@@ -346,7 +293,7 @@ index 59dc3f2076a6d..9cc9ef588580d 100644
  
  	for_each_lru(lru)
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index c3d9ed6df730b..17d2b793cbfc4 100644
+index d86551a3f6130..17d2b793cbfc4 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -670,7 +670,7 @@ static pageout_t pageout(struct swap_io_ctx *ctx, struct address_space *mapping,
@@ -367,13 +314,9 @@ index c3d9ed6df730b..17d2b793cbfc4 100644
  				if (folio_test_writeback(folio))
  					goto keep;
  				if (folio_test_dirty(folio))
-@@ -2036,10 +2034,10 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
- 	item = PGSTEAL_KSWAPD + reclaimer_offset(sc);
- 	mod_lruvec_state(lruvec, item, nr_reclaimed);
- 	mod_lruvec_state(lruvec, PGSTEAL_ANON + file, nr_reclaimed);
-+	if (nr_scanned > nr_reclaimed)
-+		mod_lruvec_state(lruvec, PGROTATE_ANON + file,
-+				 nr_scanned - nr_reclaimed);
+@@ -2040,9 +2038,6 @@ static unsigned long shrink_inactive_list(unsigned long nr_to_scan,
+ 		mod_lruvec_state(lruvec, PGROTATE_ANON + file,
+ 				 nr_scanned - nr_reclaimed);
  
 -	lruvec_lock_irq(lruvec);
 -	lru_note_cost_unlock_irq(lruvec, file, stat.nr_pageout,
@@ -381,19 +324,16 @@ index c3d9ed6df730b..17d2b793cbfc4 100644
  	handle_reclaim_writeback(nr_taken, pgdat, sc, &stat);
  	trace_mm_vmscan_lru_shrink_inactive(pgdat->node_id,
  			nr_scanned, nr_reclaimed, &stat, sc->priority, file);
-@@ -2145,9 +2143,9 @@ static void shrink_active_list(unsigned long nr_to_scan,
- 	count_vm_events(PGDEACTIVATE, nr_deactivate);
- 	count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
- 	mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
-+	if (nr_rotated)
-+		mod_lruvec_state(lruvec, PGROTATE_ANON + file, nr_rotated);
+@@ -2151,8 +2146,6 @@ static void shrink_active_list(unsigned long nr_to_scan,
+ 	if (nr_rotated)
+ 		mod_lruvec_state(lruvec, PGROTATE_ANON + file, nr_rotated);
  
 -	lruvec_lock_irq(lruvec);
 -	lru_note_cost_unlock_irq(lruvec, file, 0, nr_rotated);
  	trace_mm_vmscan_lru_shrink_active(pgdat->node_id, nr_taken, nr_activate,
  			nr_deactivate, nr_rotated, sc->priority, file);
  }
-@@ -2280,8 +2278,10 @@ enum scan_balance {
+@@ -2285,8 +2278,10 @@ enum scan_balance {
  
  static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
  {
@@ -405,7 +345,7 @@ index c3d9ed6df730b..17d2b793cbfc4 100644
  
  	if (lru_gen_enabled() && !lru_gen_switching())
  		return;
-@@ -2297,11 +2297,69 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
+@@ -2302,11 +2297,69 @@ static void prepare_scan_control(pg_data_t *pgdat, struct scan_control *sc)
  
  	/*
  	 * Determine the scan balance between anon and file LRUs.
@@ -479,56 +419,6 @@ index c3d9ed6df730b..17d2b793cbfc4 100644
  
  	/*
  	 * Target desirable inactive:active list ratios for the anon
-@@ -4826,7 +4884,8 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
- 	struct reclaim_stat stat;
- 	struct lru_gen_mm_walk *walk;
- 	int scanned, reclaimed;
--	int isolated = 0, type, type_scanned;
-+	int isolated = 0, nr_isolated = 0, type, type_scanned;
-+	unsigned long total_reclaimed = 0;
- 	bool skip_retry = false;
- 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
- 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-@@ -4838,6 +4897,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
- 
- 	scanned = isolate_folios(nr_to_scan, lruvec, sc, swappiness,
- 				 &list, &isolated, &type, &type_scanned);
-+	nr_isolated = isolated;
- 
- 	/* Scanning may have emptied the oldest gen, flush it */
- 	if (scanned)
-@@ -4850,6 +4910,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
- retry:
- 	reclaimed = shrink_folio_list(&list, pgdat, sc, &stat, false, memcg);
- 	sc->nr_reclaimed += reclaimed;
-+	total_reclaimed += reclaimed;
- 	/* Retry pass is only meant for clean folios without new isolation */
- 	if (isolated)
- 		handle_reclaim_writeback(isolated, pgdat, sc, &stat);
-@@ -4901,6 +4962,10 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
- 		goto retry;
- 	}
- 
-+	if (nr_isolated > total_reclaimed)
-+		mod_lruvec_state(lruvec, PGROTATE_ANON + type,
-+				 nr_isolated - total_reclaimed);
-+
- 	return scanned;
- }
- 
-diff --git a/mm/vmstat.c b/mm/vmstat.c
-index 9c50f0f59f572..cb57714539fb5 100644
---- a/mm/vmstat.c
-+++ b/mm/vmstat.c
-@@ -1301,6 +1301,8 @@ const char * const vmstat_text[] = {
- 	[I(PGSCAN_PROACTIVE)]			= "pgscan_proactive",
- 	[I(PGSCAN_ANON)]			= "pgscan_anon",
- 	[I(PGSCAN_FILE)]			= "pgscan_file",
-+	[I(PGROTATE_ANON)]			= "pgrotate_anon",
-+	[I(PGROTATE_FILE)]			= "pgrotate_file",
- 	[I(PGREFILL)]				= "pgrefill",
- #ifdef CONFIG_HUGETLB_PAGE
- 	[I(NR_HUGETLB)]				= "nr_hugetlb",
 diff --git a/mm/workingset.c b/mm/workingset.c
 index f351798e723ac..7ac2b88c80ae5 100644
 --- a/mm/workingset.c

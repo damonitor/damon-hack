@@ -1,5 +1,5 @@
 From: Warren Xiong <warren.xiong@ugreen.com>
-Date: Mon, 3 Aug 2026 09:30:15 +0800
+Date: Tue, 4 Aug 2026 20:16:58 +0800
 Subject: [PATCH] selftests/mm: read memory information without popen
 
 read_memory_info() invokes two shell pipelines to obtain MemFree and
@@ -13,35 +13,27 @@ dependencies on external commands.
 
 The compaction test continues to pass after this change.
 
-Link: https://lore.kernel.org/1785720615-5826-1-git-send-email-warren.xiong@ugreen.com
+Link: https://lore.kernel.org/1785845818-3131-1-git-send-email-warren.xiong@ugreen.com
 Signed-off-by: Warren Xiong <warren.xiong@ugreen.com>
-Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
-Cc: David Hildenbrand <david@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- tools/testing/selftests/mm/compaction_test.c | 43 ++++++++++++--------
- 1 file changed, 27 insertions(+), 16 deletions(-)
+ tools/testing/selftests/mm/compaction_test.c | 38 +++++++++++---------
+ 1 file changed, 21 insertions(+), 17 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/compaction_test.c b/tools/testing/selftests/mm/compaction_test.c
-index 5b582588e015d..0df2000f4a2b1 100644
+index 5b582588e015d..30d4ace7155ae 100644
 --- a/tools/testing/selftests/mm/compaction_test.c
 +++ b/tools/testing/selftests/mm/compaction_test.c
-@@ -7,6 +7,7 @@
-  * allocated.
-  */
- 
-+#include <stdbool.h>
- #include <stdio.h>
- #include <stdlib.h>
- #include <sys/mman.h>
-@@ -29,30 +30,40 @@ struct map_list {
+@@ -29,30 +29,34 @@ struct map_list {
  
  int read_memory_info(unsigned long *memfree, unsigned long *hugepagesize)
  {
@@ -49,8 +41,7 @@ index 5b582588e015d..0df2000f4a2b1 100644
 -	char *cmd = "cat /proc/meminfo | grep -i memfree | grep -o '[0-9]*'";
 -	FILE *cmdfile = popen(cmd, "r");
 +	char buffer[256];
-+	bool memfree_found = false;
-+	bool hugepagesize_found = false;
++	int found = 0;
 +	FILE *file;
 +	int ret = -1;
  
@@ -64,13 +55,7 @@ index 5b582588e015d..0df2000f4a2b1 100644
  	}
  
 -	pclose(cmdfile);
-+	while (fgets(buffer, sizeof(buffer), file)) {
-+		if (sscanf(buffer, "MemFree: %lu kB", memfree) == 1)
-+			memfree_found = true;
-+		else if (sscanf(buffer, "Hugepagesize: %lu kB",
-+				hugepagesize) == 1)
-+			hugepagesize_found = true;
- 
+-
 -	*memfree = atoll(buffer);
 -	cmd = "cat /proc/meminfo | grep -i hugepagesize | grep -o '[0-9]*'";
 -	cmdfile = popen(cmd, "r");
@@ -78,10 +63,10 @@ index 5b582588e015d..0df2000f4a2b1 100644
 -	if (!(fgets(buffer, sizeof(buffer), cmdfile))) {
 -		ksft_print_msg("Failed to read meminfo: %s\n", strerror(errno));
 -		return -1;
-+		if (memfree_found && hugepagesize_found) {
-+			ret = 0;
-+			break;
-+		}
++	while (fgets(buffer, sizeof(buffer), file) && found != 2) {
++		if (sscanf(buffer, "MemFree: %lu kB", memfree) == 1 ||
++		    sscanf(buffer, "Hugepagesize: %lu kB", hugepagesize) == 1)
++			found++;
  	}
  
 -	pclose(cmdfile);
@@ -89,8 +74,10 @@ index 5b582588e015d..0df2000f4a2b1 100644
 +	if (ferror(file))
 +		ksft_print_msg("Failed to read /proc/meminfo: %s\n",
 +			       strerror(errno));
-+	else if (ret)
++	else if (found != 2)
 +		ksft_print_msg("Failed to parse /proc/meminfo\n");
++	else
++		ret = 0;
  
 -	return 0;
 +	fclose(file);

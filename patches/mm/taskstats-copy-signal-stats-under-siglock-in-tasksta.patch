@@ -1,0 +1,82 @@
+From: Bradley Morgan <include@grrlz.net>
+Date: Tue, 4 Aug 2026 09:34:00 +0000
+Subject: [PATCH] taskstats: copy signal->stats under siglock in taskstats_exit
+
+taskstats_exit() copies tsk->signal->stats into the exit reply without
+taking any lock.  Every other writer of this struct holds sighand->siglock
+before touching it, and this copy does not.
+
+The copy happens on the last thread of a thread group that exits.
+group_dead being 1 only says that every thread has dropped signal->live,
+it does not say how far the other threads got in do_exit().  One of them
+can still be inside fill_tgid_exit() adding its counters to the struct
+while the last thread copies it out, so the copy can read the struct in
+the middle of an update.
+
+The commit that added the copy assumed no locking was needed because the
+group was dead:
+
+	/* No locking needed for tsk->signal->stats since
+	   group is dead */
+
+but at that point the other threads have not necessarily finished
+their exit path.
+
+cpu0 (thread A, not last)        cpu1 (thread B, last)
+===========================      ==============================
+atomic_dec(&signal->live)        atomic_dec(&signal->live) -> 0
+group_dead = 0                   group_dead = 1
+...                              taskstats_exit(tsk, 1)
+taskstats_exit(tsk, 0)           fill_tgid_exit(tsk) [siglock]
+fill_tgid_exit(tsk)              memcpy(stats, signal->stats)
+  spin_lock(siglock)               reads ac_utime (new)
+  stats->ac_utime += x             reads ac_stime (old)
+  stats->ac_stime += y             torn snapshot -> netlink
+  spin_unlock(siglock)
+
+The listeners receive a partially updated tgid snapshot, with some fields
+from before the concurrent update and some from after.  There is no crash
+or splat, which is likely why this went unnoticed since 2006.  A userspace
+model of the same shape, writer under a lock and a lockless memcpy reader,
+produces millions of torn reads in a few seconds.
+
+Take siglock around the copy like every other access does.  sighand is
+still alive here because taskstats_exit() runs before exit_notify(), and
+fill_tgid_exit() already takes this same lock earlier in this function.
+
+Link: https://lore.kernel.org/20260804093400.3922-1-include@grrlz.net
+Fixes: ad4ecbcba728 ("[PATCH] delay accounting taskstats interface send tgid once")
+Signed-off-by: Bradley Morgan <include@grrlz.net>
+Cc: Balbir Singh <bsingharora@gmail.com>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/taskstats.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/kernel/taskstats.c b/kernel/taskstats.c
+index f31df72f0e9df..9a48827e22bce 100644
+--- a/kernel/taskstats.c
++++ b/kernel/taskstats.c
+@@ -590,6 +590,7 @@ void taskstats_exit(struct task_struct *tsk, int group_dead)
+ 	struct sk_buff *rep_skb;
+ 	size_t size;
+ 	int is_thread_group;
++	unsigned long flags;
+ 
+ 	if (!family_registered)
+ 		return;
+@@ -635,7 +636,10 @@ void taskstats_exit(struct task_struct *tsk, int group_dead)
+ 	if (!stats)
+ 		goto err;
+ 
++	/* This was racy before, copy the stats under siglock. */
++	spin_lock_irqsave(&tsk->sighand->siglock, flags);
+ 	memcpy(stats, tsk->signal->stats, sizeof(*stats));
++	spin_unlock_irqrestore(&tsk->sighand->siglock, flags);
+ 	stats->version = TASKSTATS_VERSION;
+ 
+ send:
+-- 
+2.47.3
+
