@@ -5,17 +5,185 @@
   - series: 2 (4) -> 2 (4) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
     - maintainer, nobody: 5 -> 5 commits (no change)
-- mm-stable: 72 -> 72 commits (no change)
-  - series: 11 (71) -> 11 (71) (no change)
+- mm-stable: 72 -> 111 commits
+  - series: 11 (71) -> 14 (109)
     - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 14 -> 14 commits (no change)
-    - maintainer, nobody: 51 -> 51 commits (no change)
+    - no role, maintainer: 14 -> 15 commits
+    - reviewer, maintainer: 0 -> 1 commits
+    - maintainer, nobody: 51 -> 88 commits
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-unstable: 74 -> 74 commits (no change)
-  - series: 7 (65) -> 7 (65) (no change)
-    - no role, maintainer: 10 -> 10 commits (no change)
-    - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 63 -> 63 commits (no change)
+  - changed commits
+    - d25711a9f32a "selftests/damon: check correct path in ensure_file() not_exist case"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260706134305.5224-1-a929244872@163.com
+    - series "mm/damon: refactor damon_{start,stop,commit}() for simple error handling". (11)
+      - 5bf9c1f3a97e "mm/damon/core: stop ctxs in damon_start() before returning an error (0/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260706140628.87414-2-sj@kernel.org
+      - 5c5df7aa649a "samples/damon/mtier: do not stop first context for damon_start() failure (1/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-3-sj@kernel.org
+      - a0f1e3187399 "mm/damon/core: make damon_stop() never fail (2/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-4-sj@kernel.org
+      - 1441fc0a2538 "mm/damon/sysfs: ignore damon_stop() return value (3/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-5-sj@kernel.org
+      - 3d8837245705 "mm/damon/reclaim: ignore damon_stop() return value (4/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-6-sj@kernel.org
+      - c8518b971312 "mm/damon/lru_sort: ignore damon_stop() return value (5/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-7-sj@kernel.org
+      - a4d91b8254a9 "mm/damon/core: change damon_stop() return type to void (6/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-8-sj@kernel.org
+      - 3e734a0514f9 "samples/damon/mtier: stop all contexts with single damon_stop() call (7/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-9-sj@kernel.org
+      - d079b6b890d1 "mm/damon/core: wait ctx stop in damon_call() before reruning an error (8/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-10-sj@kernel.org
+      - cfd843b29929 "samples/damon/wsse: do not stop ctx for damon_call() failure (9/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-11-sj@kernel.org
+      - b1cc60c13be0 "samples/damon/prcl: do not stop DAMON for damon_call() failure (10/11)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260706140628.87414-12-sj@kernel.org
+    - series "mm/damon: update probe hits for runtime parameter commits". (7)
+      - f3ab162a921c "mm/damon/core: remove comment and test for nr_to_bp() divide-by-zero (0/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260708135359.122587-2-sj@kernel.org
+      - 571cc9a34ef6 "mm/damon/core: s/damon_max_nr_accesses()/damon_nr_samples_per_aggr()/ (1/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-3-sj@kernel.org
+      - 71599dc25351 "mm/damon/core: s/accesses_bp_to_nr_accesses/sample_bp_to_count/ (2/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-4-sj@kernel.org
+      - f9088c9845e7 "mm/damon/core: s/nr_accesses_to_accesses_bp/sample_count_to_bp/ (3/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-5-sj@kernel.org
+      - 84113a30a8a3 "mm/damon/core: s/nr_accesses_for_new_attrs/nr_samples_for_new_attrs/ (4/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-6-sj@kernel.org
+      - e06b7f0cf8c8 "mm/damon/core: update probe hits for new parameter commit (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-7-sj@kernel.org
+      - d59bf2653c15 "mm/damon/core: handle unreset probe_hits in probe_hits_mvsum() (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260708135359.122587-8-sj@kernel.org
+    - series "mm/damon: introduce data attributes only monitoring". (19)
+      - 37aae41c1056 "mm/damon/core: introduce damon_probe->weight (0/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260710134651.18084-2-sj@kernel.org
+        - Link: https://github.com/damonitor/damo [1]
+        - Link: https://lore.kernel.org/20260525225208.1179-1-sj@kernel.org/ [2]
+      - 1138ec78dc6d "mm/damon/core: ask apply_probes() ops callback to set sampling address (1/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-3-sj@kernel.org
+      - a75de62a5f2b "mm/damon/paddr: set samples in apply_probes() if requested (2/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-4-sj@kernel.org
+      - d235513a7c6b "mm/damon/core: ask apply_probe() to return max probe hits weighted sum (3/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-5-sj@kernel.org
+      - cfe9e8c738d9 "mm/damon/core: implement damon_probe_hits_wsum() (4/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-6-sj@kernel.org
+      - 3858025f48cf "mm/damon/paddr: respect return_max_wsum (5/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-7-sj@kernel.org
+      - e1f150d41516 "mm/damon/core: use abs_diff() instead of abs() (6/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-8-sj@kernel.org
+        - Link: https://lore.kernel.org/20260705213817.100841-1-sj@kernel.org/ [1]
+      - 0d1daaed8bea "mm/damon/core: extend merge function to work with probe hits (7/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-9-sj@kernel.org
+      - 93508425db11 "mm/damon/core: disallow probe_hits overflow on attrs only monitoring (8/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-10-sj@kernel.org
+      - 23c0623f802b "mm/damon/core: validate params for probe hits weighted sum overflow (9/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-11-sj@kernel.org
+      - 05c978da7f02 "mm/damon/core: disable access monitoring when probe weights are set (10/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-12-sj@kernel.org
+      - a8ba965a4cbb "mm/damon/core: set samples in apply_probes() if probe weights are set (11/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-13-sj@kernel.org
+      - b9bc678bfb6b "mm/damon/core: s/max_nr_accesses/max_merge_score/ in kdamond_fn() (12/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-14-sj@kernel.org
+      - db697312bb57 "mm/damon/core: get merge threshold from probe hits when weights are set (13/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-15-sj@kernel.org
+      - 8d5e0ebac9e7 "mm/damon/core: implement damon_has_probe_weight() (14/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-16-sj@kernel.org
+      - 2430a8d5172c "mm/damon/sysfs: implement probe/weight file (15/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-17-sj@kernel.org
+      - f10489d2ef8e "Docs/mm/damon/design: document attrs-only monitoring (16/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-18-sj@kernel.org
+      - 3baf78e04b0b "Docs/admin-guide/mm/damon/usage: document weight sysfs file (17/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-19-sj@kernel.org
+      - ac59b45efd3c "Docs/ABI/damon: document probe weight file (18/19)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710134651.18084-20-sj@kernel.org
+    - series "mm: make VMA page offset handling more consistent", v2. (33)
+      - 5872168de5d5 "mm/vma: use vma_start_pgoff(), linear_page_index() in mm code (17/33)"
+        - Authored by a reviewer, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260710-b4-pre-scalable-cow-v2-18-2a5aa403d977@kernel.org
+- mm-unstable: 74 -> 35 commits
+  - series: 7 (65) -> 4 (27)
+    - no role, maintainer: 10 -> 9 commits
+    - reviewer, maintainer: 1 -> 0 commits
+    - maintainer, nobody: 63 -> 26 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
