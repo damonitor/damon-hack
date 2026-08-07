@@ -1,50 +1,55 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Mon, 20 Jul 2026 15:38:35 +0100
-Subject: [PATCH] mm/rmap: use virt pgoff for MAP_PRIVATE file-backed anon
+Date: Thu, 6 Aug 2026 21:21:39 +0100
+Subject: [PATCH] mm/rmap: use anon pgoff to track MAP_PRIVATE file-backed anon
  folios
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-Currently, anonymous folios belonging to CoW'd MAP_PRIVATE file-backed
+Currently anonymous folios belonging to CoW'd MAP_PRIVATE file-backed
 mappings are indexed by their page offset within the file in which they
 were originally mapped.
 
 This differs from anonymous folios belonging to pure anon mappings which
-are indexed by their virtual page offset (the address at which they'd
+are indexed by their anonymous page offset (the address at which they'd
 belong in the VMA when first faulted).
 
 This change fixes this inconsistency, always indexing anonymous folios by
-their virtual page offset regardless of the VMA to which they belong.
+their anonymous page offset regardless of the VMA to which they belong.
 
-We have laid the foundations for making this change to the point where we
-need only 'switch it on', and this patch switches it on by:
+The foundations have been laid such that we need only switch this
+functionality on such by:
 
-* Using linear_virt_page_index() in __folio_set_anon() to assign the
+* Using linear_anon_page_index() in __folio_set_anon() to assign the
   folio's index to the anonymous linear index rather than the file-backed
   one.
 
-* Otherwise using linear_virt_page_index() in all instances where
+* Otherwise using linear_anon_page_index() in all instances where
   anonymous folios are being referenced or manipulated.
 
 * Replacing vma_address() with vma_filebacked_address() or
   vma_anon_address() as appropriate.
 
-* Updating the rmap lock logic in copy_vma() to also account for virtual
-  page offsets.
+* Updating the merging logic to check that anonymous page offsets are
+  aligned as well as filebacked ones for MAP_PRIVATE file-backed VMAs,
+  introducing needs_adjacent_anon_pgoff() to figure out when this is
+  required.
 
-* Updating the merging logic to check that virtual page offsets are
-  aligned as well as filebacked ones for anonymous or MAP_PRIVATE
-  file-backed VMAs.
-
-* Updating linear_folio_page_index() to invoke linear_virt_page_index()
+* Updating linear_folio_page_index() to invoke linear_anon_page_index()
   if the folio is anonymous.
 
-* Correcting folio_within_range() to use virtual page offset for anonymous
-  folios.
+* Updating vma_address_end() to use the VMA's anonymous page offset when
+  pvmw->pgoff is anonymous.
 
-This will have no impact on merging of anonymous VMAs or shared
-file-backed VMAs, whose page offset and anonymous page offset will be
-identical.
+* Correcting folio_within_range() to use anonymous page offset for
+  anonymous folios.
 
-However, MAP_PRIVATE file-backed mappings must now be aligned on virtual
+This will have no impact on merging of anonymous VMAs, whose page offset
+and anonymous page offset are identical, nor will it impact shared
+file-backed VMAs, which will continue to be merged based on the
+file-backed page offset.
+
+However, MAP_PRIVATE file-backed mappings must now be aligned on anonymous
 page offset as well.
 
 In most instances this should have no impact on merging of file-backed
@@ -72,82 +77,116 @@ to track some remaps, meaning that most remap tracking can be avoided, and
 in nearly all cases the anonymous page offset will be able to be used to
 quickly find the VMA in an mm.
 
-Link: https://lore.kernel.org/20260720-b4-scalable-cow-virt-pgoff-v2-9-2d549757a76f@kernel.org
+Note that the need_rmap_locks check doesn't need to be updated, as any
+remapping will offset both the anonymous and file-backed page offset, so
+it suffices to check only one.
+
+Link: https://lore.kernel.org/20260806-b4-scalable-cow-virt-pgoff-v4-14-ab318a350404@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Adrian Hunter <adrian.hunter@intel.com>
+Cc: Alexander Deucher <alexander.deucher@amd.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
 Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Barry Song <baohua@kernel.org>
+Cc: Boris Brezillon <boris.brezillon@collabora.com>
 Cc: Byungchul Park <byungchul@sk.com>
 Cc: Chengming Zhou <chengming.zhou@linux.dev>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Christan König <christian.koenig@amd.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
+Cc: Dave Airlie <airlied@gmail.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-Cc: Gregory Price <gourry@gourry.net>
+Cc: Gregory Price (Meta) <gourry@gourry.net>
 Cc: Harry Yoo <harry@kernel.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Huang Ray <Ray.Huang@amd.com>
 Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Ian Rogers <irogers@google.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Clark <james.clark@linaro.org>
 Cc: Jan Kara <jack@suse.cz>
 Cc: Jann Horn <jannh@google.com>
+Cc: Janosch Frank <frankja@linux.ibm.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Jiri Olsa <jolsa@kernel.org>
+Cc: John Hubbard <jhubbard@nvidia.com>
 Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Kairui Song <kasong@tencent.com>
 Cc: Kees Cook <kees@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
 Cc: Lance Yang <lance.yang@linux.dev>
 Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Liviu Dudau <liviu.dudau@arm.com>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Matthew Auld <matthew.auld@intel.com>
 Cc: Matthew Brost <matthew.brost@intel.com>
 Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Maxime Ripard <mripard@kernel.org>
 Cc: Miaohe Lin <linmiaohe@huawei.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Namhyung kim <namhyung@kernel.org>
 Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Nico Pache <npache@redhat.com>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
 Cc: Rakie Kim <rakie.kim@sk.com>
 Cc: Rik van Riel <riel@surriel.com>
+Cc: Rodrigo Vivi <rodrigo.vivi@intel.com>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Steven Price <steven.price@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: <syzbot@syzkaller.appspotmail.com>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Thomas Zimemrmann <tzimmermann@suse.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
-Cc: xu xin <xu.xin16@zte.com.cn>
+Cc: Xu Xin <xu.xin16@zte.com.cn>
 Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- include/linux/pagemap.h |  9 ++++++++-
- mm/internal.h           | 28 +++++++++-------------------
- mm/interval_tree.c      |  4 ++--
- mm/ksm.c                |  7 ++++---
- mm/page_vma_mapped.c    |  2 +-
- mm/rmap.c               | 12 ++++++------
- mm/vma.c                | 14 ++++++++++++--
- 7 files changed, 42 insertions(+), 34 deletions(-)
+ mm/huge_memory.c     |  2 +-
+ mm/internal.h        | 27 ++++++++-------------------
+ mm/interval_tree.c   |  4 ++--
+ mm/ksm.c             |  6 +++---
+ mm/page_vma_mapped.c |  2 +-
+ mm/rmap.c            | 12 ++++++------
+ mm/userfaultfd.c     |  4 ++--
+ mm/vma.c             | 32 +++++++++++++++++++++++++++++++-
+ 8 files changed, 54 insertions(+), 35 deletions(-)
 
-diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
-index c635c3237f524..3307c0551a0a2 100644
---- a/include/linux/pagemap.h
-+++ b/include/linux/pagemap.h
-@@ -1150,7 +1150,11 @@ static inline pgoff_t linear_virt_page_index(const struct vm_area_struct *vma,
-  * @vma: The VMA in which @address resides.
-  * @address: The address whose absolute page offset is required.
-  *
-- * For compatibility, currently identical to linear_page_index().
-+ * Determines whether to obtain the virtual linear page index based on whether
-+ * @folio is anonymous or not.
-+ *
-+ * See the descriptions of linear_virt_page_index() and linear_page_index() for
-+ * details of each.
-  *
-  * Returns: The absolute page offset of @address within @vma.
-  */
-@@ -1158,6 +1162,9 @@ static inline pgoff_t linear_folio_page_index(const struct folio *folio,
- 					      const struct vm_area_struct *vma,
- 					      const unsigned long address)
- {
-+	if (folio_test_anon(folio))
-+		return linear_virt_page_index(vma, address);
-+
- 	return linear_page_index(vma, address);
- }
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 2822190daf2b3..a8174d1d38485 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2930,7 +2930,7 @@ int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pm
+ 		}
  
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_anon_page_index(dst_vma, dst_addr);
+ 
+ 		_dst_pmd = folio_mk_pmd(src_folio, dst_vma->vm_page_prot);
+ 		/* Follow mremap() behavior and treat the entry dirty after the move */
 diff --git a/mm/internal.h b/mm/internal.h
-index 9280317d63dfb..f96ed54e3dbed 100644
+index a38b5f7896b20..16750b130ec44 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -945,7 +945,8 @@ folio_within_range(struct folio *folio, struct vm_area_struct *vma,
@@ -156,7 +195,7 @@ index 9280317d63dfb..f96ed54e3dbed 100644
  	pgoff_folio = folio_pgoff(folio);
 -	pgoff_vma_start = vma_start_pgoff(vma);
 +	pgoff_vma_start = folio_test_anon(folio) ?
-+		vma_start_virt_pgoff(vma) : vma_start_pgoff(vma);
++		vma_start_anon_pgoff(vma) : vma_start_pgoff(vma);
  
  	if (start < vma->vm_start)
  		start = vma->vm_start;
@@ -179,28 +218,27 @@ index 9280317d63dfb..f96ed54e3dbed 100644
 -}
 -
 -/**
-- * vma_anon_address - Find the address an anonymous folio with index @pgoff_virt
+- * vma_anon_address - Find the address an anonymous folio with index @pgoff_anon
 - * is mapped at.
 + * vma_anon_address - Find the virtual address an anonymous page range is mapped
 + * at.
   * @vma: The vma which maps this object.
-  * @pgoff_virt: The virtual page index belonging to the folio.
+  * @pgoff_anon: The anonymous page index belonging to the folio.
   * @nr_pages: The number of pages to consider.
-@@ -1106,7 +1092,11 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
+@@ -1105,7 +1091,10 @@ static inline unsigned long vma_address_end(struct page_vma_mapped_walk *pvmw)
  	if (pvmw->nr_pages == 1)
  		return pvmw->address + PAGE_SIZE;
  
 -	pgoff_vma_start = vma_start_pgoff(vma);
-+	if (pvmw->is_anon_walk)
-+		pgoff_vma_start = vma_start_virt_pgoff(vma);
++	if (pvmw->pgoff_is_anon)
++		pgoff_vma_start = vma_start_anon_pgoff(vma);
 +	else
 +		pgoff_vma_start = vma_start_pgoff(vma);
-+
- 	pgoff_end = pgoff + pvmw->nr_pages;
+ 
  	address = vma->vm_start +
  		((pgoff_end - pgoff_vma_start) << PAGE_SHIFT);
 diff --git a/mm/interval_tree.c b/mm/interval_tree.c
-index 3ae9e106d3afd..26b8437e3b1b1 100644
+index 3ae9e106d3afd..7bbbf15cfbf0c 100644
 --- a/mm/interval_tree.c
 +++ b/mm/interval_tree.c
 @@ -83,12 +83,12 @@ mapping_rmap_tree_iter_next(struct vm_area_struct *vma,
@@ -208,45 +246,44 @@ index 3ae9e106d3afd..26b8437e3b1b1 100644
  static pgoff_t avc_start_pgoff(struct anon_vma_chain *avc)
  {
 -	return vma_start_pgoff(avc->vma);
-+	return vma_start_virt_pgoff(avc->vma);
++	return vma_start_anon_pgoff(avc->vma);
  }
  
  static pgoff_t avc_last_pgoff(struct anon_vma_chain *avc)
  {
 -	return vma_last_pgoff(avc->vma);
-+	return vma_last_virt_pgoff(avc->vma);
++	return vma_last_anon_pgoff(avc->vma);
  }
  
  INTERVAL_TREE_DEFINE(struct anon_vma_chain, rb, pgoff_t, rb_subtree_last,
 diff --git a/mm/ksm.c b/mm/ksm.c
-index b4142746777ee..ab1fc59424e85 100644
+index b4142746777ee..b5854dc14a2ec 100644
 --- a/mm/ksm.c
 +++ b/mm/ksm.c
-@@ -1625,7 +1625,8 @@ static int try_to_merge_with_ksm_page(struct ksm_rmap_item *rmap_item,
+@@ -1625,7 +1625,7 @@ static int try_to_merge_with_ksm_page(struct ksm_rmap_item *rmap_item,
  	 * stable_tree, break_cow() will clean it up.
  	 */
  	rmap_item->anon_vma = vma->anon_vma;
 -	rmap_item->linear_page_index = linear_page_index(vma, rmap_item->address);
-+	/* The VMA is always anon/MAP_PRIVATE-file backed so use anon index. */
-+	rmap_item->linear_page_index = linear_virt_page_index(vma, rmap_item->address);
++	rmap_item->linear_page_index = linear_anon_page_index(vma, rmap_item->address);
  	get_anon_vma(vma->anon_vma);
  out:
  	mmap_read_unlock(mm);
-@@ -3152,7 +3153,7 @@ struct folio *ksm_might_need_to_copy(struct folio *folio,
+@@ -3152,7 +3152,7 @@ struct folio *ksm_might_need_to_copy(struct folio *folio,
  			return folio;	/* no need to copy it */
  	} else if (!anon_vma) {
  		return folio;		/* no need to copy it */
 -	} else if (folio->index == linear_page_index(vma, addr) &&
-+	} else if (folio->index == linear_virt_page_index(vma, addr) &&
++	} else if (folio->index == linear_anon_page_index(vma, addr) &&
  			anon_vma->root == vma->anon_vma->root) {
  		return folio;		/* still no need to copy it */
  	}
-@@ -3222,7 +3223,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
+@@ -3222,7 +3222,7 @@ void rmap_walk_ksm(struct folio *folio, struct rmap_walk_control *rwc)
  		/*
  		 * Currently, KSM folios are always small folios, so it's
  		 * sufficient to search for a single page. We can simply use
 -		 * the linear_page_index of the original de-duplicate
-+		 * the linear_virt_page_index of the original de-duplicate
++		 * the linear_anon_page_index of the original de-duplicate
  		 * anonymous page that we remembered in the rmap_item while
  		 * de-duplicating. Note that mremap() always de-duplicates KSM
  		 * folios: so if there was mremap() in our parent or our child,
@@ -264,7 +301,7 @@ index 081e483cc7bf5..4e964545e5e85 100644
  		pvmw.address = vma_filebacked_address(vma, pgoff, 1);
  	if (pvmw.address == -EFAULT)
 diff --git a/mm/rmap.c b/mm/rmap.c
-index f603a799c26b7..61fc584ed1b4b 100644
+index 1b23ac709f45c..34ceeb600111c 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
 @@ -866,7 +866,7 @@ unsigned long page_address_in_vma(const struct folio *folio,
@@ -281,7 +318,7 @@ index f603a799c26b7..61fc584ed1b4b 100644
  	anon_vma = (void *) anon_vma + FOLIO_MAPPING_ANON;
  	WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
 -	folio->index = linear_page_index(vma, address);
-+	folio->index = linear_virt_page_index(vma, address);
++	folio->index = linear_anon_page_index(vma, address);
  }
  
  /**
@@ -292,7 +329,7 @@ index f603a799c26b7..61fc584ed1b4b 100644
 -	VM_BUG_ON_PAGE(page_pgoff(folio, page) != linear_page_index(vma, address),
 -		       page);
 +	VM_BUG_ON_PAGE(page_pgoff(folio, page) !=
-+		       linear_virt_page_index(vma, address), page);
++		       linear_anon_page_index(vma, address), page);
  }
  
  static __always_inline void __folio_add_anon_rmap(struct folio *folio,
@@ -309,46 +346,86 @@ index f603a799c26b7..61fc584ed1b4b 100644
  		cond_resched();
  
  		if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 8fd24c8b428e1..24a4d92ffa3c2 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1352,7 +1352,7 @@ static long move_present_ptes(struct mm_struct *mm,
+ 		}
+ 
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_anon_page_index(dst_vma, dst_addr);
+ 
+ 		orig_dst_pte = folio_mk_pte(src_folio, dst_vma->vm_page_prot);
+ 		/* Set soft dirty bit so userspace can notice the pte was moved */
+@@ -1428,7 +1428,7 @@ static int move_swap_pte(struct mm_struct *mm, struct vm_area_struct *dst_vma,
+ 	 */
+ 	if (src_folio) {
+ 		folio_move_anon_rmap(src_folio, dst_vma);
+-		src_folio->index = linear_page_index(dst_vma, dst_addr);
++		src_folio->index = linear_anon_page_index(dst_vma, dst_addr);
+ 	} else {
+ 		/*
+ 		 * Check if the swap entry is cached after acquiring the src_pte
 diff --git a/mm/vma.c b/mm/vma.c
-index f8683834e79b3..44c6ff8c5183f 100644
+index e35b04ac12cbb..35e7a64855fad 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -233,6 +233,8 @@ static bool can_vma_merge_before(struct vma_merge_struct *vmg)
+@@ -204,6 +204,25 @@ static void init_multi_vma_prep(struct vma_prepare *vp,
+ 		vp->skip_vma_uprobe = true;
+ }
+ 
++/*
++ * Does this merge require that adjacent VMAs must have adjacent anonymous page
++ * offsets in addition to having adjacent vma->vm_pgoff?
++ *
++ * This is only required for MAP_PRIVATE-file backed mappings as the page offset
++ * for pure anonymous VMAs is equal to the anonymous page offset.
++ *
++ * Read-only shared mappings (with VMA_SHARED_BIT cleared) are always unfaulted
++ * so automatically have correct anonymous page offset (as it is always updated
++ * on remap).
++ *
++ * 'Special' mappings in the sense of VDSO, VVAR etc. have !file but would in
++ * any case not be candidates for merge nor be mergeable.
++ */
++static bool needs_adjacent_anon_pgoff(const struct vma_merge_struct *vmg)
++{
++	return vmg->file && vma_flags_is_cow_mapping(&vmg->vma_flags);
++}
++
+ /*
+  * Return true if we can merge this (vma_flags,anon_vma,file,vm_pgoff)
+  * in front of (at a lower virtual address and file offset than) the vma.
+@@ -225,6 +244,9 @@ static bool can_vma_merge_before(struct vma_merge_struct *vmg)
  		return false;
  	if (vmg_end_pgoff(vmg) != vma_start_pgoff(vmg->next))
  		return false;
-+	if (vmg_end_anon_pgoff(vmg) != vma_start_anon_pgoff(vmg->next))
++	if (needs_adjacent_anon_pgoff(vmg) &&
++	    vmg_end_anon_pgoff(vmg) != vma_start_anon_pgoff(vmg->next))
 +		return false;
  	return true;
  }
  
-@@ -253,6 +255,8 @@ static bool can_vma_merge_after(struct vma_merge_struct *vmg)
+@@ -245,6 +267,9 @@ static bool can_vma_merge_after(struct vma_merge_struct *vmg)
  		return false;
  	if (vma_end_pgoff(vmg->prev) != vmg_start_pgoff(vmg))
  		return false;
-+	if (vma_end_anon_pgoff(vmg->prev) != vmg_start_anon_pgoff(vmg))
++	if (needs_adjacent_anon_pgoff(vmg) &&
++	    vma_end_anon_pgoff(vmg->prev) != vmg_start_anon_pgoff(vmg))
 +		return false;
  	return true;
  }
  
-@@ -1988,7 +1992,8 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
- 			*vmap = vma = new_vma;
- 		}
- 		*need_rmap_locks =
--			(vma_start_pgoff(new_vma) <= vma_start_pgoff(vma));
-+			(vma_start_pgoff(new_vma) <= vma_start_pgoff(vma)) ||
-+			(vma_start_anon_pgoff(new_vma) <= vma_start_anon_pgoff(vma));
- 	} else {
- 		new_vma = vm_area_dup(vma);
- 		if (!new_vma)
-@@ -2059,7 +2064,12 @@ static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *
+@@ -2048,7 +2073,12 @@ static int anon_vma_compatible(struct vm_area_struct *a, struct vm_area_struct *
  	if (!vma_flags_empty(&diff))
  		return false;
  	/* Page offset must align. */
 -	return vma_end_pgoff(a) == vma_start_pgoff(b);
 +	if (vma_end_pgoff(a) != vma_start_pgoff(b))
 +		return false;
-+	/* Anon page offset must align. */
++	/* Only reached from anon path, so either MAP_PRIVATE file or anon. */
 +	if (vma_end_anon_pgoff(a) != vma_start_anon_pgoff(b))
 +		return false;
 +	return true;

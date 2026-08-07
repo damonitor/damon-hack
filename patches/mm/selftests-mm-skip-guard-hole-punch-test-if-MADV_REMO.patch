@@ -1,0 +1,75 @@
+From: Muhammad Usama Anjum <usama.anjum@arm.com>
+Date: Mon, 27 Jul 2026 10:52:18 +0100
+Subject: [PATCH] selftests/mm: skip guard hole-punch test if MADV_REMOVE is
+ unsupported
+
+The hole_punch case verifies that guard regions survive MADV_REMOVE and
+that the backing range is punched out.  MADV_REMOVE delegates the hole
+punch to the backing filesystem, which may reject the operation with
+EOPNOTSUPP.
+
+That result means the test cannot establish the state whose guard
+semantics it intends to validate.  Treating the missing filesystem
+capability as a guard-region failure creates a false regression.
+
+Unmap the range and skip only when MADV_REMOVE fails with EOPNOTSUPP.
+Preserve the assertion for all other errors so failures on supported
+configurations remain visible.
+
+Link: https://lore.kernel.org/20260727095225.372655-3-usama.anjum@arm.com
+Signed-off-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Tested-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Nico Pache <npache@redhat.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/guard-regions.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/guard-regions.c b/tools/testing/selftests/mm/guard-regions.c
+index b21df3040b1c7..5c8ec3ca75d7d 100644
+--- a/tools/testing/selftests/mm/guard-regions.c
++++ b/tools/testing/selftests/mm/guard-regions.c
+@@ -1912,7 +1912,7 @@ TEST_F(guard_regions, hole_punch)
+ {
+ 	const unsigned long page_size = self->page_size;
+ 	char *ptr;
+-	int i;
++	int i, ret;
+ 
+ 	if (variant->backing == ANON_BACKED)
+ 		SKIP(return, "Truncation test specific to file-backed");
+@@ -1944,8 +1944,12 @@ TEST_F(guard_regions, hole_punch)
+ 	}
+ 
+ 	/* Now hole punch the guarded region. */
+-	ASSERT_EQ(madvise(&ptr[3 * page_size], 4 * page_size,
+-			  MADV_REMOVE), 0);
++	ret = madvise(&ptr[3 * page_size], 4 * page_size, MADV_REMOVE);
++	if (ret == -1 && errno == EOPNOTSUPP) {
++		ASSERT_EQ(munmap(ptr, 10 * page_size), 0);
++		SKIP(return, "MADV_REMOVE not supported by filesystem");
++	}
++	ASSERT_EQ(ret, 0);
+ 
+ 	/* Ensure guard regions remain. */
+ 	for (i = 0; i < 10; i++) {
+-- 
+2.47.3
+

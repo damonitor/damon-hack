@@ -1,46 +1,10 @@
 - baseline: v7.2-rc5-31-g62cc90241548d -> v7.2-rc5-31-g62cc90241548d (no change)
-- mm-hotfixes-stable: 0 -> 6 commits
-  - series: 0 (0) -> 2 (4)
-    - no role, maintainer: 0 -> 1 commits
-    - maintainer, nobody: 0 -> 5 commits
-  - changed commits
-    - series "mm/damon: avoid division by zero from damos_quota_score()". (2)
-      - a16fd3ad9d89 "samples/damon/mtier: error out for zero quota goal target values (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260803134034.15217-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260803134034.15217-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260801202657.117135-1-sj@kernel.org [1]
-      - 06befa61c427 "mm/damon/lru_sort: error out for >10000 active_mem_bp (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260803134034.15217-3-sj@kernel.org
-        - Link: https://lore.kernel.org/20260801213028.5127-1-sj@kernel.org [1]
-    - series "mm/damon/{reclaim,lru_sort}: fix commit_inputs infinite hang". (2)
-      - b9b6bad94c62 "mm/damon/reclaim: skip damon_call() if ctx has not started (0/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260803134646.16640-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260803134646.16640-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260802173021.762-1-sj@kernel.org [1]
-      - 0f1868310347 "mm/damon/lru_sort: skip damon_call() if ctx has not started (1/2)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20260803134646.16640-3-sj@kernel.org
-    - 5deb65c34e68 "mm/damon/ops-common: putback folios on invalid migrate nid"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260726014815.1280757-1-dayou5941@163.com
-    - 1ec0e6b6f732 "mm/damon: adjust isolated pages stat for DAMOS_MIGRATE_{HOT,COLD}"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-      - Link: https://lore.kernel.org/20260728140404.94476-1-sj@kernel.org
-      - Link: https://github.com/damonitor/damo [1]
-      - Link: https://lore.kernel.org/20260726164356.87940-1-sj@kernel.org [2]
-- mm-hotfixes-unstable: 6 -> 0 commits
-  - series: 2 (4) -> 0 (0)
-    - no role, maintainer: 1 -> 0 commits
-    - maintainer, nobody: 5 -> 0 commits
+- mm-hotfixes-stable: 6 -> 6 commits (no change)
+  - series: 2 (4) -> 2 (4) (no change)
+    - no role, maintainer: 1 -> 1 commits (no change)
+    - maintainer, nobody: 5 -> 5 commits (no change)
+- mm-hotfixes-unstable: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 111 -> 111 commits (no change)
   - series: 14 (109) -> 14 (109) (no change)
     - no role, no role : 1 -> 1 commits (no change)

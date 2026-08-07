@@ -1,0 +1,141 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Thu, 6 Aug 2026 11:34:14 +0800
+Subject: [PATCH] selftests: mm: implement the mTHP-sized hugepage check
+ helpers
+
+Implement mTHP-sized hugepage checking helpers using
+gather_folio_orders().  Also rename the existing PMD-sized huge page check
+function to __check_pmd_huge() for clarity.
+
+Link: https://lore.kernel.org/56b16691f605426b33b5cf47319233de6127a6b3.1785985999.git.baolin.wang@linux.alibaba.com
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Tested-by: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/vm_util.c | 76 ++++++++++++++++++++++++++--
+ 1 file changed, 72 insertions(+), 4 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index 5a427f494cd82..13b5cff7dfe31 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -15,6 +15,9 @@
+ #define SMAP_FILE_PATH "/proc/self/smaps"
+ #define STATUS_FILE_PATH "/proc/self/status"
+ #define MAX_LINE_LENGTH 500
++#define PAGEMAP_PATH "/proc/self/pagemap"
++#define KPAGEFLAGS_PATH "/proc/kpageflags"
++#define MAX_NR_ORDERS 20
+ 
+ unsigned int __page_size;
+ unsigned int __page_shift;
+@@ -348,7 +351,7 @@ char *__get_smap_entry(void *addr, const char *pattern, char *buf, size_t len)
+ 	return entry;
+ }
+ 
+-bool __check_huge(void *addr, char *pattern, int nr_hpages,
++static bool __check_pmd_huge(void *addr, char *pattern, int nr_hpages,
+ 		  uint64_t hpage_size)
+ {
+ 	char buffer[MAX_LINE_LENGTH];
+@@ -366,19 +369,84 @@ bool __check_huge(void *addr, char *pattern, int nr_hpages,
+ 	return thp == (nr_hpages * (hpage_size >> 10));
+ }
+ 
++static bool check_large_folios(void *addr, size_t len, int nr_hpages,
++		uint64_t hpage_size)
++{
++	int order = 0, pagesize = getpagesize();
++	unsigned int nr_pages = hpage_size / pagesize;
++	int orders[MAX_NR_ORDERS], status;
++	int pagemap_fd, kpageflags_fd;
++	bool ret = false;
++
++	if (!nr_pages)
++		ksft_exit_fail_msg("invalid hugepage size\n");
++
++	order = 31 - __builtin_clz(nr_pages);
++	if (!order || order >= MAX_NR_ORDERS)
++		ksft_exit_fail_msg("invalid order\n");
++
++	memset(orders, 0, sizeof(int) * MAX_NR_ORDERS);
++	pagemap_fd = open(PAGEMAP_PATH, O_RDONLY);
++	if (pagemap_fd == -1)
++		ksft_exit_fail_msg("read pagemap fail\n");
++
++	kpageflags_fd = open(KPAGEFLAGS_PATH, O_RDONLY);
++	if (kpageflags_fd == -1) {
++		close(pagemap_fd);
++		ksft_exit_fail_msg("read kpageflags fail\n");
++	}
++
++	status = gather_folio_orders(addr, len, pagemap_fd,
++			kpageflags_fd, orders, MAX_NR_ORDERS);
++	if (status)
++		goto out;
++
++	if (orders[order] == nr_hpages)
++		ret = true;
++
++out:
++	close(pagemap_fd);
++	close(kpageflags_fd);
++	return ret;
++}
++
+ bool check_huge_anon(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+ {
+-	return __check_huge(addr, "AnonHugePages: ", nr_hpages, hpage_size);
++	uint64_t pmd_pagesize = read_pmd_pagesize();
++
++	if (!pmd_pagesize)
++		ksft_exit_fail_msg("reading PMD pagesize failed\n");
++
++	if (hpage_size == pmd_pagesize)
++		return __check_pmd_huge(addr, "AnonHugePages: ", nr_hpages, hpage_size);
++
++	return check_large_folios(addr, len, nr_hpages, hpage_size);
+ }
+ 
+ bool check_huge_file(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+ {
+-	return __check_huge(addr, "FilePmdMapped:", nr_hpages, hpage_size);
++	uint64_t pmd_pagesize = read_pmd_pagesize();
++
++	if (!pmd_pagesize)
++		ksft_exit_fail_msg("reading PMD pagesize failed\n");
++
++	if (hpage_size == pmd_pagesize)
++		return __check_pmd_huge(addr, "FilePmdMapped:", nr_hpages, hpage_size);
++
++	return check_large_folios(addr, len, nr_hpages, hpage_size);
+ }
+ 
+ bool check_huge_shmem(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+ {
+-	return __check_huge(addr, "ShmemPmdMapped:", nr_hpages, hpage_size);
++	uint64_t pmd_pagesize = read_pmd_pagesize();
++
++	if (!pmd_pagesize)
++		ksft_exit_fail_msg("reading PMD pagesize failed\n");
++
++	if (hpage_size == pmd_pagesize)
++		return __check_pmd_huge(addr, "ShmemPmdMapped:", nr_hpages, hpage_size);
++
++	return check_large_folios(addr, len, nr_hpages, hpage_size);
+ }
+ 
+ int64_t allocate_transhuge(void *ptr, int pagemap_fd)
+-- 
+2.47.3
+

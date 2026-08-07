@@ -1,0 +1,147 @@
+From: Hao Jia <jiahao1@lixiang.com>
+Date: Thu, 6 Aug 2026 15:09:43 +0800
+Subject: [PATCH] mm/zswap: support batch writeback in shrink_memcg()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Currently, shrink_memcg() writes back at most one entry per-node during
+its traversal.  This makes shrink_worker() inefficient, as it must
+repeatedly re-enter shrink_memcg() to make any substantial progress.
+Under high memory pressure, this can cause the writeback speed to be too
+slow to keep up with refaults, leading to zswap store failures and forcing
+pages to skip zswap and go directly to disk, which results in an LRU
+inversion.
+
+To address this, extend the per-node scan budget in shrink_memcg() from a
+single entry to up to SWAP_CLUSTER_MAX pages, enabling batch writeback for
+both the shrink_worker() and zswap_store() paths.
+
+Test Setup:
+- Total memory: 32 GB, 1 NUMA node.
+- zswap settings: accept_threshold_percent=50, shrinker_enabled=N.
+
+Test Case 1:
+Set max_pool_percent=1, allocate 512MB of anonymous pages, and fill them
+with random data (to avoid compression). Then, use cgroup memory.reclaim
+to force a large amount of anonymous pages into zswap. At an interval of
+2ms, allocate a 4K anonymous page where the first 4 bytes are random numbers
+and the rest are zeros, and then trigger reclamation of this 4K page through
+cgroup memory.reclaim. When the pool threshold is reached, shrink_memcg()
+will be triggered.
+The test data after running for 120s is as follows:
+                                Baseline      Patched
+shrink_worker wakeups              5,363          169
+shrink_memcg calls            11,373,201      350,703
+written_back pages                40,212       40,241
+zswap_store calls                161,190      163,753
+   store succeeded (ret=1)       102,743      117,183
+   store rejected (ret=0)         58,447       46,570
+   store reject rate                ~36%        ~28%
+pool_limit_hit delta              55,826       33,760
+pswpout                           98,659       86,811
+pswpin                                 2            0
+
+Test Case 2:
+We evaluated the following two sub-configurations using stress-ng inside
+a cgroup capped at memory.max=1G for 120 seconds:
+  Test Case 2a (max_pool_percent=1): Continuously triggers the global
+  zswap pool limit, thereby waking up shrink_worker() to perform asynchronous
+  shrinking.
+  Test Case 2b (zswap.max=320M, max_pool_percent=50): Continuously triggers
+  the cgroup's zswap.max limit, thereby invoking synchronous shrinking.
+Command executed for both setups:
+   bash -c 'echo $$ > /sys/fs/cgroup/zswaptest/cgroup.procs ; \
+   exec stress-ng --vm 4 --vm-bytes 4G --vm-keep --vm-method rand-set -t \
+120s -q'
+
+Test Case 2a (max_pool_percent=1):
+                                Baseline       Patched
+shrink_worker wakeups              5,640         1,308
+shrink_memcg calls             8,481,500     3,140,972
+written_back pages                   260       468,216
+zswap_store calls              2,742,756     2,011,269
+   store succeeded (ret=1)       934,640       947,988
+   store rejected (ret=0)      1,808,116     1,063,281
+   store reject rate                ~66%          ~52%
+pool_limit_hit delta           1,181,310       196,882
+pswpout                        1,808,376     1,531,497
+pswpin                         4,288,497     3,635,365
+Test Case 2b (zswap.max=320M, max_pool_percent=50):
+                                Baseline       Patched
+shrink_worker wakeups                 0              0
+shrink_memcg calls              687,608         54,002
+written_back pages              639,176        846,663
+zswap_store calls             1,224,222      1,228,548
+   store succeeded (ret=1)      992,816      1,208,123
+   store rejected (ret=0)       231,431         20,425
+   store reject rate               ~19%            ~2%
+pool_limit_hit delta                  0              0
+pswpout                         870,745        867,360
+pswpin                        1,707,823      1,216,814
+
+Under identical workloads and runtimes, batched zswap shrinking exhibits a
+significant reduction in both shrink_worker() wakeups and shrink_memcg()
+calls.  Furthermore, the sharp drop in both pswpin and zswap_store()
+rejections demonstrates that batching zswap shrink operations effectively
+mitigates zswap_store() failures caused by hitting the pool limit.  This
+significantly prevents pages from bypassing zswap and falling back
+directly to disk, thereby reducing LRU inversion.
+
+Link: https://lore.kernel.org/20260806070943.95542-3-jiahao.kernel@gmail.com
+Signed-off-by: Hao Jia <jiahao1@lixiang.com>
+Suggested-by: Yosry Ahmed <yosry@kernel.org>
+Suggested-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zswap.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 3c86c3e61ce0e..9f777a48b106f 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -1277,6 +1277,14 @@ static struct shrinker *zswap_alloc_shrinker(void)
+ 	return shrinker;
+ }
+ 
++/*
++ * Scan up to SWAP_CLUSTER_MAX pages on each per-node zswap LRU of @memcg
++ * and write back the reclaimable ones.
++ *
++ * Return: 0 if at least one entry was written back, -EAGAIN if entries
++ * were scanned but none could be written back, or -ENOENT if @memcg has
++ * writeback disabled, is a zombie cgroup, or has empty zswap LRUs.
++ */
+ static int shrink_memcg(struct mem_cgroup *memcg)
+ {
+ 	int nid, shrunk = 0, scanned = 0;
+@@ -1292,13 +1300,14 @@ static int shrink_memcg(struct mem_cgroup *memcg)
+ 		return -ENOENT;
+ 
+ 	for_each_node_state(nid, N_NORMAL_MEMORY) {
+-		unsigned long nr_to_walk = 1;
++		unsigned long nr_to_walk = SWAP_CLUSTER_MAX;
+ 
+ 		shrunk += list_lru_walk_one(&zswap_list_lru, nid, memcg,
+ 					    &shrink_memcg_cb, NULL, &nr_to_walk);
+-		scanned += 1 - nr_to_walk;
++		scanned += SWAP_CLUSTER_MAX - nr_to_walk;
+ 	}
+ 
++	/* Nothing was scanned: every LRU under @memcg was empty. */
+ 	if (!scanned)
+ 		return -ENOENT;
+ 
+-- 
+2.47.3
+
