@@ -1,5 +1,5 @@
 From: Sourav Panda <souravpanda@google.com>
-Date: Wed, 29 Jul 2026 16:31:48 +0000
+Date: Fri, 7 Aug 2026 04:00:03 +0000
 Subject: [PATCH] mm/hugetlb_cma: support percentage-based hugetlb_cma
  reservation
 
@@ -15,8 +15,9 @@ The percentage is calculated against the total memory (for global
 settings) or against the node-specific memory (for node-specific settings)
 using memblock APIs during early boot.
 
-Link: https://lore.kernel.org/20260729163148.3271755-1-souravpanda@google.com
+Link: https://lore.kernel.org/20260807040003.2156630-1-souravpanda@google.com
 Signed-off-by: Sourav Panda <souravpanda@google.com>
+Acked-by: Usama Arif <usama.arif@linux.dev>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: David Rientjes <rientjes@google.com>
 Cc: Frank van der Linden <fvdl@google.com>
@@ -26,15 +27,15 @@ Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- .../admin-guide/kernel-parameters.txt         |   7 +-
- mm/hugetlb_cma.c                              | 128 ++++++++++++++++--
- 2 files changed, 125 insertions(+), 10 deletions(-)
+ .../admin-guide/kernel-parameters.txt         |  10 +-
+ mm/hugetlb_cma.c                              | 142 +++++++++++++++++-
+ 2 files changed, 142 insertions(+), 10 deletions(-)
 
 diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
-index b5493a7f8f228..53f08950a6309 100644
+index 364c2dce8e70f..1af62cd16c9de 100644
 --- a/Documentation/admin-guide/kernel-parameters.txt
 +++ b/Documentation/admin-guide/kernel-parameters.txt
-@@ -2064,8 +2064,11 @@ Kernel parameters
+@@ -2064,8 +2064,14 @@ Kernel parameters
  	hugetlb_cma=	[HW,CMA,EARLY] The size of a CMA area used for allocation
  			of gigantic hugepages. Or using node format, the size
  			of a CMA area per node can be specified.
@@ -42,6 +43,9 @@ index b5493a7f8f228..53f08950a6309 100644
 -				<node>:nn[KMGTPE][,<node>:nn[KMGTPE]]
 +			The size can be an absolute value (e.g., 2G) or a
 +			percentage of the total memory or node memory (e.g., 20%).
++			Percentage-derived sizes are rounded down to a multiple of
++			the architecture's gigantic hugepage size and may become
++			zero.
 +			Format: nn[KMGTPE] or nn% or (node format)
 +				<node>:nn[KMGTPE][,<node>:nn[KMGTPE]] or
 +				<node>:nn%[,<node>:nn%]
@@ -49,7 +53,7 @@ index b5493a7f8f228..53f08950a6309 100644
  			The size must be a multiple of the gigantic page size.
  			When using node format, this applies to each per-node size.
 diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
-index 7ff4e73496788..ca8d53f319457 100644
+index 7ff4e73496788..2283f473f6d59 100644
 --- a/mm/hugetlb_cma.c
 +++ b/mm/hugetlb_cma.c
 @@ -9,6 +9,9 @@
@@ -91,7 +95,7 @@ index 7ff4e73496788..ca8d53f319457 100644
  void hugetlb_cma_free_frozen_folio(struct folio *folio)
  {
  	WARN_ON_ONCE(!cma_release_frozen(hugetlb_cma[folio_nid(folio)],
-@@ -93,14 +118,28 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
+@@ -93,14 +118,31 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
  			break;
  
  		if (s[count] == ':') {
@@ -101,6 +105,9 @@ index 7ff4e73496788..ca8d53f319457 100644
  				break;
  			nid = array_index_nospec(tmp, MAX_NUMNODES);
  
++			hugetlb_cma_size = 0;
++			hugetlb_cma_percent = 0;
++
  			s += count + 1;
 -			tmp = memparse(s, &s);
 -			hugetlb_cma_size_in_node[nid] = tmp;
@@ -123,7 +130,7 @@ index 7ff4e73496788..ca8d53f319457 100644
  
  			/*
  			 * Skip the separator if have one, otherwise
-@@ -111,7 +150,28 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
+@@ -111,7 +153,28 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
  			else
  				break;
  		} else {
@@ -153,7 +160,7 @@ index 7ff4e73496788..ca8d53f319457 100644
  			break;
  		}
  	}
-@@ -137,8 +197,36 @@ void __init hugetlb_cma_reserve(void)
+@@ -137,8 +200,36 @@ void __init hugetlb_cma_reserve(void)
  {
  	unsigned long size, reserved, per_node, order, gigantic_page_size;
  	bool node_specific_cma_alloc = false;
@@ -190,19 +197,31 @@ index 7ff4e73496788..ca8d53f319457 100644
  	if (!hugetlb_cma_size)
  		return;
  
-@@ -157,6 +245,20 @@ void __init hugetlb_cma_reserve(void)
+@@ -157,6 +248,32 @@ void __init hugetlb_cma_reserve(void)
  	VM_WARN_ON(order <= MAX_PAGE_ORDER);
  	gigantic_page_size = PAGE_SIZE << order;
  
 +	if (hugetlb_cma_percent) {
++		unsigned long orig_size = hugetlb_cma_size;
++
 +		hugetlb_cma_size = ALIGN_DOWN(hugetlb_cma_size, PAGE_SIZE << order);
++		if (orig_size && !hugetlb_cma_size)
++			pr_warn("hugetlb_cma: reservation size rounded down to 0 from %lu MiB (%u%%)\n",
++				orig_size / SZ_1M, hugetlb_cma_percent);
 +	} else if (has_node_specific_param) {
 +		hugetlb_cma_size = 0;
 +		for (nid = 0; nid < MAX_NUMNODES; nid++) {
 +			if (hugetlb_cma_percent_in_node[nid]) {
++				unsigned long orig_size = hugetlb_cma_size_in_node[nid];
++
 +				hugetlb_cma_size_in_node[nid] =
 +					ALIGN_DOWN(hugetlb_cma_size_in_node[nid],
 +						   PAGE_SIZE << order);
++				if (orig_size && !hugetlb_cma_size_in_node[nid])
++					pr_warn("hugetlb_cma: reservation size rounded down to 0 from %lu MiB (%u%%) on node %d\n",
++						orig_size / SZ_1M,
++						hugetlb_cma_percent_in_node[nid],
++						nid);
 +			}
 +			hugetlb_cma_size += hugetlb_cma_size_in_node[nid];
 +		}
@@ -211,7 +230,7 @@ index 7ff4e73496788..ca8d53f319457 100644
  	hugetlb_bootmem_set_nodes();
  
  	for (nid = 0; nid < MAX_NUMNODES; nid++) {
-@@ -197,8 +299,14 @@ void __init hugetlb_cma_reserve(void)
+@@ -197,8 +314,13 @@ void __init hugetlb_cma_reserve(void)
  		per_node = DIV_ROUND_UP(hugetlb_cma_size,
  					nodes_weight(hugetlb_bootmem_nodes));
  		per_node = round_up(per_node, gigantic_page_size);
@@ -223,12 +242,11 @@ index 7ff4e73496788..ca8d53f319457 100644
 +				per_node / SZ_1M);
 +		else
 +			pr_info("hugetlb_cma: reserve %lu MiB, up to %lu MiB per node\n",
-+				hugetlb_cma_size / SZ_1M,
-+				per_node / SZ_1M);
++				hugetlb_cma_size / SZ_1M, per_node / SZ_1M);
  	}
  
  	reserved = 0;
-@@ -233,8 +341,12 @@ void __init hugetlb_cma_reserve(void)
+@@ -233,8 +355,12 @@ void __init hugetlb_cma_reserve(void)
  		}
  
  		reserved += size;

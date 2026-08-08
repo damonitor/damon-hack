@@ -5,17 +5,182 @@
     - maintainer, nobody: 5 -> 5 commits (no change)
 - mm-hotfixes-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-stable: 111 -> 111 commits (no change)
-  - series: 14 (109) -> 14 (109) (no change)
+- mm-stable: 111 -> 146 commits
+  - series: 14 (109) -> 18 (136)
     - no role, no role : 1 -> 1 commits (no change)
-    - no role, maintainer: 15 -> 15 commits (no change)
+    - no role, maintainer: 15 -> 24 commits
     - reviewer, maintainer: 1 -> 1 commits (no change)
-    - maintainer, nobody: 88 -> 88 commits (no change)
+    - maintainer, nobody: 88 -> 114 commits
     - maintainer, no role : 6 -> 6 commits (no change)
-- mm-unstable: 35 -> 35 commits (no change)
-  - series: 4 (27) -> 4 (27) (no change)
-    - no role, maintainer: 9 -> 9 commits (no change)
-    - maintainer, nobody: 26 -> 26 commits (no change)
+  - changed commits
+    - 169c0a1ec494 "mm/damon/tests/core-kunit: test damon_nr_accesses_mvsum()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260713094648.897239-1-husong@kylinos.cn
+    - 0250dbe08c73 "mm/damon/core: skip aging from repeated aggressive merging"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260712165432.87609-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260621203548.10718-1-sj@kernel.org [1]
+      - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [2]
+    - series "Docs/ABI/damon: sysfs ABI document fixes and additions", v2. (4)
+      - 1b492fc82368 "Docs/ABI/damon: fix typo in intervals_goal sysfs path (0/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714140117.94147-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714140117.94147-2-sj@kernel.org
+      - 732c07c4d33e "Docs/ABI/damon: fix typos (1/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714140117.94147-3-sj@kernel.org
+      - 66a0dae14a3c "Docs/ABI/damon: document update_tuned_intervals state command (2/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714140117.94147-4-sj@kernel.org
+      - aace7a1f5f20 "Docs/ABI/damon: document tried_regions probe hits (3/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714140117.94147-5-sj@kernel.org
+    - series "mm/damon/core: hide core-private struct fields". (10)
+      - e0ea9467dbef "mm/damon/core: hide private damon_region fields (0/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714143544.101305-2-sj@kernel.org
+      - 300cb8592dd2 "mm/damon/core: hide private damon_target fields (1/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-3-sj@kernel.org
+      - 4e061ef21a09 "mm/damon/core: hide private damos_quota_goal fields (2/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-4-sj@kernel.org
+      - f4dacc7d9323 "mm/damon/core: hide private damos_quota fields (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-5-sj@kernel.org
+      - b814d8f86a58 "mm/damon/core: hide private damos_filter fields (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-6-sj@kernel.org
+      - c647b1ec5e9b "mm/damon/core: hide private damos fields (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-7-sj@kernel.org
+      - 55686d63f343 "mm/damon/core: hide private damon_filter fields (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-8-sj@kernel.org
+      - 6a0c38aba604 "mm/damon/core: hide private damon_probe fields (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-9-sj@kernel.org
+      - 131c20823ebc "mm/damon/sysfs: do not directly access damon_ctx->ops (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-10-sj@kernel.org
+      - 8315cf471eff "mm/damon/core: hide core-private damon_ctx fields (9/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260714143544.101305-11-sj@kernel.org
+    - series "mm/damon: unurgent fixes for infinite loop, NULL de-ref and races", v1.1. (6)
+      - 123e4619ab6c "mm/damon/core: avoid infinite kdamond_merge_regions() internal loop (0/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260715031002.108504-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260709145425.96247-1-sj@kernel.org [1]
+      - b640708929aa "mm/damon/tests/core-kunit: catch test failure in test_merge_regions_of() (1/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260710144937.26981-1-sj@kernel.org [1]
+      - 831846078caa "mm/damon/vaddr: drop last same folio access check optimization (2/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - f23f0aa62b2f "mm/damon/paddr: drop last same folio access check reuse optimization (3/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260621204050.10993-1-sj@kernel.org [1]
+      - ab4d9358e323 "mm/damon/sysfs: read addr_unit only once in damon_sysfs_apply_inputs() (4/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142950.100711-1-sj@kernel.org [1]
+      - 5adaaa28be8a "mm/damon/sysfs: read ops_id only once in damon_sysfs_apply_inputs() (5/6)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260715031002.108504-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260703172417.95426-1-sj@kernel.org [1]
+    - series "mm/damon: fix uninitialized DAMOS field and kunit exec expectation bugs". (7)
+      - af5f76aeb9c9 "mm/damon/core: initialize damos->last_applied (0/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260718001442.87129-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714055436.120034-1-sj@kernel.org [1]
+      - 9b18ef3c3aa1 "mm/damon/core-kunit: check region count before testing in split_at() (1/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
+      - 5fea07e46087 "mm/damon/vaddr-kunit: check region count in three_regions test (2/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - 3423fe703952 "mm/damon/core-kunit: handle region split failure in filter_out() (3/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260714142352.100478-1-sj@kernel.org [1]
+      - 7e2f2c41b27f "mm/damon/core-kunit: skip wrong dest walk in commit_dests_for() (4/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - 867bbe6dbd5a "mm/damon/core-kunit: skip wrong quota goal walk in commit_quota_goals() (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+      - 488cf81c4995 "mm/damon/core-kunit: skip wrong region walk in commit_target_regions() (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260718001442.87129-8-sj@kernel.org
+        - Link: https://lore.kernel.org/20260713144757.39740-1-sj@kernel.org [1]
+    - a43ea999c56a "mm/damon/ops-common: remove redundant local variable in damon_migrate_folio_list()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260718002125.637104-1-lienze@kylinos.cn
+    - 6c25083f7ae7 "mm/damon/ops-common: use nr_accesses moving sum for quota score"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260719161136.90191-1-sj@kernel.org
+    - c60874860762 "mm/damon/core: handle region split failure in apply_min_nr_regions()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260719155442.88794-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260717011834.120715-1-sj@kernel.org [1]
+    - 51fa46c36403 "mm/damon: update outdated comment about DAMOS filter handling"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260721140011.269802-1-sj@kernel.org
+    - 613c2d5552d2 "mm/damon/ops-common: prevent migration fallback to non-target nodes"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260721135607.251869-1-sj@kernel.org
+    - 64a853c9a648 "mm/damon: remove trailing semicolons after function definitions"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-unstable -> mm-stable
+      - Link: https://lore.kernel.org/20260721135333.241106-1-sj@kernel.org
+- mm-unstable: 35 -> 0 commits
+  - series: 4 (27) -> 0 (0)
+    - no role, maintainer: 9 -> 0 commits
+    - maintainer, nobody: 26 -> 0 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
