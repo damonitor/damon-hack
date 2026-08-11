@@ -1,0 +1,52 @@
+From: Hui Su <sh_def@163.com>
+Date: Sun, 9 Aug 2026 03:12:31 +0800
+Subject: [PATCH] kasan: avoid unnecessary quarantine lock cycling
+
+kasan_quarantine_remove_cache() drops quarantine_lock and restores
+interrupts after scanning each non-empty quarantine batch so that
+cond_resched() can schedule during a long scan.
+
+When no reschedule is pending, the unlock/IRQ restore and subsequent IRQ
+save/relock cycle is unnecessary.
+
+Check need_resched() before cycling quarantine_lock to avoid this overhead
+when rescheduling is not needed.
+
+Link: https://lore.kernel.org/20260808191230.3345930-2-sh_def@163.com
+Signed-off-by: Hui Su <sh_def@163.com>
+Suggested-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Andrey Ryabinin <ryabinin.a.a@gmail.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Vincenzo Frascino <vincenzo.frascino@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/kasan/quarantine.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/mm/kasan/quarantine.c b/mm/kasan/quarantine.c
+index 16f4e67beee82..37c9946f9a917 100644
+--- a/mm/kasan/quarantine.c
++++ b/mm/kasan/quarantine.c
+@@ -373,10 +373,12 @@ void kasan_quarantine_remove_cache(struct kmem_cache *cache)
+ 		if (qlist_empty(&global_quarantine[i]))
+ 			continue;
+ 		qlist_move_cache(&global_quarantine[i], &to_free, cache);
+-		/* Scanning whole quarantine can take a while. */
+-		raw_spin_unlock_irqrestore(&quarantine_lock, flags);
+-		cond_resched();
+-		raw_spin_lock_irqsave(&quarantine_lock, flags);
++		if (need_resched()) {
++			/* Scanning whole quarantine can take a while. */
++			raw_spin_unlock_irqrestore(&quarantine_lock, flags);
++			cond_resched();
++			raw_spin_lock_irqsave(&quarantine_lock, flags);
++		}
+ 	}
+ 	raw_spin_unlock_irqrestore(&quarantine_lock, flags);
+ 
+-- 
+2.47.3
+

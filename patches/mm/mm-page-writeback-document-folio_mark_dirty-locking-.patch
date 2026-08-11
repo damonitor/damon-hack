@@ -1,0 +1,64 @@
+From: Jann Horn <jannh@google.com>
+Date: Mon, 10 Aug 2026 20:10:01 +0200
+Subject: [PATCH] mm/page-writeback: document folio_mark_dirty() locking more
+ explicitly
+
+We have had bugs where set_page_dirty() was used on a page from GUP
+without appropriate locking, leading to UAF, in:
+
+ - KVM, see
+   https://lore.kernel.org/r/20260810-x86-kvm-setpagedirty-v1-1-85f180892d4f@google.com
+ - i915, see commit 0d4bbe3d407f ("drm/i915/userptr: Try to acquire the
+   page lock around set_page_dirty()").
+ - VMCI, see commit 5a16c535409f ("VMCI: Use set_page_dirty_lock() when
+   unregistering guest memory")
+ - kpc2000 staging driver, see commit b6d13bd9f2c1 ("staging: kpc2000:
+   kpc_dma: Convert set_page_dirty() --> set_page_dirty_lock()")
+
+I think set_page_dirty() and folio_mark_dirty() need more explicit
+documentation on how they should be used with pages from GUP; so add a
+comment on top of set_page_dirty() and make the comment above
+folio_mark_dirty() more explicit.
+
+Link: https://lore.kernel.org/20260810-set-page-dirty-warnings-v2-1-1bd40fadfacd@google.com
+Signed-off-by: Jann Horn <jannh@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Christoph Hellwig <hch@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/folio-compat.c   | 1 +
+ mm/page-writeback.c | 5 +++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/mm/folio-compat.c b/mm/folio-compat.c
+index a02179a0bded3..6212fdd6761a8 100644
+--- a/mm/folio-compat.c
++++ b/mm/folio-compat.c
+@@ -41,6 +41,7 @@ void set_page_writeback(struct page *page)
+ }
+ EXPORT_SYMBOL(set_page_writeback);
+ 
++/* Read the comment above folio_mark_dirty() regarding required locks! */
+ bool set_page_dirty(struct page *page)
+ {
+ 	return folio_mark_dirty(page_folio(page));
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index 47495be68598f..3a03e04b640c7 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -2763,6 +2763,11 @@ EXPORT_SYMBOL(folio_redirty_for_writepage);
+  * in this folio.  Truncation will block on the page table lock as it
+  * unmaps pages before removing the folio from its mapping.
+  *
++ * .. DANGER::
++ *    Do not use this on a folio obtained from a function like
++ *    get_user_pages_fast() without holding appropriate locks; you might want to
++ *    use set_page_dirty_lock() or folio_mark_dirty_lock() instead.
++ *
+  * Return: True if the folio was newly dirtied, false if it was already dirty.
+  */
+ bool folio_mark_dirty(struct folio *folio)
+-- 
+2.47.3
+

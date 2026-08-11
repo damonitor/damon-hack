@@ -1,0 +1,56 @@
+From: Guopeng Zhang <zhangguopeng@kylinos.cn>
+Date: Mon, 10 Aug 2026 15:42:47 +0800
+Subject: [PATCH] mm: memcg-v1: fix memory.memsw.failcnt accounting
+
+Commit 0e2759afcaf9 ("page_counter: track failcnt only for legacy
+cgroups") made failcnt accounting conditional on track_failcnt.  It
+enabled the flag for memcg->memory, but not for memcg->memsw.
+
+Consequently, memory.memsw.failcnt remains zero when the memory+swap limit
+is hit.  Enable failcnt accounting for the v1 memsw counter.
+
+Reproducer:
+
+    CG=/sys/fs/cgroup/memory/memsw-test
+    LIMIT=33554432
+    mkdir "$CG"
+    echo "$LIMIT" > "$CG/memory.limit_in_bytes"
+    echo "$LIMIT" > "$CG/memory.memsw.limit_in_bytes"
+
+Start a child process in the cgroup and make it allocate and touch 96 MiB
+of memory, causing a memcg OOM.
+
+    cat "$CG/memory.memsw.failcnt"
+
+Without the patch, memory.memsw.failcnt is 0.  With the patch,
+memory.memsw.failcnt is greater than 0.
+
+Link: https://lore.kernel.org/20260810074247.52747-1-guopeng.zhang@linux.dev
+Fixes: 0e2759afcaf9 ("page_counter: track failcnt only for legacy cgroups")
+Signed-off-by: Guopeng Zhang <zhangguopeng@kylinos.cn>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 0fea772d3d78c..c8fc2000f7c7c 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4180,6 +4180,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
+ 		page_counter_init(&memcg->swap, &parent->swap, false);
+ #ifdef CONFIG_MEMCG_V1
+ 		memcg->memory.track_failcnt = !memcg_on_dfl;
++		memcg->memsw.track_failcnt = !memcg_on_dfl;
+ 		WRITE_ONCE(memcg->oom_kill_disable, READ_ONCE(parent->oom_kill_disable));
+ 		page_counter_init(&memcg->kmem, &parent->kmem, false);
+ 		page_counter_init(&memcg->tcpmem, &parent->tcpmem, false);
+-- 
+2.47.3
+

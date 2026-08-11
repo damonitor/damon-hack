@@ -9,15 +9,21 @@ order is gigantic, alloc_fresh_hugetlb_folio() propagates the NULL
 nodemask down to hugetlb_cma_alloc_frozen_folio() via
 alloc_gigantic_frozen_folio().
 
-hugetlb_cma_alloc_frozen_folio() blindly dereferences the nodemask in
+Additionally, hugetlb_cma_alloc_frozen_folio() previously attempted
+allocation on hugetlb_cma[nid] without verifying if nid is included in the
+caller's nodemask.  Adding a node_isset(nid, *nodemask) check ensures the
+initial preferred node allocation honors the memory policy / nodemask.
+
+However, hugetlb_cma_alloc_frozen_folio() dereferences the nodemask in
 node_isset(nid, *nodemask) and for_each_node_mask(node, *nodemask),
-leading to a null pointer dereference kernel panic.
+leading to a null pointer dereference kernel panic when nodemask is NULL.
 
 Fix this by checking if nodemask is NULL in
 hugetlb_cma_alloc_frozen_folio() and defaulting it to
-node_states[N_MEMORY].  This allows hugetlb_cma allocations to fall back
-to any node with memory, keeping behavior consistent with
-alloc_contig_frozen_pages() and alloc_buddy_frozen_folio().
+cpuset_current_mems_allowed (safely read using a seqcount retry loop).
+This ensures that the initial node check and fallback loop safely honor
+the task's cpuset without violating cpuset constraints or causing NULL
+pointer dereferences.
 
 From a userspace perspective, this bug allows an unprivileged user to
 crash the kernel (trigger a panic) by requesting a gigantic hugepage
