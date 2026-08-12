@@ -1,5 +1,5 @@
 From: "Nico Pache (Red Hat)" <nico.pache@linux.dev>
-Date: Tue, 4 Aug 2026 13:25:03 -0600
+Date: Tue, 11 Aug 2026 06:48:37 -0600
 Subject: [PATCH] mm/khugepaged: refactor the PTE state checks into a helper
 
 For anonymous collapse, the collapse_scan_pmd() and
@@ -32,10 +32,11 @@ No other functional changes intended.
 This patch is heavily based off work done by Lance Yang, but modified to
 deal with conflicts and feedback received during the review cycle [1].
 
-Link: https://lore.kernel.org/20260804-khugepaged_pte_refactor-v3-5-0364cad642a0@linux.dev
+Link: https://lore.kernel.org/20260811-khugepaged_pte_refactor-v4-5-ddac39d61c4a@linux.dev
 Link: https://lore.kernel.org/linux-mm/20251008043748.45554-1-lance.yang@linux.dev/ [1]
 Signed-off-by: Nico Pache (Red Hat) <nico.pache@linux.dev>
 Suggested-by: David Hildenbrand <david@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
@@ -48,14 +49,13 @@ Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vlastimil Babka <vbabka@kernel.org>
-Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  mm/khugepaged.c | 298 +++++++++++++++++++++++++-----------------------
  1 file changed, 157 insertions(+), 141 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index dade6e68aa64a..068368d27c2f0 100644
+index 90d6e595d282d..b7372aba4417d 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -65,6 +65,12 @@ enum scan_result {
@@ -92,7 +92,7 @@ index dade6e68aa64a..068368d27c2f0 100644
  /**
   * struct khugepaged_scan - cursor for scanning
   * @mm_head: the head of the mm list to scan
-@@ -697,74 +717,131 @@ static void count_collapse_event(unsigned int order, enum vm_event_item vm_event
+@@ -696,74 +716,131 @@ static void count_collapse_event(unsigned int order, enum vm_event_item vm_event
  	count_mthp_stat(order, mthp_event);
  }
  
@@ -438,7 +438,7 @@ index dade6e68aa64a..068368d27c2f0 100644
  
  		/* Set bit for occupied pages */
  		__set_bit(i, cc->mthp_present_ptes);
-@@ -1779,7 +1795,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1780,7 +1796,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  	}
  	if (cc->is_khugepaged &&
  		   (!referenced ||
@@ -447,7 +447,7 @@ index dade6e68aa64a..068368d27c2f0 100644
  		result = SCAN_LACK_REFERENCED_PAGE;
  	} else {
  		result = SCAN_SUCCEED;
-@@ -1790,13 +1806,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1791,13 +1807,13 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  		/* collapse_huge_page() expects the lock to be dropped before calling */
  		mmap_read_unlock(mm);
  		result = mthp_collapse(mm, start_addr, referenced,

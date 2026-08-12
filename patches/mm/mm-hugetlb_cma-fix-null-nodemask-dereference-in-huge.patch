@@ -1,5 +1,5 @@
 From: Sourav Panda <souravpanda@google.com>
-Date: Sun, 26 Jul 2026 07:29:34 +0000
+Date: Tue, 11 Aug 2026 05:29:09 +0000
 Subject: [PATCH] mm/hugetlb_cma: fix null nodemask dereference in
  hugetlb_cma_alloc_frozen_folio
 
@@ -20,10 +20,12 @@ leading to a null pointer dereference kernel panic when nodemask is NULL.
 
 Fix this by checking if nodemask is NULL in
 hugetlb_cma_alloc_frozen_folio() and defaulting it to
-cpuset_current_mems_allowed (safely read using a seqcount retry loop).
+cpuset_current_mems_allowed.  Enclose the allocation attempts within the
+cpuset seqcount retry loop so that if the cpuset changes concurrently
+during allocation, the attempts are retried using the updated nodemask.
 This ensures that the initial node check and fallback loop safely honor
 the task's cpuset without violating cpuset constraints or causing NULL
-pointer dereferences.
+pointer dereferences or unexpected allocation failures.
 
 From a userspace perspective, this bug allows an unprivileged user to
 crash the kernel (trigger a panic) by requesting a gigantic hugepage
@@ -58,41 +60,83 @@ This results in a NULL pointer dereference:
    alloc_hugetlb_folio+0x3c5/0x660
    hugetlb_no_page+0x3d9/0x650
 
-Link: https://lore.kernel.org/20260726072935.3513996-1-souravpanda@google.com
+Link: https://lore.kernel.org/20260811052909.475635-1-souravpanda@google.com
 Fixes: eb02f14c4a2b ("mm/hugetlb: allow overcommitting gigantic hugepages")
 Signed-off-by: Sourav Panda <souravpanda@google.com>
-Cc: Anshuman Khandual <anshuman.khandual@arm.com>
-Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
-Cc: Shakeel Butt <shakeel.butt@linux.dev>
-Cc: Usama Arif <usamaarif642@gmail.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Anshuman Khandual <anshuman.khandual@arm.com>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Frank van der Linden <fvdl@google.com>
 Cc: Greg Thelen <gthelen@google.com>
-Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
 Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: SeongJae Park <sj@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@suse.cz>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/hugetlb_cma.c | 5 ++++-
- 1 file changed, 4 insertions(+), 1 deletion(-)
+ mm/hugetlb_cma.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
 
 diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
-index 39344d6c78d84..5744de0ceeb73 100644
+index 39344d6c78d84..3e22161686d2f 100644
 --- a/mm/hugetlb_cma.c
 +++ b/mm/hugetlb_cma.c
-@@ -34,7 +34,10 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+@@ -3,6 +3,7 @@
+ #include <linux/mm.h>
+ #include <linux/cma.h>
+ #include <linux/compiler.h>
++#include <linux/cpuset.h>
+ #include <linux/mm_inline.h>
+ 
+ #include <asm/page.h>
+@@ -30,15 +31,25 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 	int node;
+ 	struct folio *folio;
+ 	struct page *page = NULL;
++	const nodemask_t *nmask;
++	unsigned int cpuset_mems_cookie;
+ 
  	if (!hugetlb_cma_size)
  		return NULL;
  
 -	if (hugetlb_cma[nid])
-+	if (!nodemask)
-+		nodemask = &node_states[N_MEMORY];
++retry_cpuset:
++	if (!nodemask) {
++		cpuset_mems_cookie = read_mems_allowed_begin();
++		nmask = &cpuset_current_mems_allowed;
++	} else {
++		nmask = nodemask;
++	}
 +
-+	if (hugetlb_cma[nid] && node_isset(nid, *nodemask))
++	if (hugetlb_cma[nid] && node_isset(nid, *nmask))
  		page = cma_alloc_frozen_compound(hugetlb_cma[nid], order);
  
  	if (!page && !(gfp_mask & __GFP_THISNODE)) {
+-		for_each_node_mask(node, *nodemask) {
++		for_each_node_mask(node, *nmask) {
+ 			if (node == nid || !hugetlb_cma[node])
+ 				continue;
+ 
+@@ -48,8 +59,12 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 		}
+ 	}
+ 
+-	if (!page)
++	if (!page) {
++		if (!nodemask &&
++		    unlikely(read_mems_allowed_retry(cpuset_mems_cookie)))
++			goto retry_cpuset;
+ 		return NULL;
++	}
+ 
+ 	folio = page_folio(page);
+ 	folio_set_hugetlb_cma(folio);
 -- 
 2.47.3
 

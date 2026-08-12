@@ -1,7 +1,7 @@
 From: "Nico Pache (Red Hat)" <nico.pache@linux.dev>
-Date: Tue, 4 Aug 2026 13:25:00 -0600
-Subject: [PATCH] mm/khugepaged: extract young page check into
- pte_is_referenced() helper
+Date: Tue, 11 Aug 2026 06:48:34 -0600
+Subject: [PATCH] mm/khugepaged: extract reference check into
+ folio_pte_referenced() helper
 
 This change deduplicates the "is this PTE/folio referenced enough to be
 considered for a collapse" condition that was repeated in both
@@ -12,12 +12,13 @@ Also move the comment and use it as the function header.  While we are at
 it, updated the comment to clarify that a young pte is a recently accessed
 one.
 
-Link: https://lore.kernel.org/20260804-khugepaged_pte_refactor-v3-2-0364cad642a0@linux.dev
+Link: https://lore.kernel.org/20260811-khugepaged_pte_refactor-v4-2-ddac39d61c4a@linux.dev
 Signed-off-by: Nico Pache (Red Hat) <nico.pache@linux.dev>
 Acked-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Barry Song <baohua@kernel.org>
-Cc: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Dev Jain <dev.jain@arm.com>
 Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Lance Yang <lance.yang@linux.dev>
@@ -28,41 +29,39 @@ Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
-Cc: Zi Yan <ziy@nvidia.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/khugepaged.c | 35 +++++++++++++++++++----------------
- 1 file changed, 19 insertions(+), 16 deletions(-)
+ mm/khugepaged.c | 32 ++++++++++++++++++--------------
+ 1 file changed, 18 insertions(+), 14 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 1e26ea97381a9..9b15c1740943c 100644
+index 1e26ea97381a9..8babd4c97db68 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -672,6 +672,23 @@ static void release_pte_pages(pte_t *pte, pte_t *_pte,
+@@ -672,6 +672,22 @@ static void release_pte_pages(pte_t *pte, pte_t *_pte,
  	}
  }
  
 +/*
-+ * pte_is_referenced() - Check for enough referenced PTEs to justify collapsing
++ * folio_pte_referenced() - Check if a folio or its PTE mapping was recently used
 + *
-+ * If collapse was initiated by khugepaged, check that the page has been
-+ * recently accessed (young pte) to justify collapsing the page.
-+ *
-+ * Return: true if the page has been recently accessed.
++ * Return: true if recent access was observed through either the folio state
++ * or the current PTE mapping.
 + */
-+static inline bool pte_is_referenced(struct collapse_control *cc, pte_t pteval,
-+	struct folio *folio, struct vm_area_struct *vma, unsigned long addr)
++static inline bool folio_pte_referenced(struct folio *folio,
++		struct vm_area_struct *vma, unsigned long addr, pte_t pteval)
 +{
-+	return cc->is_khugepaged &&
-+	       (pte_young(pteval) || folio_test_young(folio) ||
-+		folio_test_referenced(folio) ||
-+		mmu_notifier_test_young(vma->vm_mm, addr));
++	/* The folio was referenced previously ... */
++	if (folio_test_young(folio) || folio_test_referenced(folio))
++		return true;
++	/* ... or the PTE mapping was recently used */
++	return pte_young(pteval) || mmu_notifier_test_young(vma->vm_mm, addr);
 +}
 +
  static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
  		unsigned long start_addr, pte_t *pte, struct collapse_control *cc,
  		unsigned int order, struct list_head *compound_pagelist)
-@@ -810,14 +827,7 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+@@ -810,14 +826,8 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
  		if (folio_test_large(folio))
  			list_add_tail(&folio->lru, compound_pagelist);
  next:
@@ -70,15 +69,15 @@ index 1e26ea97381a9..9b15c1740943c 100644
 -		 * If collapse was initiated by khugepaged, check that there is
 -		 * enough young pte to justify collapsing the page
 -		 */
--		if (cc->is_khugepaged &&
+ 		if (cc->is_khugepaged &&
 -		    (pte_young(pteval) || folio_test_young(folio) ||
 -		     folio_test_referenced(folio) ||
 -		     mmu_notifier_test_young(vma->vm_mm, addr)))
-+		if (pte_is_referenced(cc, pteval, folio, vma, addr))
++		    folio_pte_referenced(folio, vma, addr, pteval))
  			referenced++;
  	}
  
-@@ -1766,14 +1776,7 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
+@@ -1766,14 +1776,8 @@ static enum scan_result collapse_scan_pmd(struct mm_struct *mm,
  			goto out_unmap;
  		}
  
@@ -86,11 +85,11 @@ index 1e26ea97381a9..9b15c1740943c 100644
 -		 * If collapse was initiated by khugepaged, check that there is
 -		 * enough young pte to justify collapsing the page
 -		 */
--		if (cc->is_khugepaged &&
+ 		if (cc->is_khugepaged &&
 -		    (pte_young(pteval) || folio_test_young(folio) ||
 -		     folio_test_referenced(folio) ||
 -		     mmu_notifier_test_young(vma->vm_mm, addr)))
-+		if (pte_is_referenced(cc, pteval, folio, vma, addr))
++		    folio_pte_referenced(folio, vma, addr, pteval))
  			referenced++;
  	}
  	if (cc->is_khugepaged &&
