@@ -22,6 +22,10 @@ Also update the userland VMA tests to reflect the change.
 
 No functional change intended.
 
+[akpm@linux-foundation.org: add comments, per Lorenzo]
+  Link: https://lore.kernel.org/ann-vS6MYT9kuXqu@lucifer
+[akpm@linux-foundation.org: fix kerneldoc]
+  Closes: https://lore.kernel.org/e7911812-9b99-4f94-be6b-597bf202ffeb@infradead.org
 Link: https://lore.kernel.org/20260806-b4-scalable-cow-virt-pgoff-v4-2-ab318a350404@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
@@ -101,25 +105,26 @@ Cc: Vasily Gorbik <gor@linux.ibm.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Xu Xin <xu.xin16@zte.com.cn>
 Cc: Zi Yan <ziy@nvidia.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  arch/s390/mm/gmap_helpers.c             |  2 +-
- drivers/gpu/drm/amd/amdgpu/amdgpu_gem.c |  4 ++--
+ drivers/gpu/drm/amd/amdgpu/amdgpu_gem.c |  4 +-
  drivers/gpu/drm/drm_gem_shmem_helper.c  |  2 +-
  drivers/gpu/drm/panthor/panthor_gem.c   |  2 +-
  drivers/gpu/drm/ttm/ttm_bo_vm.c         |  2 +-
  drivers/gpu/drm/xe/xe_device.c          |  2 +-
  fs/proc/task_mmu.c                      |  2 +-
- include/linux/mm.h                      | 15 +++++++++------
+ include/linux/mm.h                      | 72 ++++++++++++++++++++++---
  kernel/events/uprobes.c                 |  2 +-
  mm/gup.c                                |  2 +-
- mm/huge_memory.c                        |  8 ++++----
+ mm/huge_memory.c                        |  8 +--
  mm/hugetlb.c                            |  2 +-
  mm/internal.h                           |  2 +-
- mm/memory.c                             | 25 ++++++++++++-------------
+ mm/memory.c                             | 25 +++++----
  mm/mempolicy.c                          |  2 +-
- tools/testing/vma/include/dup.h         | 11 +++++++++++
- 16 files changed, 49 insertions(+), 36 deletions(-)
+ tools/testing/vma/include/dup.h         | 11 ++++
+ 16 files changed, 106 insertions(+), 36 deletions(-)
 
 diff --git a/arch/s390/mm/gmap_helpers.c b/arch/s390/mm/gmap_helpers.c
 index 4bf7c9012feb6..cd5fded159c04 100644
@@ -216,32 +221,89 @@ index 817e3e0f91943..5c54aebe21182 100644
  	if (likely(!mm_flags_test(MMF_HAS_PINNED, vma->vm_mm)))
  		return false;
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index df78847f5f07a..a3368c5429472 100644
+index df78847f5f07a..c97d4f76267d4 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
-@@ -2271,17 +2271,20 @@ void unpin_user_pages(struct page **pages, unsigned long npages);
+@@ -2271,17 +2271,77 @@ void unpin_user_pages(struct page **pages, unsigned long npages);
  void unpin_user_folio(struct folio *folio, unsigned long npages);
  void unpin_folios(struct folio **folios, unsigned long nfolios);
  
 -static inline bool is_cow_mapping(vm_flags_t flags)
++/**
++ * vma_flags_is_cow_mapping() - Do these VMA flags imply a CoW mapping?
++ * @flags: The VMA flags to check.
++ *
++ * Mappings which could be CoW'd (subject to Copy-On-Write faults) are
++ * described as CoW mappings.
++ *
++ * All mappings backed by anonymous folios (all anonymous mappings and most
++ * MAP_PRIVATE-file backed ranges) are CoW mappings.
++ *
++ * All other mappings (including all writable MAP_SHARED mappings) are
++ * non-CoW.
++ *
++ * The criteria are !VMA_SHARED_BIT, VMA_MAYWRITE_BIT.
++ *
++ * VMA_MAYWRITE_BIT is checked instead of VMA_WRITE_BIT to account for both
++ * future mprotect() calls which can render a read-only mapping writable, and
++ * GUP with FOLL_FORCE (e.g. ptrace) which can CoW a read-only mapping.
++ *
++ * - No anonymous mapping can ever clear VMA_MAYWRITE_BIT.
++ *
++ * - Writes to anonymous mappings do not immediately result in CoW faults but
++ *   may do so after the process is forked or if a read is followed by a
++ *   write.
++ *
++ * - Writes to MAP_PRIVATE file-backed mappings result in CoW faults and may
++ *   do so again after fork.
++ *
++ * - MAP_SHARED mappings of a file opened read-only are transformed into
++ *   VMA_MAYSHARE_BIT, !VMA_SHARED_BIT, !VMA_MAYWRITE_BIT mappings, so remain
++ *   non-CoW.
++ *
++ * - Drivers may clear VMA_MAYWRITE_BIT but do so at mmap() time and cannot
++ *   mark themselves anonymous. Having cleared this flag it is not valid for
++ *   them to leave the VMA_WRITE_BIT flag set.
++ *
++ * As a consequence, the anonymous reverse mapping only tracks CoW mappings.
++ *
++ * Returns: true if the flags indicate a CoW mapping, otherwise false.
++ */
 +static inline bool vma_flags_is_cow_mapping(const vma_flags_t *flags)
- {
--	return (flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
++{
 +	return vma_flags_test(flags, VMA_MAYWRITE_BIT) &&
 +		!vma_flags_test(flags, VMA_SHARED_BIT);
- }
- 
--static inline bool vma_desc_is_cow_mapping(struct vm_area_desc *desc)
++}
++
++/**
++ * vma_is_cow_mapping() - Is this VMA a CoW mapping?
++ * @vma: The VMA to check.
++ *
++ * See vma_flags_is_cow_mapping() for details.
++ *
++ * Returns: true if the VMA is a CoW mapping, otherwise false.
++ */
 +static inline bool vma_is_cow_mapping(const struct vm_area_struct *vma)
  {
--	const vma_flags_t *flags = &desc->vma_flags;
+-	return (flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
 +	return vma_flags_is_cow_mapping(&vma->flags);
-+}
+ }
  
++/**
++ * vma_desc_is_cow_mapping() - Is this VMA descriptor a CoW mapping?
++ * @desc: The VMA descriptor to check.
++ *
++ * See vma_flags_is_cow_mapping() for details.
++ *
++ * Returns: true if the VMA descriptor describes a CoW mapping, otherwise
++ * false.
++ */
+ static inline bool vma_desc_is_cow_mapping(struct vm_area_desc *desc)
+ {
+-	const vma_flags_t *flags = &desc->vma_flags;
+-
 -	return vma_flags_test(flags, VMA_MAYWRITE_BIT) &&
 -		!vma_flags_test(flags, VMA_SHARED_BIT);
-+static inline bool vma_desc_is_cow_mapping(struct vm_area_desc *desc)
-+{
 +	return vma_flags_is_cow_mapping(&desc->vma_flags);
  }
  
