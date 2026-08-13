@@ -1,0 +1,55 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Wed, 12 Aug 2026 14:59:33 +0800
+Subject: [PATCH] mm/mglru: Fix young counter undercount for large folios
+
+In lru_gen_look_around(), the young counter tracks the number of young
+PTEs.  The original folio's contribution is represented by the initial
+value of young: test_and_clear_young_ptes_notify() is called on it at
+function entry, and the function returns early if it is not young.  In
+the subsequent loop, the original folio is skipped (its accessed bits
+were already cleared), so it is not double-counted.
+
+However, young is initialized to 1 regardless of the folio size.  When
+the original folio is a large folio with nr PTEs, its young count is
+underestimated by nr - 1.  This inconsistency can cause
+suitable_to_scan() to return false, preventing the PMD from being added
+to the bloom filter and reducing aging accuracy for mTHP workloads.
+
+Initialize young to nr so the original folio is accounted the same way
+as other young folios in the loop (young += nr).
+
+Link: https://lore.kernel.org/20260812065933.103627-1-hui.zhu@linux.dev
+Fixes: 56e5b60b2114 ("mm: support batched checking of the young flag for MGLRU")
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index be6bd26e8c578..6c35f7e214650 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4261,7 +4261,7 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
+ 	unsigned long end;
+ 	struct lru_gen_mm_walk *walk;
+ 	struct folio *last = NULL;
+-	int young = 1;
++	int young = nr;
+ 	pte_t *pte = pvmw->pte;
+ 	unsigned long addr = pvmw->address;
+ 	struct vm_area_struct *vma = pvmw->vma;
+-- 
+2.47.3
+
