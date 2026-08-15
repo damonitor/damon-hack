@@ -1,0 +1,149 @@
+From: SJ Park <sj@kernel.org>
+Date: Sat, 15 Aug 2026 11:19:15 -0700
+Subject: [PATCH] mm/damon/core: support negative feedback loop
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c             | 35 ++++++++++++++++++++++-------------
+ mm/damon/tests/core-kunit.h | 18 +++++++++---------
+ 2 files changed, 31 insertions(+), 22 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 89d9ecec19b84..310be52b59430 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2555,14 +2555,14 @@ static unsigned long damon_get_intervals_score(struct damon_ctx *c)
+ }
+ 
+ static unsigned long damon_feed_loop_next_input(unsigned long last_input,
+-		unsigned long score);
++		unsigned long score, bool positive);
+ 
+ static unsigned long damon_get_intervals_adaptation_bp(struct damon_ctx *c)
+ {
+ 	unsigned long score_bp, adaptation_bp;
+ 
+ 	score_bp = damon_get_intervals_score(c);
+-	adaptation_bp = damon_feed_loop_next_input(100000000, score_bp) /
++	adaptation_bp = damon_feed_loop_next_input(100000000, score_bp, true) /
+ 		10000;
+ 	/*
+ 	 * adaptation_bp ranges from 1 to 20,000.  Avoid too rapid reduction of
+@@ -3052,40 +3052,49 @@ static void damos_apply_target(struct damon_ctx *c, struct damon_target *t,
+  * damon_feed_loop_next_input() - get next input to achieve a target score.
+  * @last_input	The last input.
+  * @score	Current score that made with @last_input.
++ * @positive	If this is a positive feed loop.
+  *
+  * Calculate next input to achieve the target score, based on the last input
+- * and current score.  Assuming the input and the score are positively
+- * proportional, calculate how much compensation should be added to or
+- * subtracted from the last input as a proportion of the last input.  Avoid
+- * next input always being zero by setting it non-zero always.  In short form
+- * (assuming support of float and signed calculations), the algorithm is as
+- * below.
++ * and current score.  Assuming the input and the score are proportional,
++ * calculate how much compensation should be added to or subtracted from the
++ * last input as a proportion of the last input.  Whether the proportionality
++ * is positive or negative is determined by @positive.   Avoid next input
++ * always being zero by setting it non-zero always.  In short form (assuming
++ * support of float and signed calculations), the algorithm is as below for
++ * positively proportional (@positive is true) case.
+  *
+  * next_input = max(last_input * ((goal - current) / goal + 1), 1)
+  *
++ * If it is negatively proportional (@positive is false), it becomes below.
++ *
++ * next_input = max(last_input * ((curent - goal) / goal + 1), 1)
++ *
+  * For simple implementation, we assume the target score is always 10,000.  The
+  * caller should adjust @score for this.
+  *
+  * Returns next input that assumed to achieve the target score.
+  */
+ static unsigned long damon_feed_loop_next_input(unsigned long last_input,
+-		unsigned long score)
++		unsigned long score, bool positive)
+ {
+ 	const unsigned long goal = 10000;
+ 	/* Set minimum input as 10000 to avoid compensation be zero */
+ 	const unsigned long min_input = 10000;
+ 	unsigned long score_goal_diff, compensation;
+-	bool over_achieving = score > goal;
+ 
+ 	if (score == goal)
+ 		return last_input;
+-	if (score >= goal * 2)
++	if ((positive && score >= goal * 2) || (!positive && !score))
+ 		return min_input;
++	score = min(score, goal * 2);
+ 
+ 	score_goal_diff = abs_diff(score, goal);
+ 	compensation = mult_frac(last_input, score_goal_diff, goal);
+ 
+-	if (over_achieving)
++	if (score > goal)
++		positive = !positive;
++
++	if (!positive)
+ 		return max(last_input - compensation, min_input);
+ 	if (last_input < ULONG_MAX - compensation)
+ 		return last_input + compensation;
+@@ -3414,7 +3423,7 @@ static void damos_goal_tune_esz_bp_consist(struct damon_ctx *c, struct damos *s)
+ 	unsigned long score = damos_quota_score(c, s);
+ 
+ 	quota->esz_bp = damon_feed_loop_next_input(
+-			max(quota->esz_bp, 10000UL), score);
++			max(quota->esz_bp, 10000UL), score, true);
+ }
+ 
+ static void damos_goal_tune_esz_bp_temporal(struct damon_ctx *c,
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 29ab719ae0154..23c1b6419f0dd 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -1581,32 +1581,32 @@ static void damos_test_filter_out(struct kunit *test)
+ static void damon_test_feed_loop_next_input(struct kunit *test)
+ {
+ 	unsigned long last_input = 900000, current_score = 200;
++	bool positive_loop = true;
+ 
+ 	/*
+ 	 * If current score is lower than the goal, which is always 10,000
+ 	 * (read the comment on damon_feed_loop_next_input()'s comment), next
+ 	 * input should be higher than the last input.
+ 	 */
+-	KUNIT_EXPECT_GT(test,
+-			damon_feed_loop_next_input(last_input, current_score),
+-			last_input);
++	KUNIT_EXPECT_GT(test, damon_feed_loop_next_input(last_input,
++				current_score, positive_loop), last_input);
+ 
+ 	/*
+ 	 * If current score is higher than the goal, next input should be lower
+ 	 * than the last input.
+ 	 */
+ 	current_score = 250000000;
+-	KUNIT_EXPECT_LT(test,
+-			damon_feed_loop_next_input(last_input, current_score),
+-			last_input);
++	KUNIT_EXPECT_LT(test, damon_feed_loop_next_input(last_input,
++				current_score, positive_loop), last_input);
+ 
+ 	/*
+ 	 * The next input depends on the distance between the current score and
+ 	 * the goal
+ 	 */
+-	KUNIT_EXPECT_GT(test,
+-			damon_feed_loop_next_input(last_input, 200),
+-			damon_feed_loop_next_input(last_input, 2000));
++	KUNIT_EXPECT_GT(test, damon_feed_loop_next_input(last_input, 200,
++				positive_loop),
++			damon_feed_loop_next_input(last_input, 2000,
++				positive_loop));
+ }
+ 
+ static void damon_test_set_filters_default_reject(struct kunit *test)
+-- 
+2.47.3
+
