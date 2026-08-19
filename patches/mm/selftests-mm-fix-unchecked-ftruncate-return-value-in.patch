@@ -1,0 +1,43 @@
+From: Anshuman <anshumantewari123@gmail.com>
+Date: Tue, 18 Aug 2026 19:02:06 +0530
+Subject: [PATCH] selftests/mm: fix unchecked ftruncate return value in
+ soft-dirty test
+
+test_mprotect() calls ftruncate() to resize the backing file before
+mmap()'ing it, but never checks the return value.  If ftruncate() fails,
+the file may remain shorter than the requested mapping size.  The
+subsequent mmap() with MAP_SHARED can still succeed in this case, but the
+very next line writes directly into the mapped memory (*map = 1), which
+can trigger SIGBUS if the mapping extends beyond the actual file size.
+
+Check the return value and fail cleanly with ksft_exit_fail_msg() if
+ftruncate() fails, matching the error-handling style already used for the
+mmap() call immediately below it.
+
+Link: https://lore.kernel.org/20260818133206.39503-1-anshumantewari123@gmail.com
+Signed-off-by: Anshuman <anshumantewari123@gmail.com>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/soft-dirty.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/soft-dirty.c b/tools/testing/selftests/mm/soft-dirty.c
+index e198facf78bb5..5f278913c4d75 100644
+--- a/tools/testing/selftests/mm/soft-dirty.c
++++ b/tools/testing/selftests/mm/soft-dirty.c
+@@ -152,7 +152,8 @@ static void test_mprotect(int pagemap_fd, int pagesize, bool anon)
+ 			return;
+ 		}
+ 		unlink(fname);
+-		ftruncate(test_fd, pagesize);
++		if (ftruncate(test_fd, pagesize) != 0)
++			ksft_exit_fail_msg("ftruncate failed\n");
+ 		map = mmap(NULL, pagesize, PROT_READ|PROT_WRITE,
+ 			   MAP_SHARED, test_fd, 0);
+ 		if (map == MAP_FAILED)
+-- 
+2.47.3
+

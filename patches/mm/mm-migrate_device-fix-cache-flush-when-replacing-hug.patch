@@ -1,0 +1,56 @@
+From: Hui Su <sh_def@163.com>
+Date: Mon, 17 Aug 2026 14:08:46 +0800
+Subject: [PATCH] mm/migrate_device: fix cache flush when replacing huge zero
+ PMD
+
+migrate_vma_insert_huge_pmd_page() calls flush_cache_page() before
+replacing an existing huge zero PMD.  However, the third argument to
+flush_cache_page() is a PFN, while addr + HPAGE_PMD_SIZE is an end virtual
+address.
+
+More importantly, the mapping being invalidated is PMD-sized rather than
+PAGE_SIZE-sized.  Flush the whole PMD range with flush_cache_range(),
+matching other huge PMD invalidation paths.
+
+There is no userspace-visible effect today.  The architectures that
+currently enable ARCH_ENABLE_THP_MIGRATION use no-op implementations of
+flush_cache_page()/flush_cache_range().  32-bit ARM has non-trivial
+implementations, but does not enable ARCH_ENABLE_THP_MIGRATION.
+
+So this appears to be a latent API misuse rather than a currently
+observable bug, and I don't think a stable backport is necessary.
+
+Link: https://lore.kernel.org/20260817060845.377800-2-sh_def@163.com
+Fixes: a30b48bf1b24 ("mm/migrate_device: implement THP migration of zone device pages")
+Signed-off-by: Hui Su <sh_def@163.com>
+Reviewed-by: Balbir Singh <balbirs@nvidia.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/migrate_device.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index ab3281b7fb6e9..009bfa8b212d5 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -882,7 +882,7 @@ static int migrate_vma_insert_huge_pmd_page(struct migrate_vma *migrate,
+ 
+ 	if (flush) {
+ 		pte_free(vma->vm_mm, pgtable);
+-		flush_cache_page(vma, addr, addr + HPAGE_PMD_SIZE);
++		flush_cache_range(vma, addr, addr + HPAGE_PMD_SIZE);
+ 		pmdp_invalidate(vma, addr, pmdp);
+ 	} else {
+ 		pgtable_trans_huge_deposit(vma->vm_mm, pmdp, pgtable);
+-- 
+2.47.3
+

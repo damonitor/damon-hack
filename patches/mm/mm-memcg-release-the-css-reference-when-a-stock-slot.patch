@@ -1,0 +1,62 @@
+From: Song Hu <husong@kylinos.cn>
+Date: Tue, 18 Aug 2026 21:01:35 +0800
+Subject: [PATCH] mm: memcg: release the css reference when a stock slot
+ empties
+
+consume_stock() can drive a stock slot's nr_pages to zero while its
+cached[] pointer stays set, so the slot keeps pinning the css reference
+that refill_stock() took.  The offlining drain only flushes slots with
+cached pages, so the reference is never released unless the slot happens
+to be displaced by an unrelated charge or by CPU hotplug, and the memcg
+lingers in the dying state - up to NR_MEMCG_STOCK (7) of them per CPU
+under container churn.
+
+Keeping the slot populated past the last page only saves a
+css_get()/css_put() pair on the next charge of the same memcg, and costs
+more than that: the offlining drain has to know about empty slots, and
+refill_stock() cannot reuse them either, so a charge under a different
+memcg evicts a live batch through the drain_idx rotation instead.
+
+Drop the reference in consume_stock() when the slot empties.  Empty slots
+stop existing, so is_memcg_drain_needed() and the drain path stay as they
+are, and refill_stock() reuses emptied slots directly.  The cost is one
+refcount pair per emptied slot, at most once per MEMCG_CHARGE_BATCH pages.
+
+Link: https://lore.kernel.org/20260818130135.154315-1-husong@kylinos.cn
+Fixes: d1a05b6973c7 ("memcg: do not try to drain per-cpu caches without pages")
+Signed-off-by: Song Hu <husong@kylinos.cn>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Audra Mitchell <audra@redhat.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Nico Pache <npache@redhat.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 1d3339520809f..11b85f4b6828b 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2140,7 +2140,12 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 
+ 		stock_pages = READ_ONCE(stock->nr_pages[i]);
+ 		if (stock_pages >= nr_pages) {
+-			WRITE_ONCE(stock->nr_pages[i], stock_pages - nr_pages);
++			stock_pages -= nr_pages;
++			WRITE_ONCE(stock->nr_pages[i], stock_pages);
++			if (!stock_pages) {
++				css_put(&memcg->css);
++				WRITE_ONCE(stock->cached[i], NULL);
++			}
+ 			ret = true;
+ 		}
+ 		break;
+-- 
+2.47.3
+
