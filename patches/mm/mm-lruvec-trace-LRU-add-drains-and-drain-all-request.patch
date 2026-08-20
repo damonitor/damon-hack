@@ -1,0 +1,93 @@
+From: JP Kobryn <jp.kobryn@linux.dev>
+Date: Mon, 22 Jun 2026 11:51:27 -0700
+Subject: [PATCH] mm/lruvec: trace LRU add drains and drain-all requests
+
+LRU add batches can be drained before they reach capacity.  This can be a
+source of LRU lock contention, but it is not currently possible to
+attribute these drains to callers with existing tracepoints.
+
+Add mm_lru_add_drain to report the CPU and lru_add batch count when an
+lru_add batch is drained.  This allows tracing to distinguish full drains
+from partial drains and attribute them to the calling stack.
+
+Add mm_lru_add_drain_all to capture callers of __lru_add_drain_all and
+whether they set the force flag for all CPUs.  The tracepoint resembles
+the signature of the enclosing function, but is needed because of
+potential inlining.
+
+Note that DECLARE_TRACE() is used for these new trace hooks to avoid
+creating a new trace event ABI.
+
+Link: https://lore.kernel.org/20260622185127.24579-1-jp.kobryn@linux.dev
+Signed-off-by: JP Kobryn <jp.kobryn@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/pagemap.h | 8 ++++++++
+ mm/swap.c                      | 7 ++++++-
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/include/trace/events/pagemap.h b/include/trace/events/pagemap.h
+index 171524d3526db..36c3a90f0acca 100644
+--- a/include/trace/events/pagemap.h
++++ b/include/trace/events/pagemap.h
+@@ -77,6 +77,14 @@ TRACE_EVENT(mm_lru_activate,
+ 	TP_printk("folio=%p pfn=0x%lx", __entry->folio, __entry->pfn)
+ );
+ 
++DECLARE_TRACE(mm_lru_add_drain,
++	      TP_PROTO(int cpu, unsigned int nr_folios),
++	      TP_ARGS(cpu, nr_folios));
++
++DECLARE_TRACE(mm_lru_add_drain_all,
++	      TP_PROTO(bool force_all_cpus),
++	      TP_ARGS(force_all_cpus));
++
+ #endif /* _TRACE_PAGEMAP_H */
+ 
+ /* This part must be outside protection */
+diff --git a/mm/swap.c b/mm/swap.c
+index 588f50d8f1a8c..460e56370b3cc 100644
+--- a/mm/swap.c
++++ b/mm/swap.c
+@@ -694,9 +694,12 @@ void lru_add_drain_cpu(int cpu)
+ {
+ 	struct cpu_fbatches *fbatches = &per_cpu(cpu_fbatches, cpu);
+ 	struct folio_batch *fbatch = &fbatches->lru_add;
++	unsigned int nr_folios = folio_batch_count(fbatch);
+ 
+-	if (folio_batch_count(fbatch))
++	if (nr_folios) {
+ 		folio_batch_move_lru(fbatch, lru_add);
++		trace_mm_lru_add_drain_tp(cpu, nr_folios);
++	}
+ 
+ 	fbatch = &fbatches->lru_move_tail;
+ 	/* Disabling interrupts below acts as a compiler barrier. */
+@@ -869,6 +872,8 @@ static inline void __lru_add_drain_all(bool force_all_cpus)
+ 	if (WARN_ON(!mm_percpu_wq))
+ 		return;
+ 
++	trace_mm_lru_add_drain_all_tp(force_all_cpus);
++
+ 	/*
+ 	 * Guarantee folio_batch counter stores visible by this CPU
+ 	 * are visible to other CPUs before loading the current drain
+-- 
+2.47.3
+

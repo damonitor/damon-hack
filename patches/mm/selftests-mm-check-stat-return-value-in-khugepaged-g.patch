@@ -1,0 +1,49 @@
+From: Anshuman <anshumantewari123@gmail.com>
+Date: Wed, 19 Aug 2026 17:44:26 +0530
+Subject: [PATCH] selftests/mm: check stat() return value in khugepaged
+ get_finfo()
+
+get_finfo() calls stat() to get metadata about the target directory, but
+never checks the return value.  On failure, stat() returns -1 and leaves
+path_stat unmodified, so path_stat.st_mode may contain uninitialized stack
+data.
+
+The code then checks S_ISDIR(path_stat.st_mode) against this potentially
+garbage value.  This can produce a misleading "Not a directory" error when
+the real problem is a nonexistent or inaccessible path, or, in the worst
+case, the check could pass by chance on garbage data and let the function
+continue using an invalid path_stat for the rest of its logic.
+
+Check the return value and fail with a clear error message if stat()
+fails, matching the error-handling style already used for statfs() and
+read_file() later in the same function.
+
+Link: https://lore.kernel.org/20260819121426.49500-1-anshumantewari123@gmail.com
+Signed-off-by: Anshuman <anshumantewari123@gmail.com>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index d3a53673e1f9a..1d2d6bd72fd2a 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -124,7 +124,8 @@ static void get_finfo(const char *dir)
+ 	char *str, *end;
+ 
+ 	finfo.dir = dir;
+-	stat(finfo.dir, &path_stat);
++	if (stat(finfo.dir, &path_stat))
++		ksft_exit_fail_perror("stat()");
+ 	if (!S_ISDIR(path_stat.st_mode))
+ 		ksft_exit_fail_msg("%s: Not a directory (%s)\n", __func__, finfo.dir);
+ 	if (snprintf(finfo.path, sizeof(finfo.path), "%s/" TEST_FILE,
+-- 
+2.47.3
+

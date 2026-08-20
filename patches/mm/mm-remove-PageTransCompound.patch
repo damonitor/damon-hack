@@ -1,0 +1,86 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Thu, 18 Jun 2026 19:35:23 +0800
+Subject: [PATCH] mm: remove PageTransCompound()
+
+Remove the last user of PageTransCompound() in ksm and get rid of
+PageTransCompound().
+
+Link: https://lore.kernel.org/20260618113523.3913307-1-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Xu Xin <xu.xin16@zte.com.cn>
+Tested-by: Xu Xin <xu.xin16@zte.com.cn>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: SeongJae Park <sj@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/page-flags.h | 14 --------------
+ mm/ksm.c                   | 17 +++++++++--------
+ 2 files changed, 9 insertions(+), 22 deletions(-)
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index 7223f6f4e2b40..7a863572adce7 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -879,20 +879,6 @@ FOLIO_FLAG_FALSE(partially_mapped)
+ 
+ #define PG_head_mask ((1UL << PG_head))
+ 
+-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-/*
+- * PageTransCompound returns true for both transparent huge pages
+- * and hugetlbfs pages, so it should only be called when it's known
+- * that hugetlbfs pages aren't involved.
+- */
+-static inline int PageTransCompound(const struct page *page)
+-{
+-	return PageCompound(page);
+-}
+-#else
+-TESTPAGEFLAG_FALSE(TransCompound, transcompound)
+-#endif
+-
+ #if defined(CONFIG_MEMORY_FAILURE) && defined(CONFIG_TRANSPARENT_HUGEPAGE)
+ /*
+  * PageHasHWPoisoned indicates that at least one subpage is hwpoisoned in the
+diff --git a/mm/ksm.c b/mm/ksm.c
+index 7d5b76478f0b6..41ab25aa2a82c 100644
+--- a/mm/ksm.c
++++ b/mm/ksm.c
+@@ -2327,23 +2327,24 @@ static void cmp_and_merge_page(struct page *page, struct ksm_rmap_item *rmap_ite
+ 	tree_rmap_item =
+ 		unstable_tree_search_insert(rmap_item, page, &tree_page);
+ 	if (tree_rmap_item) {
++		struct folio *tree_folio;
+ 		bool split;
+ 
+ 		kfolio = try_to_merge_two_pages(rmap_item, page,
+ 						tree_rmap_item, tree_page);
++		tree_folio = page_folio(tree_page);
+ 		/*
+-		 * If both pages we tried to merge belong to the same compound
+-		 * page, then we actually ended up increasing the reference
+-		 * count of the same compound page twice, and split_huge_page
+-		 * failed.
++		 * If both pages we tried to merge belong to the same (large)
++		 * folio, then we actually ended up increasing the reference
++		 * count of the same folio twice, and split_huge_page failed.
++		 *
+ 		 * Here we set a flag if that happened, and we use it later to
+-		 * try split_huge_page again. Since we call put_page right
++		 * try split_huge_page again. Since we call folio_put() right
+ 		 * afterwards, the reference count will be correct and
+ 		 * split_huge_page should succeed.
+ 		 */
+-		split = PageTransCompound(page)
+-			&& compound_head(page) == compound_head(tree_page);
+-		put_page(tree_page);
++		split = folio == tree_folio;
++		folio_put(tree_folio);
+ 		if (kfolio) {
+ 			/*
+ 			 * The pages were successfully merged: insert new
+-- 
+2.47.3
+

@@ -1,0 +1,71 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Wed, 15 Jul 2026 16:47:37 +0200
+Subject: [PATCH] raid6: defer implementation selection when built-in
+
+Don't hold up early boot and defer the selection just like we've been
+doing for the RAID5 XOR code since commit 524ccdbdfb52 ("crypto: xor -
+defer load time benchmark to a later time").
+
+This will also allow full use of the timing subsystem for benchmarking.
+
+Link: https://lore.kernel.org/20260715144825.95432-7-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Cc: Eric Biggers <ebiggers@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/raid/raid6/algos.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/lib/raid/raid6/algos.c b/lib/raid/raid6/algos.c
+index 6f5c89ab2b17b..702e167a543af 100644
+--- a/lib/raid/raid6/algos.c
++++ b/lib/raid/raid6/algos.c
+@@ -239,10 +239,6 @@ static int __init raid6_select_algo(void)
+ 	if (!IS_ENABLED(CONFIG_RAID6_PQ_BENCHMARK) || raid6_nr_algos == 1) {
+ 		pr_info("raid6: skipped pq benchmark and selected %s\n",
+ 			raid6_algos[raid6_nr_algos - 1]->name);
+-		static_call_update(raid6_gen_syndrome_impl,
+-				raid6_algos[raid6_nr_algos - 1]->gen_syndrome);
+-		static_call_update(raid6_xor_syndrome_impl,
+-				raid6_algos[raid6_nr_algos - 1]->xor_syndrome);
+ 		return 0;
+ 	}
+ 
+@@ -329,13 +325,34 @@ static int __init raid6_init(void)
+ 	static_call_update(raid6_recov_datap_impl, raid6_recov_algo->datap);
+ 	pr_info("raid6: using %s recovery algorithm\n", raid6_recov_algo->name);
+ 
++	/*
++	 * Pick the last registered implementation as the temporary default until
++	 * calibration happens.
++	 */
++	static_call_update(raid6_gen_syndrome_impl,
++			raid6_algos[raid6_nr_algos - 1]->gen_syndrome);
++	static_call_update(raid6_xor_syndrome_impl,
++			raid6_algos[raid6_nr_algos - 1]->xor_syndrome);
++
++#ifdef MODULE
+ 	return raid6_select_algo();
++#else
++	return 0;
++#endif
+ }
+ 
+ static void __exit raid6_exit(void)
+ {
+ }
+ 
++/*
++ * When built-in we must register the default implementation before md
++ * initializes, but we don't want calibration to run that early as that
++ * would delay the boot process.
++ */
++#ifndef MODULE
++device_initcall(raid6_select_algo);
++#endif
+ subsys_initcall(raid6_init);
+ module_exit(raid6_exit);
+ MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

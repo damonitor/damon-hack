@@ -1,0 +1,69 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Thu, 18 Jun 2026 17:28:43 +0800
+Subject: [PATCH] mm: mprotect: use walk_page_range_vma() in mprotect_fixup()
+
+In mprotect_fixup(), the PROT_NONE PFN permission check uses
+walk_page_range() to walk the page table.  Fortunately, the caller always
+passes start/end that falls within a single VMA, the do_mprotect_pkey()
+iterates per-VMA via for_each_vma_range(), and setup_arg_pages() passes
+the whole VMA.
+
+Note, walk_page_test() isn't called in walk_page_range_vma(), however,
+prot_none_test() in prot_none_walk_ops always return 0, so it's safe to
+replace walk_page_range() with walk_page_range_vma() to eliminate an
+unnecessary find_vma() lookup, also remove unneeded prot_none_test() too.
+
+Link: https://lore.kernel.org/20260618092845.3905740-3-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mprotect.c | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+index c0f5ab74bee23..8665a23f38d3d 100644
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -708,16 +708,9 @@ static int prot_none_hugetlb_entry(pte_t *pte, unsigned long hmask,
+ 		0 : -EACCES;
+ }
+ 
+-static int prot_none_test(unsigned long addr, unsigned long next,
+-			  struct mm_walk *walk)
+-{
+-	return 0;
+-}
+-
+ static const struct mm_walk_ops prot_none_walk_ops = {
+ 	.pte_entry		= prot_none_pte_entry,
+ 	.hugetlb_entry		= prot_none_hugetlb_entry,
+-	.test_walk		= prot_none_test,
+ 	.walk_lock		= PGWALK_WRLOCK,
+ };
+ 
+@@ -753,7 +746,7 @@ mprotect_fixup(struct vma_iterator *vmi, struct mmu_gather *tlb,
+ 	    !vma_flags_test_any_mask(&new_vma_flags, VMA_ACCESS_FLAGS)) {
+ 		pgprot_t new_pgprot = vm_get_page_prot(newflags);
+ 
+-		error = walk_page_range(current->mm, start, end,
++		error = walk_page_range_vma(vma, start, end,
+ 				&prot_none_walk_ops, &new_pgprot);
+ 		if (error)
+ 			return error;
+-- 
+2.47.3
+

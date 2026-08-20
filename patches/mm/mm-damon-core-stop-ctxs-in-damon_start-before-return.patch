@@ -1,0 +1,69 @@
+From: SJ Park <sj@kernel.org>
+Date: Mon, 6 Jul 2026 07:06:16 -0700
+Subject: [PATCH] mm/damon/core: stop ctxs in damon_start() before returning an
+ error
+
+Patch series "mm/damon: refactor damon_{start,stop,commit}() for simple
+error handling".
+
+damon_start() and damon_stop() could leave a few of requested DAMON
+contexts running when they return an error.  damon_commit() failure stops
+the DAMON context, but in an asynchronous way.  Callers should stop the
+left-over DAMON contexts.  It is easy to make mistakes, and indeed a few
+bugs from such mistakes were found and fixed.
+
+Refactor the core API functions to guarantee contexts are completely
+stopped under failures.  Remove the caller side error handlers that are no
+longer needed due to the refactoring.
+
+Patches Sequence
+================
+
+Patch 1 refactors damon_start() to ensure all contexts are stopped for
+failures.  Patch 2 updates unnecessary damon_start() error handling from
+mtier sample module.
+
+Patch 3 refactors damon_stop() to always success.  Patches 4-6 updates
+callers (damon_{sysfs,reclaim lru_sort}) to ignore the return value.
+Patch 7 update damon_stop() return value to void.  Patch 8 simplifies
+damon_stop() error handling in mtier sample module.
+
+Patch 9 refactors damon_call() to return errors only after the context
+is completely stopped.  Patches 10 and 11 remove unnecessary error
+handlings from callers (wsse and prcl sample modules).
+
+
+This patch (of 11):
+
+When multiple contexts are passed to damon_start(), the function starts
+the contexts one by one.  If any of the operations fails, it immediately
+returns an error.  Contexts that successfully started before the failure
+keep running.  The caller should catch this and stop the contexts.  It is
+complicated and easy to make mistakes.  Stop all contexts in damon_start()
+under the failures.
+
+Link: https://lore.kernel.org/20260706140628.87414-1-sj@kernel.org
+Link: https://lore.kernel.org/20260706140628.87414-2-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 3c5a46e1c079a..d89a7f2faf350 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1917,6 +1917,9 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive)
+ 		running_exclusive_ctxs = true;
+ 	mutex_unlock(&damon_lock);
+ 
++	if (i != nr_ctxs)
++		damon_stop(ctxs, i);
++
+ 	return err;
+ }
+ 
+-- 
+2.47.3
+

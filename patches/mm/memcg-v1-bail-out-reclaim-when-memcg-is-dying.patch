@@ -1,0 +1,70 @@
+From: Jiayuan Chen <jiayuan.chen@shopee.com>
+Date: Thu, 2 Jul 2026 20:02:30 +0800
+Subject: [PATCH] memcg-v1: bail out reclaim when memcg is dying
+
+The legacy memory.limit_in_bytes and memory.memsw.limit_in_bytes writers
+retry page_counter_set_max() by reclaiming synchronously in the writer
+context.  memory.force_empty similarly loops in synchronous reclaim until
+the cgroup is empty or reclaim stops making progress.
+
+These writes hold a kernfs active reference on the file.  If cgroup
+removal starts in parallel, the remover sets CSS_DYING and then waits in
+kernfs_drain() under cgroup_mutex for the active reference to drain.
+Continuing reclaim after the memcg is dying can therefore delay cgroup
+removal and keep cgroup_mutex held for a long time.
+
+Stop the v1 reclaim loops once the memcg is dying.  For limit resizing,
+keep the existing -EBUSY semantics when the new limit could not be
+installed.  For memory.force_empty, keep the existing best-effort success
+semantics.
+
+Link: https://lore.kernel.org/20260702120235.376752-5-jiayuan.chen@linux.dev
+Signed-off-by: Jiayuan Chen <jiayuan.chen@shopee.com>
+Reported-by: Zhou Yingfu <yingfu.zhou@shopee.com>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jiayuan Chen <jiayuan.chen@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol-v1.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/mm/memcontrol-v1.c b/mm/memcontrol-v1.c
+index 135622b6172b6..e8b6e1560278b 100644
+--- a/mm/memcontrol-v1.c
++++ b/mm/memcontrol-v1.c
+@@ -1805,6 +1805,10 @@ static int mem_cgroup_resize_max(struct mem_cgroup *memcg,
+ 		if (!ret)
+ 			break;
+ 
++		/* cgroup_rmdir() waits for us with cgroup_mutex held. */
++		if (memcg_is_dying(memcg))
++			break;
++
+ 		if (!drained) {
+ 			drain_all_stock(memcg);
+ 			drained = true;
+@@ -1843,6 +1847,10 @@ static int mem_cgroup_force_empty(struct mem_cgroup *memcg)
+ 		if (signal_pending(current))
+ 			return -EINTR;
+ 
++		/* cgroup_rmdir() waits for us with cgroup_mutex held. */
++		if (memcg_is_dying(memcg))
++			break;
++
+ 		if (!try_to_free_mem_cgroup_pages(memcg, 1, GFP_KERNEL,
+ 						  MEMCG_RECLAIM_MAY_SWAP, NULL))
+ 			nr_retries--;
+-- 
+2.47.3
+

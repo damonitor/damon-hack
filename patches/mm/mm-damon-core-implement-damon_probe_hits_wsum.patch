@@ -1,0 +1,75 @@
+From: SJ Park <sj@kernel.org>
+Date: Fri, 10 Jul 2026 06:46:34 -0700
+Subject: [PATCH] mm/damon/core: implement damon_probe_hits_wsum()
+
+When damon_probe->weight is set, the weighted sum of probe hits will be
+useful.  It will be useful for not only the users but also DAMON internal
+logics like regions merging.  Implement a function for calculating it.
+
+Link: https://lore.kernel.org/20260710134651.18084-6-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h |  2 ++
+ mm/damon/core.c       | 24 ++++++++++++++++++++++++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index e7acd8e610a64..f69442a9d4312 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1012,6 +1012,8 @@ unsigned int damon_nr_accesses_mvsum(struct damon_region *r,
+ 		struct damon_ctx *ctx);
+ unsigned char damon_probe_hits_mvsum(int probe_idx, struct damon_region *r,
+ 		struct damon_ctx *ctx);
++unsigned int damon_probe_hits_wsum(struct damon_region *r, bool last,
++		struct damon_ctx *ctx);
+ 
+ int damon_set_regions(struct damon_target *t, struct damon_addr_range *ranges,
+ 		unsigned int nr_ranges, unsigned long min_region_sz);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9f6cdd810bd8a..fea97399b5754 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -393,6 +393,30 @@ static bool damon_is_last_region(struct damon_region *r,
+ 	return list_is_last(&r->list, &t->regions_list);
+ }
+ 
++/**
++ * damon_probe_hits_wsum() - Returns probe hits weighted sum of a region.
++ * @r:		region to get the weighted sum of.
++ * @last:	if the request is for last-window aggregated probe hits.
++ * @ctx:	context of &r.
++ *
++ * Return: the weighted sum of probe hits of the region.
++ */
++unsigned int damon_probe_hits_wsum(struct damon_region *r, bool last,
++		struct damon_ctx *ctx)
++{
++	struct damon_probe *probe;
++	unsigned int sum = 0;
++	int i = 0;
++
++	damon_for_each_probe(probe, ctx) {
++		if (last)
++			sum += r->last_probe_hits[i++] * probe->weight;
++		else
++			sum += r->probe_hits[i++] * probe->weight;
++	}
++	return sum;
++}
++
+ /*
+  * Check whether a region is intersecting an address range
+  *
+-- 
+2.47.3
+

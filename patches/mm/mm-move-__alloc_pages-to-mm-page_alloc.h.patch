@@ -1,0 +1,129 @@
+From: Brendan Jackman <jackmanb@google.com>
+Date: Fri, 3 Jul 2026 12:31:54 +0000
+Subject: [PATCH] mm: move __alloc_pages() to mm/page_alloc.h
+
+It's no longer used outside of mm/.
+
+Since this means __alloc_pages_noprof() is no longer visible from gfp.h,
+this also means moving the definition of alloc_pages_node_noprof into
+the .c file.
+
+Also remove references to this API from the documentation tree -
+referring to the specific function name was already questionable but
+now the function is not even public it definitely seems wrong.
+
+Link: https://lore.kernel.org/20260703-alloc-trylock-v5-14-c87b714e19d3@google.com
+Signed-off-by: Brendan Jackman <jackmanb@google.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ Documentation/admin-guide/cgroup-v1/cpusets.rst |  2 +-
+ Documentation/admin-guide/mm/transhuge.rst      |  2 +-
+ include/linux/gfp.h                             | 16 +---------------
+ mm/page_alloc.c                                 | 13 ++++++++++++-
+ mm/page_alloc.h                                 |  4 ++++
+ 5 files changed, 19 insertions(+), 18 deletions(-)
+
+diff --git a/Documentation/admin-guide/cgroup-v1/cpusets.rst b/Documentation/admin-guide/cgroup-v1/cpusets.rst
+index c7909e5ac1361..52a213aff04e5 100644
+--- a/Documentation/admin-guide/cgroup-v1/cpusets.rst
++++ b/Documentation/admin-guide/cgroup-v1/cpusets.rst
+@@ -284,7 +284,7 @@ take action.
+ ==>
+     Unless this feature is enabled by writing "1" to the special file
+     /dev/cpuset/memory_pressure_enabled, the hook in the rebalance
+-    code of __alloc_pages() for this metric reduces to simply noticing
++    code of the page allocator for this metric reduces to simply noticing
+     that the cpuset_memory_pressure_enabled flag is zero.  So only
+     systems that enable this feature will compute the metric.
+ 
+diff --git a/Documentation/admin-guide/mm/transhuge.rst b/Documentation/admin-guide/mm/transhuge.rst
+index 23f8d13c2629d..16f37135ed80d 100644
+--- a/Documentation/admin-guide/mm/transhuge.rst
++++ b/Documentation/admin-guide/mm/transhuge.rst
+@@ -761,7 +761,7 @@ compact_fail
+ 	but failed.
+ 
+ It is possible to establish how long the stalls were using the function
+-tracer to record how long was spent in __alloc_pages() and
++tracer to record how long was spent in the page allocator and
+ using the mm_page_alloc tracepoint to identify which allocations were
+ for huge pages.
+ 
+diff --git a/include/linux/gfp.h b/include/linux/gfp.h
+index 3bf55a5f9143e..4d57e9c0bf204 100644
+--- a/include/linux/gfp.h
++++ b/include/linux/gfp.h
+@@ -204,10 +204,6 @@ static inline void arch_free_page(struct page *page, int order) { }
+ static inline void arch_alloc_page(struct page *page, int order) { }
+ #endif
+ 
+-struct page *__alloc_pages_noprof(gfp_t gfp, unsigned int order, int preferred_nid,
+-		nodemask_t *nodemask);
+-#define __alloc_pages(...)			alloc_hooks(__alloc_pages_noprof(__VA_ARGS__))
+-
+ struct folio *__folio_alloc_noprof(gfp_t gfp, unsigned int order, int preferred_nid,
+ 		nodemask_t *nodemask);
+ #define __folio_alloc(...)			alloc_hooks(__folio_alloc_noprof(__VA_ARGS__))
+@@ -272,17 +268,7 @@ struct folio *__folio_alloc_node_noprof(gfp_t gfp, unsigned int order, int nid)
+  * prefer the current CPU's closest node. Otherwise node must be valid and
+  * online.
+  */
+-static inline struct page *alloc_pages_node_noprof(int nid, gfp_t gfp_mask,
+-						   unsigned int order)
+-{
+-	if (nid == NUMA_NO_NODE)
+-		nid = numa_mem_id();
+-
+-	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
+-	warn_if_node_offline(nid, gfp_mask);
+-
+-	return __alloc_pages_noprof(gfp_mask, order, nid, NULL);
+-}
++struct page *alloc_pages_node_noprof(int nid, gfp_t gfp_mask, unsigned int order);
+ 
+ #define  alloc_pages_node(...)			alloc_hooks(alloc_pages_node_noprof(__VA_ARGS__))
+ 
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index c2839959d7908..f68b2b138a2e8 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5431,7 +5431,18 @@ struct page *__alloc_pages_noprof(gfp_t gfp, unsigned int order,
+ 		set_page_refcounted(page);
+ 	return page;
+ }
+-EXPORT_SYMBOL(__alloc_pages_noprof);
++
++struct page *alloc_pages_node_noprof(int nid, gfp_t gfp_mask, unsigned int order)
++{
++	if (nid == NUMA_NO_NODE)
++		nid = numa_mem_id();
++
++	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
++	warn_if_node_offline(nid, gfp_mask);
++
++	return __alloc_pages_noprof(gfp_mask, order, nid, NULL);
++}
++EXPORT_SYMBOL(alloc_pages_node_noprof);
+ 
+ struct folio *__folio_alloc_noprof(gfp_t gfp, unsigned int order, int preferred_nid,
+ 		nodemask_t *nodemask)
+diff --git a/mm/page_alloc.h b/mm/page_alloc.h
+index 2d60551b4453f..aa0c1481f7ca3 100644
+--- a/mm/page_alloc.h
++++ b/mm/page_alloc.h
+@@ -244,6 +244,10 @@ struct page *alloc_frozen_pages_nolock_noprof(gfp_t gfp_flags, int nid, unsigned
+ 	alloc_hooks(alloc_frozen_pages_nolock_noprof(__VA_ARGS__))
+ void free_frozen_pages_nolock(struct page *page, unsigned int order);
+ 
++struct page *__alloc_pages_noprof(gfp_t gfp, unsigned int order, int preferred_nid,
++		nodemask_t *nodemask);
++#define __alloc_pages(...)			alloc_hooks(__alloc_pages_noprof(__VA_ARGS__))
++
+ extern void zone_pcp_reset(struct zone *zone);
+ extern void zone_pcp_disable(struct zone *zone);
+ extern void zone_pcp_enable(struct zone *zone);
+-- 
+2.47.3
+

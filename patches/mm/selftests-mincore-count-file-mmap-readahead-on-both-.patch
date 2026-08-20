@@ -1,0 +1,64 @@
+From: Yijia Wang <wangyijia.yeah@bytedance.com>
+Date: Mon, 13 Jul 2026 17:43:19 +0800
+Subject: [PATCH] selftests: mincore: count file-mmap readahead on both sides
+
+check_file_mmap() faults a page in the middle of a file mapping and
+expects the mmap read-around path to make neighbouring pages resident.
+The test currently counts only pages after the faulted page.
+
+That misses valid read-around on systems with large base page sizes.  On
+arm64 with 64K pages and the default 128K readahead setting, the
+read-around window is two pages wide and centred on the faulting page.
+Faulting page 32 makes pages 31 and 32 resident, so the forward-only scan
+from page 33 reports ra_pages == 0 even though a neighbouring page was
+brought in.
+
+Keep the existing readahead assertion, but count resident neighbouring
+pages on both sides of the faulted page.  This fixes the 64K-page false
+failure without teaching the selftest to compute the expected readahead
+window from sysfs or other implementation details.
+
+Link: https://lore.kernel.org/20260713094319.771550-1-wangyijia.yeah@bytedance.com
+Signed-off-by: Yijia Wang <wangyijia.yeah@bytedance.com>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Shuah Khan <shuah@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mincore/mincore_selftest.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mincore/mincore_selftest.c b/tools/testing/selftests/mincore/mincore_selftest.c
+index cdd022c1c4974..18dfbf318b1f4 100644
+--- a/tools/testing/selftests/mincore/mincore_selftest.c
++++ b/tools/testing/selftests/mincore/mincore_selftest.c
+@@ -242,8 +242,10 @@ TEST(check_file_mmap)
+ 	}
+ 
+ 	/*
+-	 * Touch a page in the middle of the mapping. We expect the next
+-	 * few pages (the readahead window) to be populated too.
++	 * Touch a page in the middle of the mapping. We expect some
++	 * surrounding pages (the readahead window) to be populated too.
++	 * Depending on the page size and readahead setting, the pages may
++	 * land before the faulted page rather than after it.
+ 	 */
+ 	addr[FILE_SIZE / 2] = 1;
+ 	retval = mincore(addr, FILE_SIZE, vec);
+@@ -252,6 +254,12 @@ TEST(check_file_mmap)
+ 		TH_LOG("Page not found in memory after use");
+ 	}
+ 
++	i = FILE_SIZE / 2 / page_size - 1;
++	while (i >= 0 && vec[i]) {
++		ra_pages++;
++		i--;
++	}
++
+ 	i = FILE_SIZE / 2 / page_size + 1;
+ 	while (i < vec_size && vec[i]) {
+ 		ra_pages++;
+-- 
+2.47.3
+

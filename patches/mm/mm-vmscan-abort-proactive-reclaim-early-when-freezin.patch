@@ -1,0 +1,110 @@
+From: Richard Chang <richardycc@google.com>
+Date: Mon, 20 Jul 2026 04:41:03 +0000
+Subject: [PATCH] mm: vmscan: abort proactive reclaim early when freezing for
+ suspend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Proactive reclaim (triggered via memory.reclaim or node sysfs) checks for
+pending signals in its outer loop in user_proactive_reclaim().  However,
+the inner reclaim loops—specifically scanning cgroups in shrink_many()
+and evicting/aging folios in try_to_shrink_lruvec()—can run for a long
+time before returning to the outer loop, especially on systems with many
+cgroups or large memory sizes.
+
+During system suspend, the PM freezer attempts to freeze all tasks by
+sending fake signals (setting TIF_SIGPENDING).  Because the inner loops do
+not check for pending signals, the proactive reclaim task can remain stuck
+in kernel space for seconds, failing to enter the refrigerator in a timely
+manner.  This leads to suspend failures due to freeze timeouts, a behavior
+observed on Android devices.
+
+This latency issue is specific to proactive reclaim because of its large,
+user-defined reclaim targets (could be gigabytes).  Since commit
+287d5fedb377 ("mm: memcg: use larger batches for proactive reclaim"),
+proactive reclaim uses larger decaying batch sizes (starting at 1/4 of the
+remaining target) to maintain throughput.  This keeps the task in the
+inner reclaim loop for extended periods.  In contrast, reactive reclaim
+(global/memcg) uses small targets (SWAP_CLUSTER_MAX, typically 32 pages),
+allowing it to return to the outer loop and check signals frequently.
+
+To fix this, add a signal_pending() check to should_abort_scan() for
+proactive reclaim paths.  Since should_abort_scan() is called within the
+inner scanning and eviction loops, this allows proactive reclaim to abort
+early and return to the outer loop in user_proactive_reclaim().
+
+Additionally, return -ERESTARTSYS instead of -EINTR in
+user_proactive_reclaim().  When interrupted by system suspend, returning
+-ERESTARTSYS allows the task to enter the refrigerator and automatically
+restart the syscall upon resume, making the freezer transparent to
+userspace.  For real signals, the signal layer will either restart the
+syscall (if SA_RESTART is set) or return -EINTR to userspace.
+
+This fix specifically targets Multi-Gen LRU (MGLRU).  Classic LRU's scan
+targets per iteration are strictly bounded by get_scan_count(), which
+ensures it returns to the outer loop more frequently.
+
+The check in should_abort_scan() is limited to proactive reclaim
+(sc->proactive) to avoid inadvertently affecting reactive reclaim paths,
+and is wrapped in unlikely() as it is a slow path.
+
+Link: https://lore.kernel.org/20260720044103.905191-1-richardycc@google.com
+Fixes: 287d5fedb377 ("mm: memcg: use larger batches for proactive reclaim")
+Fixes: 94968384dde1 ("memcg: introduce per-memcg reclaim interface")
+Suggested-by: Michal Hocko <mhocko@suse.com>
+Suggested-by: Oleg Nesterov <oleg@redhat.com>
+Signed-off-by: Richard Chang <richardycc@google.com>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Martin Liu <liumartin@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: T.J. Mercier <tjmercier@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 1a142c58700d0..56708d1d2dfd5 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4926,6 +4926,9 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
+ 	int i;
+ 	enum zone_watermarks mark;
+ 
++	if (unlikely(sc->proactive && signal_pending(current)))
++		return true;
++
+ 	if (sc->nr_reclaimed >= max(sc->nr_to_reclaim, compact_gap(sc->order)))
+ 		return true;
+ 
+@@ -7906,8 +7909,15 @@ int user_proactive_reclaim(char *buf,
+ 		unsigned long batch_size = (nr_to_reclaim - nr_reclaimed) / 4;
+ 		unsigned long reclaimed;
+ 
++		/*
++		 * Return -ERESTARTSYS to allow the freezer to interrupt the
++		 * task. The syscall will be transparently restarted upon
++		 * resume. For real signals, it either restarts the syscall
++		 * (if SA_RESTART is set) or is converted to -EINTR by the
++		 * signal layer.
++		 */
+ 		if (signal_pending(current))
+-			return -EINTR;
++			return -ERESTARTSYS;
+ 
+ 		/*
+ 		 * This is the final attempt, drain percpu lru caches in the
+-- 
+2.47.3
+

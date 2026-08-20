@@ -1,0 +1,64 @@
+From: Christoph Hellwig <hch@lst.de>
+Date: Thu, 23 Jul 2026 07:46:04 +0200
+Subject: [PATCH] mm/swap: revert to single-folio writes for synchronous swap
+ devices
+
+Patch series "swap_ops updates", v2.
+
+This series is a follow on to the swap ops series now in mm-unstable.
+
+The first patch reintroduces direct folio writes for synchronous
+swap files, the other two remove the double indirect for file
+system based swap.
+
+
+This patch (of 3):
+
+Kairui Song reported that zram benefits from submitting each folio
+directly instead of batching up I/O because the classic LRU scanning
+benefits from clearing the folio writeback bit in the scan loop.
+
+Accommodate that by kicking off writes for synchronous devices for each
+iteration.
+
+Link: https://lore.kernel.org/20260723054622.3460249-1-hch@lst.de
+Link: https://lore.kernel.org/20260723054622.3460249-2-hch@lst.de
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: Chris Li <chrisl@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Steve French <sfrench@samba.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_io.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page_io.c b/mm/page_io.c
+index e4fa7ffffe8bb..c984a4023a651 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -358,7 +358,16 @@ static void swap_add_folio(struct swap_io_ctx *ctx, struct folio *folio, int rw)
+ 	}
+ 	bvec_set_folio(&sio->bvecs[sio->nr_bvecs], folio, folio_size(folio), 0);
+ 	sio->len += folio_size(folio);
+-	if (++sio->nr_bvecs == ARRAY_SIZE(sio->bvecs)) {
++
++	/*
++	 * Write out the iocb if we filled it, or if the device is synchronous.
++	 *
++	 * The latter is to work around expectations in the classic LRU code
++	 * which make synchronous clearing of the folio writeback flag in the
++	 * reclaim path beneficial.
++	 */
++	if (++sio->nr_bvecs == ARRAY_SIZE(sio->bvecs) ||
++	    (rw == WRITE && (sis->flags & SWP_SYNCHRONOUS_IO))) {
+ 		if (rw == WRITE)
+ 			swap_write_submit(ctx);
+ 		else
+-- 
+2.47.3
+

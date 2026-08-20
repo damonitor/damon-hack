@@ -1,0 +1,72 @@
+From: Brendan Jackman <jackmanb@google.com>
+Date: Fri, 3 Jul 2026 12:31:53 +0000
+Subject: [PATCH] mm: remove __alloc_pages_node()
+
+There were only a few users, which have been removed.  The only advantage
+of this API over alloc_pages_node() is avoiding a single conditional
+branch.  The disadvantages are:
+
+1. More API surface, more sources of confusion, more maintenance.
+
+2. Worse impact of CPU hotplug bugs: most users of __alloc_pages_node()
+   were using the result of cpu_to_node(); if the CPU gets hotplugged
+   out this will return NUMA_NO_NODE. If one of these paths fails to
+   protect against a concurrent hotplug then page_alloc.c will use
+   NUMA_NO_NODE as an index into NODE_DATA() and cause some horrible
+   memory corruption or other. With alloc_pages_node(), the code might
+   just work fine.
+
+Ulterior motive: this frees up the __* variants of the allocator APIs to
+serve specifically for use as mm-internal API.
+
+Link: https://lore.kernel.org/20260703-alloc-trylock-v5-13-c87b714e19d3@google.com
+Signed-off-by: Brendan Jackman <jackmanb@google.com>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/gfp.h | 20 ++++----------------
+ 1 file changed, 4 insertions(+), 16 deletions(-)
+
+diff --git a/include/linux/gfp.h b/include/linux/gfp.h
+index 01d6d2591f49e..3bf55a5f9143e 100644
+--- a/include/linux/gfp.h
++++ b/include/linux/gfp.h
+@@ -256,21 +256,6 @@ static inline void warn_if_node_offline(int this_node, gfp_t gfp_mask)
+ 	dump_stack();
+ }
+ 
+-/*
+- * Allocate pages, preferring the node given as nid. The node must be valid and
+- * online. For more general interface, see alloc_pages_node().
+- */
+-static inline struct page *
+-__alloc_pages_node_noprof(int nid, gfp_t gfp_mask, unsigned int order)
+-{
+-	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
+-	warn_if_node_offline(nid, gfp_mask);
+-
+-	return __alloc_pages_noprof(gfp_mask, order, nid, NULL);
+-}
+-
+-#define  __alloc_pages_node(...)		alloc_hooks(__alloc_pages_node_noprof(__VA_ARGS__))
+-
+ static inline
+ struct folio *__folio_alloc_node_noprof(gfp_t gfp, unsigned int order, int nid)
+ {
+@@ -293,7 +278,10 @@ static inline struct page *alloc_pages_node_noprof(int nid, gfp_t gfp_mask,
+ 	if (nid == NUMA_NO_NODE)
+ 		nid = numa_mem_id();
+ 
+-	return __alloc_pages_node_noprof(nid, gfp_mask, order);
++	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
++	warn_if_node_offline(nid, gfp_mask);
++
++	return __alloc_pages_noprof(gfp_mask, order, nid, NULL);
+ }
+ 
+ #define  alloc_pages_node(...)			alloc_hooks(alloc_pages_node_noprof(__VA_ARGS__))
+-- 
+2.47.3
+

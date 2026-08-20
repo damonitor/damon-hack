@@ -1,0 +1,55 @@
+From: Richard Chang <richardycc@google.com>
+Date: Tue, 28 Jul 2026 05:53:33 +0000
+Subject: [PATCH] mm/zsmalloc: fix release order of locks in zs_page_migrate()
+
+In zs_page_migrate(), locks are acquired in the following order:
+  1. write_lock(&pool->lock)
+  2. spin_lock(&class->lock)
+  3. zspage_write_trylock(zspage)
+
+However, upon successful page migration, they were being released in
+forward acquisition (FIFO) order:
+  1. write_unlock(&pool->lock)
+  2. spin_unlock(&class->lock)
+  3. zspage_write_unlock(zspage)
+
+Fix the unlocking order to release locks in strict reverse (LIFO)
+order of acquisition:
+  3. zspage_write_unlock(zspage)
+  2. spin_unlock(&class->lock)
+  1. write_unlock(&pool->lock)
+
+Releasing locks in reverse order of acquisition adheres to standard
+kernel locking hygiene, prevents potential lock ordering and lockdep
+inconsistencies.
+
+Link: https://lore.kernel.org/20260728055333.421080-1-richardycc@google.com
+Signed-off-by: Richard Chang <richardycc@google.com>
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Tested-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Martin Liu <liumartin@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zsmalloc.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index b5eadee0e8f05..8204b76f78308 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -1926,9 +1926,9 @@ static int zs_page_migrate(struct page *newpage, struct page *page,
+ 	 * Since we complete the data copy and set up new zspage structure,
+ 	 * it's okay to release migration_lock.
+ 	 */
+-	write_unlock(&pool->lock);
+-	spin_unlock(&class->lock);
+ 	zspage_write_unlock(zspage);
++	spin_unlock(&class->lock);
++	write_unlock(&pool->lock);
+ 
+ 	zpdesc_get(newzpdesc);
+ 	if (zpdesc_zone(newzpdesc) != zpdesc_zone(zpdesc)) {
+-- 
+2.47.3
+

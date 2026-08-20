@@ -1,0 +1,82 @@
+From: Yichong Chen <chenyichong@uniontech.com>
+Date: Mon, 29 Jun 2026 09:43:15 +0800
+Subject: [PATCH] tools/mm/page_owner_sort: free per-record allocations
+
+add_list() allocates comm and txt for each page owner record, but the
+cleanup path only frees the outer list array.  This leaks both buffers for
+every retained record.
+
+Free partial allocations in add_list(), discarded records during culling,
+and retained records on exit.
+
+Link: https://lore.kernel.org/20260629014316.130307-3-chenyichong@uniontech.com
+Signed-off-by: Yichong Chen <chenyichong@uniontech.com>
+Reviewed-by: Vishal Moola <vishal.moola@gmail.com>
+Cc: Ye Liu <ye.liu@linux.dev>
+Cc: Zhen Ni <zhen.ni@easystack.cn>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/mm/page_owner_sort.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/tools/mm/page_owner_sort.c b/tools/mm/page_owner_sort.c
+index 3c754826cec50..4c9be28abe3b5 100644
+--- a/tools/mm/page_owner_sort.c
++++ b/tools/mm/page_owner_sort.c
+@@ -396,6 +396,12 @@ static char *get_comm(char *buf)
+ 	return comm_str;
+ }
+ 
++static void free_block_list(struct block_list *block)
++{
++	free(block->comm);
++	free(block->txt);
++}
++
+ static int get_arg_type(const char *arg)
+ {
+ 	if (!strcmp(arg, "pid") || !strcmp(arg, "p"))
+@@ -502,9 +508,14 @@ static bool add_list(char *buf, int len, char *ext_buf)
+ 	list[list_size].pid = get_pid(buf);
+ 	list[list_size].tgid = get_tgid(buf);
+ 	list[list_size].comm = get_comm(buf);
+-	list[list_size].txt = malloc(len+1);
++	if (!list[list_size].comm) {
++		fprintf(stderr, "Out of memory\n");
++		return false;
++	}
++	list[list_size].txt = malloc(len + 1);
+ 	if (!list[list_size].txt) {
+ 		fprintf(stderr, "Out of memory\n");
++		free(list[list_size].comm);
+ 		return false;
+ 	}
+ 	memcpy(list[list_size].txt, buf, len);
+@@ -863,8 +874,10 @@ int main(int argc, char **argv)
+ 		} else {
+ 			list[count-1].num += list[i].num;
+ 			list[count-1].page_num += list[i].page_num;
++			free_block_list(&list[i]);
+ 		}
+ 	}
++	list_size = count;
+ 
+ 	qsort(list, count, sizeof(list[0]), compare_sort_condition);
+ 
+@@ -898,8 +911,11 @@ int main(int argc, char **argv)
+ 		free(ext_buf);
+ 	if (buf)
+ 		free(buf);
+-	if (list)
++	if (list) {
++		for (i = 0; i < list_size; i++)
++			free_block_list(&list[i]);
+ 		free(list);
++	}
+ out_ts:
+ 	regfree(&ts_nsec_pattern);
+ out_comm:
+-- 
+2.47.3
+
