@@ -41,6 +41,20 @@ def pr_contributors(base, tip, repo, lazybox_dir, is_linux):
         exit(1)
     print(res.stdout)
 
+def pr_damon_mail_traffic(linux_dir, base, tip):
+    now_dir = os.getcwd()
+    os.chdir(linux_dir)
+    cmd = ['hkml', 'list', 'damon', '--since', base, '--until', tip,
+           '--collapse', '--stat_only', '--stdout']
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    print(' '.join(cmd))
+    if res.returncode != 0:
+        print('\ncmd failed\n')
+        print(res.stderr)
+        exit(1)
+    print(res.stdout)
+    os.chdir(now_dir)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('linux_dir', help='path to the linux local repo')
@@ -84,6 +98,9 @@ def main():
     print()
     pr_contributors(time_base, time_tip, args.damo_dir, args.lazybox_dir,
                     is_linux=False)
+
+    print('Mailing List Traffic')
+    pr_damon_mail_traffic(args.linux_dir, linux_ver_base, linux_ver_tip)
 
 if __name__ == '__main__':
     main()
