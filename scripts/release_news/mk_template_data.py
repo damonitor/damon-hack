@@ -81,6 +81,9 @@ def main():
     print('Contributors')
     pr_contributors(linux_ver_base, linux_ver_tip, args.linux_dir,
                     args.lazybox_dir, is_linux=True)
+    print()
+    pr_contributors(time_base, time_tip, args.damo_dir, args.lazybox_dir,
+                    is_linux=False)
 
 if __name__ == '__main__':
     main()
