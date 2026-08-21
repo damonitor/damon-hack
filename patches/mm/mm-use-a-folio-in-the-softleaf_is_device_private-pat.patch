@@ -1,0 +1,61 @@
+From: Hongfu Li <lihongfu@kylinos.cn>
+Date: Wed, 19 Aug 2026 17:51:43 +0800
+Subject: [PATCH] mm: use a folio in the softleaf_is_device_private path
+
+Use the folio APIs in the device_private migration path of do_swap_page(),
+replacing four calls to compound_head() with two page_folio() calls.  The
+second one re-fetches the folio from vmf->page after migrate_to_ram(),
+which might have split the folio.
+
+Link: https://lore.kernel.org/20260819095144.45660-1-hongfu.li@linux.dev
+Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Link: https://lore.kernel.org/all/e20678ed-3fa1-4677-a1d7-e2af481e8302@kernel.org/
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index c549433025532..c6a9242d1b5bd 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -4926,18 +4926,21 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 				goto unlock;
+ 
+ 			/*
+-			 * Get a page reference while we know the page can't be
+-			 * freed.
++			 * Get a folio reference while we know the folio can't
++			 * be freed.
+ 			 */
+-			if (trylock_page(vmf->page)) {
++			folio = page_folio(vmf->page);
++			if (folio_trylock(folio)) {
+ 				struct dev_pagemap *pgmap;
+ 
+-				get_page(vmf->page);
++				folio_get(folio);
+ 				pte_unmap_unlock(vmf->pte, vmf->ptl);
+ 				pgmap = page_pgmap(vmf->page);
+ 				ret = pgmap->ops->migrate_to_ram(vmf);
+-				unlock_page(vmf->page);
+-				put_page(vmf->page);
++				/* migrate_to_ram() might have split the folio. */
++				folio = page_folio(vmf->page);
++				folio_unlock(folio);
++				folio_put(folio);
+ 			} else {
+ 				pte_unmap(vmf->pte);
+ 				softleaf_entry_wait_on_locked(entry, vmf->ptl);
+-- 
+2.47.3
+
