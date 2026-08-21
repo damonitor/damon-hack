@@ -5,6 +5,15 @@ import argparse
 import os
 import subprocess
 
+def linux_ver_date(linux_dir, version):
+    cmd = ['git', '-C', linux_dir, 'log', version, '-1', '--pretty=%cd',
+           '--date=iso-strict']
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print('%s fail\n', ' '.join(cmd))
+        exit(1)
+    return res.stdout.strip()
+
 def pr_damon_commits(linux_dir, base, tip, damon_src_files):
     cmd = ['git', '-C', linux_dir, 'log', '%s..%s' % (base, tip), '--oneline',
            '--no-merges', '--']
@@ -53,6 +62,13 @@ def main():
 
     linux_ver_base, linux_ver_tip = args.linux_version_range
     last_major_release = linux_ver_base[:-len('-rc1')]
+
+    time_base = linux_ver_date(args.linux_dir, linux_ver_base)
+    time_tip = linux_ver_date(args.linux_dir, linux_ver_tip)
+    print('Time range')
+    print('%s..%s' % (linux_ver_base, linux_ver_tip))
+    print('%s to %s' % (time_base, time_tip))
+    print()
 
     print('Statistics')
     pr_damon_commits(args.linux_dir, linux_ver_base, last_major_release,
