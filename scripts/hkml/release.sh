@@ -14,11 +14,11 @@ head release_note
 echo "'''"
 echo
 
-current_version=$(git tag | sort -V | tail -n 1)
+current_version=$(git tag | sort -V | tail -n 1 | awk -F'v' '{print $2}')
 
-first=$(echo "$current_version" | awk -F'[v.]' '{print $2}')
-second=$(echo "$current_version" | awk -F'[v.]' '{print $3}')
-third=$(echo "$current_version" | awk -F'[v.]' '{print $4}')
+first=$(echo "$current_version" | awk -F. '{print $1}')
+second=$(echo "$current_version" | awk -F. '{print $2}')
+third=$(echo "$current_version" | awk -F. '{print $3}')
 
 echo "current version is $first.$second.$third"
 
