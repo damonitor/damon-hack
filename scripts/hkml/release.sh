@@ -45,6 +45,21 @@ then
 	exit 0
 fi
 
+sed -i "s/$current_version/$new_version/" ./pyproject.toml
+git add pyproject.toml
+git commit -s -m "pyproject: update version"
+to_confirm=$(git --no-pager show)
+echo "made below commit"
+echo
+printf '%s\n' "$to_confirm"
+echo
+read -p "ok? [y/N] " answer
+if [ ! "$answer" = "y" ]
+then
+	echo "please cleanup the commit on your own"
+	exit 0
+fi
+
 bindir=$(dirname "$0")
 if !  "$bindir/../ensure_gpg_password.sh"
 then
