@@ -4,17 +4,21 @@ Subject: [PATCH] mm/damon/core: initialize damos_quota_goal->last_psi_total
 
 When DAMOS_QUOTA_SOME_MEM_PSI_US metric damos quota goal is set, the PSI
 delta for the feedback loop is calculated using
-damos_quota_goal->last_psi_total.  It is not initialized at the
-beginning.  So the first iteration of the feedback loop uses the
-uninitialized value and makes an unexpected starting point quota.
-Initialize the value at the beginning of kdamond.
+damos_quota_goal->last_psi_total.  However, it is initialized only after
+the first feedback loop.  The first iteration of the loop uses the
+uninitialized value.  As a result, the feedback loop can change the
+effective quota in an unexpected way at the first iteration.
 
-The user impact would be trivial because the issue impacts only the
-initial iteration of the feedback loop.  The feedback loop also has an
+The user impact of the issue is not big, because the issue impacts only
+the first iteration of the feedback loop.  The feedback loop also has an
 internal cap of the quota adjustment.  The wrong adjustment will soon be
-corrected over a few iterations.
+corrected over a few iterations.  For this reason, doing no
+initialization at commit time was intentional.  It is also explicitly
+commented.  That said, nobody likes behaviors that are unexpected or
+difficult to be expected.  Fixing it is also simple and not expensive.
 
-TODO: handle the commit case.
+Initialize the field at the beginning of kdamond and each commit of
+SOME_MEM_PSI_US type quota goals.
 
 The issue was discovered [1] by Sashiko.
 
@@ -24,14 +28,32 @@ Fixes: 2dbb60f789cb ("mm/damon/core: implement PSI metric DAMOS quota goal")
 Cc: <stable@vger.kernel.org> # 6.9.x
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 12 ++++++++++++
- 1 file changed, 12 insertions(+)
+ mm/damon/core.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index cbf2b19d5526d..0dd9c0848a0fc 100644
+index cbf2b19d5526d..abb30819d48c0 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
-@@ -4080,6 +4080,17 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+@@ -1274,6 +1274,9 @@ static void damos_commit_quota_goal_union(
+ 		struct damos_quota_goal *dst, struct damos_quota_goal *src)
+ {
+ 	switch (dst->metric) {
++	case DAMOS_QUOTA_SOME_MEM_PSI_US:
++		dst->last_psi_total = damos_get_some_mem_psi_total();
++		break;
+ 	case DAMOS_QUOTA_NODE_MEM_USED_BP:
+ 	case DAMOS_QUOTA_NODE_MEM_FREE_BP:
+ 		dst->nid = src->nid;
+@@ -1297,7 +1300,6 @@ static int damos_commit_quota_goal(
+ 	dst->target_value = src->target_value;
+ 	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
+ 		dst->current_value = src->current_value;
+-	/* keep last_psi_total as is, since it will be updated in next cycle */
+ 	damos_commit_quota_goal_union(dst, src);
+ 	return 0;
+ }
+@@ -4080,6 +4082,17 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
  	return -EBUSY;
  }
  
@@ -49,7 +71,7 @@ index cbf2b19d5526d..0dd9c0848a0fc 100644
  static void kdamond_init_ctx(struct damon_ctx *ctx)
  {
  	unsigned long sample_interval = ctx->attrs.sample_interval ?
-@@ -4097,6 +4108,7 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
+@@ -4097,6 +4110,7 @@ static void kdamond_init_ctx(struct damon_ctx *ctx)
  	damon_for_each_scheme(scheme, ctx) {
  		damos_set_next_apply_sis(scheme, ctx);
  		damos_set_filters_default_reject(scheme);
