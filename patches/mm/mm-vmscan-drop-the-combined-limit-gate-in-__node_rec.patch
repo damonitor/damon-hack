@@ -1,0 +1,71 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Wed, 26 Aug 2026 20:44:09 +0800
+Subject: [PATCH] mm/vmscan: drop the combined limit gate in __node_reclaim()
+
+__node_reclaim() is called from two paths: node_reclaim() and
+user_proactive_reclaim().
+
+node_reclaim() already bails out early unless node_pagecache_reclaimable()
+is over pgdat->min_unmapped_pages or the reclaimable slab is over
+pgdat->min_slab_pages.  The identical check inside __node_reclaim() that
+guards the shrink_node() loop is therefore redundant for this path.
+
+user_proactive_reclaim() is proactive reclaim driven by userspace and
+should not be gated by the per-node min_unmapped_pages / min_slab_pages
+limits at all [1].  With the gate in place, a proactive request is
+silently turned into a no-op whenever the node happens to sit below both
+thresholds.
+
+Drop the gate in __node_reclaim() and always run the shrink_node() loop.
+The node_reclaim() path is unchanged, since its caller has already applied
+the same test; the proactive path is no longer wrongly gated.
+
+Link: https://lore.kernel.org/20260826124409.35569-1-ridong.chen@linux.dev
+Link: https://sashiko.dev/#/patchset/20260723045718.2052070-1-ridong.chen@linux.dev [1]
+Fixes: b980077899ea ("mm: introduce per-node proactive reclaim interface")
+Assisted-by: Claude:claude-opus-4-8
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 13 +++----------
+ 1 file changed, 3 insertions(+), 10 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index f11491ee9ed5c..6dff207ad8c61 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -7851,16 +7851,9 @@ static unsigned long __node_reclaim(struct pglist_data *pgdat,
+ 	noreclaim_flag = memalloc_noreclaim_save();
+ 	set_task_reclaim_state(p, &sc->reclaim_state);
+ 
+-	if (node_pagecache_reclaimable(pgdat) > pgdat->min_unmapped_pages ||
+-	    node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) > pgdat->min_slab_pages) {
+-		/*
+-		 * Free memory by calling shrink node with increasing
+-		 * priorities until we have enough memory freed.
+-		 */
+-		do {
+-			shrink_node(pgdat, sc);
+-		} while (sc->nr_reclaimed < nr_pages && --sc->priority >= 0);
+-	}
++	do {
++		shrink_node(pgdat, sc);
++	} while (sc->nr_reclaimed < nr_pages && --sc->priority >= 0);
+ 
+ 	set_task_reclaim_state(p, NULL);
+ 	memalloc_noreclaim_restore(noreclaim_flag);
+-- 
+2.47.3
+

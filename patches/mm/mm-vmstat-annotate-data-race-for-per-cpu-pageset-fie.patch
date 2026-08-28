@@ -1,0 +1,103 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Thu, 27 Aug 2026 15:05:46 +0800
+Subject: [PATCH] mm/vmstat: annotate data race for per-cpu pageset fields
+
+zoneinfo_show_print() reads pcp->count, pcp->high, pcp->batch,
+pcp->high_min, pcp->high_max and the per-cpu stat_threshold while holding
+only zone->lock, which does not synchronize these fields.  The writers are
+the page allocation and free fast paths under pcp->lock, decay_pcp_high()
+which updates pcp->high without any lock, pageset_update() which writes
+batch/high_min/high_max with WRITE_ONCE(), and
+refresh_zone_stat_thresholds() which writes stat_threshold locklessly.
+
+The race is benign: the values are only printed to /proc/zoneinfo, they
+are naturally aligned integers, and pageset_update() already documents
+that users of batch/high_min/high_max must cope with the fields changing
+asynchronously.  Annotate the reads with data_race(), following commit
+af1c31acc853 ("mm/vmstat: annotate data race for
+zone->free_area[order].nr_free").
+
+Found by KCSAN testing on an older kernel; the same race still exists on
+mainline.  No functional change intended.
+
+BUG: KCSAN: data-race in zoneinfo_show_print+0x355/0x520 root/klinux/mm/vmstat.c:1774
+race at unknown origin, with read to 0xffff8e1835410808 of 4 bytes by task 22653 on cpu 12:
+zoneinfo_show_print+0x355/0x520 root/klinux/mm/vmstat.c:1774
+walk_zones_in_node root/klinux/mm/vmstat.c:1496 [inline]
+zoneinfo_show+0x41/0x70 root/klinux/mm/vmstat.c:1806
+seq_read_iter+0x30c/0x970 root/klinux/fs/seq_file.c:230
+proc_reg_read_iter+0x10c/0x170 root/klinux/fs/proc/inode.c:305
+copy_splice_read+0x2a1/0x4e0 root/klinux/fs/splice.c:365
+do_splice_read root/klinux/fs/splice.c:985 [inline]
+do_splice_read+0x139/0x1a0 root/klinux/fs/splice.c:959
+splice_direct_to_actor+0x16b/0x540 root/klinux/fs/splice.c:1089
+do_splice_direct_actor root/klinux/fs/splice.c:1207 [inline]
+do_splice_direct+0x10a/0x180 root/klinux/fs/splice.c:1233
+do_sendfile+0x6ea/0x7e0 root/klinux/fs/read_write.c:1363
+__do_sys_sendfile64 root/klinux/fs/read_write.c:1424 [inline]
+__se_sys_sendfile64 root/klinux/fs/read_write.c:1410 [inline]
+__x64_sys_sendfile64+0x117/0x130 root/klinux/fs/read_write.c:1410
+x64_sys_call+0x1cc7/0x1ee0 root/klinux/./arch/x86/include/generated/asm/syscalls_64.h:41
+do_syscall_x64 root/klinux/arch/x86/entry/common.c:46 [inline]
+do_syscall_64+0x75/0x2c0 root/klinux/arch/x86/entry/common.c:76
+entry_SYSCALL_64_after_hwframe+0x76/0xe0
+value changed: 0x000001b2 -> 0x000001b1
+Reported by Kernel Concurrency Sanitizer on:
+CPU: 12 PID: 22653 Comm: syz-executor.12 Not tainted 6.6.140+ #672
+Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.16.3-0-ga6ed6b701f0a-prebuilt.qemu.org 04/01/2014
+
+Link: https://lore.kernel.org/20260827070546.1336383-1-hui.zhu@linux.dev
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmstat.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/mm/vmstat.c b/mm/vmstat.c
+index cb57714539fb5..a3e809c57f295 100644
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -1837,6 +1837,11 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
+ 		struct per_cpu_zonestat __maybe_unused *pzstats;
+ 
+ 		pcp = per_cpu_ptr(zone->per_cpu_pageset, i);
++		/*
++		 * Access to the per-cpu pageset fields is lockless as they
++		 * are used only for printing purposes. Use data_race to
++		 * avoid KCSAN warning.
++		 */
+ 		seq_printf(m,
+ 			   "\n    cpu: %i"
+ 			   "\n              count:    %i"
+@@ -1845,15 +1850,15 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
+ 			   "\n              high_min: %i"
+ 			   "\n              high_max: %i",
+ 			   i,
+-			   pcp->count,
+-			   pcp->high,
+-			   pcp->batch,
+-			   pcp->high_min,
+-			   pcp->high_max);
++			   data_race(pcp->count),
++			   data_race(pcp->high),
++			   data_race(pcp->batch),
++			   data_race(pcp->high_min),
++			   data_race(pcp->high_max));
+ #ifdef CONFIG_SMP
+ 		pzstats = per_cpu_ptr(zone->per_cpu_zonestats, i);
+ 		seq_printf(m, "\n  vm stats threshold: %d",
+-				pzstats->stat_threshold);
++				data_race(pzstats->stat_threshold));
+ #endif
+ 	}
+ 	seq_printf(m,
+-- 
+2.47.3
+

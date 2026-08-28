@@ -1,0 +1,55 @@
+From: JonasZhou-oc <jonaszhou-oc@zhaoxin.com>
+Date: Tue, 25 Aug 2026 18:46:59 +0800
+Subject: [PATCH] mm/vmalloc: avoid false sharing with drain_vmap_work
+
+free_vmap_area_noflush() queues drain_vmap_work after the number of lazily
+freed pages exceeds lazy_max_pages().  Until the worker purges those
+pages, concurrent frees keep calling schedule_work().  Even if the work is
+already pending, queue_work_on() performs a locked test_and_set_bit() on
+the pending bit in the work item.
+
+On the tested x86-64 build, drain_vmap_work and vmap_nodes occupy the same
+64-byte cache line.  The work item starts at offset 0 and the vmap_nodes
+pointer at offset 32.  The latter is read by vmap allocation and free
+paths, so updates to the work item invalidate a cache line read by all
+CPUs.
+
+Put drain_vmap_work in the cacheline-aligned data section.  Tests were run
+on Linux 7.2.
+
+On a two-socket Intel Xeon Silver 4208 system using 16 workers, the
+runtimes of vmalloc.fix_align, vmalloc.fix_size, and
+vmalloc.no_block_alloc decreased by 12.61%, 5.78%, and 6.87%,
+respectively.  HITM samples for the affected cache line and total HITM
+samples decreased by 96.55% and 13.36%, respectively.
+
+Link: https://lore.kernel.org/20260825104659.100134-1-jonaszhou-oc@zhaoxin.com
+Signed-off-by: JonasZhou <jonaszhou-oc@zhaoxin.com>
+Reviewed-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: <jianhuizzzzz@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index bea9f76ed7e74..cfeac79856e8b 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -1089,7 +1089,12 @@ RB_DECLARE_CALLBACKS_MAX(static, free_vmap_area_rb_augment_cb,
+ static void reclaim_and_purge_vmap_areas(void);
+ static BLOCKING_NOTIFIER_HEAD(vmap_notify_list);
+ static void drain_vmap_area_work(struct work_struct *work);
+-static DECLARE_WORK(drain_vmap_work, drain_vmap_area_work);
++/*
++ * Keep the work item, whose pending bit is updated by freeing CPUs,
++ * away from vmap metadata read by allocation and free paths.
++ */
++static __cacheline_aligned_in_smp
++DECLARE_WORK(drain_vmap_work, drain_vmap_area_work);
+ 
+ static __cacheline_aligned_in_smp atomic_long_t vmap_lazy_nr;
+ 
+-- 
+2.47.3
+

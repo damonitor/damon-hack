@@ -1,0 +1,72 @@
+From: Hao Ge <hao.ge@linux.dev>
+Date: Mon, 17 Aug 2026 14:27:26 +0800
+Subject: [PATCH] alloc_tag: remove /proc/allocinfo outside of mod_lock
+
+shutdown_mem_profiling() calls remove_proc_entry() from
+reserve_module_tags(), which runs under mod_lock held for write.
+remove_proc_entry() waits for readers, and a reader takes mod_lock for
+read in allocinfo_start():
+
+  CPU0 (insmod)                      CPU1 (read /proc/allocinfo)
+  ----------------                   ----------------------------
+  reserve_module_tags()
+    down_write(&mod_lock)  [held]
+                                     use_pde()            [in_use++]
+                                     allocinfo_start()
+                                       down_read(&mod_lock)  <- blocks
+    shutdown_mem_profiling()
+      remove_proc_entry()
+        wait for in_use == 0         <- blocks
+
+Move remove_proc_entry() to a workqueue.
+
+Link: https://lore.kernel.org/20260817062726.106511-3-hao.ge@linux.dev
+Fixes: 4835f747d3ed ("alloc_tag: support for page allocation tag compression")
+Signed-off-by: Hao Ge <hao.ge@linux.dev>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Acked-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/alloc_tag.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index 470deb2af2d74..f30ef8dd24c70 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -15,6 +15,7 @@
+ #include <linux/seq_file.h>
+ #include <linux/string_choices.h>
+ #include <linux/vmalloc.h>
++#include <linux/workqueue.h>
+ #include <linux/kmemleak.h>
+ #include <uapi/linux/alloc_tag.h>
+ 
+@@ -591,6 +592,13 @@ void pgalloc_tag_swap(struct folio *new, struct folio *old)
+ 	put_page_tag_ref(handle_new);
+ }
+ 
++static void remove_allocinfo_file(struct work_struct *work)
++{
++	remove_proc_entry(ALLOCINFO_FILE_NAME, NULL);
++}
++
++static DECLARE_WORK(remove_allocinfo_work, remove_allocinfo_file);
++
+ static void shutdown_mem_profiling(bool remove_file)
+ {
+ 	if (mem_alloc_profiling_enabled())
+@@ -600,7 +608,7 @@ static void shutdown_mem_profiling(bool remove_file)
+ 		return;
+ 
+ 	if (remove_file)
+-		remove_proc_entry(ALLOCINFO_FILE_NAME, NULL);
++		schedule_work(&remove_allocinfo_work);
+ 	mem_profiling_support = false;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,90 @@
+From: Hao Ge <hao.ge@linux.dev>
+Date: Mon, 17 Aug 2026 14:27:25 +0800
+Subject: [PATCH] alloc_tag: skip percpu counter allocation when profiling is
+ disabled
+
+Patch series "alloc_tag: fix a leak and a deadlock around
+shutdown_mem_profiling()", v2.
+
+Two fixes for issues reported by sashiko:
+
+  1. percpu counter leak on modules loaded after profiling is disabled.
+  2. AB-BA deadlock between module load and /proc/allocinfo readers.
+
+
+This patch (of 2):
+
+After shutdown_mem_profiling() clears mem_profiling_support,
+needs_section_mem() returns false, so later modules have their codetag
+section placed as regular data and never enter the alloc_tag maple tree.
+codetag_load_module() still called load_module(), which allocated a percpu
+counter for every tag; release_module_tags() could not find these modules
+on unload, so the counters leaked.
+
+Return -EOPNOTSUPP from load_module() when profiling is off:
+codetag_module_init() drops the module's cmod, no counters are allocated
+and the module loads without its tags.  codetag_unload_module() now always
+calls free_section_mem(), since a module whose module_load() returned
+-EOPNOTSUPP is not in the idr but may still hold a reserved section.
+
+Link: https://lore.kernel.org/20260817062726.106511-1-hao.ge@linux.dev
+Link: https://lore.kernel.org/20260817062726.106511-2-hao.ge@linux.dev
+Fixes: 4835f747d3ed ("alloc_tag: support for page allocation tag compression")
+Signed-off-by: Hao Ge <hao.ge@linux.dev>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Suggested-by: Suren Baghdasaryan <surenb@google.com>
+Acked-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/codetag.c  | 10 ++++++++--
+ mm/alloc_tag.c |  4 ++++
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/lib/codetag.c b/lib/codetag.c
+index a9cda4c962a30..a0b600720afc1 100644
+--- a/lib/codetag.c
++++ b/lib/codetag.c
+@@ -240,7 +240,9 @@ static int codetag_module_init(struct codetag_type *cttype, struct module *mod)
+ 
+ 	if (err < 0) {
+ 		kfree(cmod);
+-		return err;
++		/* -EOPNOTSUPP means we can load the module without its tag. */
++		if (err != -EOPNOTSUPP)
++			return err;
+ 	}
+ 
+ 	return 0;
+@@ -388,7 +390,11 @@ void codetag_unload_module(struct module *mod)
+ 			++cttype->content_id;
+ 		}
+ 		up_write(&cttype->mod_lock);
+-		if (found && cttype->desc.free_section_mem)
++		/*
++		 * A module whose module_load() returned -EOPNOTSUPP is not
++		 * in the idr but may still hold reserved section memory.
++		 */
++		if (cttype->desc.free_section_mem)
+ 			cttype->desc.free_section_mem(mod, true);
+ 	}
+ 	mutex_unlock(&codetag_lock);
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index b334103104779..470deb2af2d74 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -975,6 +975,10 @@ static int load_module(struct module *mod, struct codetag *start, struct codetag
+ 	struct alloc_tag *stop_tag;
+ 	struct alloc_tag *tag;
+ 
++	/* Profiling disabled: load the module without its tags. */
++	if (!mem_profiling_support)
++		return -EOPNOTSUPP;
++
+ 	/* percpu counters for core allocations are already statically allocated */
+ 	if (!mod)
+ 		return 0;
+-- 
+2.47.3
+

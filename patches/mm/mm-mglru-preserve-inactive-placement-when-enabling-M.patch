@@ -1,0 +1,99 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Fri, 21 Aug 2026 10:16:06 +0800
+Subject: [PATCH] mm/mglru: preserve inactive placement when enabling MGLRU
+
+When the LRU is switched to MGLRU (echo y > /sys/kernel/mm/lru_gen/
+enabled), fill_evictable() re-inserts every folio via
+lru_gen_add_folio(..., false).  With reclaiming hardcoded to false, an
+inactive anonymous folio (no PG_active, not in the swapcache) takes the
+"gen = MIN_NR_GENS" branch in lru_gen_folio_seq() and is seeded at seq =
+max_seq - 1, which lru_gen_is_active() treats as active.  Its inactive
+placement is lost and NR_INACTIVE_ANON is folded into NR_ACTIVE_ANON.
+
+Pass reclaiming=!active so a folio from an inactive list is seeded into an
+older generation.  Folios from the active list carry PG_active and hit the
+first branch either way, so they are unchanged.
+
+Reclaiming also selects the insertion end in lru_gen_add_folio():
+list_add_tail() for inactive folios, list_add() for active ones.  Both the
+legacy LRU and a MGLRU generation keep the hottest folios at the head and
+the coldest at the tail, and reclaim takes from the tail.  To preserve
+that order the folio must be taken from the end matching the insertion
+end, so take inactive folios from the head and active folios from the
+tail; otherwise hot/cold would be reversed within the generation.
+
+Tested on x86_64, next-20260812, 2G VM + 1G swap, ~1.5G anon pushed onto
+the inactive list before enabling MGLRU:
+
+                         Active(anon)  Inactive(anon)
+  before switch (legacy)        2952         1548792   kB
+  after `echo y`, unpatched  1552052               0   kB
+  after `echo y`, patched      15144         1536636   kB
+
+Inactive file folios stay inactive either way (NR_INACTIVE_FILE is
+preserved).
+
+Link: https://lore.kernel.org/20260821021606.877330-1-ridong.chen@linux.dev
+Fixes: 354ed5974429 ("mm: multi-gen LRU: kill switch")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Suggested-by: Barry Song <baohua@kernel.org>
+Assisted-by: Claude:claude-opus-4-8
+Acked-by: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Oleksandr Natalenko <oleksandr@natalenko.name>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Steven Barrett <steven@liquorix.net>
+Cc: Suleiman Souhlal <suleiman@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 6dff207ad8c61..fdd13299a04a9 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5307,7 +5307,17 @@ static bool fill_evictable(struct lruvec *lruvec)
+ 
+ 		while (!list_empty(head)) {
+ 			bool success;
+-			struct folio *folio = lru_to_folio(head);
++			struct folio *folio;
++
++			/*
++			 * lru_gen_add_folio() uses list_add_tail() rather
++			 * than list_add() when reclaiming is true.  Match
++			 * its ordering to avoid cold/hot inversion.
++			 */
++			if (active)
++				folio = lru_to_folio(head);
++			else
++				folio = list_first_entry(head, struct folio, lru);
+ 
+ 			VM_WARN_ON_ONCE_FOLIO(folio_test_unevictable(folio), folio);
+ 			VM_WARN_ON_ONCE_FOLIO(folio_test_active(folio) != active, folio);
+@@ -5315,7 +5325,11 @@ static bool fill_evictable(struct lruvec *lruvec)
+ 			VM_WARN_ON_ONCE_FOLIO(folio_lru_gen(folio) != -1, folio);
+ 
+ 			lruvec_del_folio(lruvec, folio);
+-			success = lru_gen_add_folio(lruvec, folio, false);
++			/*
++			 * Borrow reclaiming=true to place inactive folios in
++			 * the older gens.
++			 */
++			success = lru_gen_add_folio(lruvec, folio, !active);
+ 			VM_WARN_ON_ONCE(!success);
+ 
+ 			if (!--remaining)
+-- 
+2.47.3
+

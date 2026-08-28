@@ -1,0 +1,69 @@
+From: Kazuki Hanai <hnkz.64@gmail.com>
+Date: Fri, 28 Aug 2026 00:25:16 +0900
+Subject: [PATCH] tmpfs: fix unicode_map leaks in casefold option handling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+shmem_parse_opt_casefold() stores the unicode_map returned by utf8_load()
+in ctx->encoding.  The casefold parameter can be supplied more than once
+for the same filesystem context, but replacing the stored map does not
+release the previous reference.
+
+The final reference is also leaked when an unmounted filesystem context is
+freed.
+
+Release the previous map before replacing it, clear ctx->encoding after
+transferring ownership to the superblock, and release any remaining
+reference from shmem_free_fc().
+
+An unprivileged user can repeatedly set the casefold parameter on a tmpfs
+filesystem context from a user namespace.  This causes unbounded kernel
+memory consumption and can result in a local denial of service.
+
+Link: https://lore.kernel.org/20260827152516.805622-1-hnkz.64@gmail.com
+Fixes: 58e55efd6c72 ("tmpfs: Add casefold lookup support")
+Signed-off-by: Kazuki Hanai <hnkz.64@gmail.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: André Almeida <andrealmeid@igalia.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 897fa2b61346f..de144a9a9558b 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -4527,6 +4527,7 @@ static int shmem_parse_opt_casefold(struct fs_context *fc, struct fs_parameter *
+ 	pr_info("tmpfs: Using encoding : utf8-%u.%u.%u\n",
+ 		unicode_major(version), unicode_minor(version), unicode_rev(version));
+ 
++	utf8_unload(ctx->encoding);
+ 	ctx->encoding = encoding;
+ 
+ 	return 0;
+@@ -4995,6 +4996,7 @@ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
+ 
+ 	if (ctx->encoding) {
+ 		sb->s_encoding = ctx->encoding;
++		ctx->encoding = NULL;
+ 		set_default_d_op(sb, &shmem_ci_dentry_ops);
+ 		if (ctx->strict_encoding)
+ 			sb->s_encoding_flags = SB_ENC_STRICT_MODE_FL;
+@@ -5092,6 +5094,9 @@ static void shmem_free_fc(struct fs_context *fc)
+ 	struct shmem_options *ctx = fc->fs_private;
+ 
+ 	if (ctx) {
++#if IS_ENABLED(CONFIG_UNICODE)
++		utf8_unload(ctx->encoding);
++#endif
+ 		mpol_put(ctx->mpol);
+ 		kfree(ctx);
+ 	}
+-- 
+2.47.3
+

@@ -1,0 +1,86 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 25 Aug 2026 08:55:26 +0100
+Subject: [PATCH] mm/mremap: reset unfaulted VMA page offset for
+ MREMAP_DONTUNMAP
+
+Uniquely an mremap() invocation using the MREMAP_DONTUNMAP flag can reset
+a faulted VMA into an unfaulted one.
+
+It does so after the page tables have been moved to the copied VMA with
+MREMAP_DONTUNMAP leaving the old VMA in place which is naturally unfaulted
+as the page tables it had are no longer present.
+
+However, in doing so, it violates the invariant that the anonymous page
+offset of an unfaulted VMA is vma->vm_start >> PAGE_SHIFT.
+
+This is because a VMA may have been faulted in, mremap()'d (causing a
+delta between its page offset and vma->vm_start >> PAGE_SHIFT), and then
+mremap()'d again with MREMAP_DONTUNMAP resulting in the unfaulting.
+
+This condition is a violation of a fundamental assumption in mm, but now
+also triggers an assert in assert_sane_pgoff() which explicitly checks for
+this condition.
+
+Correct it by resetting the VMA's page offset at the point of completing
+the MREMAP_DONTUNMAP operation.
+
+Link: https://lore.kernel.org/20260825-fix-mremap-dontunmap-pgoff-v1-1-39a40b2c98b3@kernel.org
+Fixes: 1583aa278f5f ("mm: mremap: unlink anon_vmas when mremap with MREMAP_DONTUNMAP success")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reported-by: syzbot+f12658786a4153df5113@syzkaller.appspotmail.com
+Closes: https://lore.kernel.org/all/6a87853b.ae6ddae5.3da009.0023.GAE@google.com/
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Li Xinhai <lixinhai.lxh@gmail.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mremap.c | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/mm/mremap.c b/mm/mremap.c
+index e8df5cdb0ac9f..2b4b523a86b87 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -1331,18 +1331,30 @@ static void dontunmap_complete(struct vma_remap_struct *vrm,
+ {
+ 	unsigned long start = vrm->addr;
+ 	unsigned long end = vrm->addr + vrm->old_len;
+-	unsigned long old_start = vrm->vma->vm_start;
+-	unsigned long old_end = vrm->vma->vm_end;
++	struct vm_area_struct *vma = vrm->vma;
++	unsigned long old_start = vma->vm_start;
++	unsigned long old_end = vma->vm_end;
+ 
+ 	/* We always clear VMA_LOCKED[ONFAULT]_BIT on the old VMA. */
+-	vma_clear_flags_mask(vrm->vma, VMA_LOCKED_MASK);
++	vma_clear_flags_mask(vma, VMA_LOCKED_MASK);
+ 
+ 	/*
+ 	 * anon_vma links of the old vma is no longer needed after its page
+ 	 * table has been moved.
+ 	 */
+-	if (new_vma != vrm->vma && start == old_start && end == old_end)
+-		unlink_anon_vmas(vrm->vma);
++	if (new_vma != vma && start == old_start && end == old_end) {
++		const pgoff_t pgoff_unfaulted = vma->vm_start >> PAGE_SHIFT;
++
++		unlink_anon_vmas(vma);
++		/*
++		 * The VMA is now unfaulted and it is an invariant that
++		 * unfaulted anonymous VMAs have page offset equal to
++		 * vma->vm_start >> PAGE_SHIFT.
++		 */
++		vma_set_anon_pgoff(vma, pgoff_unfaulted);
++		if (vma_is_anonymous(vma) && !vma->vm_file)
++			vma_set_pgoff(vma, pgoff_unfaulted);
++	}
+ 
+ 	/* Because we won't unmap we don't need to touch locked_vm. */
+ }
+-- 
+2.47.3
+
