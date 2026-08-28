@@ -1,0 +1,59 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 27 Aug 2026 07:37:20 -0700
+Subject: [PATCH] mm/damon/core: last_psi_total initialization fixup
+
+Mark it as not yet initialized, in damos_new_quota_goal().
+damos_commit_quota_goal_union() also do so, by simply copying the
+source's last_psi_total, which is assumed to be the uninitialized value.
+Skip the first tuning round if it is not yet initialized.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 04af826704927..380b19aa3c0c0 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -706,6 +706,8 @@ struct damos_quota_goal *damos_new_quota_goal(
+ 	goal->metric = metric;
+ 	goal->complement = complement;
+ 	goal->target_value = target_value;
++	if (metric == DAMOS_QUOTA_SOME_MEM_PSI_US)
++		goal->last_psi_total = U64_MAX;
+ 	INIT_LIST_HEAD(&goal->list);
+ 	return goal;
+ }
+@@ -1275,6 +1277,9 @@ static void damos_commit_quota_goal_union(
+ 		struct damos_quota_goal *dst, struct damos_quota_goal *src)
+ {
+ 	switch (dst->metric) {
++	case DAMOS_QUOTA_SOME_MEM_PSI_US:
++		dst->last_psi_total = U64_MAX;
++		break;
+ 	case DAMOS_QUOTA_NODE_MEM_USED_BP:
+ 	case DAMOS_QUOTA_NODE_MEM_FREE_BP:
+ 		dst->nid = src->nid;
+@@ -1302,7 +1307,6 @@ static int damos_commit_quota_goal(
+ 	dst->target_value = src->target_value;
+ 	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
+ 		dst->current_value = src->current_value;
+-	/* keep last_psi_total as is, since it will be updated in next cycle */
+ 	damos_commit_quota_goal_union(dst, src);
+ 	return 0;
+ }
+@@ -3388,6 +3392,10 @@ static void damos_set_quota_goal_current_value(struct damon_ctx *c,
+ 		break;
+ 	case DAMOS_QUOTA_SOME_MEM_PSI_US:
+ 		now_psi_total = damos_get_some_mem_psi_total();
++		/* uninitialized last_psi_total; make no effect this round */
++		if (goal->last_psi_total == U64_MAX)
++			goal->last_psi_total = now_psi_total +
++				goal->target_value;
+ 		goal->current_value = now_psi_total - goal->last_psi_total;
+ 		goal->last_psi_total = now_psi_total;
+ 		break;
+-- 
+2.47.3
+
