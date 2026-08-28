@@ -1,0 +1,167 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 25 Aug 2026 16:45:52 +0800
+Subject: [PATCH] mm/sparse: relax struct mem_section size constraints
+
+Patch series "mm: Introduce section-based vmemmap optimization for
+HugeTLB", v5.
+
+HugeTLB vmemmap optimization currently has its own early boot setup
+path. It pre-populates optimized vmemmap mappings before the normal
+sparse-vmemmap population code runs, and sparsemem carries
+SPARSEMEM_VMEMMAP_PREINIT only to support that special case.
+
+That makes the HugeTLB vmemmap optimization path harder to share with
+other users of sparse-vmemmap optimization and leaves a fair amount of
+HugeTLB-specific boot-time state in the generic memory initialization
+flow.
+
+This series introduces section-based vmemmap optimization support in
+the sparse-vmemmap code and switches HugeTLB bootmem pages over to it.
+Instead of having HugeTLB pre-populate optimized vmemmap mappings
+itself, HugeTLB now records the compound page order in the corresponding
+memory sections. The generic sparse-vmemmap population path can then
+allocate or reuse shared tail vmemmap pages based on section metadata.
+
+The patches are organized as follows:
+
+  - patches 1-2 prepare sparsemem and vmemmap optimization metadata
+  - patches 3-8 teach the common sparse-vmemmap paths to use that state
+  - patches 9-10 switch HugeTLB bootmem optimization to the
+    section-based path
+  - patches 11-17 clean up sparsemem and HugeTLB bootmem code that is no
+    longer needed after the conversion
+
+This is intended to be the second smaller step toward the broader HVO
+generalization [1].  The device DAX conversion and the wider HVO
+consolidation are left for follow-up series.
+
+
+This patch (of 17):
+
+struct mem_section is currently forced to a power-of-2 size so the
+section-to-root lookup can use a mask instead of a modulo.
+
+That requirement makes future extensions harder than necessary: adding a
+small field can require configuration-dependent padding or layout checks
+just to preserve the lookup scheme.  Keep the lookup correct for any
+struct mem_section size by using a plain modulo instead.
+
+Do not leave the layout entirely unconstrained, though.  Keep struct
+mem_section double-word aligned so modest size changes, such as adding
+another word-sized field on 64-bit systems, still keep a compact and
+efficient layout.  If future fields grow the structure beyond that sweet
+spot, the lookup remains correct; only the exact layout efficiency
+changes.
+
+Link: https://lore.kernel.org/20260825084608.47437-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260825084608.47437-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/linux-mm/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmzone.h  | 11 +++--------
+ mm/sparse.c             |  2 --
+ scripts/gdb/linux/mm.py |  6 ++----
+ 3 files changed, 5 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 94f9c3ff54160..0a2428714108c 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -2027,13 +2027,9 @@ struct mem_section {
+ 	 * section. (see page_ext.h about this.)
+ 	 */
+ 	struct page_ext *page_ext;
+-	unsigned long pad;
+ #endif
+-	/*
+-	 * WARNING: mem_section must be a power-of-2 in size for the
+-	 * calculation and use of SECTION_ROOT_MASK to make sense.
+-	 */
+-};
++/* Sacrifice minor padding space for efficient lookup. */
++} __aligned(2 * sizeof(unsigned long));
+ 
+ #ifdef CONFIG_SPARSEMEM_EXTREME
+ #define SECTIONS_PER_ROOT       (PAGE_SIZE / sizeof (struct mem_section))
+@@ -2043,7 +2039,6 @@ struct mem_section {
+ 
+ #define SECTION_NR_TO_ROOT(sec)	((sec) / SECTIONS_PER_ROOT)
+ #define NR_SECTION_ROOTS	DIV_ROUND_UP(NR_MEM_SECTIONS, SECTIONS_PER_ROOT)
+-#define SECTION_ROOT_MASK	(SECTIONS_PER_ROOT - 1)
+ 
+ #ifdef CONFIG_SPARSEMEM_EXTREME
+ extern struct mem_section **mem_section;
+@@ -2067,7 +2062,7 @@ static inline struct mem_section *__nr_to_section(unsigned long nr)
+ 	if (!mem_section || !mem_section[root])
+ 		return NULL;
+ #endif
+-	return &mem_section[root][nr & SECTION_ROOT_MASK];
++	return &mem_section[root][nr % SECTIONS_PER_ROOT];
+ }
+ 
+ /*
+diff --git a/mm/sparse.c b/mm/sparse.c
+index 7c15406e77f5d..c84b4c7b8c706 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -322,8 +322,6 @@ void __init sparse_init(void)
+ 	unsigned long pnum_end, pnum_begin, map_count = 1;
+ 	int nid_begin;
+ 
+-	/* see include/linux/mmzone.h 'struct mem_section' definition */
+-	BUILD_BUG_ON(!is_power_of_2(sizeof(struct mem_section)));
+ 	memblocks_present();
+ 
+ 	if (compound_info_has_mask()) {
+diff --git a/scripts/gdb/linux/mm.py b/scripts/gdb/linux/mm.py
+index 28d33624c38bd..193a88d763abf 100644
+--- a/scripts/gdb/linux/mm.py
++++ b/scripts/gdb/linux/mm.py
+@@ -70,7 +70,6 @@ class x86_page_ops():
+             self.SECTIONS_PER_ROOT = 1
+ 
+         self.NR_SECTION_ROOTS = DIV_ROUND_UP(self.NR_MEM_SECTIONS, self.SECTIONS_PER_ROOT)
+-        self.SECTION_ROOT_MASK = self.SECTIONS_PER_ROOT - 1
+ 
+         try:
+             self.SECTION_HAS_MEM_MAP = 1 << int(gdb.parse_and_eval('SECTION_HAS_MEM_MAP_BIT'))
+@@ -100,7 +99,7 @@ class x86_page_ops():
+     def __nr_to_section(self, nr):
+         root = self.SECTION_NR_TO_ROOT(nr)
+         mem_section = gdb.parse_and_eval("mem_section")
+-        return mem_section[root][nr & self.SECTION_ROOT_MASK]
++        return mem_section[root][nr % self.SECTIONS_PER_ROOT]
+ 
+     def pfn_to_section_nr(self, pfn):
+         return pfn >> self.PFN_SECTION_SHIFT
+@@ -249,7 +248,6 @@ class aarch64_page_ops():
+             self.SECTIONS_PER_ROOT = 1
+ 
+         self.NR_SECTION_ROOTS = DIV_ROUND_UP(self.NR_MEM_SECTIONS, self.SECTIONS_PER_ROOT)
+-        self.SECTION_ROOT_MASK = self.SECTIONS_PER_ROOT - 1
+         self.SUBSECTION_SHIFT = 21
+         self.SEBSECTION_SIZE = 1 << self.SUBSECTION_SHIFT
+         self.PFN_SUBSECTION_SHIFT = self.SUBSECTION_SHIFT - self.PAGE_SHIFT
+@@ -304,7 +302,7 @@ class aarch64_page_ops():
+     def __nr_to_section(self, nr):
+         root = self.SECTION_NR_TO_ROOT(nr)
+         mem_section = gdb.parse_and_eval("mem_section")
+-        return mem_section[root][nr & self.SECTION_ROOT_MASK]
++        return mem_section[root][nr % self.SECTIONS_PER_ROOT]
+ 
+     def pfn_to_section_nr(self, pfn):
+         return pfn >> self.PFN_SECTION_SHIFT
+-- 
+2.47.3
+

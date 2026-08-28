@@ -1,0 +1,208 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 25 Aug 2026 16:46:02 +0800
+Subject: [PATCH] mm/sparse-vmemmap: remove SPARSEMEM_VMEMMAP_PREINIT support
+
+SPARSEMEM_VMEMMAP_PREINIT existed only to support HugeTLB's early vmemmap
+optimization setup.
+
+Now that HugeTLB bootmem vmemmap optimization uses the common
+section-based sparse-vmemmap path, the sparse initialization code no
+longer needs a separate pre-initialization mechanism for vmemmap
+population.
+
+Remove the related Kconfig symbols, section flag, and empty early hook, so
+present sections always go through the normal sparse setup path.
+
+Link: https://lore.kernel.org/20260825084608.47437-12-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/Kconfig       |  1 -
+ fs/Kconfig             |  1 -
+ include/linux/mmzone.h | 25 -------------------------
+ mm/Kconfig             |  5 -----
+ mm/sparse-vmemmap.c    | 13 -------------
+ mm/sparse.c            | 23 ++++++++---------------
+ 6 files changed, 8 insertions(+), 60 deletions(-)
+
+diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
+index 15fd9ec5ecacb..7aa74bcc72f9d 100644
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -150,7 +150,6 @@ config X86
+ 	select ARCH_WANT_LD_ORPHAN_WARN
+ 	select ARCH_WANT_OPTIMIZE_DAX_VMEMMAP	if X86_64
+ 	select ARCH_WANT_OPTIMIZE_HUGETLB_VMEMMAP	if X86_64
+-	select ARCH_WANT_HUGETLB_VMEMMAP_PREINIT if X86_64
+ 	select ARCH_WANTS_THP_SWAP		if X86_64
+ 	select ARCH_HAS_PARANOID_L1D_FLUSH
+ 	select ARCH_WANT_IRQS_OFF_ACTIVATE_MM
+diff --git a/fs/Kconfig b/fs/Kconfig
+index e05917adcd608..d1c210c6508f0 100644
+--- a/fs/Kconfig
++++ b/fs/Kconfig
+@@ -278,7 +278,6 @@ config HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+ 	def_bool HUGETLB_PAGE
+ 	depends on ARCH_WANT_OPTIMIZE_HUGETLB_VMEMMAP
+ 	depends on SPARSEMEM_VMEMMAP
+-	select SPARSEMEM_VMEMMAP_PREINIT if ARCH_WANT_HUGETLB_VMEMMAP_PREINIT
+ 
+ config HUGETLB_PMD_PAGE_TABLE_SHARING
+ 	def_bool HUGETLB_PAGE
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 177455d980646..8bcb522645ba9 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -2095,9 +2095,6 @@ enum {
+ 	SECTION_IS_EARLY_BIT,
+ #ifdef CONFIG_ZONE_DEVICE
+ 	SECTION_TAINT_ZONE_DEVICE_BIT,
+-#endif
+-#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+-	SECTION_IS_VMEMMAP_PREINIT_BIT,
+ #endif
+ 	SECTION_MAP_LAST_BIT,
+ };
+@@ -2109,9 +2106,6 @@ enum {
+ #ifdef CONFIG_ZONE_DEVICE
+ #define SECTION_TAINT_ZONE_DEVICE	BIT(SECTION_TAINT_ZONE_DEVICE_BIT)
+ #endif
+-#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+-#define SECTION_IS_VMEMMAP_PREINIT	BIT(SECTION_IS_VMEMMAP_PREINIT_BIT)
+-#endif
+ #define SECTION_MAP_MASK		(~(BIT(SECTION_MAP_LAST_BIT) - 1))
+ #define SECTION_NID_SHIFT		SECTION_MAP_LAST_BIT
+ 
+@@ -2166,24 +2160,6 @@ static inline int online_device_section(const struct mem_section *section)
+ }
+ #endif
+ 
+-#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+-static inline int preinited_vmemmap_section(const struct mem_section *section)
+-{
+-	return (section &&
+-		(section->section_mem_map & SECTION_IS_VMEMMAP_PREINIT));
+-}
+-
+-void sparse_vmemmap_init_nid_early(int nid);
+-#else
+-static inline int preinited_vmemmap_section(const struct mem_section *section)
+-{
+-	return 0;
+-}
+-static inline void sparse_vmemmap_init_nid_early(int nid)
+-{
+-}
+-#endif
+-
+ static inline int online_section_nr(unsigned long nr)
+ {
+ 	return online_section(__nr_to_section(nr));
+@@ -2385,7 +2361,6 @@ static inline unsigned long next_present_section_nr(unsigned long section_nr)
+ #endif
+ 
+ #else
+-#define sparse_vmemmap_init_nid_early(_nid) do {} while (0)
+ #define pfn_in_present_section pfn_valid
+ #endif /* CONFIG_SPARSEMEM */
+ 
+diff --git a/mm/Kconfig b/mm/Kconfig
+index 604c58199acbf..2c385f8b29445 100644
+--- a/mm/Kconfig
++++ b/mm/Kconfig
+@@ -461,8 +461,6 @@ config SPARSEMEM_VMEMMAP
+ 	  pfn_to_page and page_to_pfn operations.  This is the most
+ 	  efficient option when sufficient kernel resources are available.
+ 
+-config SPARSEMEM_VMEMMAP_PREINIT
+-	bool
+ #
+ # Select this config option from the architecture Kconfig, if it is preferred
+ # to enable the feature of HugeTLB/dev_dax vmemmap optimization.
+@@ -473,9 +471,6 @@ config ARCH_WANT_OPTIMIZE_DAX_VMEMMAP
+ config ARCH_WANT_OPTIMIZE_HUGETLB_VMEMMAP
+ 	bool
+ 
+-config ARCH_WANT_HUGETLB_VMEMMAP_PREINIT
+-	bool
+-
+ config HAVE_MEMBLOCK_PHYS_MAP
+ 	bool
+ 
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index e48758805a8ff..e62e6aa07f126 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -594,19 +594,6 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
+ 	return pfn_to_page(pfn);
+ }
+ 
+-#ifdef CONFIG_SPARSEMEM_VMEMMAP_PREINIT
+-/*
+- * This is called just before initializing sections for a NUMA node.
+- * Any special initialization that needs to be done before the
+- * generic initialization can be done from here. Sections that
+- * are initialized in hooks called from here will be skipped by
+- * the generic initialization.
+- */
+-void __init sparse_vmemmap_init_nid_early(int nid)
+-{
+-}
+-#endif
+-
+ static void subsection_mask_set(unsigned long *map, unsigned long pfn,
+ 		unsigned long nr_pages)
+ {
+diff --git a/mm/sparse.c b/mm/sparse.c
+index 439802e6a6ad7..948839621f83d 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -284,27 +284,20 @@ static void __init sparse_init_nid(int nid, unsigned long pnum_begin,
+ 	if (sparse_usage_init(nid, map_count))
+ 		panic("Failed to allocate usemap for node %d\n", nid);
+ 
+-	sparse_vmemmap_init_nid_early(nid);
+-
+ 	for_each_present_section_nr(pnum_begin, pnum) {
+-		struct mem_section *ms;
+ 		unsigned long pfn = section_nr_to_pfn(pnum);
++		struct page *map;
+ 
+ 		if (pnum >= pnum_end)
+ 			break;
+ 
+-		ms = __nr_to_section(pnum);
+-		if (!preinited_vmemmap_section(ms)) {
+-			struct page *map;
+-
+-			map = __populate_section_memmap(pfn, PAGES_PER_SECTION,
+-							nid, NULL, NULL);
+-			if (!map)
+-				panic("Failed to allocate memmap for section %lu\n", pnum);
+-			memmap_boot_pages_add(section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION,
+-								       NULL, NULL));
+-			sparse_init_early_section(nid, map, pnum, 0);
+-		}
++		map = __populate_section_memmap(pfn, PAGES_PER_SECTION,
++						nid, NULL, NULL);
++		if (!map)
++			panic("Failed to allocate memmap for section %lu\n", pnum);
++		memmap_boot_pages_add(section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION,
++							       NULL, NULL));
++		sparse_init_early_section(nid, map, pnum, 0);
+ 	}
+ 	sparse_usage_fini();
+ }
+-- 
+2.47.3
+

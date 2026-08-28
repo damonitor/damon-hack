@@ -1,0 +1,129 @@
+From: Song Hu <husong@kylinos.cn>
+Date: Tue, 25 Aug 2026 16:57:55 +0800
+Subject: [PATCH] selftests/mm: emit TAP header and use TAP skip in mremap_test
+
+mremap_test calls ksft_set_plan() without ksft_print_header(), and its
+get_mmap_min_addr() skip path uses a bare exit(KSFT_SKIP) that prints no
+TAP line, so its output is not valid KTAP.  Add the header and switch the
+skip to ksft_exit_skip().
+
+Also fix two more KTAP compliance issues spotted in review:
+
+- get_mmap_min_addr() calls strerror(errno) after fclose(), which may
+  clobber errno; save errno before fclose() instead.
+
+- Some ksft_*() messages embed "\n\t", so the text after each embedded
+  newline is printed without the "# " prefix.  Split those into separate
+  messages.
+
+And cache mmap_min_addr in main() before ksft_set_plan(), so that the skip
+paths in get_mmap_min_addr() are taken before the plan is set; a skip
+after the plan leaves the run with fewer tests than planned.
+
+Link: https://lore.kernel.org/20260825085756.63030-3-husong@kylinos.cn
+Signed-off-by: Song Hu <husong@kylinos.cn>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Reviewed-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/mremap_test.c | 43 ++++++++++++++----------
+ 1 file changed, 25 insertions(+), 18 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/mremap_test.c b/tools/testing/selftests/mm/mremap_test.c
+index 779ef2d5f1b9f..97abf4713cc59 100644
+--- a/tools/testing/selftests/mm/mremap_test.c
++++ b/tools/testing/selftests/mm/mremap_test.c
+@@ -111,18 +111,17 @@ static unsigned long long get_mmap_min_addr(void)
+ 		return addr;
+ 
+ 	fp = fopen("/proc/sys/vm/mmap_min_addr", "r");
+-	if (fp == NULL) {
+-		ksft_print_msg("Failed to open /proc/sys/vm/mmap_min_addr: %s\n",
+-			strerror(errno));
+-		exit(KSFT_SKIP);
+-	}
++	if (!fp)
++		ksft_exit_skip("Failed to open /proc/sys/vm/mmap_min_addr: %s\n",
++			       strerror(errno));
+ 
+ 	n_matched = fscanf(fp, "%llu", &addr);
+ 	if (n_matched != 1) {
+-		ksft_print_msg("Failed to read /proc/sys/vm/mmap_min_addr: %s\n",
+-			strerror(errno));
++		int err = errno;
++
+ 		fclose(fp);
+-		exit(KSFT_SKIP);
++		ksft_exit_skip("Failed to read /proc/sys/vm/mmap_min_addr: %s\n",
++			       strerror(err));
+ 	}
+ 
+ 	fclose(fp);
+@@ -1165,10 +1164,11 @@ static void run_mremap_test_case(struct test test_case, int *failures,
+ 					    rand_addr);
+ 
+ 	if (remap_time < 0) {
+-		if (test_case.expect_failure)
+-			ksft_test_result_xfail("%s\n\tExpected mremap failure\n",
+-					      test_case.name);
+-		else {
++		if (test_case.expect_failure) {
++			ksft_print_msg("%s: expected mremap failure\n",
++				       test_case.name);
++			ksft_test_result_xfail("%s\n", test_case.name);
++		} else {
+ 			ksft_test_result_fail("%s\n", test_case.name);
+ 			*failures += 1;
+ 		}
+@@ -1178,11 +1178,13 @@ static void run_mremap_test_case(struct test test_case, int *failures,
+ 		 * was faulted in.
+ 		 */
+ 		if (threshold_mb == VALIDATION_NO_THRESHOLD ||
+-		    test_case.config.region_size <= threshold_mb * _1MB)
+-			ksft_test_result_pass("%s\n\tmremap time: %12lldns\n",
+-					      test_case.name, remap_time);
+-		else
++		    test_case.config.region_size <= threshold_mb * _1MB) {
++			ksft_print_msg("%s: mremap time: %12lldns\n",
++				       test_case.name, remap_time);
+ 			ksft_test_result_pass("%s\n", test_case.name);
++		} else {
++			ksft_test_result_pass("%s\n", test_case.name);
++		}
+ 	}
+ }
+ 
+@@ -1251,13 +1253,18 @@ int main(int argc, char **argv)
+ 	time_t t;
+ 	FILE *maps_fp;
+ 
++	ksft_print_header();
++
++	get_mmap_min_addr();
++
+ 	pattern_seed = (unsigned int) time(&t);
+ 
+ 	if (parse_args(argc, argv, &threshold_mb, &pattern_seed) < 0)
+ 		exit(EXIT_FAILURE);
+ 
+-	ksft_print_msg("Test configs:\n\tthreshold_mb=%u\n\tpattern_seed=%u\n\n",
+-		       threshold_mb, pattern_seed);
++	ksft_print_msg("Test configs:\n");
++	ksft_print_msg("threshold_mb=%u\n", threshold_mb);
++	ksft_print_msg("pattern_seed=%u\n", pattern_seed);
+ 
+ 	/*
+ 	 * set preallocated random array according to test configs; see the
+-- 
+2.47.3
+

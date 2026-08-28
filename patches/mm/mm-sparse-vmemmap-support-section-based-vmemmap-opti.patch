@@ -1,0 +1,183 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 25 Aug 2026 16:45:59 +0800
+Subject: [PATCH] mm/sparse-vmemmap: support section-based vmemmap optimization
+
+Teach sparse-vmemmap population code to use the compound page order when
+deciding whether a vmemmap page can be optimized.
+
+With this information, the common sparse-vmemmap population path can
+allocate or reuse shared tail vmemmap pages directly instead of relying on
+HugeTLB-specific handling.
+
+This centralizes vmemmap optimization logic in the sparse-vmemmap code,
+based on section metadata, and prepares for sharing the same mechanism
+across different users of vmemmap optimization, including HugeTLB and DAX.
+
+Link: https://lore.kernel.org/20260825084608.47437-9-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/sparse-vmemmap.c | 46 +++++++++++++++++++++++++++++++++++++--------
+ mm/sparse.c         |  4 ++--
+ mm/sparse.h         |  7 +++++++
+ 3 files changed, 47 insertions(+), 10 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index ea3cacec0a798..8d39196f6d936 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -148,8 +148,7 @@ void __meminit vmemmap_verify(pte_t *pte, int node,
+ 			start, end - 1);
+ }
+ 
+-#ifdef CONFIG_MEMORY_HOTPLUG
+-static int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
++int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
+ 		struct vmem_altmap *altmap, struct dev_pagemap *pgmap)
+ {
+ 	const struct mem_section *ms = __pfn_to_section(pfn);
+@@ -175,7 +174,6 @@ static int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long n
+ 
+ 	return 0;
+ }
+-#endif
+ 
+ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
+ {
+@@ -215,19 +213,44 @@ static __meminit struct page *vmemmap_get_tail(unsigned int order, struct zone *
+ 
+ 	return tail;
+ }
++#else
++static inline struct page *vmemmap_get_tail(unsigned int order, struct zone *zone)
++{
++	return NULL;
++}
+ #endif
+ 
++static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
++					 struct vmem_altmap *altmap)
++{
++	struct zone *zone;
++	struct page *page;
++	const unsigned int order = pfn_to_section_order(pfn);
++
++	if (!vmemmap_optimizable_pfn(pfn))
++		return vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
++
++	zone = pfn_to_zone(pfn, node);
++	page = vmemmap_get_tail(order, zone);
++	if (!page)
++		return NULL;
++
++	return page_address(page);
++}
++
+ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, int node,
+ 				       struct vmem_altmap *altmap,
+ 				       unsigned long ptpfn, unsigned long flags)
+ {
+ 	pte_t *pte = pte_offset_kernel(pmd, addr);
++	unsigned long pfn = page_to_pfn((struct page *)addr);
++
+ 	if (pte_none(ptep_get(pte))) {
+ 		pte_t entry;
+-		void *p;
+ 
+ 		if (ptpfn == (unsigned long)-1) {
+-			p = vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
++			void *p = vmemmap_alloc_pte(pfn, node, altmap);
++
+ 			if (!p)
+ 				return NULL;
+ 			ptpfn = PHYS_PFN(__pa(p));
+@@ -246,7 +269,8 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 		}
+ 		entry = pfn_pte(ptpfn, PAGE_KERNEL);
+ 		set_pte_at(&init_mm, addr, pte, entry);
+-	}
++	} else if (WARN_ON_ONCE(vmemmap_optimizable_pfn(pfn)))
++		return NULL;
+ 	return pte;
+ }
+ 
+@@ -435,6 +459,9 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+ 	pmd_t *pmd;
+ 
+ 	for (addr = start; addr < end; addr = next) {
++		unsigned long pfn = page_to_pfn((struct page *)addr);
++		const struct mem_section *ms = __pfn_to_section(pfn);
++
+ 		next = pmd_addr_end(addr, end);
+ 
+ 		pgd = vmemmap_pgd_populate(addr, node);
+@@ -450,7 +477,7 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+ 			return -ENOMEM;
+ 
+ 		pmd = pmd_offset(pud, addr);
+-		if (pmd_none(pmdp_get(pmd))) {
++		if (pmd_none(pmdp_get(pmd)) && !section_vmemmap_optimizable(ms)) {
+ 			void *p;
+ 
+ 			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
+@@ -468,8 +495,11 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+ 				 */
+ 				return -ENOMEM;
+ 			}
+-		} else if (vmemmap_check_pmd(pmd, node, addr, next))
++		} else if (vmemmap_check_pmd(pmd, node, addr, next)) {
++			if (WARN_ON_ONCE(section_vmemmap_optimizable(ms)))
++				return -EOPNOTSUPP;
+ 			continue;
++		}
+ 		if (vmemmap_populate_basepages(addr, next, node, altmap))
+ 			return -ENOMEM;
+ 	}
+diff --git a/mm/sparse.c b/mm/sparse.c
+index c84b4c7b8c706..e6cb67ca9c8d1 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -305,8 +305,8 @@ static void __init sparse_init_nid(int nid, unsigned long pnum_begin,
+ 							nid, NULL, NULL);
+ 			if (!map)
+ 				panic("Failed to allocate memmap for section %lu\n", pnum);
+-			memmap_boot_pages_add(DIV_ROUND_UP(PAGES_PER_SECTION * sizeof(struct page),
+-							   PAGE_SIZE));
++			memmap_boot_pages_add(section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION,
++								       NULL, NULL));
+ 			sparse_init_early_section(nid, map, pnum, 0);
+ 		}
+ 	}
+diff --git a/mm/sparse.h b/mm/sparse.h
+index 02ed0f34eac8e..e427d72e9c2d9 100644
+--- a/mm/sparse.h
++++ b/mm/sparse.h
+@@ -111,8 +111,15 @@ static inline void sparse_init(void) {}
+  */
+ #ifdef CONFIG_SPARSEMEM_VMEMMAP
+ void sparse_init_subsection_map(void);
++int section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
++		struct vmem_altmap *altmap, struct dev_pagemap *pgmap);
+ #else
+ static inline void sparse_init_subsection_map(void) {}
++static inline int section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
++		struct vmem_altmap *altmap, struct dev_pagemap *pgmap)
++{
++	return DIV_ROUND_UP(nr_pages * sizeof(struct page), PAGE_SIZE);
++}
+ #endif /* CONFIG_SPARSEMEM_VMEMMAP */
+ 
+ #endif /* __MM_SPARSE_H */
+-- 
+2.47.3
+

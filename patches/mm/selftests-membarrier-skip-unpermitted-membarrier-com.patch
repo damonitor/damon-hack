@@ -1,0 +1,58 @@
+From: Chris Gellermann <christian.gellermann@codasip.com>
+Date: Mon, 3 Aug 2026 14:49:00 +0200
+Subject: [PATCH] selftests/membarrier: skip unpermitted membarrier command
+ test if preregistered by libc
+
+On thread creation, Musl registers the private expedited memory barrier,
+see pthread_create [1].  Thus, invoking the barrier command will no longer
+be rejected by the kernel with EPERM.  The test checking this will fail.
+Check if the memory barrier command has been registered and skip the test
+in this case.
+
+Link: https://git.musl-libc.org/cgit/musl/tree/src/thread/pthread_create.c#n260 [1]
+Link: https://lore.kernel.org/20260803124900.3328789-3-christian.gellermann@codasip.com
+Signed-off-by: Chris Gellermann <christian.gellermann@codasip.com>
+Tested-by: Michael Jeanson <mjeanson@efficios.com>
+Cc: Ben Segall <bsegall@google.com>
+Cc: Dietmar Eggemann <dietmar.eggemann@arm.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Juri Lelli <juri.lelli@redhat.com>
+Cc: K Prateek Nayak <kprateek.nayak@amd.com>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: "Paul E . McKenney" <paulmck@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Valentin Schneider <vschneid@redhat.com>
+Cc: Vincent Guittot <vincent.guittot@linaro.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../selftests/membarrier/membarrier_test_impl.h        | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/tools/testing/selftests/membarrier/membarrier_test_impl.h b/tools/testing/selftests/membarrier/membarrier_test_impl.h
+index 29aac3bc49887..b4dcbb32538d4 100644
+--- a/tools/testing/selftests/membarrier/membarrier_test_impl.h
++++ b/tools/testing/selftests/membarrier/membarrier_test_impl.h
+@@ -113,6 +113,16 @@ static int test_membarrier_private_expedited_fail(void)
+ 	int cmd = MEMBARRIER_CMD_PRIVATE_EXPEDITED, flags = 0;
+ 	const char *test_name = "sys membarrier MEMBARRIER_CMD_PRIVATE_EXPEDITED not registered failure";
+ 
++	/*
++	 * Some C libraries, like Musl, register the private expedited barrier
++	 * command when creating a thread. Expecting an EPERM on an unregistered
++	 * command will therefore no longer work. Skip the test in this case.
++	 */
++	if (MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED & membarrier_get_registrations()) {
++		ksft_test_result_skip("%s test: Command already registered\n", test_name);
++		return 0;
++	}
++
+ 	if (sys_membarrier(cmd, flags) != -1) {
+ 		ksft_exit_fail_msg(
+ 			"%s test: flags = %d. Should fail, but passed\n",
+-- 
+2.47.3
+

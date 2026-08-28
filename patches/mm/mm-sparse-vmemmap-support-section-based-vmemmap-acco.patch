@@ -1,0 +1,120 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 25 Aug 2026 16:45:56 +0800
+Subject: [PATCH] mm/sparse-vmemmap: support section-based vmemmap accounting
+
+section_nr_vmemmap_pages() can account ordinary sections and DAX sections,
+but section-based vmemmap optimization keeps its compound order in struct
+mem_section and retains a different number of vmemmap pages.
+
+Teach section_nr_vmemmap_pages() to recognize section-based optimized
+sections and calculate their vmemmap page count from the section order and
+the HVO retained page count.
+
+Link: https://lore.kernel.org/20260825084608.47437-6-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmzone.h |  6 ++++--
+ mm/sparse-vmemmap.c    | 10 ++++++----
+ mm/sparse.h            | 16 ++++++++++++++++
+ 3 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index df31cac123119..177455d980646 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -107,8 +107,10 @@
+ 	 is_power_of_2(sizeof(struct page)) ? \
+ 	 MAX_FOLIO_NR_PAGES * sizeof(struct page) : 0)
+ 
+-/* The number of struct pages covered by the retained vmemmap pages with HVO enabled. */
+-#define VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES	(PAGE_SIZE / sizeof(struct page))
++/* The number of retained vmemmap pages with HVO enabled. */
++#define VMEMMAP_OPTIMIZATION_PAGES		1
++#define VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES	\
++	(VMEMMAP_OPTIMIZATION_PAGES * PAGE_SIZE / sizeof(struct page))
+ #define VMEMMAP_OPTIMIZATION_MIN_ORDER		(ilog2(VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES) + 1)
+ 
+ #define __VMEMMAP_OPTIMIZATION_NR_ORDERS	\
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 107215cf8488c..b7abc5494bb99 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -649,24 +649,26 @@ void offline_mem_sections(unsigned long start_pfn, unsigned long end_pfn)
+ static int __meminit section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
+ 		struct vmem_altmap *altmap, struct dev_pagemap *pgmap)
+ {
+-	const unsigned int order = pgmap ? pgmap->vmemmap_shift : 0;
++	const struct mem_section *ms = __pfn_to_section(pfn);
++	const int order = pgmap ? pgmap->vmemmap_shift : section_order(ms);
++	const int vmemmap_pages = pgmap ? VMEMMAP_RESERVE_NR : VMEMMAP_OPTIMIZATION_PAGES;
+ 	const unsigned long pages_per_compound = 1UL << order;
+ 
+ 	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SUBSECTION));
+ 	VM_WARN_ON_ONCE(nr_pages > PAGES_PER_SECTION);
+ 
+-	if (!vmemmap_can_optimize(altmap, pgmap))
++	if (!vmemmap_can_optimize(altmap, pgmap) && !section_vmemmap_optimizable(ms))
+ 		return DIV_ROUND_UP(nr_pages * sizeof(struct page), PAGE_SIZE);
+ 
+ 	if (order < PFN_SECTION_SHIFT) {
+ 		VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, pages_per_compound));
+-		return VMEMMAP_RESERVE_NR * nr_pages / pages_per_compound;
++		return vmemmap_pages * nr_pages / pages_per_compound;
+ 	}
+ 
+ 	VM_WARN_ON_ONCE(!IS_ALIGNED(pfn | nr_pages, PAGES_PER_SECTION));
+ 
+ 	if (IS_ALIGNED(pfn, pages_per_compound))
+-		return VMEMMAP_RESERVE_NR;
++		return vmemmap_pages;
+ 
+ 	return 0;
+ }
+diff --git a/mm/sparse.h b/mm/sparse.h
+index 1fcda8a1c270d..02ed0f34eac8e 100644
+--- a/mm/sparse.h
++++ b/mm/sparse.h
+@@ -43,6 +43,17 @@ static inline bool vmemmap_optimizable_pfn(unsigned long pfn)
+ 	return (pfn & (nr_pages - 1)) >= VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES;
+ }
+ 
++static inline bool vmemmap_optimizable_order(unsigned int order)
++{
++	if (!IS_ENABLED(CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP))
++		return false;
++
++	if (!is_power_of_2(sizeof(struct page)))
++		return false;
++
++	return order >= VMEMMAP_OPTIMIZATION_MIN_ORDER;
++}
++
+ /*
+  * mm/sparse.c
+  */
+@@ -86,6 +97,11 @@ static inline size_t mem_section_usage_size(void)
+ 	return struct_size_t(struct mem_section_usage, pageblock_flags,
+ 			     BITS_TO_LONGS(SECTION_BLOCKFLAGS_BITS));
+ }
++
++static inline bool section_vmemmap_optimizable(const struct mem_section *ms)
++{
++	return vmemmap_optimizable_order(section_order(ms));
++}
+ #else
+ static inline void sparse_init(void) {}
+ #endif /* CONFIG_SPARSEMEM */
+-- 
+2.47.3
+

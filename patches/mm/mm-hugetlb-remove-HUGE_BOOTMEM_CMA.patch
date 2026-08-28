@@ -1,0 +1,87 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 25 Aug 2026 16:46:06 +0800
+Subject: [PATCH] mm/hugetlb: remove HUGE_BOOTMEM_CMA
+
+Track early CMA hugetlb pages from the hstate instead of storing a
+redundant bootmem flag.  This removes the unused helper and keeps the
+bootmem metadata minimal.
+
+Link: https://lore.kernel.org/20260825084608.47437-16-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/hugetlb.h |  1 -
+ mm/hugetlb.c            | 14 ++++----------
+ 2 files changed, 4 insertions(+), 11 deletions(-)
+
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index 3559041a5a578..255a258f11d13 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -676,7 +676,6 @@ struct hstate {
+ };
+ 
+ #define HUGE_BOOTMEM_ZONES_VALID	BIT(0)
+-#define HUGE_BOOTMEM_CMA		BIT(1)
+ 
+ int isolate_or_dissolve_huge_folio(struct folio *folio, struct list_head *list);
+ int replace_free_hugepage_folios(unsigned long start_pfn, unsigned long end_pfn);
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 7e9f69996a33e..1a2804f9ff906 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3133,7 +3133,7 @@ static bool __init alloc_bootmem_huge_page(struct hstate *h, int nid)
+ 	 */
+ 	INIT_LIST_HEAD(&m->list);
+ 	m->hstate = h;
+-	m->flags = hugetlb_early_cma(h) ? HUGE_BOOTMEM_CMA : 0;
++	m->flags = 0;
+ 
+ 	/* CMA pages: zone-crossing is validated in hugetlb_cma_reserve(). */
+ 	if (!hugetlb_early_cma(h) &&
+@@ -3209,11 +3209,6 @@ static void __init hugetlb_folio_init_vmemmap(struct folio *folio,
+ 	prep_compound_head(&folio->page, huge_page_order(h));
+ }
+ 
+-static bool __init hugetlb_bootmem_page_earlycma(struct huge_bootmem_page *m)
+-{
+-	return m->flags & HUGE_BOOTMEM_CMA;
+-}
+-
+ /*
+  * memblock-allocated pageblocks might not have the migrate type set
+  * if marked with the 'noinit' flag. Set it to the default (MIGRATE_MOVABLE)
+@@ -3304,9 +3299,6 @@ static void __init gather_bootmem_prealloc_node(unsigned long nid)
+ 			folio_set_hugetlb_vmemmap_optimized(folio);
+ 		section_set_order_range(folio_pfn(folio), folio_nr_pages(folio), 0);
+ 
+-		if (hugetlb_bootmem_page_earlycma(m))
+-			folio_set_hugetlb_cma(folio);
+-
+ 		list_add(&folio->lru, &folio_list);
+ 
+ 		/*
+@@ -3317,7 +3309,9 @@ static void __init gather_bootmem_prealloc_node(unsigned long nid)
+ 		 * For CMA pages, this is done in init_cma_pageblock
+ 		 * (via hugetlb_bootmem_init_migratetype), so skip it here.
+ 		 */
+-		if (!folio_test_hugetlb_cma(folio))
++		if (hugetlb_early_cma(h))
++			folio_set_hugetlb_cma(folio);
++		else
+ 			adjust_managed_page_count(page, pages_per_huge_page(h));
+ 		cond_resched();
+ 	}
+-- 
+2.47.3
+

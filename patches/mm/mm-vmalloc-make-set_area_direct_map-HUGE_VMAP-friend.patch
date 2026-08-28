@@ -1,0 +1,81 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Sun, 23 Aug 2026 14:46:15 +0300
+Subject: [PATCH] mm/vmalloc: make set_area_direct_map HUGE_VMAP friendly
+
+set_area_direct_map() always updates direct map alias permissions in
+single page increments.
+
+For HUGE_VMAP areas it's suboptimal.  Not only the loop in
+set_area_direct_map() needlessly has more iterations (e.g times 512 on
+x86), but it also causes fragmentation of the direct map that could be
+avoided for the HUGE_VMAP areas populated with large pages.
+
+All pages in an area are always of the same order: either same-order large
+pages when VM_ALLOW_HUGE_VMAP is set and all huge pages were successfully
+allocated, or order-0 page when VM_ALLOW_HUGE_VMAP is cleared or when huge
+pages allocation fails and fallback path is taken.
+
+Instead of updating the direct map permissions for every order-0 page in
+an area, use the area's page_order as the loop increment and update the
+large pages in one call to set_direct_map_{invalid,default}_noflush().
+
+Link: https://lore.kernel.org/20260823-execmem-set-vm-perms-v0-2-v2-4-b013a37d84b3@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andy Lutomirski <luto@kernel.org>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: "Rafael J. Wysocki" <rafael@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmalloc.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 2a202e8fe7f56..676fe96ae8414 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3366,12 +3366,15 @@ static inline void set_area_direct_map(const struct vm_struct *area,
+ 				       int (*set_direct_map)(struct page *page,
+ 							     unsigned int nr))
+ {
+-	unsigned long i;
++	unsigned int nr = (1U << vm_area_page_order(area));
++
++	for (unsigned long i = 0; i < area->nr_pages; i += nr) {
++		if (page_address(area->pages[i])) {
++			int err = set_direct_map(area->pages[i], nr);
+ 
+-	/* HUGE_VMALLOC passes small pages to set_direct_map */
+-	for (i = 0; i < area->nr_pages; i++)
+-		if (page_address(area->pages[i]))
+-			set_direct_map(area->pages[i], 1);
++			WARN_ON_ONCE(err);
++		}
++	}
+ }
+ 
+ /*
+-- 
+2.47.3
+
