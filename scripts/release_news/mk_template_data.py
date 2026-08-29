@@ -14,6 +14,42 @@ def linux_ver_date(linux_dir, version):
         exit(1)
     return res.stdout.strip()
 
+def pr_damon_changes(linux_dir, base, tip, damon_src_files):
+    cmd = ['git', '-C', linux_dir, 'log', '%s..%s' % (base, tip), '--reverse',
+           '--no-merges', '--pretty=%H', '--'] + damon_src_files
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print('%s fail\n', ' '.join(cmd))
+        exit(1)
+    commits = res.stdout.strip().split()
+    to_skip = 0
+    for commit in commits:
+        if to_skip > 0:
+            to_skip -= 1
+            continue
+        cmd = ['git', '-C', linux_dir, 'log', '-1', '--pretty=%B', commit]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            print('%s fail\n', ' '.join(cmd))
+            exit(1)
+        pars = [p.strip() for p in res.stdout.strip().split('\n\n')
+                if p.strip() != '']
+        if not pars[1].startswith('Patch series "'):
+            print('Commit %s: %s' % (commit[:12], pars[0]))
+            continue
+        for par in pars[2:]:
+            if not par.startswith('This patch (of '):
+                continue
+            if par.endswith(')'):
+                suffix_len = 1
+            elif par.endswith('):'):
+                suffix_len = 2
+            sz_series = int(par[len('This patch (of '):-suffix_len])
+            to_skip = sz_series - 1
+            break
+        subject = ' '.join(pars[1].split('\n'))
+        print('Commit %s: %s' % (commit[:12], subject))
+
 def pr_damon_commits(linux_dir, base, tip, damon_src_files):
     cmd = ['git', '-C', linux_dir, 'log', '%s..%s' % (base, tip), '--oneline',
            '--no-merges', '--']
@@ -82,6 +118,11 @@ def main():
     print('Time range')
     print('%s..%s' % (linux_ver_base, linux_ver_tip))
     print('%s to %s' % (time_base, time_tip))
+    print()
+
+    print('Changes in this merge window')
+    pr_damon_changes(args.linux_dir, last_major_release, linux_ver_tip,
+                     src_files)
     print()
 
     print('Statistics')
