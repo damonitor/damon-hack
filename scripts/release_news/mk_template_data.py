@@ -99,6 +99,14 @@ def main():
             help='base and tip linux versions, e.g., v7.3-rc1 and v7.4-rc1')
     parser.add_argument('damo_dir', help='path to the damo local repo')
     parser.add_argument('lazybox_dir', help='path to the lazybox local repo')
+    parser.add_argument(
+            '--categories', choices=[
+                'time_range', 'changes', 'nr_commits', 'contributors',
+                'mail_traffic'],
+            default=[
+                'time_range', 'changes', 'nr_commits', 'contributors',
+                'mail_traffic'],
+            help='cateogries to print out')
 
     args = parser.parse_args()
 
@@ -115,33 +123,38 @@ def main():
 
     time_base = linux_ver_date(args.linux_dir, linux_ver_base)
     time_tip = linux_ver_date(args.linux_dir, linux_ver_tip)
-    print('Time range')
-    print('%s..%s' % (linux_ver_base, linux_ver_tip))
-    print('%s to %s' % (time_base, time_tip))
-    print()
+    if 'time_range' in args.categories:
+        print('Time range')
+        print('%s..%s' % (linux_ver_base, linux_ver_tip))
+        print('%s to %s' % (time_base, time_tip))
+        print()
 
-    print('Changes in this merge window')
-    pr_damon_changes(args.linux_dir, last_major_release, linux_ver_tip,
-                     src_files)
-    print()
+    if 'changes' in args.categories:
+        print('Changes in this merge window')
+        pr_damon_changes(args.linux_dir, last_major_release, linux_ver_tip,
+                         src_files)
+        print()
 
-    print('Statistics')
-    pr_damon_commits(args.linux_dir, linux_ver_base, last_major_release,
-                     src_files)
-    print()
-    pr_damon_commits(args.linux_dir, last_major_release, linux_ver_tip,
-                     src_files)
+    if 'nr_commits' in args.categories:
+        print('Statistics')
+        pr_damon_commits(args.linux_dir, linux_ver_base, last_major_release,
+                         src_files)
+        print()
+        pr_damon_commits(args.linux_dir, last_major_release, linux_ver_tip,
+                         src_files)
+        print()
 
-    print()
-    print('Contributors')
-    pr_contributors(linux_ver_base, linux_ver_tip, args.linux_dir,
-                    args.lazybox_dir, is_linux=True)
-    print()
-    pr_contributors(time_base, time_tip, args.damo_dir, args.lazybox_dir,
-                    is_linux=False)
+    if 'contributors' in args.categories:
+        print('Contributors')
+        pr_contributors(linux_ver_base, linux_ver_tip, args.linux_dir,
+                        args.lazybox_dir, is_linux=True)
+        print()
+        pr_contributors(time_base, time_tip, args.damo_dir, args.lazybox_dir,
+                        is_linux=False)
 
-    print('Mailing List Traffic')
-    pr_damon_mail_traffic(args.linux_dir, linux_ver_base, linux_ver_tip)
+    if 'mail_traffic' in args.categories:
+        print('Mailing List Traffic')
+        pr_damon_mail_traffic(args.linux_dir, linux_ver_base, linux_ver_tip)
 
 if __name__ == '__main__':
     main()
