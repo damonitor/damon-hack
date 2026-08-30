@@ -1,0 +1,94 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Sat, 29 Aug 2026 15:09:00 -0400
+Subject: [PATCH] mm/page_io: convert write completion handlers to folios
+
+Patch series "mm/page_io: folio conversion cleanups", v2.
+
+Convert the remaining struct page usage in mm/page_io.c to folios.  This
+removes one of the last callers of end_page_writeback(), along with the
+last caller of ClearPageReclaim().  This allows us to remove the
+PG_reclaim page accessors entirely.  Clean up a few other stale references
+to pages throughout while at it.
+
+The rename of mm/page_io.c to mm/swap_io.c is deferred to a separate
+series.
+
+
+This patch (of 6):
+
+Convert swap_write_end() and swap_fs_write_complete() to operate on folios
+directly instead of going through the folio-compat page APIs.  This
+removes calls to end_page_writeback() and set_page_dirty(), and the last
+caller of ClearPageReclaim(), saving two calls to compound_head() per
+folio on the write error path.
+
+Link: https://lore.kernel.org/20260829-b4-page_io-folios-v2-0-649728091117@columbia.edu
+Link: https://lore.kernel.org/20260829-b4-page_io-folios-v2-1-649728091117@columbia.edu
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_io.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/mm/page_io.c b/mm/page_io.c
+index 88962571cb931..fbcf58ff292d8 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -497,13 +497,13 @@ static void swap_write_end(struct swap_iocb *sio, bool failed)
+ 	int p;
+ 
+ 	for (p = 0; p < sio->nr_bvecs; p++) {
+-		struct page *page = sio->bvecs[p].bv_page;
++		struct folio *folio = bvec_folio(&sio->bvecs[p]);
+ 
+ 		if (failed) {
+-			set_page_dirty(page);
+-			ClearPageReclaim(page);
++			folio_mark_dirty(folio);
++			folio_clear_reclaim(folio);
+ 		}
+-		end_page_writeback(page);
++		folio_end_writeback(folio);
+ 	}
+ 	mempool_free(sio, sio_pool);
+ }
+@@ -514,16 +514,16 @@ static void swap_fs_write_complete(struct kiocb *iocb, long ret)
+ 	bool failed = ret != sio->len;
+ 
+ 	if (failed) {
+-		struct page *page = sio->bvecs[0].bv_page;
++		struct folio *folio = bvec_folio(&sio->bvecs[0]);
+ 
+ 		/*
+ 		 * In the case of swap-over-nfs, this can be a temporary failure
+ 		 * if the system has limited memory for allocating transmit
+-		 * buffers.  Mark the page dirty and avoid
++		 * buffers.  Mark the folio dirty and avoid
+ 		 * folio_rotate_reclaimable but rate-limit the messages.
+ 		 */
+ 		pr_err_ratelimited("Write error %ld on dio swapfile (%llu)\n",
+-				   ret, swap_dev_pos(page_swap_entry(page)));
++				   ret, swap_dev_pos(folio->swap));
+ 	}
+ 
+ 	swap_write_end(sio, failed);
+-- 
+2.47.3
+

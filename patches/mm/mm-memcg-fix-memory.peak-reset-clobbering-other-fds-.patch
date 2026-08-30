@@ -1,0 +1,75 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Sun, 30 Aug 2026 08:20:44 +0800
+Subject: [PATCH] mm, memcg: fix memory.peak reset clobbering other fds'
+ watermark
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Writing to memory.peak resets the peak for that fd only.  Each fd is a
+watcher and reads back max(its own value, the shared local_watermark).
+
+peak_write() resets by lowering local_watermark to the current usage.  To
+keep the other watchers' peaks it then walks the watcher list, but it
+stores the current usage into them instead of the old watermark.  So once
+usage has dropped from a peak, a reset on one fd wrongly drags every other
+fd's peak down too, even fds that never reset.
+
+Reproduced on 7.2.0-rc5-next under QEMU, two fds A and B on one cgroup: B
+sees the peak (410624 KB), usage drops, then A resets -- and B's peak
+collapses to 1060 KB although B never reset.  With this patch B keeps
+reading 410624 KB.
+
+Fix: save the old watermark before lowering it and use that to floor the
+other watchers, so a reset only affects the fd that issued it.
+
+Link: https://lore.kernel.org/20260830002044.1938621-3-ridong.chen@linux.dev
+Fixes: c6f53ed8f213 ("mm, memcg: cg2 memory{.swap,}.peak write handlers")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Closes: https://sashiko.dev/#/patchset/20260807090000.1532495-1-ridong.chen@linux.dev
+Assisted-by: Claude:claude-opus-4-8
+Acked-by: Tao Cui <cuitao@kylinos.cn>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: David Finkel <davidf@vimeo.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index bb7c14adadc8c..bf829638524b5 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4759,7 +4759,7 @@ static ssize_t peak_write(struct kernfs_open_file *of, char *buf, size_t nbytes,
+ 			  loff_t off, struct page_counter *pc,
+ 			  struct list_head *watchers)
+ {
+-	unsigned long usage;
++	unsigned long usage, old_watermark;
+ 	struct cgroup_of_peak *peer_ctx;
+ 	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+ 	struct cgroup_of_peak *ofp = of_peak(of);
+@@ -4767,11 +4767,12 @@ static ssize_t peak_write(struct kernfs_open_file *of, char *buf, size_t nbytes,
+ 	spin_lock(&memcg->peaks_lock);
+ 
+ 	usage = page_counter_read(pc);
++	old_watermark = READ_ONCE(pc->local_watermark);
+ 	WRITE_ONCE(pc->local_watermark, usage);
+ 
+ 	list_for_each_entry(peer_ctx, watchers, list)
+-		if (usage > peer_ctx->value)
+-			WRITE_ONCE(peer_ctx->value, usage);
++		if (peer_ctx != ofp && old_watermark > peer_ctx->value)
++			WRITE_ONCE(peer_ctx->value, old_watermark);
+ 
+ 	/* initial write, register watcher */
+ 	if (ofp->value == OFP_PEAK_UNSET)
+-- 
+2.47.3
+

@@ -1,80 +1,98 @@
 From: Hao Jia <jiahao1@lixiang.com>
-Date: Tue, 25 Aug 2026 17:23:16 +0800
+Date: Fri, 28 Aug 2026 16:31:49 +0800
 Subject: [PATCH] zram: fix idle age_sec underflow in idle_store()
 
 After commit 2e8ff2f51dde ("zram: use u32 for entry ac_time tracking"),
-idle_store() computes the idle cutoff as follows:
+idle_store() computes the idle cutoff as:
 
 	cutoff = ktime_sub((u32)ktime_get_boottime_seconds(), age_sec);
 
-Because the left operand is cast to a 32-bit unsigned integer, when
-age_sec exceeds the current uptime, the subtraction wraps modulo 2^32 and
-the huge result is zero-extended into the s64 cutoff.  mark_idle()
-subsequently marks every entry as idle instead of matching nothing,
-breaking the intended semantics of /sys/block/zramX/idle.  For instance,
-running echo 86400 > idle on a machine up for only two minutes causes all
-newly written pages to be marked as idle and handed over to idle writeback
-and recompression.
+Because the left operand is cast to u32, when age_sec exceeds the current
+uptime the subtraction wraps modulo 2^32 and the huge result is
+zero-extended into the s64 cutoff.  mark_idle() then marks every entry as
+idle instead of matching nothing.  For instance, running
 
-Drop the explicit cast to perform the subtraction in signed arithmetic
-again, restoring the previous behavior: an age_sec greater than uptime
-yields a negative cutoff, and one equal to uptime yields 0.  Since a
-cutoff of 0 is now a valid computed value, it can no longer double as the
-"all" sentinel.  Switch to KTIME_MIN instead, which no ac_time can be
-after.
+	echo 86400 > /sys/block/zramX/idle
 
-Link: https://lore.kernel.org/20260825092316.69658-1-jiahao.kernel@gmail.com
+on a machine up for only two minutes marks all newly written pages idle
+and hands them to idle writeback and recompression.
+
+No slot can have been accessed before the system booted, so an age_sec
+that reaches back past uptime cannot match any slot.  Return early in that
+case, without walking the table or taking any slot locks.
+
+Track the cutoff as time64_t rather than ktime_t.  Both cutoff and ac_time
+are boot-time values in seconds, so a plain arithmetic comparison against
+ac_time in mark_idle() is correct and no ktime helpers are needed.
+
+Link: https://lore.kernel.org/20260828083149.45760-1-jiahao.kernel@gmail.com
 Fixes: 2e8ff2f51dde ("zram: use u32 for entry ac_time tracking")
 Signed-off-by: Hao Jia <jiahao1@lixiang.com>
+Suggested-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Brian Geffon <bgeffon@google.com>
 Cc: Jens Axboe <axboe@kernel.dk>
 Cc: Minchan Kim <minchan@kernel.org>
-Cc: Sergey Senozhatsky <senozhatsky@chromium.org>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- drivers/block/zram/zram_drv.c | 8 ++++----
- 1 file changed, 4 insertions(+), 4 deletions(-)
+ drivers/block/zram/zram_drv.c | 21 +++++++++++++--------
+ 1 file changed, 13 insertions(+), 8 deletions(-)
 
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index a9b3bb1d3bef3..da51f70b71215 100644
+index a9b3bb1d3bef3..4ba0f77b2abd8 100644
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
-@@ -438,7 +438,7 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
- 		}
+@@ -415,7 +415,7 @@ static ssize_t mem_used_max_store(struct device *dev,
+  * Mark all pages which are older than or equal to cutoff as IDLE.
+  * Callers should hold the zram init lock in read mode
+  */
+-static void mark_idle(struct zram *zram, ktime_t cutoff)
++static void mark_idle(struct zram *zram, time64_t cutoff)
+ {
+ 	int is_idle = 1;
+ 	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
+@@ -439,7 +439,7 @@ static void mark_idle(struct zram *zram, ktime_t cutoff)
  
  #ifdef CONFIG_ZRAM_TRACK_ENTRY_ACTIME
--		is_idle = !cutoff ||
-+		is_idle = cutoff == KTIME_MIN ||
- 			ktime_after(cutoff, zram->table[index].attr.ac_time);
+ 		is_idle = !cutoff ||
+-			ktime_after(cutoff, zram->table[index].attr.ac_time);
++			cutoff > zram->table[index].attr.ac_time;
  #endif
  		if (is_idle)
-@@ -453,7 +453,7 @@ static ssize_t idle_store(struct device *dev, struct device_attribute *attr,
+ 			set_slot_flag(zram, index, ZRAM_IDLE);
+@@ -453,21 +453,26 @@ static ssize_t idle_store(struct device *dev, struct device_attribute *attr,
  			  const char *buf, size_t len)
  {
  	struct zram *zram = dev_to_zram(dev);
 -	ktime_t cutoff = 0;
-+	ktime_t cutoff = KTIME_MIN;
++	time64_t cutoff = 0;
  
  	if (!sysfs_streq(buf, "all")) {
  		/*
-@@ -464,7 +464,7 @@ static ssize_t idle_store(struct device *dev, struct device_attribute *attr,
+ 		 * If it did not parse as 'all' try to treat it as an integer
+ 		 * when we have memory tracking enabled.
+ 		 */
++		time64_t uptime;
+ 		u32 age_sec;
  
- 		if (IS_ENABLED(CONFIG_ZRAM_TRACK_ENTRY_ACTIME) &&
- 		    !kstrtouint(buf, 0, &age_sec))
+-		if (IS_ENABLED(CONFIG_ZRAM_TRACK_ENTRY_ACTIME) &&
+-		    !kstrtouint(buf, 0, &age_sec))
 -			cutoff = ktime_sub((u32)ktime_get_boottime_seconds(),
-+			cutoff = ktime_sub(ktime_get_boottime_seconds(),
- 					   age_sec);
- 		else
+-					   age_sec);
+-		else
++		if (!IS_ENABLED(CONFIG_ZRAM_TRACK_ENTRY_ACTIME) ||
++		    kstrtouint(buf, 0, &age_sec))
  			return -EINVAL;
-@@ -475,7 +475,7 @@ static ssize_t idle_store(struct device *dev, struct device_attribute *attr,
- 		return -EINVAL;
++
++		/* No slot can be older than the system uptime */
++		uptime = ktime_get_boottime_seconds();
++		if (age_sec >= uptime)
++			return len;
++
++		cutoff = uptime - age_sec;
+ 	}
  
- 	/*
--	 * A cutoff of 0 marks everything as idle, this is the
-+	 * A cutoff of KTIME_MIN marks everything as idle, this is the
- 	 * "all" behavior.
- 	 */
- 	mark_idle(zram, cutoff);
+ 	guard(rwsem_read)(&zram->dev_lock);
 -- 
 2.47.3
 

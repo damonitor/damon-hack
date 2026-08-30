@@ -1,0 +1,77 @@
+From: Pedro Falcato <pfalcato@suse.de>
+Date: Tue, 11 Aug 2026 18:21:56 +0100
+Subject: [PATCH] mm/page_alloc: replace custom bad page ratelimiting logic
+
+The current logic (allow up to $BURST prints per minute) can be entirely
+replaced by the generic version in lib/ratelimit.c, used around the
+kernel.
+
+Do so. The only functional difference should be that the new logs will
+read something like:
+
+KERN_WARNING "bad_page: %d callbacks suppressed\n", ...
+
+But that should be fine enough.
+
+Link: https://lore.kernel.org/20260811172156.356053-3-pfalcato@suse.de
+Signed-off-by: Pedro Falcato <pfalcato@suse.de>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/page_alloc.c | 28 +++++-----------------------
+ 1 file changed, 5 insertions(+), 23 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 146f7e0a9462a..c4dc61ec663ee 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -613,31 +613,13 @@ static inline bool __maybe_unused bad_range(struct zone *zone, struct page *page
+ }
+ #endif
+ 
++/* Allow a burst of 60 reports per minute */
++static DEFINE_RATELIMIT_STATE(bad_page_ratelimit, 60 * HZ, 60);
++
+ static void bad_page(struct page *page, const char *reason)
+ {
+-	static unsigned long resume;
+-	static unsigned long nr_shown;
+-	static unsigned long nr_unshown;
+-
+-	/*
+-	 * Allow a burst of 60 reports, then keep quiet for that minute;
+-	 * or allow a steady drip of one report per second.
+-	 */
+-	if (nr_shown == 60) {
+-		if (time_before(jiffies, resume)) {
+-			nr_unshown++;
+-			goto out;
+-		}
+-		if (nr_unshown) {
+-			pr_alert(
+-			      "BUG: Bad page state: %lu messages suppressed\n",
+-				nr_unshown);
+-			nr_unshown = 0;
+-		}
+-		nr_shown = 0;
+-	}
+-	if (nr_shown++ == 0)
+-		resume = jiffies + 60 * HZ;
++	if (!__ratelimit(&bad_page_ratelimit))
++		goto out;
+ 
+ 	pr_alert("BUG: Bad page state in process %s  pfn:%05lx\n",
+ 		current->comm, page_to_pfn(page));
+-- 
+2.47.3
+

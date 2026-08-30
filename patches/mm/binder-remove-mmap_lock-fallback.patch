@@ -1,0 +1,138 @@
+From: Dave Hansen <dave.hansen@linux.intel.com>
+Date: Thu, 13 Aug 2026 12:34:32 -0700
+Subject: [PATCH] binder: remove mmap_lock fallback
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Previously, the per-VMA locking could fail in the face of writers which
+necessitate a fallback to mmap_lock.  The new vma_start_read_unlocked()
+will wait for writers instead of failing.
+
+Use the new helper. Wait for writers. Remove the fallback to mmap_lock.
+
+Link: https://lore.kernel.org/20260813193433.3318288-5-surenb@google.com
+Signed-off-by: Dave Hansen <dave.hansen@linux.intel.com>
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Reviewed-by: Alice Ryhl <aliceryhl@google.com>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Todd Kjos <tkjos@android.com>
+Cc: Christian Brauner <christian@brauner.io>
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Ahern <dsahern@kernel.org>
+Cc: Arve Hjønnevåg <arve@android.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ drivers/android/binder/page_range.rs | 19 +++----------------
+ drivers/android/binder_alloc.c       | 17 +++++------------
+ rust/kernel/mm.rs                    | 27 +++++++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/android/binder/page_range.rs b/drivers/android/binder/page_range.rs
+index 52ffbf3504e7f..71febd3d5b073 100644
+--- a/drivers/android/binder/page_range.rs
++++ b/drivers/android/binder/page_range.rs
+@@ -439,22 +439,9 @@ unsafe fn use_page_slow(&self, i: usize) -> Result<()> {
+         // workqueue.
+         let mm = MmWithUser::into_mmput_async(self.mm.mmget_not_zero().ok_or(ESRCH)?);
+         {
+-            let vma_read;
+-            let mmap_read;
+-            let vma = if let Some(ret) = mm.lock_vma_under_rcu(vma_addr) {
+-                vma_read = ret;
+-                check_vma(&vma_read, self)
+-            } else {
+-                mmap_read = mm.mmap_read_lock();
+-                mmap_read
+-                    .vma_lookup(vma_addr)
+-                    .and_then(|vma| check_vma(vma, self))
+-            };
+-
+-            match vma {
+-                Some(vma) => vma.vm_insert_page(user_page_addr, &new_page)?,
+-                None => return Err(ESRCH),
+-            }
++            let vma_read_guard = mm.vma_start_read_unlocked(vma_addr).ok_or(ESRCH)?;
++            let vma = check_vma(&vma_read_guard, self).ok_or(ESRCH)?;
++            vma.vm_insert_page(user_page_addr, &new_page)?;
+         }
+ 
+         let inner = self.lock.lock();
+diff --git a/drivers/android/binder_alloc.c b/drivers/android/binder_alloc.c
+index fcb744088e77c..d6eae0aa70854 100644
+--- a/drivers/android/binder_alloc.c
++++ b/drivers/android/binder_alloc.c
+@@ -259,21 +259,14 @@ static int binder_page_insert(struct binder_alloc *alloc,
+ 	struct vm_area_struct *vma;
+ 	int ret = -ESRCH;
+ 
+-	/* attempt per-vma lock first */
+-	vma = lock_vma_under_rcu(mm, addr);
+-	if (vma) {
+-		if (binder_alloc_is_mapped(alloc))
+-			ret = vm_insert_page(vma, addr, page);
+-		vma_end_read(vma);
++	vma = vma_start_read_unlocked(mm, addr);
++	if (!vma)
+ 		return ret;
+-	}
+ 
+-	/* fall back to mmap_lock */
+-	mmap_read_lock(mm);
+-	vma = vma_lookup(mm, addr);
+-	if (vma && binder_alloc_is_mapped(alloc))
++	if (binder_alloc_is_mapped(alloc))
+ 		ret = vm_insert_page(vma, addr, page);
+-	mmap_read_unlock(mm);
++
++	vma_end_read(vma);
+ 
+ 	return ret;
+ }
+diff --git a/rust/kernel/mm.rs b/rust/kernel/mm.rs
+index f4fa54616085f..11466fb304dfa 100644
+--- a/rust/kernel/mm.rs
++++ b/rust/kernel/mm.rs
+@@ -186,6 +186,33 @@ pub fn lock_vma_under_rcu(&self, vma_addr: usize) -> Option<VmaReadGuard<'_>> {
+         })
+     }
+ 
++    /// Find the VMA covering 'address' and read-lock it.
++    ///
++    /// The fast path does not take mmap_lock. Waits for writers to finish if the
++    /// VMA is being modified by taking mmap_lock.
++    /// Use when mmap_lock is not held, otherwise use vma_start_read_locked().
++    /// Nothing prevents VMAs being unmapped/mapped before or after the VMA is
++    /// looked up, if a stronger guarantee is required, take an mmap_lock.
++    ///
++    /// Return: If a VMA exists which spans @address, return that VMA, read-locked.
++    /// If no VMA is mapped there or, very unlikely, a reference count overflow
++    /// occurred, return NULL.
++    #[inline]
++    pub fn vma_start_read_unlocked(&self, vma_addr: usize) -> Option<VmaReadGuard<'_>> {
++        // SAFETY: We may invoke `vma_start_read_unlocked` because we know this `mm` has non-zero
++        // `mm_users`.
++        let vma = unsafe { bindings::vma_start_read_unlocked(self.as_raw(), vma_addr) };
++        if vma.is_null() {
++            return None;
++        }
++        Some(VmaReadGuard {
++            // SAFETY: If `vma_start_read_unlocked` returns a non-null ptr, then it points at a
++            // valid vma. The vma is stable for as long as the vma read lock is held.
++            vma: unsafe { VmaRef::from_raw(vma) },
++            _nts: NotThreadSafe,
++        })
++    }
++
+     /// Lock the mmap read lock.
+     #[inline]
+     pub fn mmap_read_lock(&self) -> MmapReadGuard<'_> {
+-- 
+2.47.3
+

@@ -1,0 +1,63 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 28 Aug 2026 12:24:19 -0700
+Subject: [PATCH] memcg: clear FLUSHING_CACHED_CHARGE on cpu offline
+
+Sashiko [1] reported that memcg_hotplug_cpu_dead() drains the stocks of
+the CPU which went away but leaves FLUSHING_CACHED_CHARGE alone.
+
+The flag can be set at that point: drain_all_stock() may have claimed the
+stock and queued the drain work shortly before the CPU went down.
+workqueue_offline_cpu() unbinds the per-cpu workers, so such a pending
+work item is executed by an unbound worker on some other CPU, where
+drain_local_memcg_stock() operates on this_cpu_ptr() and thus drains and
+clears the flag of that other CPU instead.  Nothing clears the flag of the
+dead CPU, so drain_all_stock() would skip its stock forever once the CPU
+comes back online.
+
+Clear the flag of both stocks after draining them.
+
+Link: https://lore.kernel.org/20260828192419.3057939-1-shakeel.butt@linux.dev
+Link: https://sashiko.dev/#/patchset/20260828135036.7d44361f%40fangorn [1]
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index c6b85e3a5a0b3..05f5338765a99 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2373,9 +2373,21 @@ void drain_all_stock(struct mem_cgroup *root_memcg)
+ 
+ static int memcg_hotplug_cpu_dead(unsigned int cpu)
+ {
++	struct memcg_stock_pcp *memcg_st = &per_cpu(memcg_stock, cpu);
++	struct obj_stock_pcp *obj_st = &per_cpu(obj_stock, cpu);
++
+ 	/* no need for the local lock */
+-	drain_obj_stock(&per_cpu(obj_stock, cpu));
+-	drain_stock_fully(&per_cpu(memcg_stock, cpu));
++	drain_obj_stock(obj_st);
++	drain_stock_fully(memcg_st);
++
++	/*
++	 * A drain work queued before the CPU went away is executed by an
++	 * unbound worker on some other CPU and clears that CPU's flag, so
++	 * clear the flags here to make these stocks drainable again once
++	 * the CPU comes back online.
++	 */
++	clear_bit(FLUSHING_CACHED_CHARGE, &memcg_st->flags);
++	clear_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags);
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

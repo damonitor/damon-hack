@@ -1,0 +1,369 @@
+From: Wilson Felipe Pereira <wfelipe@google.com>
+Date: Tue, 18 Aug 2026 23:16:32 +0000
+Subject: [PATCH] init, arch: make CONFIG_COMMAND_LINE_SIZE globally
+ configurable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Currently, s390 has the ability to configure the maximum kernel command
+line size via Kconfig (CONFIG_COMMAND_LINE_SIZE).  Other architectures
+define a hardcoded COMMAND_LINE_SIZE macro in their setup.h headers.
+
+In some use cases, such as netboot kernels, rootfs configurations, or
+larger initramfs setups, a larger command line size is required.  While
+for embedded workloads, it can be reduced to save memory.
+
+Move CONFIG_COMMAND_LINE_SIZE out of arch/s390/Kconfig and into
+init/Kconfig under General setup, and update every architecture's setup.h
+header to define COMMAND_LINE_SIZE as CONFIG_COMMAND_LINE_SIZE.
+
+For user-space API (uapi) headers, wrap the definition in an `#ifdef
+__KERNEL__` guard and retain the historical hardcoded default in the
+`#else` block.  When user-space headers are installed via `make
+headers_install`, unifdef strips out the kernel section, ensuring the same
+value as before for user-space applications including `<asm/setup.h>`.
+
+For S390, the range is kept the same, but other architectures have varying
+constraints.  S390 requires a minimum of 896 bytes to protect legacy
+bootloaders from overwriting the .text section.  ARM, M68K, and NIOS2
+allocate the command line directly on severely constrained decompressor
+stacks, so their ranges are strictly capped at 2048 bytes to prevent
+deterministic stack exhaustion and boot panics.  PowerPC (PPC) boot
+wrappers silently truncate arguments past 2048 bytes, so it is also capped
+at 2048 to prevent silent parameter loss.
+
+The SuperH (SUPERH) boot parameter page allocates exactly PAGE_SIZE
+(typically 4096 bytes), and placing a 4096-byte command line starting at
+offset 256 would cause strscpy() to read out of bounds; it is capped at
+3840 bytes.  Alpha physically limits its boot parameter block to 256
+bytes, so its limit is strictly locked to 256.  All other architectures
+are capped at 4096 bytes to prevent unreasonable allocations.
+
+Link: https://lore.kernel.org/20260818231646.804507-2-wfelipe@google.com
+Signed-off-by: Maciej Żenczykowski <maze@google.com>
+Signed-off-by: Wilson Felipe Pereira <wfelipe@google.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/alpha/include/uapi/asm/setup.h      |  4 ++++
+ arch/arc/include/asm/setup.h             |  2 +-
+ arch/arm/include/uapi/asm/setup.h        |  6 +++++-
+ arch/arm64/include/uapi/asm/setup.h      |  4 ++++
+ arch/loongarch/include/uapi/asm/setup.h  |  4 ++++
+ arch/m68k/include/uapi/asm/setup.h       |  6 +++++-
+ arch/microblaze/include/uapi/asm/setup.h |  4 ++++
+ arch/mips/include/uapi/asm/setup.h       |  4 ++++
+ arch/parisc/include/uapi/asm/setup.h     |  4 ++++
+ arch/powerpc/include/uapi/asm/setup.h    |  4 ++++
+ arch/riscv/include/uapi/asm/setup.h      |  4 ++++
+ arch/s390/Kconfig                        |  8 --------
+ arch/sparc/include/uapi/asm/setup.h      | 10 +++++++---
+ arch/um/include/asm/setup.h              |  2 +-
+ arch/x86/include/asm/setup.h             |  2 +-
+ arch/xtensa/include/uapi/asm/setup.h     |  4 ++++
+ include/uapi/asm-generic/setup.h         |  4 ++++
+ init/Kconfig                             | 16 ++++++++++++++++
+ 18 files changed, 76 insertions(+), 16 deletions(-)
+
+diff --git a/arch/alpha/include/uapi/asm/setup.h b/arch/alpha/include/uapi/asm/setup.h
+index f881ea5947cbc..169f743ef7658 100644
+--- a/arch/alpha/include/uapi/asm/setup.h
++++ b/arch/alpha/include/uapi/asm/setup.h
+@@ -2,6 +2,10 @@
+ #ifndef _UAPI__ALPHA_SETUP_H
+ #define _UAPI__ALPHA_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	256
++#endif
+ 
+ #endif /* _UAPI__ALPHA_SETUP_H */
+diff --git a/arch/arc/include/asm/setup.h b/arch/arc/include/asm/setup.h
+index 1c6db599e1fcc..60e158d58cec7 100644
+--- a/arch/arc/include/asm/setup.h
++++ b/arch/arc/include/asm/setup.h
+@@ -9,7 +9,7 @@
+ #include <linux/types.h>
+ #include <uapi/asm/setup.h>
+ 
+-#define COMMAND_LINE_SIZE 256
++#define COMMAND_LINE_SIZE CONFIG_COMMAND_LINE_SIZE
+ 
+ /*
+  * Data structure to map a ID to string
+diff --git a/arch/arm/include/uapi/asm/setup.h b/arch/arm/include/uapi/asm/setup.h
+index 8e50e034fec73..4aa93558af1e7 100644
+--- a/arch/arm/include/uapi/asm/setup.h
++++ b/arch/arm/include/uapi/asm/setup.h
+@@ -17,7 +17,11 @@
+ 
+ #include <linux/types.h>
+ 
+-#define COMMAND_LINE_SIZE 1024
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
++#define COMMAND_LINE_SIZE	1024
++#endif
+ 
+ /* The list ends with an ATAG_NONE node. */
+ #define ATAG_NONE	0x00000000
+diff --git a/arch/arm64/include/uapi/asm/setup.h b/arch/arm64/include/uapi/asm/setup.h
+index 5d703888f3511..2236890175a5a 100644
+--- a/arch/arm64/include/uapi/asm/setup.h
++++ b/arch/arm64/include/uapi/asm/setup.h
+@@ -22,6 +22,10 @@
+ 
+ #include <linux/types.h>
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	2048
++#endif
+ 
+ #endif
+diff --git a/arch/loongarch/include/uapi/asm/setup.h b/arch/loongarch/include/uapi/asm/setup.h
+index d46363ce3e024..03c7bfa1e5d9f 100644
+--- a/arch/loongarch/include/uapi/asm/setup.h
++++ b/arch/loongarch/include/uapi/asm/setup.h
+@@ -3,6 +3,10 @@
+ #ifndef _UAPI_ASM_LOONGARCH_SETUP_H
+ #define _UAPI_ASM_LOONGARCH_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	4096
++#endif
+ 
+ #endif /* _UAPI_ASM_LOONGARCH_SETUP_H */
+diff --git a/arch/m68k/include/uapi/asm/setup.h b/arch/m68k/include/uapi/asm/setup.h
+index 25fe26d5597cc..2d5b24a5345f9 100644
+--- a/arch/m68k/include/uapi/asm/setup.h
++++ b/arch/m68k/include/uapi/asm/setup.h
+@@ -12,6 +12,10 @@
+ #ifndef _UAPI_M68K_SETUP_H
+ #define _UAPI_M68K_SETUP_H
+ 
+-#define COMMAND_LINE_SIZE 256
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
++#define COMMAND_LINE_SIZE	256
++#endif
+ 
+ #endif /* _UAPI_M68K_SETUP_H */
+diff --git a/arch/microblaze/include/uapi/asm/setup.h b/arch/microblaze/include/uapi/asm/setup.h
+index 16c56807f86a2..e4b253064c7d9 100644
+--- a/arch/microblaze/include/uapi/asm/setup.h
++++ b/arch/microblaze/include/uapi/asm/setup.h
+@@ -12,6 +12,10 @@
+ #ifndef _UAPI_ASM_MICROBLAZE_SETUP_H
+ #define _UAPI_ASM_MICROBLAZE_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	256
++#endif
+ 
+ #endif /* _UAPI_ASM_MICROBLAZE_SETUP_H */
+diff --git a/arch/mips/include/uapi/asm/setup.h b/arch/mips/include/uapi/asm/setup.h
+index 7d48c433b0c27..8d6c474835aec 100644
+--- a/arch/mips/include/uapi/asm/setup.h
++++ b/arch/mips/include/uapi/asm/setup.h
+@@ -2,7 +2,11 @@
+ #ifndef _UAPI_MIPS_SETUP_H
+ #define _UAPI_MIPS_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	4096
++#endif
+ 
+ 
+ #endif /* _UAPI_MIPS_SETUP_H */
+diff --git a/arch/parisc/include/uapi/asm/setup.h b/arch/parisc/include/uapi/asm/setup.h
+index 78b2f4ec7d652..cfa77e84205dc 100644
+--- a/arch/parisc/include/uapi/asm/setup.h
++++ b/arch/parisc/include/uapi/asm/setup.h
+@@ -2,6 +2,10 @@
+ #ifndef _PARISC_SETUP_H
+ #define _PARISC_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	1024
++#endif
+ 
+ #endif /* _PARISC_SETUP_H */
+diff --git a/arch/powerpc/include/uapi/asm/setup.h b/arch/powerpc/include/uapi/asm/setup.h
+index c54940b09d065..daa15ac4e94c6 100644
+--- a/arch/powerpc/include/uapi/asm/setup.h
++++ b/arch/powerpc/include/uapi/asm/setup.h
+@@ -2,6 +2,10 @@
+ #ifndef _UAPI_ASM_POWERPC_SETUP_H
+ #define _UAPI_ASM_POWERPC_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	2048
++#endif
+ 
+ #endif /* _UAPI_ASM_POWERPC_SETUP_H */
+diff --git a/arch/riscv/include/uapi/asm/setup.h b/arch/riscv/include/uapi/asm/setup.h
+index eb4f0209c6960..a6c1f4b0987e3 100644
+--- a/arch/riscv/include/uapi/asm/setup.h
++++ b/arch/riscv/include/uapi/asm/setup.h
+@@ -3,6 +3,10 @@
+ #ifndef _UAPI_ASM_RISCV_SETUP_H
+ #define _UAPI_ASM_RISCV_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	2048
++#endif
+ 
+ #endif /* _UAPI_ASM_RISCV_SETUP_H */
+diff --git a/arch/s390/Kconfig b/arch/s390/Kconfig
+index 4b51bc6e8948d..026ba041ca950 100644
+--- a/arch/s390/Kconfig
++++ b/arch/s390/Kconfig
+@@ -521,14 +521,6 @@ endchoice
+ config 64BIT
+ 	def_bool y
+ 
+-config COMMAND_LINE_SIZE
+-	int "Maximum size of kernel command line"
+-	default 4096
+-	range 896 1048576
+-	help
+-	  This allows you to specify the maximum length of the kernel command
+-	  line.
+-
+ config SMP
+ 	def_bool y
+ 
+diff --git a/arch/sparc/include/uapi/asm/setup.h b/arch/sparc/include/uapi/asm/setup.h
+index 3c208a4dd4640..7054f5249a3a6 100644
+--- a/arch/sparc/include/uapi/asm/setup.h
++++ b/arch/sparc/include/uapi/asm/setup.h
+@@ -6,10 +6,14 @@
+ #ifndef _UAPI_SPARC_SETUP_H
+ #define _UAPI_SPARC_SETUP_H
+ 
+-#if defined(__sparc__) && defined(__arch64__)
+-# define COMMAND_LINE_SIZE 2048
++#ifdef __KERNEL__
++# define COMMAND_LINE_SIZE CONFIG_COMMAND_LINE_SIZE
+ #else
+-# define COMMAND_LINE_SIZE 256
++# if defined(__sparc__) && defined(__arch64__)
++#  define COMMAND_LINE_SIZE 2048
++# else
++#  define COMMAND_LINE_SIZE 256
++# endif
+ #endif
+ 
+ 
+diff --git a/arch/um/include/asm/setup.h b/arch/um/include/asm/setup.h
+index 80ada899f2542..bc83dc4d467d3 100644
+--- a/arch/um/include/asm/setup.h
++++ b/arch/um/include/asm/setup.h
+@@ -6,6 +6,6 @@
+  * command line, so this choice is ok.
+  */
+ 
+-#define COMMAND_LINE_SIZE 4096
++#define COMMAND_LINE_SIZE CONFIG_COMMAND_LINE_SIZE
+ 
+ #endif		/* SETUP_H_INCLUDED */
+diff --git a/arch/x86/include/asm/setup.h b/arch/x86/include/asm/setup.h
+index 895d09faaf832..1b333bb091d7f 100644
+--- a/arch/x86/include/asm/setup.h
++++ b/arch/x86/include/asm/setup.h
+@@ -4,7 +4,7 @@
+ 
+ #include <uapi/asm/setup.h>
+ 
+-#define COMMAND_LINE_SIZE 2048
++#define COMMAND_LINE_SIZE CONFIG_COMMAND_LINE_SIZE
+ 
+ #include <linux/linkage.h>
+ #include <asm/page_types.h>
+diff --git a/arch/xtensa/include/uapi/asm/setup.h b/arch/xtensa/include/uapi/asm/setup.h
+index 5356a5fd4d173..dcf33a403527a 100644
+--- a/arch/xtensa/include/uapi/asm/setup.h
++++ b/arch/xtensa/include/uapi/asm/setup.h
+@@ -12,6 +12,10 @@
+ #ifndef _XTENSA_SETUP_H
+ #define _XTENSA_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	256
++#endif
+ 
+ #endif
+diff --git a/include/uapi/asm-generic/setup.h b/include/uapi/asm-generic/setup.h
+index 88ac5100df359..b8d06e6d56bd7 100644
+--- a/include/uapi/asm-generic/setup.h
++++ b/include/uapi/asm-generic/setup.h
+@@ -2,6 +2,10 @@
+ #ifndef __ASM_GENERIC_SETUP_H
+ #define __ASM_GENERIC_SETUP_H
+ 
++#ifdef __KERNEL__
++#define COMMAND_LINE_SIZE	CONFIG_COMMAND_LINE_SIZE
++#else
+ #define COMMAND_LINE_SIZE	512
++#endif
+ 
+ #endif	/* __ASM_GENERIC_SETUP_H */
+diff --git a/init/Kconfig b/init/Kconfig
+index 8583d9f06c522..edc79893e1ac4 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -1614,6 +1614,22 @@ config CMDLINE_FROM_BOOTCONFIG
+ 
+ 	  If unsure, say N.
+ 
++config COMMAND_LINE_SIZE
++	int "Maximum size of kernel command line"
++	default 4096 if S390 || LOONGARCH || MIPS || UML
++	default 2048 if X86 || ARM64 || PPC || SPARC64 || RISCV
++	default 1024 if ARM || PARISC
++	default 256 if ALPHA || ARC || M68K || MICROBLAZE || SPARC32 || XTENSA
++	default 512
++	range 896 1048576 if S390
++	range 256 2048 if ARM || M68K || NIOS2 || PPC
++	range 256 3840 if SUPERH
++	range 256 256 if ALPHA
++	range 256 4096
++	help
++	  This allows you to specify the maximum length of the kernel command
++	  line.
++
+ config CMDLINE_LOG_WRAP_IDEAL_LEN
+ 	int "Length to try to wrap the cmdline when logged at boot"
+ 	default 1021
+-- 
+2.47.3
+

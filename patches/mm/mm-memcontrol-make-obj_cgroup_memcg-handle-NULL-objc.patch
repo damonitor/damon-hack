@@ -1,0 +1,136 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Mon, 17 Aug 2026 17:03:26 +0800
+Subject: [PATCH] mm: memcontrol: make obj_cgroup_memcg() handle NULL objcg
+
+obj_cgroup_memcg() currently requires a non-NULL objcg, so callers that
+may hold a NULL objcg must guard the call with an explicit NULL check.
+This pattern is duplicated in folio_memcg(), folio_memcg_check(),
+mm/page_owner.c, and mm/zswap.c.
+
+Teach obj_cgroup_memcg() to accept NULL and return NULL in that case, then
+remove the redundant NULL checks at the call sites.  Also remove the
+mem_cgroup_from_entry() wrapper in zswap, which existed solely to provide
+this NULL-safe behaviour, and replace its two callers with direct
+obj_cgroup_memcg() calls.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/09bcf74312246a6e4146be8a0cb9787f8beddb28.1786955972.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 11 ++++++++---
+ mm/page_owner.c            |  2 +-
+ mm/zswap.c                 | 17 ++---------------
+ 3 files changed, 11 insertions(+), 19 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 7d1c0ce189a88..da625d2edb3ba 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -380,7 +380,7 @@ enum objext_flags {
+ static inline struct mem_cgroup *obj_cgroup_memcg(struct obj_cgroup *objcg)
+ {
+ 	lockdep_assert_once(rcu_read_lock_held() || lockdep_is_held(&cgroup_mutex));
+-	return READ_ONCE(objcg->memcg);
++	return objcg ? READ_ONCE(objcg->memcg) : NULL;
+ }
+ 
+ /*
+@@ -433,7 +433,7 @@ static inline struct mem_cgroup *folio_memcg(struct folio *folio)
+ {
+ 	struct obj_cgroup *objcg = folio_objcg(folio);
+ 
+-	return objcg ? obj_cgroup_memcg(objcg) : NULL;
++	return obj_cgroup_memcg(objcg);
+ }
+ 
+ /*
+@@ -476,7 +476,7 @@ static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
+ 
+ 	objcg = (void *)(memcg_data & ~OBJEXTS_FLAGS_MASK);
+ 
+-	return objcg ? obj_cgroup_memcg(objcg) : NULL;
++	return obj_cgroup_memcg(objcg);
+ }
+ 
+ static inline struct mem_cgroup *page_memcg_check(struct page *page)
+@@ -1050,6 +1050,11 @@ void mem_cgroup_flush_workqueue(void);
+ extern int mem_cgroup_init(void);
+ #else /* CONFIG_MEMCG */
+ 
++static inline struct mem_cgroup *obj_cgroup_memcg(struct obj_cgroup *objcg)
++{
++	return NULL;
++}
++
+ #define MEM_CGROUP_ID_SHIFT	0
+ 
+ #define root_mem_cgroup		(NULL)
+diff --git a/mm/page_owner.c b/mm/page_owner.c
+index fbbda7ba914ba..3fc37d9b908ef 100644
+--- a/mm/page_owner.c
++++ b/mm/page_owner.c
+@@ -575,7 +575,7 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
+ 	}
+ 
+ 	objcg = (void *)(memcg_data & ~OBJEXTS_FLAGS_MASK);
+-	memcg = objcg ? obj_cgroup_memcg(objcg) : NULL;
++	memcg = obj_cgroup_memcg(objcg);
+ 	if (!memcg)
+ 		goto out_unlock;
+ 
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 37f34e406c8e3..c1dc60926bad9 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -647,19 +647,6 @@ static int zswap_enabled_param_set(const char *val,
+ * lru functions
+ **********************************/
+ 
+-/* should be called under RCU */
+-#ifdef CONFIG_MEMCG
+-static inline struct mem_cgroup *mem_cgroup_from_entry(struct zswap_entry *entry)
+-{
+-	return entry->objcg ? obj_cgroup_memcg(entry->objcg) : NULL;
+-}
+-#else
+-static inline struct mem_cgroup *mem_cgroup_from_entry(struct zswap_entry *entry)
+-{
+-	return NULL;
+-}
+-#endif
+-
+ static inline int entry_to_nid(struct zswap_entry *entry)
+ {
+ 	return page_to_nid(virt_to_page(entry));
+@@ -682,7 +669,7 @@ static void zswap_lru_add(struct zswap_entry *entry)
+ 	 * Similar reasoning holds for list_lru_del().
+ 	 */
+ 	rcu_read_lock();
+-	memcg = mem_cgroup_from_entry(entry);
++	memcg = obj_cgroup_memcg(entry->objcg);
+ 	/* will always succeed */
+ 	list_lru_add(&zswap_list_lru, &entry->lru, nid, memcg);
+ 	rcu_read_unlock();
+@@ -694,7 +681,7 @@ static void zswap_lru_del(struct zswap_entry *entry)
+ 	struct mem_cgroup *memcg;
+ 
+ 	rcu_read_lock();
+-	memcg = mem_cgroup_from_entry(entry);
++	memcg = obj_cgroup_memcg(entry->objcg);
+ 	/* will always succeed */
+ 	list_lru_del(&zswap_list_lru, &entry->lru, nid, memcg);
+ 	rcu_read_unlock();
+-- 
+2.47.3
+

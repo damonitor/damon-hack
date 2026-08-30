@@ -1,0 +1,57 @@
+From: Karl Mehltretter <kmehltretter@gmail.com>
+Date: Sat, 22 Aug 2026 16:33:28 +0200
+Subject: [PATCH] squashfs: make the fragment index table bounds check
+ overflow-safe
+
+squashfs_read_fragment_index_table() checks that the table fits before the
+next one with:
+
+	if (fragment_table_start + length > next_table)
+		return ERR_PTR(-EINVAL);
+
+fragment_table_start comes from the superblock and is not validated before
+this point.  A start of 2^64 - length wraps the sum to zero, so the check
+passes regardless of next_table and fails to reject the invalid table
+ordering.
+
+length then reaches kmalloc() through squashfs_read_table().  A fragment
+count of 0xffffffff asks for 64MB, order 14.  GFP_KERNEL does not include
+__GFP_NOWARN, so the page allocator warns before the mount fails with
+-ENOMEM.  With panic_on_warn, the warning panics the kernel.
+
+Compare the operands instead of adding them.  id.c and export.c avoid the
+same wrap with an exact-size check.  Keep the inequality here because a
+gap before the next table is still allowed.
+
+Link: https://lore.kernel.org/20260822143328.68867-3-kmehltretter@gmail.com
+Fixes: 1cac63cc9b2f ("Squashfs: add sanity checks to fragment reading at mount time")
+Signed-off-by: Karl Mehltretter <kmehltretter@gmail.com>
+Assisted-by: Claude:claude-opus-5
+Cc: Phillip Lougher <phillip@squashfs.org.uk>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/squashfs/fragment.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/fs/squashfs/fragment.c b/fs/squashfs/fragment.c
+index 49602b9a42e19..c46e946fa4744 100644
+--- a/fs/squashfs/fragment.c
++++ b/fs/squashfs/fragment.c
+@@ -69,9 +69,11 @@ __le64 *squashfs_read_fragment_index_table(struct super_block *sb,
+ 	/*
+ 	 * Sanity check, length bytes should not extend into the next table -
+ 	 * this check also traps instances where fragment_table_start is
+-	 * incorrectly larger than the next table start
++	 * incorrectly larger than the next table start.  Both values are read
++	 * from the filesystem image, so compare without adding them.
+ 	 */
+-	if (fragment_table_start + length > next_table)
++	if (fragment_table_start > next_table ||
++	    length > next_table - fragment_table_start)
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	table = squashfs_read_table(sb, fragment_table_start, length);
+-- 
+2.47.3
+

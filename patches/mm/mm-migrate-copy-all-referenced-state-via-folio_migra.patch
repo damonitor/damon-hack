@@ -1,0 +1,118 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Wed, 26 Aug 2026 01:53:36 +0800
+Subject: [PATCH] mm/migrate: copy all referenced state via
+ folio_migrate_lru_refs
+
+folio_migrate_flags() copies PG_referenced separately from the MGLRU refs
+counter, which folio_migrate_refs() transfers.  Yet under MGLRU,
+PG_referenced and the refs counter bits together describe the referenced
+status of a folio.
+
+Consolidate the two: rename folio_migrate_refs() to
+folio_migrate_lru_refs() and let it copy the complete referenced status,
+i.e., the MGLRU refs count including PG_referenced, or just PG_referenced
+for the active/inactive LRU.  Drop the open-coded PG_referenced copy so
+the referenced status is transferred in one place.  No behavior change is
+intended: under the active/inactive LRU the extra bits are unused, so
+operating on them is a noop.
+
+Transfer the reference state first, before the destination folio is marked
+uptodate, so a concurrent lockless reader cannot have its reference update
+overwritten by the copy.
+
+Link: https://lore.kernel.org/20260826-mglru-flags-cleanup-v3-3-d9f1c75549c8@tencent.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_inline.h | 20 +++++++++++++++-----
+ mm/migrate.c              |  6 +++---
+ 2 files changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/include/linux/mm_inline.h b/include/linux/mm_inline.h
+index edfaf26618120..7f91a89b5ba3a 100644
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -365,11 +365,19 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
+ 	return true;
+ }
+ 
+-static inline void folio_migrate_refs(struct folio *new, const struct folio *old)
++/**
++ * folio_migrate_lru_refs - copy the reference state to a new folio
++ * @new: the destination folio
++ * @old: the source folio
++ *
++ * Transfer the reference state to @new during migration: the MGLRU
++ * refs count, including PG_referenced, or just PG_referenced for the
++ * active/inactive LRU.
++ */
++static inline void folio_migrate_lru_refs(struct folio *new, const struct folio *old)
+ {
+-	unsigned long refs = READ_ONCE(old->flags.f) & LRU_REFS_MASK;
+-
+-	set_mask_bits(&new->flags.f, LRU_REFS_MASK, refs);
++	BUILD_BUG_ON(LRU_REFS_MASK & BIT(PG_referenced));
++	folio_set_lru_refs(new, folio_lru_refs(old));
+ }
+ #else /* !CONFIG_LRU_GEN */
+ 
+@@ -398,8 +406,10 @@ static inline bool lru_gen_del_folio(struct lruvec *lruvec, struct folio *folio,
+ 	return false;
+ }
+ 
+-static inline void folio_migrate_refs(struct folio *new, const struct folio *old)
++static inline void folio_migrate_lru_refs(struct folio *new, const struct folio *old)
+ {
++	if (folio_test_referenced(old))
++		folio_set_referenced(new);
+ }
+ #endif /* CONFIG_LRU_GEN */
+ 
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 15b45832bcfa7..a369d0c95c386 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -776,8 +776,9 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
+ {
+ 	int cpupid;
+ 
+-	if (folio_test_referenced(folio))
+-		folio_set_referenced(newfolio);
++	/* Copy the reference state, including PG_referenced */
++	folio_migrate_lru_refs(newfolio, folio);
++
+ 	if (folio_test_uptodate(folio))
+ 		folio_mark_uptodate(newfolio);
+ 	if (folio_test_clear_active(folio)) {
+@@ -807,7 +808,6 @@ void folio_migrate_flags(struct folio *newfolio, struct folio *folio)
+ 	if (folio_test_idle(folio))
+ 		folio_set_idle(newfolio);
+ 
+-	folio_migrate_refs(newfolio, folio);
+ 	/*
+ 	 * Copy NUMA information to the new page, to prevent over-eager
+ 	 * future migrations of this same page.
+-- 
+2.47.3
+

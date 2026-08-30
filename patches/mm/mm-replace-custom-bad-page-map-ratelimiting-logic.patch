@@ -1,0 +1,93 @@
+From: Pedro Falcato <pfalcato@suse.de>
+Date: Tue, 11 Aug 2026 18:21:55 +0100
+Subject: [PATCH] mm: replace custom bad page map ratelimiting logic
+
+Patch series "mm: replace custom ratelimiting logic".
+
+The kernel has a perfectly cromulent and mostly-equivalent variant in
+lib/ratelimit.c that can be used.
+
+
+This patch (of 2):
+
+The current logic (allow up to $BURST prints per minute) can be entirely
+replaced by the generic version in lib/ratelimit.c, used around the
+kernel.
+
+Do so.  The only functional difference should be that the new logs will
+read something like:
+
+KERN_WARNING "print_bad_page_map: %d callbacks suppressed\n", ...
+
+But that should be fine enough.
+
+Link: https://lore.kernel.org/20260811172156.356053-1-pfalcato@suse.de
+Link: https://lore.kernel.org/20260811172156.356053-2-pfalcato@suse.de
+Signed-off-by: Pedro Falcato <pfalcato@suse.de>
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory.c | 30 +++---------------------------
+ 1 file changed, 3 insertions(+), 27 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index 53f03a5227a33..bc14cae3c49d7 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -492,32 +492,8 @@ static inline void add_mm_rss_vec(struct mm_struct *mm, int *rss)
+ 			add_mm_counter(mm, i, rss[i]);
+ }
+ 
+-static bool is_bad_page_map_ratelimited(void)
+-{
+-	static unsigned long resume;
+-	static unsigned long nr_shown;
+-	static unsigned long nr_unshown;
+-
+-	/*
+-	 * Allow a burst of 60 reports, then keep quiet for that minute;
+-	 * or allow a steady drip of one report per second.
+-	 */
+-	if (nr_shown == 60) {
+-		if (time_before(jiffies, resume)) {
+-			nr_unshown++;
+-			return true;
+-		}
+-		if (nr_unshown) {
+-			pr_alert("BUG: Bad page map: %lu messages suppressed\n",
+-				 nr_unshown);
+-			nr_unshown = 0;
+-		}
+-		nr_shown = 0;
+-	}
+-	if (nr_shown++ == 0)
+-		resume = jiffies + 60 * HZ;
+-	return false;
+-}
++/* Allow a burst of 60 bad page map reports per minute. */
++static DEFINE_RATELIMIT_STATE(bad_page_map_ratelimit, 60 * HZ, 60);
+ 
+ static void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry, size_t entry_size)
+ {
+@@ -633,7 +609,7 @@ static void print_bad_page_map(struct vm_area_struct *vma,
+ 	char entry_str[PTVAL_STR_MAX];
+ 	pgoff_t index, anon_index;
+ 
+-	if (is_bad_page_map_ratelimited())
++	if (!__ratelimit(&bad_page_map_ratelimit))
+ 		return;
+ 
+ 	mapping = vma->vm_file ? vma->vm_file->f_mapping : NULL;
+-- 
+2.47.3
+

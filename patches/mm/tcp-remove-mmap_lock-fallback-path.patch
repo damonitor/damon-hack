@@ -1,0 +1,111 @@
+From: Dave Hansen <dave.hansen@linux.intel.com>
+Date: Thu, 13 Aug 2026 12:34:33 -0700
+Subject: [PATCH] tcp: remove mmap_lock fallback path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Previously, the per-VMA locking could fail in the face of writers which
+necessitates a fallback to mmap_lock.  The new vma_start_read_unlocked()
+will wait for writers instead of failing.
+
+Use the new helper.  Wait for writers.  Remove the fallback to mmap_lock.
+The fallback removal does not affect NOMMU case because TCP_ZEROCOPY is
+gated on CONFIG_MMU.
+
+This really is a nice cleanup.  It removes the need to pass the lock state
+back and forth to find_tcp_vma().
+
+Link: https://lore.kernel.org/20260813193433.3318288-6-surenb@google.com
+Signed-off-by: Dave Hansen <dave.hansen@linux.intel.com>
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Acked-by: Lorenzo Stoakes <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Tested-by: syzbot@syzkaller.appspotmail.com
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Todd Kjos <tkjos@android.com>
+Cc: Christian Brauner <christian@brauner.io>
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Ahern <dsahern@kernel.org>
+Cc: Arve Hjønnevåg <arve@android.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ net/ipv4/tcp.c | 31 +++++++++----------------------
+ 1 file changed, 9 insertions(+), 22 deletions(-)
+
+diff --git a/net/ipv4/tcp.c b/net/ipv4/tcp.c
+index 455441f1b6949..62defe70f3ceb 100644
+--- a/net/ipv4/tcp.c
++++ b/net/ipv4/tcp.c
+@@ -2167,27 +2167,18 @@ static void tcp_zc_finalize_rx_tstamp(struct sock *sk,
+ }
+ 
+ static struct vm_area_struct *find_tcp_vma(struct mm_struct *mm,
+-					   unsigned long address,
+-					   bool *mmap_locked)
++					   unsigned long address)
+ {
+-	struct vm_area_struct *vma = lock_vma_under_rcu(mm, address);
++	struct vm_area_struct *vma = vma_start_read_unlocked(mm, address);
+ 
+-	if (vma) {
+-		if (vma->vm_ops != &tcp_vm_ops) {
+-			vma_end_read(vma);
+-			return NULL;
+-		}
+-		*mmap_locked = false;
+-		return vma;
+-	}
++	if (!vma)
++		return NULL;
+ 
+-	mmap_read_lock(mm);
+-	vma = vma_lookup(mm, address);
+-	if (!vma || vma->vm_ops != &tcp_vm_ops) {
+-		mmap_read_unlock(mm);
++	if (vma->vm_ops != &tcp_vm_ops) {
++		vma_end_read(vma);
+ 		return NULL;
+ 	}
+-	*mmap_locked = true;
++
+ 	return vma;
+ }
+ 
+@@ -2208,7 +2199,6 @@ static int tcp_zerocopy_receive(struct sock *sk,
+ 	u32 seq = tp->copied_seq;
+ 	u32 total_bytes_to_map;
+ 	int inq = tcp_inq(sk);
+-	bool mmap_locked;
+ 	int ret;
+ 
+ 	zc->copybuf_len = 0;
+@@ -2233,7 +2223,7 @@ static int tcp_zerocopy_receive(struct sock *sk,
+ 		return 0;
+ 	}
+ 
+-	vma = find_tcp_vma(current->mm, address, &mmap_locked);
++	vma = find_tcp_vma(current->mm, address);
+ 	if (!vma)
+ 		return -EINVAL;
+ 
+@@ -2315,10 +2305,7 @@ static int tcp_zerocopy_receive(struct sock *sk,
+ 						   zc, total_bytes_to_map);
+ 	}
+ out:
+-	if (mmap_locked)
+-		mmap_read_unlock(current->mm);
+-	else
+-		vma_end_read(vma);
++	vma_end_read(vma);
+ 	/* Try to copy straggler data. */
+ 	if (!ret)
+ 		copylen = tcp_zc_handle_leftover(zc, sk, skb, &seq, copybuf_len, tss);
+-- 
+2.47.3
+

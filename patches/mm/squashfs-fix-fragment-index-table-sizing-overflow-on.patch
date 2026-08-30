@@ -1,0 +1,76 @@
+From: Karl Mehltretter <kmehltretter@gmail.com>
+Date: Sat, 22 Aug 2026 16:33:27 +0200
+Subject: [PATCH] squashfs: fix fragment index table sizing overflow on 32-bit
+
+Patch series "squashfs: harden fragment index table sizing".
+
+Two integer overflows undermine fragment index table handling.  One is in
+the original fragment sizing macros.  The other is in a bounds check added
+by commit 1cac63cc9b2f ("Squashfs: add sanity checks to fragment reading
+at mount time").
+
+Patch 1: the fragment byte count wraps on 32-bit, so the index table is
+allocated too small and squashfs_frag_lookup() reads out of bounds.  A
+crafted image triggers a KASAN out-of-bounds read on a 32-bit build.  With
+the fix the same image fails cleanly at mount.
+
+Patch 2: the check that the table fits before the next one adds two u64
+values controlled by the filesystem image and can wrap.
+
+
+This patch (of 2):
+
+SQUASHFS_FRAGMENT_BYTES() multiplies the on-disk fragment count (an
+unsigned int) by sizeof(struct squashfs_fragment_entry), a size_t.  On a
+32-bit kernel that product is 32-bit and can wrap.
+
+squashfs_read_fragment_index_table() sizes the fragment index table from
+it, but squashfs_frag_lookup() bounds the fragment number against
+msblk->fragments, the unwrapped superblock value.  The two disagree: an
+image declaring 0x10000001 fragments wraps the product to 16, so a single
+index entry is allocated, yet the lookup still accepts fragment
+0x0fffffff:
+
+	if (fragment >= msblk->fragments)
+		return -EIO;
+	block = SQUASHFS_FRAGMENT_INDEX(fragment);
+	...
+	start_block = le64_to_cpu(msblk->fragment_index[block]);
+
+block is then 524287 and the read lands ~4MB past an 8-byte allocation.
+On a 32-bit build KASAN catches it when the crafted image is mounted and
+the file is stat'd.
+
+Cast to u64 in the macro so the multiplication is 64-bit on all targets.
+After conversion to index-table entries, SQUASHFS_FRAGMENT_INDEX_BYTES()
+is at most 64 MiB for any u32 count, so it fits both the unsigned int
+local and the int argument it feeds.  64-bit builds are unchanged.
+
+Link: https://lore.kernel.org/20260822143328.68867-1-kmehltretter@gmail.com
+Link: https://lore.kernel.org/20260822143328.68867-2-kmehltretter@gmail.com
+Fixes: ffae2cd73a9e ("Squashfs: header files")
+Signed-off-by: Karl Mehltretter <kmehltretter@gmail.com>
+Assisted-by: Claude:claude-opus-5
+Cc: Phillip Lougher <phillip@squashfs.org.uk>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/squashfs/squashfs_fs.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index a955d9369749f..93436c7d80c97 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -136,7 +136,7 @@ static inline int squashfs_block_size(__le32 raw)
+ 
+ /* fragment and fragment table defines */
+ #define SQUASHFS_FRAGMENT_BYTES(A)	\
+-				((A) * sizeof(struct squashfs_fragment_entry))
++			((u64)(A) * sizeof(struct squashfs_fragment_entry))
+ 
+ #define SQUASHFS_FRAGMENT_INDEX(A)	(SQUASHFS_FRAGMENT_BYTES(A) / \
+ 					SQUASHFS_METADATA_SIZE)
+-- 
+2.47.3
+

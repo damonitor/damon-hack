@@ -1,0 +1,101 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Mon, 17 Aug 2026 17:03:27 +0800
+Subject: [PATCH] mm: shmem: move unused huge shrinklist queuing past the
+ truncation check
+
+The shmem_get_folio_gfp() adds the inode to the unused huge shrinker list
+at the alloced label, but a subsequent truncation check may still fail and
+remove the folio, leaving the inode on the list with a stale folio.
+
+The original code works because the shrinker re-looks-up the folio and
+drops stale entries, but it is cleaner to queue the inode only after all
+checks that might remove the folio have passed.
+
+So just make the pure structural move with no functional change, and it
+serves as preparation for the memcg-aware shrinker conversion.
+
+Link: https://lore.kernel.org/17fcf64faec0dfbbe6cf8a97924e3f39cd3c51a4.1786955972.git.zhengqi.arch@bytedance.com
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 48 +++++++++++++++++++++++++++---------------------
+ 1 file changed, 27 insertions(+), 21 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index de144a9a9558b..d49cbffbe7e16 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -2536,27 +2536,6 @@ static int shmem_get_folio_gfp(struct inode *inode, pgoff_t index,
+ 
+ alloced:
+ 	alloced = true;
+-	if (folio_test_large(folio) &&
+-	    DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE) <
+-					folio_next_index(folio)) {
+-		struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
+-		struct shmem_inode_info *info = SHMEM_I(inode);
+-		/*
+-		 * Part of the large folio is beyond i_size: subject
+-		 * to shrink under memory pressure.
+-		 */
+-		spin_lock(&sbinfo->shrinklist_lock);
+-		/*
+-		 * _careful to defend against unlocked access to
+-		 * ->shrink_list in shmem_unused_huge_shrink()
+-		 */
+-		if (list_empty_careful(&info->shrinklist)) {
+-			list_add_tail(&info->shrinklist,
+-				      &sbinfo->shrinklist);
+-			sbinfo->shrinklist_len++;
+-		}
+-		spin_unlock(&sbinfo->shrinklist_lock);
+-	}
+ 
+ 	if (sgp == SGP_WRITE)
+ 		folio_set_referenced(folio);
+@@ -2586,6 +2565,33 @@ static int shmem_get_folio_gfp(struct inode *inode, pgoff_t index,
+ 		error = -EINVAL;
+ 		goto unlock;
+ 	}
++
++	/*
++	 * Queue the inode on the shrink list only after all checks that might
++	 * remove the folio have passed. Otherwise the inode could be left on
++	 * the shrinker list with a stale folio.
++	 */
++	if (alloced && folio_test_large(folio) &&
++	    DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE) < folio_next_index(folio)) {
++		struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
++		struct shmem_inode_info *info = SHMEM_I(inode);
++		/*
++		 * Part of the large folio is beyond i_size: subject
++		 * to shrink under memory pressure.
++		 */
++		spin_lock(&sbinfo->shrinklist_lock);
++		/*
++		 * _careful to defend against unlocked access to
++		 * ->shrink_list in shmem_unused_huge_shrink()
++		 */
++		if (list_empty_careful(&info->shrinklist)) {
++			list_add_tail(&info->shrinklist,
++				      &sbinfo->shrinklist);
++			sbinfo->shrinklist_len++;
++		}
++		spin_unlock(&sbinfo->shrinklist_lock);
++	}
++
+ out:
+ 	*foliop = folio;
+ 	return 0;
+-- 
+2.47.3
+

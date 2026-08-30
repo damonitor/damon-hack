@@ -1,0 +1,129 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Sat, 29 Aug 2026 15:42:03 +0800
+Subject: [PATCH] mm/mglru: make type fallback logic explicit in
+ isolate_folios()
+
+Patch series "mm/mglru: clean up isolate_folios for readability and
+clarity", v2.
+
+Right now, isolate_folios() is quite difficult to follow:
+
+1. It uses for_each_evictable_type(i, swappiness) to iterate over
+   the types, but 'i' is not actually used as the type within the
+   loop body.
+
+2. It retries the same type when folios were scanned but none could
+   be isolated, but the retry is implemented in a rather subtle way
+   that is difficult to understand.
+
+This patchset makes both behaviors explicit and much easier to follow.
+
+There are no functional changes for swappiness values from 1 to 200.
+There is a slight functional change for 0 and 201: with the existing code,
+there is no chance to retry for these values because
+for_each_evictable_type() only iterates once.  After this patch, 0 and 201
+have behavior that is more consistent with the 1-200 range.
+
+
+This patch (of 2):
+
+The for_each_evictable_type() loop in isolate_folios() is misleading: it
+does not actually iterate over each evictable type.  Instead,
+get_type_to_scan() selects the type to scan, while the iterator `i` merely
+bounds the number of attempts.
+
+Make the fallback behavior explicit in the code and remove the opaque
+for_each_evictable_type(i, swappiness).
+
+Link: https://lore.kernel.org/20260829074204.45304-1-baohua@kernel.org
+Link: https://lore.kernel.org/20260829074204.45304-2-baohua@kernel.org
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Co-developed-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Stevens <stevensd@chromium.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 46 ++++++++++++++++++++++++++--------------------
+ 1 file changed, 26 insertions(+), 20 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 45a9079a04e8c..ddb9f458af291 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4829,35 +4829,41 @@ static int get_type_to_scan(struct lruvec *lruvec, int swappiness)
+ 	return positive_ctrl_err(&sp, &pv);
+ }
+ 
++static inline bool is_single_type_reclaim(int swappiness)
++{
++	return swappiness == MIN_SWAPPINESS ||
++	       swappiness == SWAPPINESS_ANON_ONLY;
++}
++
+ static int isolate_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 			  struct scan_control *sc, int swappiness,
+ 			  struct list_head *list, int *isolated,
+ 			  int *isolate_type, int *isolate_scanned)
+ {
+-	int i;
+-	int total_scanned = 0;
++	bool type_fallback_allowed = !is_single_type_reclaim(swappiness);
+ 	int type = get_type_to_scan(lruvec, swappiness);
++	int total_scanned = 0, scanned, tier;
+ 
+-	for_each_evictable_type(i, swappiness) {
+-		int scanned;
+-		int tier = get_tier_idx(lruvec, type);
++retry:
++	tier = get_tier_idx(lruvec, type);
++	scanned = scan_folios(nr_to_scan, lruvec, sc,
++			      type, tier, list, isolated);
+ 
+-		scanned = scan_folios(nr_to_scan, lruvec, sc,
+-				      type, tier, list, isolated);
++	total_scanned += scanned;
++	if (*isolated) {
++		*isolate_type = type;
++		*isolate_scanned = scanned;
++		return total_scanned;
++	}
+ 
+-		total_scanned += scanned;
+-		if (*isolated) {
+-			*isolate_type = type;
+-			*isolate_scanned = scanned;
+-			break;
+-		}
+-		/*
+-		 * If scanned > 0 and isolated == 0, avoid falling back to the
+-		 * other type, as this type remains sufficient. Falling back
+-		 * too readily can disrupt the positive_ctrl_err() bias.
+-		 */
+-		if (!scanned)
+-			type = !type;
++	/*
++	 * We are running out of the current reclaim type. Fall back to
++	 * the other type if allowed.
++	 */
++	if (!scanned && type_fallback_allowed) {
++		type = !type;
++		type_fallback_allowed = false;
++		goto retry;
+ 	}
+ 
+ 	return total_scanned;
+-- 
+2.47.3
+

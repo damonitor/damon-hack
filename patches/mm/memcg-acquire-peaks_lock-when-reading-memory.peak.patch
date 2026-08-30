@@ -1,0 +1,99 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Sun, 30 Aug 2026 08:20:43 +0800
+Subject: [PATCH] memcg: acquire peaks_lock when reading memory.peak
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm, memcg: fix memory.peak reset clobbering other fds'
+watermark", v4.
+
+The memory.peak / memory.swap.peak per-fd watermark tracking has two
+issues.  Each open fd is a watcher and reads back max(its own value, the
+shared local_watermark); both bugs live in that scheme.
+
+Worst case for both is the same and is userspace-visible: a reader of
+memory.peak (or memory.swap.peak) gets a value lower than the true peak,
+so a tool that sizes or bills a cgroup by its peak usage under-reports it.
+
+Patch 1 (read side) fixes the race Sashiko pointed out in the v1 review
+[1]: peak_show() inspects local_watermark and the per-fd values without
+holding peaks_lock, so a reader that races an unrelated peak_write() reset
+briefly observes the lowered value.  Transient.  It takes peaks_lock in
+the show path.
+
+Patch 2 (write side) fixes peak_write(): on a reset it stores the current
+usage into the other watchers instead of the old watermark, so once usage
+has dropped from a peak a reset on one fd drags every other fd's peak down
+too, even fds that never reset.
+
+
+This patch (of 2):
+
+Sashiko reported that a reader can transiently observe a lower peak within
+a race window [1].  peak_show() returns max(local_watermark, ofp->value),
+but peak_write() updates those two under peaks_lock while the reader takes
+no lock.  The interleaving is:
+
+  writer (reset on fd A)                 reader (fd B)
+  ----------------------                 -------------
+  usage = page_counter_read(pc)
+  WRITE_ONCE(local_watermark, usage)
+  // watermark lowered to usage
+                                         lw  = READ_ONCE(local_watermark)
+                                         // sees the lowered usage
+                                         val = READ_ONCE(ofp->value)
+                                         // B's value not updated yet
+                                         return max(lw, val)
+                                         // both low -> low peak
+  WRITE_ONCE(peer_ctx->value, usage)
+  // B updated, but too late
+
+Fix it by acquiring peaks_lock when reading the peak, so the reader sees a
+consistent snapshot of local_watermark and the per-fd values.  The same
+race applies to memory.swap.peak, which shares peaks_lock and the
+peak_write() path, so take the lock there as well.
+
+Link: https://lore.kernel.org/20260830002044.1938621-1-ridong.chen@linux.dev
+Link: https://lore.kernel.org/20260830002044.1938621-2-ridong.chen@linux.dev
+Link: https://sashiko.dev/#/patchset/20260730115314.1069089-1-ridong.chen@linux.dev?part=1 [1]
+Fixes: c6f53ed8f213 ("mm, memcg: cg2 memory{.swap,}.peak write handlers")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Assisted-by: Claude:claude-opus-4-8
+Acked-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Cc: David Finkel <davidf@vimeo.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Tao Cui <cuitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memcontrol.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index cd5c4585f7527..bb7c14adadc8c 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4729,6 +4729,7 @@ static int memory_peak_show(struct seq_file *sf, void *v)
+ {
+ 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(sf));
+ 
++	guard(spinlock)(&memcg->peaks_lock);
+ 	return peak_show(sf, v, &memcg->memory);
+ }
+ 
+@@ -5872,6 +5873,7 @@ static int swap_peak_show(struct seq_file *sf, void *v)
+ {
+ 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(sf));
+ 
++	guard(spinlock)(&memcg->peaks_lock);
+ 	return peak_show(sf, v, &memcg->swap);
+ }
+ 
+-- 
+2.47.3
+

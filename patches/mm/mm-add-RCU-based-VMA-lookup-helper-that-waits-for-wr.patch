@@ -1,0 +1,169 @@
+From: Dave Hansen <dave.hansen@linux.intel.com>
+Date: Thu, 13 Aug 2026 12:34:31 -0700
+Subject: [PATCH] mm: add RCU-based VMA lookup helper that waits for writers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There are basically two parallel ways to look up a VMA: the traditional
+way, which is protected by mmap_read_lock, and the RCU-based per-VMA lock
+way which is based on RCU and refcounts.  However, per-VMA locks will fail
+if the lock is help by a writer and therefore never waits.  In a number of
+places we need to wait for the lock and it's done by falling back to
+mmap_read_lock, locking the VMA and releasing the mmap_lock once VMA is
+locked.
+
+Add vma_start_read_unlocked() - a variant of the RCU-based lookup that
+waits for writers.  This is basically the same as the existing RCU-based
+lookup, but on a failure to lock it temporarily takes mmap_lock for read
+and waits for writers to finish before locking the VMA, dropping the
+mmap_read_lock and returning the locked VMA.  This has some advantages:
+
+ 1. Callers do not need to have a fallback path for when they
+    collide with writers.
+ 2. Its fast path does not require taking mmap_lock for read.
+
+Basically, when applied correctly, this approach results in faster *and*
+simpler code.
+
+While at it, fix the comments for vma_start_read_locked(),
+vma_start_read_locked_nested(), and uffd_lock_vma().
+
+Link: https://lore.kernel.org/20260813193433.3318288-4-surenb@google.com
+Signed-off-by: Dave Hansen <dave.hansen@linux.intel.com>
+Signed-off-by: Suren Baghdasaryan <surenb@google.com>
+Suggested-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Todd Kjos <tkjos@android.com>
+Cc: Christian Brauner <christian@brauner.io>
+Cc: Carlos Llamas <cmllamas@google.com>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: David Ahern <dsahern@kernel.org>
+Cc: Arve Hjønnevåg <arve@android.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmap_lock.h | 19 +++++++++++++++----
+ mm/mmap_lock.c            | 35 +++++++++++++++++++++++++++++++++++
+ mm/userfaultfd.c          |  6 ++++--
+ 3 files changed, 54 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index 27c00bac29f9e..00eae65b74bd6 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -228,10 +228,14 @@ static inline void vma_refcount_put(struct vm_area_struct *vma)
+ }
+ 
+ /*
+- * Use only while holding mmap read lock which guarantees that locking will not
+- * fail (nobody can concurrently write-lock the vma). vma_start_read() should
++ * Use only while holding mmap read lock which guarantees that vma lock is not
++ * contended (nobody can concurrently write-lock the vma). vma_start_read() should
+  * not be used in such cases because it might fail due to mm_lock_seq overflow.
+  * This functionality is used to obtain vma read lock and drop the mmap read lock.
++ *
++ * VMA can't be detached while we are holding mmap lock, therefore in practice this
++ * function can fail only when there are so many readers that vm_refcnt overflows.
++ * The failure case is very unlikely and is already annotated as such internally.
+  */
+ static inline bool vma_start_read_locked_nested(struct vm_area_struct *vma, int subclass)
+ {
+@@ -247,16 +251,23 @@ static inline bool vma_start_read_locked_nested(struct vm_area_struct *vma, int
+ }
+ 
+ /*
+- * Use only while holding mmap read lock which guarantees that locking will not
+- * fail (nobody can concurrently write-lock the vma). vma_start_read() should
++ * Use only while holding mmap read lock which guarantees that vma lock is not
++ * contended (nobody can concurrently write-lock the vma). vma_start_read() should
+  * not be used in such cases because it might fail due to mm_lock_seq overflow.
+  * This functionality is used to obtain vma read lock and drop the mmap read lock.
++ *
++ * VMA can't be detached while we are holding mmap lock, therefore in practice this
++ * function can fail only when there are so many readers that vm_refcnt overflows.
++ * The failure case is very unlikely and is already annotated as such internally.
+  */
+ static inline bool vma_start_read_locked(struct vm_area_struct *vma)
+ {
+ 	return vma_start_read_locked_nested(vma, 0);
+ }
+ 
++struct vm_area_struct *vma_start_read_unlocked(struct mm_struct *mm,
++					       unsigned long address);
++
+ static inline void vma_end_read(struct vm_area_struct *vma)
+ {
+ 	vma_refcount_put(vma);
+diff --git a/mm/mmap_lock.c b/mm/mmap_lock.c
+index 272f9ac762b91..2f94ee0fdee2a 100644
+--- a/mm/mmap_lock.c
++++ b/mm/mmap_lock.c
+@@ -340,6 +340,41 @@ struct vm_area_struct *lock_vma_under_rcu(struct mm_struct *mm,
+ 	return NULL;
+ }
+ 
++/**
++ * vma_start_read_unlocked() - Find the VMA covering 'address' and read-lock it.
++ * @mm: the mm_struct of the address space to search
++ * @address: address that the vma should contain
++ *
++ * The fast path does not take mmap_lock. Waits for writers to finish if the
++ * VMA is being modified by taking mmap_lock.
++ * Use when mmap_lock is not held, otherwise use vma_start_read_locked().
++ * Nothing prevents VMAs being unmapped/mapped before or after the VMA is
++ * looked up, if a stronger guarantee is required, take an mmap_lock.
++ *
++ * Return: If a VMA exists which spans @address, return that VMA, read-locked.
++ * If no VMA is mapped there or, very unlikely, a reference count overflow
++ * occurred, return NULL.
++ */
++struct vm_area_struct *vma_start_read_unlocked(struct mm_struct *mm,
++					       unsigned long address)
++{
++	struct vm_area_struct *vma;
++
++	/* Fast path: return stable VMA covering 'address': */
++	vma = lock_vma_under_rcu(mm, address);
++	if (vma)
++		return vma;
++
++	/* Slow path: preclude VMA writers by temporarily getting mmap read lock. */
++	mmap_read_lock(mm);
++	vma = vma_lookup(mm, address);
++	if (vma && !vma_start_read_locked(vma))
++		vma = NULL;
++	mmap_read_unlock(mm);
++
++	return vma;
++}
++
+ static struct vm_area_struct *lock_next_vma_under_mmap_lock(struct mm_struct *mm,
+ 							    struct vma_iterator *vmi,
+ 							    unsigned long from_addr)
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 4ccf472b41630..79cc7b546f130 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -129,8 +129,10 @@ struct vm_area_struct *find_vma_and_prepare_anon(struct mm_struct *mm,
+  *
+  * Should be called without holding mmap_lock.
+  *
+- * Return: A locked vma containing @address, -ENOENT if no vma is found, or
+- * -ENOMEM if anon_vma couldn't be allocated.
++ * Return: A locked vma containing @address, -ENOENT if no vma is found,
++ * -ENOMEM if anon_vma couldn't be allocated, or -EAGAIN if vma refcount
++ * overflow happened due to high number of readers and the caller should
++ * retry later.
+  */
+ static struct vm_area_struct *uffd_lock_vma(struct mm_struct *mm,
+ 				       unsigned long address)
+-- 
+2.47.3
+

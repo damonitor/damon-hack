@@ -1,0 +1,252 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Tue, 18 Aug 2026 03:06:23 -0700
+Subject: [PATCH] mm, swap: distinguish a malformed swap entry from a dying
+ device
+
+Patch series "mm, swap: don't spin on a bad swap entry", v3.
+
+I've seen some machines at Meta fleet that show the following type of
+problem:
+
+1) It gets some weird warning:
+
+  BUG: Bad page map in process khugepaged  pte:f000eef300000017 pmd:00000067
+  addr:00007f57c0a01000 vm_flags:20200073 anon_vma:ffff88829af7c340 mapping:0000000000000000 index:7f57c0a01
+
+The corruption is most likely the collapse/PT_RECLAIM race fixed by commit
+366a4532d96f ("mm: fix the race between collapse and PT_RECLAIM under
+per-vma lock").  But this series is not about this one.
+
+2) Then the fault never makes progress. do_swap_page() returns 0 when
+   get_swap_device() fails, so the fault is retried, reads the same
+   entry and faults again. Nothing in the round trip changes the PTE,
+   and the same line comes out on every pass:
+
+  get_swap_device: Bad swap offset entry 3ffffffc043c5
+
+Patch 1 makes get_swap_device() return ERR_PTR(-EIO) for a malformed
+entry, keeping NULL for a device swapoff is taking away, and converts the
+callers.  No functional change expected.
+
+Patch 2 uses that to return VM_FAULT_SIGBUS instead of retrying.
+
+
+This patch (of 2):
+
+get_swap_device() returns NULL for two different things: an entry whose
+type names no swap device or whose offset is past the end of one, and a
+device that swapoff is taking away.  The first never becomes valid, the
+second does, and callers cannot tell them apart.
+
+Return ERR_PTR(-EIO) for the two malformed cases and keep NULL for
+swapoff.  copy_nonpresent_pte() already reports -EIO for an entry whose
+type names no device.
+
+Callers bail out on failure either way, so switch them to
+IS_ERR_OR_NULL(), and let the two paths that drop the reference skip an
+error pointer.  No functional change.
+
+Link: https://lore.kernel.org/20260818-swap-v3-0-d3fa52598a59@debian.org
+Link: https://lore.kernel.org/20260818-swap-v3-1-d3fa52598a59@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/memory.c      |  6 +++---
+ mm/mincore.c     |  2 +-
+ mm/shmem.c       |  2 +-
+ mm/swap_state.c  |  4 ++--
+ mm/swapfile.c    | 15 ++++++++++-----
+ mm/userfaultfd.c |  4 ++--
+ mm/zswap.c       |  2 +-
+ 7 files changed, 20 insertions(+), 15 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index 27ffe1a99a08b..e59d6c2a34320 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -4956,9 +4956,9 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 		goto out;
+ 	}
+ 
+-	/* Prevent swapoff from happening to us. */
++	/* Prevent swapoff from happening to us, and reject a bad entry. */
+ 	si = get_swap_device(entry);
+-	if (unlikely(!si))
++	if (IS_ERR_OR_NULL(si))
+ 		goto out;
+ 
+ 	folio = swap_cache_get_folio(entry);
+@@ -5268,7 +5268,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 	if (vmf->pte)
+ 		pte_unmap_unlock(vmf->pte, vmf->ptl);
+ out:
+-	if (si)
++	if (!IS_ERR_OR_NULL(si))
+ 		put_swap_device(si);
+ 	return ret;
+ out_nomap:
+diff --git a/mm/mincore.c b/mm/mincore.c
+index ff4ac82817683..c086836bc4bcc 100644
+--- a/mm/mincore.c
++++ b/mm/mincore.c
+@@ -71,7 +71,7 @@ static unsigned char mincore_swap(swp_entry_t entry, bool shmem)
+ 	 */
+ 	if (shmem) {
+ 		si = get_swap_device(entry);
+-		if (!si)
++		if (IS_ERR_OR_NULL(si))
+ 			return 0;
+ 	}
+ 	folio = swap_cache_get_folio(entry);
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 9c76032c396ee..eeb9a78c125a5 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -2478,7 +2478,7 @@ static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
+ 
+ 	si = get_swap_device(index_entry);
+ 	order = shmem_confirm_swap(mapping, index, index_entry);
+-	if (unlikely(!si)) {
++	if (IS_ERR_OR_NULL(si)) {
+ 		if (order < 0)
+ 			return -EEXIST;
+ 		else
+diff --git a/mm/swap_state.c b/mm/swap_state.c
+index f3961fdd857dc..305877e1f4d7b 100644
+--- a/mm/swap_state.c
++++ b/mm/swap_state.c
+@@ -716,7 +716,7 @@ struct folio *read_swap_cache_async(struct swap_io_ctx *ctx, swp_entry_t entry,
+ 	struct folio *folio;
+ 
+ 	si = get_swap_device(entry);
+-	if (!si)
++	if (IS_ERR_OR_NULL(si))
+ 		return NULL;
+ 
+ 	mpol = get_vma_policy(vma, addr, 0, &ilx);
+@@ -952,7 +952,7 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
+ 		 */
+ 		if (swp_type(entry) != swp_type(targ_entry)) {
+ 			si = get_swap_device(entry);
+-			if (!si)
++			if (IS_ERR_OR_NULL(si))
+ 				continue;
+ 		}
+ 		folio = swap_cache_read_folio(&ctx, entry, gfp_mask, mpol, ilx,
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 3b2279a16d1cf..408f6c72fb5a6 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1504,7 +1504,7 @@ int swap_retry_table_alloc(swp_entry_t entry, gfp_t gfp)
+ 	unsigned long offset = swp_offset(entry);
+ 
+ 	si = get_swap_device(entry);
+-	if (!si)
++	if (IS_ERR_OR_NULL(si))
+ 		return 0;
+ 
+ 	ci = __swap_offset_to_cluster(si, offset);
+@@ -1859,7 +1859,10 @@ void folio_put_swap(struct folio *folio, struct page *page)
+  * Check whether swap entry is valid in the swap device.  If so,
+  * return pointer to swap_info_struct, and keep the swap entry valid
+  * via preventing the swap device from being swapoff, until
+- * put_swap_device() is called.  Otherwise return NULL.
++ * put_swap_device() is called.  Return NULL for an empty entry or a
++ * device that is going away, and ERR_PTR(-EIO) if the entry's type
++ * names no swap device or its offset is past the end of one. These EIOs
++ * are preceded by pr_err().
+  *
+  * Notice that swapoff or swapoff+swapon can still happen before the
+  * percpu_ref_tryget_live() in get_swap_device() or after the
+@@ -1900,12 +1903,14 @@ struct swap_info_struct *get_swap_device(swp_entry_t entry)
+ 	return si;
+ bad_nofile:
+ 	pr_err_ratelimited("%s: %s%08lx\n", __func__, Bad_file, entry.val);
++	return ERR_PTR(-EIO);
++
+ out:
+ 	return NULL;
+ put_out:
+ 	pr_err_ratelimited("%s: %s%08lx\n", __func__, Bad_offset, entry.val);
+ 	percpu_ref_put(&si->users);
+-	return NULL;
++	return ERR_PTR(-EIO);
+ }
+ 
+ /*
+@@ -2001,7 +2006,7 @@ int swp_swapcount(swp_entry_t entry)
+ 	int count;
+ 
+ 	si = get_swap_device(entry);
+-	if (!si)
++	if (IS_ERR_OR_NULL(si))
+ 		return 0;
+ 
+ 	ci = swap_cluster_lock(si, swp_offset(entry));
+@@ -2127,7 +2132,7 @@ void swap_put_entries_direct(swp_entry_t entry, int nr)
+ 	struct swap_info_struct *si;
+ 
+ 	si = get_swap_device(entry);
+-	if (WARN_ON_ONCE(!si))
++	if (WARN_ON_ONCE(IS_ERR_OR_NULL(si)))
+ 		return;
+ 	if (WARN_ON_ONCE(end_offset > si->max))
+ 		goto out;
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 74f04c323c50f..95c1ed96df9a7 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1700,7 +1700,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
+ 		}
+ 
+ 		si = get_swap_device(entry);
+-		if (unlikely(!si)) {
++		if (IS_ERR_OR_NULL(si)) {
+ 			ret = -EAGAIN;
+ 			goto out;
+ 		}
+@@ -1757,7 +1757,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
+ 	if (dst_pte)
+ 		pte_unmap(dst_pte);
+ 	mmu_notifier_invalidate_range_end(&range);
+-	if (si)
++	if (!IS_ERR_OR_NULL(si))
+ 		put_swap_device(si);
+ 
+ 	return ret;
+diff --git a/mm/zswap.c b/mm/zswap.c
+index fc869d60ef1b4..f3ae3c81e48ea 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -984,7 +984,7 @@ static int zswap_writeback_entry(struct zswap_entry *entry,
+ 
+ 	/* try to allocate swap cache folio */
+ 	si = get_swap_device(swpentry);
+-	if (!si)
++	if (IS_ERR_OR_NULL(si))
+ 		return -EEXIST;
+ 
+ 	mpol = get_task_policy(current);
+-- 
+2.47.3
+

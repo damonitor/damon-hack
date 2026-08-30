@@ -1,0 +1,88 @@
+From: Ye Liu <liuye@kylinos.cn>
+Date: Wed, 19 Aug 2026 10:16:09 +0800
+Subject: [PATCH] tools/mm/page_owner_sort: fix --sort option being silently
+ ignored
+
+Patch series "tools/mm/page_owner_sort: fix --sort, add module filter,
+improve usage", v3.
+
+This series improves the page_owner_sort tool with a bug fix, a new
+module-name feature, and better usage text.
+
+Patch 1 fixes a long-standing bug where --sort was silently ignored when
+used without a short option (-a, -m, -p, etc.).  The COMP_NO_FLAG case
+fell through to COMP_NUM and overwrote the sort conditions configured by
+parse_sort_args().
+
+Patch 2 adds kernel module name support for sort, cull, and filter
+operations.  Page owner stack traces already contain module names in the
+"function+0xNN/0xNN [module]" format produced by %pS, but page_owner_sort
+had no way to use them.  Records without module frames are assigned
+"vmlinux".
+
+  # Aggregate page usage per module
+  ./page_owner_sort input.txt output.txt --cull=mod
+
+  # Filter to records from xfs module only
+  ./page_owner_sort input.txt output.txt --module xfs
+
+  # Sort by module name, then by pid descending
+  ./page_owner_sort input.txt output.txt --sort=mod,-pid
+
+Patch 3 lists all available sort keys with abbreviations and examples
+directly in the --sort help section so users no longer need to read the
+source to discover valid keys.
+
+
+This patch (of 3):
+
+When --sort is used without any short option (-a, -m, -p, etc.),
+compare_flag remains COMP_NO_FLAG.  The switch (compare_flag) then falls
+through to the COMP_NUM case and calls set_single_cmp(), which
+unconditionally overwrites the sort conditions that parse_sort_args()
+already configured.  This makes --sort silently ineffective unless a short
+option is also supplied.
+
+Split COMP_NO_FLAG out of the COMP_NUM fallthrough so that --sort is
+respected when no short option is present.
+
+Reproduction:
+  # Before fix: ascending order (ignored --sort=-pid)
+  ./page_owner_sort --sort=-pid input.txt output.txt
+  # After fix: descending order as expected
+
+Link: https://lore.kernel.org/20260819021611.2910835-1-ye.liu@linux.dev
+Link: https://lore.kernel.org/20260819021611.2910835-2-ye.liu@linux.dev
+Signed-off-by: Ye Liu <liuye@kylinos.cn>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Liu Jing <liujing@cmss.chinamobile.com>
+Cc: Yichong Chen <chenyichong@uniontech.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/mm/page_owner_sort.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/tools/mm/page_owner_sort.c b/tools/mm/page_owner_sort.c
+index 22b3b500d33a4..f1dc0763c25ce 100644
+--- a/tools/mm/page_owner_sort.c
++++ b/tools/mm/page_owner_sort.c
+@@ -821,6 +821,9 @@ int main(int argc, char **argv)
+ 		set_single_cmp(compare_stacktrace, SORT_ASC);
+ 		break;
+ 	case COMP_NO_FLAG:
++		if (sc.size > 0)
++			break;
++		/* fallthrough */
+ 	case COMP_NUM:
+ 		set_single_cmp(compare_num, SORT_DESC);
+ 		break;
+-- 
+2.47.3
+

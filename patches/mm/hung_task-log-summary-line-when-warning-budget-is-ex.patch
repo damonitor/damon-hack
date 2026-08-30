@@ -1,0 +1,54 @@
+From: Aaron Tomlin <atomlin@atomlin.com>
+Date: Sat, 29 Aug 2026 10:53:21 -0400
+Subject: [PATCH] hung_task: log summary line when warning budget is exhausted
+
+Once the warning budget is exhausted, hung_task_info() normally stops
+printing per-task details.  When panic is triggered, full details are
+still printed so diagnostics remain available before panic.
+
+To retain visibility without restoring per-task output after budget
+exhaustion, emit a single aggregate summary line at the end of each
+watchdog scan that detects hung tasks with an exhausted budget.  This
+keeps non-panic per-task reports budgeted during system-wide hangs.
+
+Link: https://lore.kernel.org/20260829145321.18423-3-atomlin@atomlin.com
+Signed-off-by: Aaron Tomlin <atomlin@atomlin.com>
+Suggested-by: Petr Mladek <pmladek@suse.com>
+Suggested-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Petr Mladek <pmladek@suse.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Bradley Morgan <brads@mainlining.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/hung_task.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/hung_task.c b/kernel/hung_task.c
+index a5043188456d4..49d47ae475ab1 100644
+--- a/kernel/hung_task.c
++++ b/kernel/hung_task.c
+@@ -277,7 +277,7 @@ static void hung_task_info(struct task_struct *t, unsigned long timeout,
+ 		debug_show_blocker(t, timeout);
+ 
+ 		if (!hung_task_warnings_budget)
+-			pr_info("Future hung task reports are suppressed, see sysctl kernel.hung_task_warnings\n");
++			pr_info("hung_task: further per-task details suppressed until warning budget is reset or panic is triggered (see sysctl kernel.hung_task_warnings)\n");
+ 	}
+ 
+ 	touch_nmi_watchdog();
+@@ -363,6 +363,10 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
+ 		return;
+ 	}
+ 
++	if (!hung_task_warnings_budget && !hung_task_call_panic)
++		pr_info("hung_task: %lu hung tasks detected, warning budget exhausted\n",
++			this_round_count);
++
+ 	if (need_warning || hung_task_call_panic) {
+ 		si_mask |= SYS_INFO_LOCKS;
+ 
+-- 
+2.47.3
+
