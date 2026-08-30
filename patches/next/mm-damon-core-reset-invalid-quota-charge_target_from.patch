@@ -1,0 +1,66 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 30 Aug 2026 11:49:48 -0700
+Subject: [PATCH] mm/damon/core: reset invalid quota->charge_target_from
+
+When DAMOS quota is fullly charged, the target to continue applying the
+action in the next round is saved in damos_quota->charge_target_from.
+In the next round, DAMOS skips targets and regions before the pointer
+and reset the pointer when the skipping is done.
+
+DAMON target could be invalid.  For example, virtual address space
+targets became invalid if the process is terminated.  In the case, DAMOS
+skips processing it before the target/region skipping is done.  As a
+result, if charge_target_from target becomes invalid, the target/region
+skipping cannot find where to stop skipping, skip all the regions.
+
+Handle the corner case and reset the pointer in damos_adjust_quota(),
+which is called for adjustment of the quota for every round.
+
+This issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260830064708.40CA61F000E9@smtp.kernel.org
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index c075050d48fa2..a7ed7724c85af 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3530,6 +3530,22 @@ static void damos_trace_esz(struct damon_ctx *c, struct damos *s,
+ 	trace_damos_esz(cidx, sidx, quota->esz);
+ }
+ 
++static void damos_reset_invalid_charge_target_from(struct damos_quota *quota,
++		struct damon_ctx *c)
++{
++	struct damon_target *t;
++
++	t = quota->charge_target_from;
++	if (!t)
++		return;
++	if (!c->ops.target_valid)
++		return;
++	if (c->ops.target_valid(t))
++		return;
++	quota->charge_target_from = NULL;
++	quota->charge_addr_from = 0;
++}
++
+ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ {
+ 	struct damos_quota *quota = &s->quota;
+@@ -3570,6 +3586,8 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 			damos_trace_esz(c, s, quota);
+ 	}
+ 
++	damos_reset_invalid_charge_target_from(quota, c);
++
+ 	if (!c->ops.get_scheme_score)
+ 		return;
+ 
+-- 
+2.47.3
+
