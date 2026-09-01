@@ -1,0 +1,197 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Mon, 31 Aug 2026 19:16:32 +0800
+Subject: [PATCH] mm: fix stale ZONE_DEVICE refcount comment
+
+Patch series "mm: optimize zone-device memmap initialization", v11.
+
+memmap_init_zone_device() can take a noticeable amount of time when large
+pmem namespaces are bound or rebound, because it initializes nearly
+identical struct page descriptors one PFN at a time.  This series reduces
+that ZONE_DEVICE memmap initialization overhead by reusing prepared struct
+page templates and, on x86, using memcpy_nontemporal() for the template
+copy path.
+
+The main target is large fsdax/devdax pmem configurations, where the cost
+of initializing the memmap shows up directly in nd_pmem/dax_pmem bind and
+rebind latency.  This matters because the cost is paid in the synchronous
+probe/bind path for large DAX/PMEM ZONE_DEVICE mappings.  Userspace
+workflows such as provisioning or reconfiguring nd_pmem/dax_pmem
+namespaces, bringing hot-added PMEM-backed capacity online, and recovering
+or rebinding a device after driver or device changes all wait for this
+initialization to finish.  Reducing this cost will yield benefits as lower
+user-visible provisioning, hot-add, recovery, and rebind latency for large
+DAX/PMEM devices.
+
+Patches 1-2 are preparatory cleanups and helper extraction.  Patches 3-4
+add the template-copy path for head pages and compound tails.  Patch 5
+introduces memcpy_nontemporal().  Patch 6 switches the ZONE_DEVICE
+template-copy path over to memcpy_nontemporal().  Patch 7 extends the x86
+fixed-size memcpy_flushcache() inline cases used by the x86
+memcpy_nontemporal() backend for struct page sized copies.
+
+Architectures without a specialized memcpy_nontemporal() backend fall back
+to memcpy(), so the generic template-copy optimization remains available
+without arch-specific support.  On x86, memcpy_nontemporal() maps to the
+existing memcpy_flushcache() backend and can use the fixed-size MOVNTI
+paths added by this series for struct page sized copies.
+
+memcpy_nontemporal() is only a copy primitive.  It does not imply a drain
+or a publication barrier.  Callers that use it before a producer-consumer
+or device-visible handoff must provide the required ordering.  The
+ZONE_DEVICE template-copy path uses it only while initializing struct page
+metadata, so the copy primitive itself does not grow a separate drain
+contract.
+
+The numbers below measure the time spent in memmap_init_zone_device()
+during driver bind/rebind.  They are not measurements of the full nd_pmem
+or dax_pmem bind/rebind operation.
+
+Tested in an x86_64 QEMU/KVM VM with a 100 GB fsdax namespace device
+configured with map=dev and a 100 GB devdax namespace (align=2097152) on
+Intel Ice Lake server.
+
+Test procedure:
+Rebind the nd_pmem and dax_pmem drivers 30 times and collect the memmap
+initialization time from the pr_debug() output of
+memmap_init_zone_device().
+
+Base(v7.3-rc1):
+  Average of nd_pmem rebinds: 221.07 ms
+  Average of dax_pmem rebinds: 191.20 ms
+
+With this series applied:
+  Average of nd_pmem rebinds:  71.93 ms
+  Average of dax_pmem rebinds:  87.37 ms
+
+This reduces the average memmap initialization time measured during rebind
+by about 67.5% for nd_pmem and 54.3% for dax_pmem.
+
+As an additional x86_64 data point, I also ran measurements on the same
+physical host with a 100 GB PMEM region created via the memmap= kernel
+command line, configured as fsdax and devdax namespaces with map=dev and 2
+MiB alignment.
+
+For brevity, the individual patches keep only the VM results rather than
+including a second set of physical-host measurements throughout the
+series.  The physical-host numbers below are included only as supplemental
+evidence that the same optimization also provides a similar benefit on a
+non-virtualized system.
+
+Test procedure:
+Reconfigure the namespace mode, rebind the nd_pmem or dax_pmem driver
+30 times, and collect the memmap initialization time from the pr_debug()
+output of memmap_init_zone_device().
+
+Base (v7.3-rc1):
+  nd_pmem / fsdax: 205.90 ms
+  dax_pmem / devdax: 225.43 ms
+
+With this series applied:
+  nd_pmem / fsdax: 69.13 ms
+  dax_pmem / devdax: 90.67 ms
+
+This reduces the measured memmap initialization time during rebind by
+about 66.4% for nd_pmem and 59.8% for dax_pmem on that setup, which is
+broadly consistent with the VM results above.
+
+As another supplemental data point, I measured the test_hmm.ko module on
+the same physical x86_64 host, using the test_hmm.ko setup from the
+previous discussion that times ten 64 GB memremap_pages()/memunmap_pages()
+iterations during module insertion[1].  By default, module insertion
+initializes two DEVICE_PRIVATE dmirror devices, so two avg memremap values
+are reported; each value is the average for one 64 GB chunk.
+
+This is not the primary target workload of the series, but it exercises
+the same large ZONE_DEVICE memmap initialization path and shows the same
+direction of improvement.
+
+Base (v7.3-rc1):
+  avg memremap reported during module insertion: 116500596 ns, 116438028 ns
+
+With this series applied:
+  avg memremap reported during module insertion: 46953088 ns, 46428399 ns
+
+This corresponds to about a 59.9% reduction based on the mean of the
+reported values, which is again consistent with the pmem bind/rebind
+results above.
+
+I also include an arm64 data point for the generic template-copy part.  It
+was measured on an arm64 QEMU virt VM with 64 KB pages and a 100 GB ACPI
+NVDIMM sparse backend.  This setup does not use the x86 MOVNTI fast paths,
+so it exercises the architecture-independent part of the optimization.
+
+For devdax, 2 MiB alignment is rejected in this 64 KB page setup, so the
+devdax namespace was tested with the supported default 512 MiB alignment.
+
+Base (v7.3-rc1):
+  Average of rebinds for nd_pmem driver: 27.93 ms
+  Average of rebinds for dax_pmem driver: 27.87 ms
+
+With this series applied:
+  Average of rebinds for nd_pmem driver: 14.53 ms
+  Average of rebinds for dax_pmem driver: 16.27 ms
+
+This reduces the average memmap initialization time measured during rebind
+by about 48.0% for nd_pmem and 41.6% for dax_pmem on that arm64 VM setup.
+Since this arm64 setup does not use the x86 MOVNTI fast paths, the result
+also suggests that the generic template-copy optimization can benefit
+architectures without an architecture-specific memcpy_nontemporal()
+backend.
+
+
+This patch (of 7):
+
+The comment in __init_zone_device_page() still uses the old MEMORY_TYPE_*
+names and implies that FS_DAX pages regain a refcount of 1 in the free
+path.  That no longer matches the code.
+
+Update the comment to describe the current policy correctly:
+MEMORY_DEVICE_GENERIC pages regain a refcount of 1 in the free path, while
+the remaining ZONE_DEVICE types start from 0 here and raise the count
+again when the allocator or driver hands the page out.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260831111638.76012-1-lizhe.67@bytedance.com
+Link: https://lore.kernel.org/20260831111638.76012-2-lizhe.67@bytedance.com
+Link: https://lore.kernel.org/all/aiEoByaQdRR3xtM5@nvdebian.thelocal/ [1]
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Alistair Popple <apopple@nvidia.com>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index e2a16d8336355..ac9cf1a59d620 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1012,13 +1012,9 @@ static void __ref __init_zone_device_page(struct page *page, unsigned long pfn,
+ 	page->zone_device_data = NULL;
+ 
+ 	/*
+-	 * ZONE_DEVICE pages other than MEMORY_TYPE_GENERIC are released
+-	 * directly to the driver page allocator which will set the page count
+-	 * to 1 when allocating the page.
+-	 *
+-	 * MEMORY_TYPE_GENERIC and MEMORY_TYPE_FS_DAX pages automatically have
+-	 * their refcount reset to one whenever they are freed (ie. after
+-	 * their refcount drops to 0).
++	 * MEMORY_DEVICE_GENERIC pages regain a refcount of 1 in the free
++	 * path. The remaining ZONE_DEVICE types start from 0 here and raise
++	 * the count again when the allocator or driver hands the page out.
+ 	 */
+ 	switch (pgmap->type) {
+ 	case MEMORY_DEVICE_FS_DAX:
+-- 
+2.47.3
+

@@ -1,14 +1,11 @@
 From: Dave Hansen <dave.hansen@linux.intel.com>
-Date: Thu, 13 Aug 2026 12:34:29 -0700
+Date: Mon, 31 Aug 2026 13:30:52 -0700
 Subject: [PATCH] mm: make per-VMA locks available universally
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Patch series "mm: Unconditional per-VMA locks and cleanups", v6.
-
-v2 version of this patchset [1] was written by Dave Hansen and per his
-request, I'm taking over this series.
+Patch series "mm: Unconditional per-VMA locks and cleanups", v7.
 
 tl;dr: Make per-VMA locks available in all configs.  Simplify some of the
 per-VMA lock users now that they can rely on them being always available.
@@ -32,13 +29,12 @@ available on select architectures when SMP and MMU are enabled.  But all
 of the primitives that per-VMA locks are built on (RCU, maple trees,
 refcounts) work just fine without SMP or MMU.
 
-The only real downside is that making VMAs a wee bit bigger on !MMU
-and !SMP builds.
+The only real downside is that making VMAs a wee bit bigger on !MMU and
+!SMP builds.
 
 The upside is much cleaner code, lower complexity and less #ifdeffery.
 
-Clean up a binder VMA locking site now that it can rely on per-VMA
-locks.
+Clean up a binder VMA locking site now that it can rely on per-VMA locks.
 
 Building on top of universally-available per-VMA locks, introduce a new
 helper.  Since the new API does not require callers to have a fallback to
@@ -61,7 +57,7 @@ Which avoids mmap_lock entirely in the fast path.
 Use that new API for another binder site and one in the TCP code.
 
 
-This patch (of 5):
+This patch (of 7):
 
 The per-VMA locks have been around for several years.  They've had some
 bugs worked out of them and have seen quite wide use.  However, they are
@@ -138,7 +134,8 @@ The following functions work for both MMU and NOMMU configs:
 - vma_is_attached() always return false because VMAs are always
   detached;
 
-- vma_assert_detached() will never trigger because VMAs are never attached;
+- vma_assert_detached() will never trigger because VMAs are never
+  attached;
 
 - vma_start_read_locked() always return false because VMAs are always
   detached;
@@ -158,22 +155,22 @@ working like before:
 stack_map_lock_vma() - keeps mmap_lock in NOMMU config;
 bpf_iter_task_vma_new() - bails out in NOMMU config;
 
-Link: https://lore.kernel.org/20260813193433.3318288-1-surenb@google.com
-Link: https://lore.kernel.org/20260813193433.3318288-2-surenb@google.com
+Link: https://lore.kernel.org/20260831203056.838265-1-surenb@google.com
+Link: https://lore.kernel.org/20260831203056.838265-2-surenb@google.com
 Signed-off-by: Dave Hansen <dave.hansen@linux.intel.com>
 Signed-off-by: Suren Baghdasaryan <surenb@google.com>
-Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
 Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
-Cc: Liam R. Howlett <liam@infradead.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Liam R. Howlett <Liam.Howlett@oracle.com>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-Cc: Arve Hjønnevåg <arve@android.com>
 Cc: Todd Kjos <tkjos@android.com>
 Cc: Christian Brauner <christian@brauner.io>
 Cc: Carlos Llamas <cmllamas@google.com>
 Cc: Alice Ryhl <aliceryhl@google.com>
 Cc: David S. Miller <davem@davemloft.net>
 Cc: David Ahern <dsahern@kernel.org>
+Cc: Arve Hjønnevåg <arve@android.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
  arch/arm/Kconfig                       |  1 -
@@ -207,7 +204,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
  28 files changed, 48 insertions(+), 316 deletions(-)
 
 diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
-index f10379dfe7a33..3075e5c60a25e 100644
+index ffbc7f3861315..408aa58a2a5bb 100644
 --- a/arch/arm/Kconfig
 +++ b/arch/arm/Kconfig
 @@ -42,7 +42,6 @@ config ARM
@@ -858,10 +855,10 @@ index 3e792aad76261..a1bb2c2d0284a 100644
  	.mm_cid.lock = __RAW_SPIN_LOCK_UNLOCKED(init_mm.mm_cid.lock),
  #endif
 diff --git a/mm/memory.c b/mm/memory.c
-index 347db2acd0f83..53f03a5227a33 100644
+index 09ac784f8b7b3..bc14cae3c49d7 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
-@@ -6823,7 +6823,6 @@ static vm_fault_t sanitize_fault_flags(struct vm_area_struct *vma,
+@@ -6799,7 +6799,6 @@ static vm_fault_t sanitize_fault_flags(struct vm_area_struct *vma,
  				 !vma_is_cow_mapping(vma)))
  			return VM_FAULT_SIGSEGV;
  	}
@@ -869,7 +866,7 @@ index 347db2acd0f83..53f03a5227a33 100644
  	/*
  	 * Per-VMA locks can't be used with FAULT_FLAG_RETRY_NOWAIT because of
  	 * the assumption that lock is dropped on VM_FAULT_RETRY.
-@@ -6832,7 +6831,6 @@ static vm_fault_t sanitize_fault_flags(struct vm_area_struct *vma,
+@@ -6808,7 +6807,6 @@ static vm_fault_t sanitize_fault_flags(struct vm_area_struct *vma,
  			(FAULT_FLAG_VMA_LOCK | FAULT_FLAG_RETRY_NOWAIT)) ==
  			(FAULT_FLAG_VMA_LOCK | FAULT_FLAG_RETRY_NOWAIT)))
  		return VM_FAULT_SIGSEGV;

@@ -2,6 +2,57 @@ From: Qi Zheng <zhengqi.arch@bytedance.com>
 Date: Mon, 17 Aug 2026 17:03:26 +0800
 Subject: [PATCH] mm: memcontrol: make obj_cgroup_memcg() handle NULL objcg
 
+Patch series "make unused huge shrinker memcg aware", v4.
+
+The shmem unused huge shrinker maintains a per-superblock list of inodes
+whose tail huge folio extends beyond i_size.  Because this list is not
+memcg aware, reclaim triggered by memcg A can scan inodes across the
+entire superblock and split huge folios charged to unrelated memcg B,
+causing unexpected impact on it.
+
+In the worst case, memcg A has no reclaimable shmem at all, making the
+reclaim entirely useless and incurring unnecessary latency.  We observed
+this in production, where page lock contention during split caused
+multi-hundred-millisecond stalls:
+
+  tid 11340 comm scanner locked a page for 182264 us! kstack:
+          unlock_page+1
+          split_huge_page_to_list+3135
+          shmem_unused_huge_shrink+767
+          super_cache_scan+329
+          do_shrink_slab+291
+          shrink_slab+533
+          shrink_node+400
+          do_try_to_free_pages+206
+          try_to_free_mem_cgroup_pages+262
+          try_charge_memcg+591
+          mem_cgroup_charge+136
+          __handle_mm_fault+2431
+          handle_mm_fault+194
+          do_user_addr_fault+462
+          __do_page_fault+176
+          do_page_fault+48
+          page_fault+62
+
+Usama's recent patch [1] prevents the shmem unused shrinker from being
+invoked during memcg-level reclaim altogether, but this is overly
+conservative: we can do better by reclaiming only the shmem charged to the
+reclaiming memcg.
+
+This series converts the shrinker list to a memcg-aware list_lru, so that
+non-root memcg reclaim walks only candidates charged to the reclaiming
+memcg.  Global reclaim, root memcg reclaim and shmem quota reclaim retain
+their existing global semantics.
+
+To avoid pinning a dying memcg through a long-lived CSS reference, each
+inode stores an obj_cgroup reference instead of a mem_cgroup reference.
+The list_lru add/delete paths resolve the current memcg from the objcg
+under RCU, staying consistent with list_lru's own memcg migration on
+offline.
+
+
+This patch (of 3):
+
 obj_cgroup_memcg() currently requires a non-NULL objcg, so callers that
 may hold a NULL objcg must guard the call with an explicit NULL check.
 This pattern is duplicated in folio_memcg(), folio_memcg_check(),
@@ -15,6 +66,7 @@ obj_cgroup_memcg() calls.
 
 No functional change intended.
 
+Link: https://lore.kernel.org/cover.1786955972.git.zhengqi.arch@bytedance.com
 Link: https://lore.kernel.org/09bcf74312246a6e4146be8a0cb9787f8beddb28.1786955972.git.zhengqi.arch@bytedance.com
 Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
 Acked-by: Shakeel Butt <shakeel.butt@linux.dev>

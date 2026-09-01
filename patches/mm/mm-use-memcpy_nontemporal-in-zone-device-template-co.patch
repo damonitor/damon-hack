@@ -1,0 +1,88 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Mon, 31 Aug 2026 19:16:37 +0800
+Subject: [PATCH] mm: use memcpy_nontemporal() in zone-device template copies
+
+The template fast path currently uses memcpy() for the actual struct page
+copy.  Switch zone_device_page_init_from_template() to
+memcpy_nontemporal().
+
+ZONE_DEVICE memmap initialization is largely write-once: each struct page
+is populated once, and most destination cachelines are not expected to be
+reused immediately afterwards.  On x86, a regular cached memcpy() can
+therefore incur write-allocate traffic by pulling destination cachelines
+into the cache before writeback, and can populate the cache with data that
+has little near-term reuse.  Using memcpy_nontemporal() lets this path
+request nontemporal stores for that copy pattern, which can reduce cache
+pollution and avoid part of the associated write-allocate overhead, while
+architectures without a specialized backend still fall back to memcpy().
+
+Do not add a KASAN/KMSAN-specific fallback around this call site.  As
+Muchun pointed out, special KASAN handling for memcpy_flushcache() or
+memcpy_nontemporal(), if needed, belongs in the low-level helper rather
+than in this ZONE_DEVICE caller.
+
+No separate drain is added here.  memcpy_nontemporal() is used only as the
+copy primitive while memmap_init_zone_device() is still initializing the
+struct page array.  The ordinary stores that follow in this path, such as
+compound-page setup, are part of the same CPU's initialization sequence;
+they are not used as a publication store that tells another CPU or device
+to consume data written by the non-temporal copy.
+
+Therefore this call site does not need a helper-level drain for
+correctness.  Callers that use memcpy_nontemporal() as part of a
+producer-consumer or device-visible handoff must add the required ordering
+themselves.
+
+Tested in a VM with a 100 GB fsdax namespace device configured with
+map=dev and a 100 GB devdax namespace (align=2097152) on Intel Ice Lake
+server.
+
+Test procedure:
+Rebind the nd_pmem and dax_pmem driver 30 times and collect the memmap
+initialization time from the pr_debug() output of
+memmap_init_zone_device().
+
+Base(v7.3-rc1):
+  Average of rebinds for nd_pmem driver: 221.07 ms
+  Average of rebinds for dax_pmem driver: 191.20 ms
+
+With this patch and its prerequisites applied:
+  Average of rebinds for nd_pmem driver: 150.40 ms
+  Average of rebinds for dax_pmem driver: 161.83 ms
+
+This reduces the average memmap initialization time measured during rebind
+by about 32.0% for nd_pmem and 15.4% for dax_pmem.
+
+Link: https://lore.kernel.org/20260831111638.76012-7-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/mm_init.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 0d83034cfa97b..2ed17cc707edc 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1037,7 +1037,7 @@ static void zone_device_page_init_from_template(struct page *page,
+ 	if (!is_highmem_idx(ZONE_DEVICE))
+ 		set_page_address(template, __va(pfn << PAGE_SHIFT));
+ #endif
+-	memcpy(page, template, sizeof(*page));
++	memcpy_nontemporal(page, template, sizeof(*page));
+ }
+ 
+ /*
+-- 
+2.47.3
+

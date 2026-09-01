@@ -1,0 +1,72 @@
+From: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Date: Sun, 30 Aug 2026 12:29:20 +0800
+Subject: [PATCH] mm/shmem: split large folios only on -E2BIG
+
+shmem_writeout() currently splits a large folio on every
+folio_alloc_swap() failure.  With the refined return-value contract, only
+-E2BIG indicates that splitting might allow smaller folios to be swapped
+out.
+
+Enter the split fallback only for -E2BIG.  For -ENOSPC and -ENOMEM,
+redirty and reactivate the folio as before.
+
+Link: https://lore.kernel.org/20260830042920.2280454-5-xueyuan.chen21@gmail.com
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Suggested-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nanzhe Zhao <zhaonanzhe@xiaomi.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/shmem.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index eeb9a78c125a5..255d69ebceba0 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -1813,7 +1813,7 @@ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
+ 	struct shmem_inode_info *info = SHMEM_I(inode);
+ 	struct shmem_sb_info *sbinfo = SHMEM_SB(inode->i_sb);
+ 	pgoff_t index;
+-	int nr_pages;
++	int nr_pages, ret;
+ 	bool split = false;
+ 
+ 	if ((info->flags & SHMEM_F_LOCKED) || sbinfo->noswap)
+@@ -1894,7 +1894,8 @@ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
+ 		folio_mark_uptodate(folio);
+ 	}
+ 
+-	if (!folio_alloc_swap(folio)) {
++	ret = folio_alloc_swap(folio);
++	if (!ret) {
+ 		bool first_swapped = shmem_recalc_inode(inode, 0, nr_pages);
+ 		int error;
+ 
+@@ -1947,7 +1948,7 @@ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
+ 		swap_cache_del_folio(folio);
+ 		goto redirty;
+ 	}
+-	if (nr_pages > 1)
++	if (nr_pages > 1 && ret == -E2BIG)
+ 		goto try_split;
+ redirty:
+ 	folio_mark_dirty(folio);
+-- 
+2.47.3
+

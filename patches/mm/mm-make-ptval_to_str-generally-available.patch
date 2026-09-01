@@ -1,0 +1,106 @@
+From: Anshuman Khandual <anshuman.khandual@arm.com>
+Date: Mon, 31 Aug 2026 11:13:23 +0530
+Subject: [PATCH] mm: make ptval_to_str() generally available
+
+Patch series "mm: Drop pxd_ERROR()".
+
+pxd_ERROR() macros have been provided by all platforms, which are very
+much identical and can be dropped off completely if these pgtable printing
+could be moved to callers in generic MM aka all pxd_clear_bad().
+
+But first cleanups and re-organizations are required in some platforms
+that are using these macros internally.  Afterwards
+[pte|pmd|pud|p4d|pgd]_ERROR() macros have been completely dropped from the
+entire tree.
+
+
+This patch (of 8):
+
+Move ptval_to_str() inside a header thus making the helper more generally
+available for new users which are being added later.  While here, also
+move another related string size macro PTVAL_STR_MAX inside the header as
+well.
+
+Link: https://lore.kernel.org/20260831054331.625505-1-anshuman.khandual@arm.com
+Link: https://lore.kernel.org/20260831054331.625505-2-anshuman.khandual@arm.com
+Signed-off-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: James Bottomley <james.bottomley@HansenPartnership.com>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Rich Felker <dalias@libc.org>
+Cc: Samuel Holland <samuel.holland@sifive.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/pgtable.h | 14 ++++++++++++++
+ mm/memory.c             | 15 +--------------
+ 2 files changed, 15 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 8c093c119e5a8..e3c8ab96941c5 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -2313,6 +2313,20 @@ static inline const char *pgtable_level_to_str(enum pgtable_level level)
+ 	}
+ }
+ 
++void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry, size_t entry_size);
++
++#define ptval_to_str(buf, val)								\
++	do {										\
++		auto __val = (val);							\
++											\
++		ptval_bytes_to_hex_str((buf), sizeof(buf), &__val, sizeof(__val));	\
++	} while (0)
++
++#if defined(__SIZEOF_INT128__)
++#define PTVAL_STR_MAX	(32 + 1) /* Max 128-bit value in hex + NUL */
++#else
++#define PTVAL_STR_MAX	(16 + 1) /* Max 64-bit value in hex + NUL */
++#endif
+ #endif /* !__ASSEMBLER__ */
+ 
+ #if !defined(MAX_POSSIBLE_PHYSMEM_BITS) && !defined(CONFIG_64BIT)
+diff --git a/mm/memory.c b/mm/memory.c
+index bc14cae3c49d7..ec63dd6212ac5 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -495,7 +495,7 @@ static inline void add_mm_rss_vec(struct mm_struct *mm, int *rss)
+ /* Allow a burst of 60 bad page map reports per minute. */
+ static DEFINE_RATELIMIT_STATE(bad_page_map_ratelimit, 60 * HZ, 60);
+ 
+-static void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry, size_t entry_size)
++void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry, size_t entry_size)
+ {
+ 	if (WARN_ON_ONCE(buf_size < entry_size * 2 + 1)) {
+ 		snprintf(buf, buf_size, "overflow");
+@@ -522,19 +522,6 @@ static void ptval_bytes_to_hex_str(char *buf, size_t buf_size, const void *entry
+ 	}
+ }
+ 
+-#define ptval_to_str(buf, val)								\
+-	do {										\
+-		auto __val = (val);							\
+-											\
+-		ptval_bytes_to_hex_str((buf), sizeof(buf), &__val, sizeof(__val));	\
+-	} while (0)
+-
+-#if defined(__SIZEOF_INT128__)
+-#define PTVAL_STR_MAX	(32 + 1) /* Max 128-bit value in hex + NUL */
+-#else
+-#define PTVAL_STR_MAX	(16 + 1) /* Max 64-bit value in hex + NUL */
+-#endif
+-
+ static void __print_bad_page_map_pgtable(struct mm_struct *mm, unsigned long addr)
+ {
+ 	char pgd_str[PTVAL_STR_MAX];
+-- 
+2.47.3
+

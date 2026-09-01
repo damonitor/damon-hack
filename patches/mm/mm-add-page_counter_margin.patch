@@ -1,0 +1,156 @@
+From: Johannes Weiner <hannes@cmpxchg.org>
+Date: Sun, 30 Aug 2026 12:29:17 +0800
+Subject: [PATCH] mm: add page_counter_margin()
+
+Patch series "mm: avoid large folio splits when swap is unavailable", v7.
+
+This is v7 of Barry's original RFC patch, "mm: Avoiding split large folios
+if swap has no space":
+
+https://lore.kernel.org/r/20260618221720.71768-1-baohua@kernel.org
+
+Barry's RFC showed the no-swap case with MADV_PAGEOUT on 16KB mTHP: the
+large-folio split counter increased by 1024 even though no swapout
+progress was possible.  Skipping the split in that case kept the counter
+at 0.
+
+This series makes folio_alloc_swap() classify failures according to
+whether splitting a large folio might allow swapout to make progress.
+Callers can then avoid destroying the large folio when neither global swap
+availability nor the folio's memcg swap hierarchy has capacity for even a
+smaller folio.
+
+Patch #1 adds page_counter_margin(), a small helper that computes the
+minimum remaining chargeable space across a page_counter hierarchy.
+
+Patch #2 establishes the folio_alloc_swap() return-value contract:
+
+  - -E2BIG: splitting may let smaller folios make progress
+  - -ENOSPC: no global swap space is available
+  - -ENOMEM: splitting is not expected to help, including when the
+    folio's memcg swap hierarchy has no remaining capacity
+
+Patch #3 makes vmscan split a large folio only when folio_alloc_swap()
+returns -E2BIG.  Other failures keep the existing activation path and
+avoid destroying the large folio when no smaller part can be backed by
+swap either.
+
+Patch #4 applies the same contract to shmem_writeout(), which currently
+splits a large folio on every folio_alloc_swap() failure.  It now enters
+the split fallback only on -E2BIG; other failures redirty and reactivate
+the folio as before.
+
+Testing:
+
+With a 1GB anonymous mapping backed by 16KB mTHPs and memory.swap.max=0,
+the patch reduced the median latency of 30 process_madvise(MADV_PAGEOUT)
+runs from 743.8 ms to 181.7 ms, while the number of large-folio splits per
+run dropped from 65536 to 0.  Neither kernel swapped out any pages.
+
+I also ran DaCapo h2 under swap pressure and found no statistically
+significant change in wall time or CPU time.  The overall benefit appears
+minor and workload-dependent.
+
+
+This patch (of 4):
+
+mem_cgroup_get_nr_swap_pages() open-codes the remaining capacity across
+the memcg swap counter hierarchy.
+
+Add page_counter_margin() to return the minimum usable space from a page
+counter to the root, and use it in mem_cgroup_get_nr_swap_pages().  This
+is a pure refactoring with no intended behavior change.
+
+Link: https://lore.kernel.org/20260830042920.2280454-1-xueyuan.chen21@gmail.com
+Link: https://lore.kernel.org/20260830042920.2280454-2-xueyuan.chen21@gmail.com
+Signed-off-by: Johannes Weiner <hannes@cmpxchg.org>
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Nanzhe Zhao <zhaonanzhe@xiaomi.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/page_counter.h |  1 +
+ mm/memcontrol.c              |  9 +++------
+ mm/page_counter.c            | 20 ++++++++++++++++++++
+ 3 files changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/page_counter.h b/include/linux/page_counter.h
+index d649b6bbbc871..07b7cb12249c7 100644
+--- a/include/linux/page_counter.h
++++ b/include/linux/page_counter.h
+@@ -68,6 +68,7 @@ static inline unsigned long page_counter_read(struct page_counter *counter)
+ 	return atomic_long_read(&counter->usage);
+ }
+ 
++long page_counter_margin(struct page_counter *counter);
+ void page_counter_cancel(struct page_counter *counter, unsigned long nr_pages);
+ void page_counter_charge(struct page_counter *counter, unsigned long nr_pages);
+ bool page_counter_try_charge(struct page_counter *counter,
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 27942d9aac899..ff6e20a002730 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5826,12 +5826,9 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
+ {
+ 	long nr_swap_pages = get_nr_swap_pages();
+ 
+-	if (mem_cgroup_disabled() || do_memsw_account())
+-		return nr_swap_pages;
+-	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg))
+-		nr_swap_pages = min_t(long, nr_swap_pages,
+-				      READ_ONCE(memcg->swap.max) -
+-				      page_counter_read(&memcg->swap));
++	if (!mem_cgroup_disabled() && !do_memsw_account())
++		nr_swap_pages = min(nr_swap_pages, page_counter_margin(&memcg->swap));
++
+ 	return nr_swap_pages;
+ }
+ 
+diff --git a/mm/page_counter.c b/mm/page_counter.c
+index 661e0f2a5127a..450543f4b318b 100644
+--- a/mm/page_counter.c
++++ b/mm/page_counter.c
+@@ -46,6 +46,26 @@ static void propagate_protected_usage(struct page_counter *c,
+ 	}
+ }
+ 
++/**
++ * page_counter_margin - remaining usable space within hierarchical limits
++ * @counter: counter
++ *
++ * Return: The minimum value of max minus usage across @counter and all of
++ * its ancestors. The value may be negative during a concurrent charge.
++ */
++long page_counter_margin(struct page_counter *counter)
++{
++	long margin = PAGE_COUNTER_MAX;
++
++	do {
++		long m = READ_ONCE(counter->max) - page_counter_read(counter);
++
++		margin = min(margin, m);
++	} while ((counter = counter->parent));
++
++	return margin;
++}
++
+ /**
+  * page_counter_cancel - take pages out of the local counter
+  * @counter: counter
+-- 
+2.47.3
+

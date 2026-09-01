@@ -1,0 +1,99 @@
+From: Bradley Morgan <include@grrlz.net>
+Date: Sat, 1 Aug 2026 22:58:44 +0000
+Subject: [PATCH] taskstats: fold the two pid/tgid handlers into one
+
+cmd_attr_pid() and cmd_attr_tgid() are copy paste.  fold them into one
+handler that takes the attr type and fill function as parameters, same
+pattern as the cpumask fold in 59c0bc949c5e.
+
+No functional change.
+
+Link: https://lore.kernel.org/20260801225845.23855-1-include@grrlz.net
+Signed-off-by: Bradley Morgan <include@grrlz.net>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Balbir Singh <bsingharora@gmail.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/taskstats.c | 47 ++++++++++++----------------------------------
+ 1 file changed, 12 insertions(+), 35 deletions(-)
+
+diff --git a/kernel/taskstats.c b/kernel/taskstats.c
+index 9a48827e22bce..598d9cd832501 100644
+--- a/kernel/taskstats.c
++++ b/kernel/taskstats.c
+@@ -473,7 +473,8 @@ static size_t taskstats_packet_size(void)
+ 	return size;
+ }
+ 
+-static int cmd_attr_pid(struct genl_info *info)
++static int cmd_attr_pid_tgid(struct genl_info *info, int attr,
++			     int (*fill)(pid_t, struct taskstats *))
+ {
+ 	struct taskstats *stats;
+ 	struct sk_buff *rep_skb;
+@@ -488,41 +489,15 @@ static int cmd_attr_pid(struct genl_info *info)
+ 		return rc;
+ 
+ 	rc = -EINVAL;
+-	pid = nla_get_u32(info->attrs[TASKSTATS_CMD_ATTR_PID]);
+-	stats = mk_reply(rep_skb, TASKSTATS_TYPE_PID, pid);
++	pid = nla_get_u32(info->attrs[attr]);
++	stats = mk_reply(rep_skb,
++			 attr == TASKSTATS_CMD_ATTR_PID
++				? TASKSTATS_TYPE_PID : TASKSTATS_TYPE_TGID,
++			 pid);
+ 	if (!stats)
+ 		goto err;
+ 
+-	rc = fill_stats_for_pid(pid, stats);
+-	if (rc < 0)
+-		goto err;
+-	return send_reply(rep_skb, info);
+-err:
+-	nlmsg_free(rep_skb);
+-	return rc;
+-}
+-
+-static int cmd_attr_tgid(struct genl_info *info)
+-{
+-	struct taskstats *stats;
+-	struct sk_buff *rep_skb;
+-	size_t size;
+-	u32 tgid;
+-	int rc;
+-
+-	size = taskstats_packet_size();
+-
+-	rc = prepare_reply(info, TASKSTATS_CMD_NEW, &rep_skb, size);
+-	if (rc < 0)
+-		return rc;
+-
+-	rc = -EINVAL;
+-	tgid = nla_get_u32(info->attrs[TASKSTATS_CMD_ATTR_TGID]);
+-	stats = mk_reply(rep_skb, TASKSTATS_TYPE_TGID, tgid);
+-	if (!stats)
+-		goto err;
+-
+-	rc = fill_stats_for_tgid(tgid, stats);
++	rc = fill(pid, stats);
+ 	if (rc < 0)
+ 		goto err;
+ 	return send_reply(rep_skb, info);
+@@ -542,9 +517,11 @@ static int taskstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
+ 					TASKSTATS_CMD_ATTR_DEREGISTER_CPUMASK,
+ 					DEREGISTER);
+ 	else if (info->attrs[TASKSTATS_CMD_ATTR_PID])
+-		return cmd_attr_pid(info);
++		return cmd_attr_pid_tgid(info, TASKSTATS_CMD_ATTR_PID,
++					 fill_stats_for_pid);
+ 	else if (info->attrs[TASKSTATS_CMD_ATTR_TGID])
+-		return cmd_attr_tgid(info);
++		return cmd_attr_pid_tgid(info, TASKSTATS_CMD_ATTR_TGID,
++					 fill_stats_for_tgid);
+ 	else
+ 		return -EINVAL;
+ }
+-- 
+2.47.3
+

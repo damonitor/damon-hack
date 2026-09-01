@@ -1,0 +1,122 @@
+From: Longlong Xia <xialonglong@kylinos.cn>
+Date: Mon, 31 Aug 2026 21:35:19 +0800
+Subject: [PATCH] mm/hugetlb: cap demotion at currently available free pages
+
+Demotion must not remove free huge pages that back existing reservations.
+The sysfs path checks whether any page is available, but passes the entire
+request to demote_pool_huge_page().  For example, with two free pages and
+one reservation, a request for two pages removes both and leaves the
+reservation without a backing page.
+
+Cap the sysfs request by both global availability and the selected node's
+free pages.  Recheck global availability in demote_pool_huge_page() before
+each node batch because that function drops hugetlb_lock while restoring
+vmemmap and reservations can change before the next batch.
+
+Testing:
+Tested on an x86_64 QEMU guest booted with:
+
+  hugepagesz=1G hugepages=2
+
+Reserve one 1 GiB huge page with an untouched hugetlbfs mapping:
+
+  nr=2 surplus=0 free=2 resv=1
+
+Request demotion of two pages. Before this fix, both free pages are
+demoted:
+
+  nr=0 surplus=0 free=0 resv=1
+
+Touching the reserved mapping then fails with SIGBUS. After this fix, the
+request is capped at the single available page:
+
+  nr=1 surplus=0 free=1 resv=1
+
+Touching the reserved mapping succeeds. After the process exits, the
+counters are:
+
+  nr=1 surplus=0 free=1 resv=0
+
+Link: https://lore.kernel.org/20260831133519.2505020-3-xialonglong2025@163.com
+Fixes: c0f398c3b2cf ("mm/hugetlb_vmemmap: batch HVO work when demoting")
+Signed-off-by: Longlong Xia <xialonglong@kylinos.cn>
+Assisted-by: Codex:gpt-5.6-sol
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Longlong Xia <xialonglong@kylinos.cn>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Yu Zhao <yuzhao@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c       | 22 +++++++++++++++++++++-
+ mm/hugetlb_sysfs.c | 10 +++++-----
+ 2 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 2692fb760c3f1..bfc0184ed95c7 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -4014,6 +4014,26 @@ long demote_pool_huge_page(struct hstate *src, nodemask_t *nodes_allowed,
+ 		LIST_HEAD(list);
+ 		LIST_HEAD(surplus_list);
+ 		struct folio *folio, *next;
++		unsigned long nr_available, nr_target;
++
++		/*
++		 * Re-check available each node batch: the previous
++		 * batch released hugetlb_lock for vmemmap restore/split,
++		 * and a new reservation could have been added in that
++		 * window, shrinking the budget.  available is global
++		 * (resv is not per-node), so 0 means no node can
++		 * contribute -- stop the whole scan.
++		 */
++		nr_available = available_huge_pages(src);
++		if (!nr_available)
++			break;
++
++		/*
++		 * Cap this batch at the current budget; expressed as a
++		 * cumulative stop point because nr_demoted is running.
++		 */
++		nr_target = nr_demoted + min_t(unsigned long,
++				nr_to_demote - nr_demoted, nr_available);
+ 
+ 		list_for_each_entry_safe(folio, next, &src->hugepage_freelists[node], lru) {
+ 			bool adjust_surplus;
+@@ -4028,7 +4048,7 @@ long demote_pool_huge_page(struct hstate *src, nodemask_t *nodes_allowed,
+ 			if (!adjust_surplus)
+ 				nr_persistent++;
+ 
+-			if (++nr_demoted == nr_to_demote)
++			if (++nr_demoted == nr_target)
+ 				break;
+ 		}
+ 
+diff --git a/mm/hugetlb_sysfs.c b/mm/hugetlb_sysfs.c
+index 79ece91406bfa..326a54b4d991c 100644
+--- a/mm/hugetlb_sysfs.c
++++ b/mm/hugetlb_sysfs.c
+@@ -211,15 +211,15 @@ static ssize_t demote_store(struct kobject *kobj,
+ 		 * Check for available pages to demote each time thorough the
+ 		 * loop as demote_pool_huge_page will drop hugetlb_lock.
+ 		 */
++		nr_available = h->free_huge_pages - h->resv_huge_pages;
+ 		if (nid != NUMA_NO_NODE)
+-			nr_available = h->free_huge_pages_node[nid];
+-		else
+-			nr_available = h->free_huge_pages;
+-		nr_available -= h->resv_huge_pages;
++			nr_available = min(nr_available,
++					   h->free_huge_pages_node[nid]);
+ 		if (!nr_available)
+ 			break;
+ 
+-		rc = demote_pool_huge_page(h, n_mask, nr_demote);
++		rc = demote_pool_huge_page(h, n_mask,
++					   min(nr_demote, nr_available));
+ 		if (rc < 0) {
+ 			err = rc;
+ 			break;
+-- 
+2.47.3
+

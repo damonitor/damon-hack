@@ -1,0 +1,102 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Mon, 31 Aug 2026 19:16:36 +0800
+Subject: [PATCH] string: introduce memcpy_nontemporal()
+
+Introduce memcpy_nontemporal() for write-once copy sites that want a named
+non-temporal copy primitive.
+
+On x86_64, override the helper in arch/x86/include/asm/string_64.h using
+the usual self-macro pattern, next to the existing memcpy_flushcache()
+backend that memcpy_nontemporal() wraps.
+
+include/linux/string.h provides the generic memcpy_nontemporal() fallback
+as
+
+  #define memcpy_nontemporal(dst, src, len) \
+	((void)memcpy(dst, src, len))
+
+instead of an inline wrapper, so architectures without a specialized
+backend keep the usual memcpy() FORTIFY coverage when the compiler can
+still see object sizes at the original call site.  It also makes the
+memcpy_nontemporal() API uniformly void, matching memcpy_flushcache() and
+the x86 backend, so callers cannot accidentally depend on a return value
+on fallback architectures.
+
+memcpy_nontemporal() is only a copy primitive.  It does not imply a drain
+or a publication barrier.  Callers that use it before a producer-consumer
+or device-visible handoff must provide the required ordering at that
+handoff point.
+
+The immediate user is the ZONE_DEVICE template-copy path.  It populates
+struct page descriptors in a write-once pattern, so a regular cached
+memcpy() can incur avoidable write-allocate traffic and cache pollution
+for data with little near-term reuse.
+
+Link: https://lore.kernel.org/20260831111638.76012-6-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/include/asm/string_64.h | 12 ++++++++++++
+ include/linux/string.h           | 13 +++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/arch/x86/include/asm/string_64.h b/arch/x86/include/asm/string_64.h
+index 4635616863f53..21ae515ae35a3 100644
+--- a/arch/x86/include/asm/string_64.h
++++ b/arch/x86/include/asm/string_64.h
+@@ -100,6 +100,18 @@ static __always_inline void memcpy_flushcache(void *dst, const void *src, size_t
+ 	}
+ 	__memcpy_flushcache(dst, src, cnt);
+ }
++
++#define memcpy_nontemporal memcpy_nontemporal
++/*
++ * Reuse the existing x86 flushcache backend as the non-temporal copy
++ * primitive.
++ */
++static __always_inline void memcpy_nontemporal(void *dst, const void *src,
++		size_t cnt)
++{
++	memcpy_flushcache(dst, src, cnt);
++}
++
+ #endif
+ 
+ #endif /* __KERNEL__ */
+diff --git a/include/linux/string.h b/include/linux/string.h
+index 5702daca4326b..6cb5cdd01158b 100644
+--- a/include/linux/string.h
++++ b/include/linux/string.h
+@@ -278,6 +278,19 @@ static inline void memcpy_flushcache(void *dst, const void *src, size_t cnt)
+ }
+ #endif
+ 
++#ifndef memcpy_nontemporal
++/*
++ * memcpy_nontemporal() requests a non-temporal copy when the
++ * architecture has a suitable backend. Architectures without a
++ * specialized backend fall back to memcpy(). Keep this as a
++ * function-like macro so the compiler can still see the original
++ * memcpy() call site and preserve the usual FORTIFY coverage when
++ * object sizes remain visible there, while keeping the API void.
++ */
++#define memcpy_nontemporal(dst, src, len) \
++	((void)memcpy(dst, src, len))
++#endif
++
+ void *memchr_inv(const void *s, int c, size_t n);
+ char *strreplace(char *str, char old, char new);
+ 
+-- 
+2.47.3
+

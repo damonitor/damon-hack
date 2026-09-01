@@ -1,0 +1,68 @@
+From: Anshuman Khandual <anshuman.khandual@arm.com>
+Date: Mon, 31 Aug 2026 11:13:25 +0530
+Subject: [PATCH] loongarch/mm: stop using pte_ERROR()
+
+Directly use pr_err() in __set_fixmap() and drop pte_ERROR() which helps
+in eventually dropping pte_ERROR() macro across the tree.  In this new
+printing __FILE__ and __LINE__ has been dropped because they are always
+the same and don't really add any value.  The new ptval_to_str() helper is
+being used for converting pgtable entry value into a string.  The error
+message itself has been cleaned up as well.
+
+Link: https://lore.kernel.org/20260831054331.625505-4-anshuman.khandual@arm.com
+Signed-off-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: James Bottomley <james.bottomley@HansenPartnership.com>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Rich Felker <dalias@libc.org>
+Cc: Samuel Holland <samuel.holland@sifive.com>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/loongarch/include/asm/pgtable.h | 2 --
+ arch/loongarch/mm/init.c             | 4 +++-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/arch/loongarch/include/asm/pgtable.h b/arch/loongarch/include/asm/pgtable.h
+index a05f6a4928dc6..eddd8906b77df 100644
+--- a/arch/loongarch/include/asm/pgtable.h
++++ b/arch/loongarch/include/asm/pgtable.h
+@@ -135,8 +135,6 @@ struct vm_area_struct;
+ #define ptep_get(ptep) READ_ONCE(*(ptep))
+ #define pmdp_get(pmdp) READ_ONCE(*(pmdp))
+ 
+-#define pte_ERROR(e) \
+-	pr_err("%s:%d: bad pte %016lx.\n", __FILE__, __LINE__, pte_val(e))
+ #ifndef __PAGETABLE_PMD_FOLDED
+ #define pmd_ERROR(e) \
+ 	pr_err("%s:%d: bad pmd %016lx.\n", __FILE__, __LINE__, pmd_val(e))
+diff --git a/arch/loongarch/mm/init.c b/arch/loongarch/mm/init.c
+index 4b46c5d30708d..f801f7097f037 100644
+--- a/arch/loongarch/mm/init.c
++++ b/arch/loongarch/mm/init.c
+@@ -197,13 +197,15 @@ void __init __set_fixmap(enum fixed_addresses idx,
+ 			       phys_addr_t phys, pgprot_t flags)
+ {
+ 	unsigned long addr = __fix_to_virt(idx);
++	char str[PTVAL_STR_MAX];
+ 	pte_t *ptep;
+ 
+ 	BUG_ON(idx <= FIX_HOLE || idx >= __end_of_fixed_addresses);
+ 
+ 	ptep = populate_kernel_pte(addr);
+ 	if (!pte_none(ptep_get(ptep))) {
+-		pte_ERROR(*ptep);
++		ptval_to_str(str, pte_val(*ptep));
++		pr_err("unexpected set PTE at %lx in %s: %s\n", addr, __func__, str);
+ 		return;
+ 	}
+ 
+-- 
+2.47.3
+

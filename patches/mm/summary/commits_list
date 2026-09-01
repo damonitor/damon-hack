@@ -1,8 +1,71 @@
-- baseline: v7.2-15455-g18fbf5151d2c0
+- baseline: v7.3-rc1-71-g786262be6048d
 - mm-hotfixes-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-hotfixes-unstable: 0 total, 0 (0) series, 0 non-series commits
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 0 total, 0 (0) series, 0 non-series commits
+- mm-unstable: 17 total, 5 (17) series, 0 non-series commits
+  - author/reviewer role stat
+    - no role, nobody: 1 commits
+    - no role, maintainer: 16 commits
+  - full commits list
+    - series "mm/damon: add kunit tests for probe_hits handling and probe params validation", v2. (2 commits)
+      - 0f1e962720bb "mm/damon/core-kunit: test probe_hits handling at region split and merge" (0/2)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831150650.84829-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831150650.84829-2-sj@kernel.org
+      - 1ac081d5c8ee "mm/damon/core-kunit: test damon_valid_probe_params()" (1/2)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831150650.84829-3-sj@kernel.org
+    - series "docs/mm/damon/design: add explanation of nr_snapshots", v3. (3 commits)
+      - f722f4fedce6 "docs/mm/damon/design: accurate semantics of nr_snapshots" (0/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831150227.83416-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831150227.83416-2-sj@kernel.org
+      - b2d8fcb8b36d "docs/mm/damon/design: difference between watermarks and nr_snapshots" (1/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831150227.83416-3-sj@kernel.org
+      - 9d3d3356faf0 "docs/mm/damon/design: fix typo of max_nr_snapshots" (2/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831150227.83416-4-sj@kernel.org
+    - series "mm/damon/core: remove unused helper functions", v2. (2 commits)
+      - 45d2a411a99b "mm/damon/core: remove unused damon_targets_empty()" (0/2)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831145724.82387-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831145724.82387-2-sj@kernel.org
+      - 4e458195f6ad "mm/damon/core: remove unused damon_nr_running_ctxs()" (1/2)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831145724.82387-3-sj@kernel.org
+    - series "mm/damon: Introduce a huge page collapsing mechanism using auto tuning", v4. (3 commits)
+      - 870d63dae109 "mm/damon: introduce DAMOS_QUOTA_HUGEPAGE auto tuning" (0/3)
+        - Authored by no role player, reviewed by nobody
+      - 82927fb0b33f "mm/damon/sysfs: support hugepage_mem_bp quota goal metric" (1/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831144732.80910-3-sj@kernel.org
+      - cf76fb0e3f19 "Docs/mm/damon/design: cocument hugepage_mem_bp target metric" (2/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831144732.80910-4-sj@kernel.org
+    - series "mm/damon: misc cleanups". (7 commits)
+      - 603392b87e8b "mm/damon/core: remove declaration of __damon_commit_ctx()" (0/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831142611.77572-2-sj@kernel.org
+      - 0584d36c010b "mm/damon/core: introduce damon_set_target_pid()" (1/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-3-sj@kernel.org
+      - 517f1595f8dd "mm/damon/ops-common: factor out damon_putback_folio_list()" (2/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-4-sj@kernel.org
+      - 417ae6f94509 "selftests/damon/sysfs.py: clean up sh processes used for obsolete_target test" (3/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-5-sj@kernel.org
+      - d53ada5b715c "mm/damon/tests: use scoped_guard() for damon_test_ops_registration" (4/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-6-sj@kernel.org
+      - ccc1075d8aaa "selftests/damon: prevent remaining cross-object state pollution" (5/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-7-sj@kernel.org
+      - 6ccb5f4a9380 "samples/damon/mtier: add comment for struct region_range" (6/7)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831142611.77572-8-sj@kernel.org
 - mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

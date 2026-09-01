@@ -1,0 +1,69 @@
+From: Yuntao Wang <yuntao.wang@linux.dev>
+Date: Tue, 11 Aug 2026 20:18:30 +0800
+Subject: [PATCH] dyndbg: fix incorrect mod_ct value in dynamic_debug_init()
+
+Patch series "dyndbg: fix incorrect mod_ct value in dynamic_debug_init()".
+
+Fix and clean up dynamic_debug_init().
+
+
+This patch (of 2):
+
+Suppose all `struct _ddebug` instances belong to the same module, mod_ct
+should be 1, but it is currently 0.
+
+mod_ct is incremented only when iter->modname changes, i.e.  when the loop
+encounters the first _ddebug entry of a new module:
+
+if (strcmp(modname, iter->modname)) {
+	mod_ct++;
+	...
+}
+
+If all _ddebug entries belong to the same module, strcmp() never returns
+nonzero, so mod_ct remains 0.
+
+However, the last (and in this case only) module is added after the loop:
+
+di.num_descs = mod_sites;
+di.descs = iter_mod_start;
+ret = ddebug_add_module(&di, modname);
+
+Thus, mod_ct should be incremented before adding this final module.
+
+The bug only affects the diagnostic message printed by vpr_info():
+
+"%d prdebugs in %d modules, ..."
+
+It reports one fewer module than the actual number of modules.  There is
+no userspace-visible runtime effect; the dynamic debug tables themselves
+are initialized correctly.
+
+Fix it.
+
+Link: https://lore.kernel.org/20260811121831.577848-1-yuntao.wang@linux.dev
+Link: https://lore.kernel.org/20260811121831.577848-2-yuntao.wang@linux.dev
+Signed-off-by: Yuntao Wang <yuntao.wang@linux.dev>
+Cc: Jason Baron <jbaron@akamai.com>
+Cc: Jim Cromie <jim.cromie@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/dynamic_debug.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/lib/dynamic_debug.c b/lib/dynamic_debug.c
+index 18a71a9108d3e..16fad5454d6a5 100644
+--- a/lib/dynamic_debug.c
++++ b/lib/dynamic_debug.c
+@@ -1456,6 +1456,8 @@ static int __init dynamic_debug_init(void)
+ 			iter_mod_start = iter;
+ 		}
+ 	}
++
++	mod_ct++;
+ 	di.num_descs = mod_sites;
+ 	di.descs = iter_mod_start;
+ 	ret = ddebug_add_module(&di, modname);
+-- 
+2.47.3
+

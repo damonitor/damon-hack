@@ -1,0 +1,116 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Mon, 31 Aug 2026 10:15:14 +0100
+Subject: [PATCH] mm/huge_memory: dequeue the deferred split after the split
+ freeze
+
+__folio_freeze_and_split_unmapped() takes the deferred split list_lru lock
+across the freeze.  It is only there to stop deferred_split_scan() from
+touching the folio under split.
+
+With deferred_split_isolate() fixed, the workaround can be dropped.
+
+Unqueue the folio after folio_ref_freeze(), the way
+__folio_migrate_mapping() does: folio_unqueue_deferred_split() needs a
+zero refcount and a memcg still set, and both hold there.
+
+If the split is called from deferred_split_scan(), the unqueue is a no-op
+-- the folio is already removed from the list.  But PG_partially_mapped is
+still set, so it has to be cleared here or
+MTHP_STAT_NR_ANON_PARTIALLY_MAPPED never comes back down.
+
+Assisted-by: Claude-Code:claude-opus-5
+Link: https://lore.kernel.org/20260831091514.1879786-3-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 46 ++++++++++++++--------------------------------
+ 1 file changed, 14 insertions(+), 32 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 779c02e0bf6cc..c5d11147b69ae 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3979,41 +3979,27 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+ 	struct folio *end_folio = folio_next(folio);
+ 	struct folio *new_folio, *next;
+ 	int old_order = folio_order(folio);
+-	struct list_lru_one *lru;
+-	bool dequeue_deferred;
+ 	int ret = 0;
+ 
+ 	VM_WARN_ON_ONCE(!mapping && end);
+-	/*
+-	 * If this folio can be on the deferred split queue, lock out
+-	 * the shrinker before freezing the ref. If the shrinker sees
+-	 * a 0-ref folio, it assumes it beat folio_put() to the list
+-	 * lock and must clean up the LRU state - the same dequeue we
+-	 * will do below as part of the split.
+-	 */
+-	dequeue_deferred = folio_test_anon(folio) && old_order > 1;
+-	if (dequeue_deferred) {
+-		struct mem_cgroup *memcg;
+-
+-		rcu_read_lock();
+-		memcg = folio_memcg(folio);
+-		lru = list_lru_lock(&deferred_split_lru,
+-				    folio_nid(folio), &memcg);
+-	}
++
+ 	if (folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1)) {
+ 		struct swap_cluster_info *ci = NULL;
+ 		struct lruvec *lruvec;
+ 
+-		if (dequeue_deferred) {
+-			__list_lru_del(&deferred_split_lru, lru,
+-				       &folio->_deferred_list, folio_nid(folio));
+-			if (folio_test_partially_mapped(folio)) {
+-				folio_clear_partially_mapped(folio);
+-				mod_mthp_stat(old_order,
+-					MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+-			}
+-			list_lru_unlock(lru);
+-			rcu_read_unlock();
++		/* Take off the deferred split queue while frozen and memcg set */
++		folio_unqueue_deferred_split(folio);
++
++		/*
++		 * deferred_split_scan() takes the folio off the queue before it
++		 * splits it, so the unqueue above finds an empty list and
++		 * leaves PG_partially_mapped set.
++		 * Clear it here: the flag does not survive the split.
++		 */
++		if (folio_test_partially_mapped(folio)) {
++			folio_clear_partially_mapped(folio);
++			mod_mthp_stat(old_order,
++				      MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+ 		}
+ 
+ 		if (mapping) {
+@@ -4115,10 +4101,6 @@ static int __folio_freeze_and_split_unmapped(struct folio *folio, unsigned int n
+ 		if (ci)
+ 			swap_cluster_unlock(ci);
+ 	} else {
+-		if (dequeue_deferred) {
+-			list_lru_unlock(lru);
+-			rcu_read_unlock();
+-		}
+ 		return -EAGAIN;
+ 	}
+ 
+-- 
+2.47.3
+

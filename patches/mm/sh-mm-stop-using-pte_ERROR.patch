@@ -1,0 +1,70 @@
+From: Anshuman Khandual <anshuman.khandual@arm.com>
+Date: Mon, 31 Aug 2026 11:13:27 +0530
+Subject: [PATCH] sh/mm: stop using pte_ERROR()
+
+Directly use pr_err() in set_pte_phys() and drop pte_ERROR() which helps
+in eventually dropping pte_ERROR() macro across the tree.  In this new
+printing __FILE__ and __LINE__ has been dropped because they are always
+the same and don't really add any value.  Besides ptrval_to_str() has been
+able to handle different PTE representation with and without CONFIG_X2TLB,
+which helped in unifying error message printing.
+
+Link: https://lore.kernel.org/20260831054331.625505-6-anshuman.khandual@arm.com
+Signed-off-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Cc: Rich Felker <dalias@libc.org>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: James Bottomley <james.bottomley@HansenPartnership.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Samuel Holland <samuel.holland@sifive.com>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/sh/include/asm/pgtable_32.h | 5 -----
+ arch/sh/mm/init.c                | 6 +++++-
+ 2 files changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/arch/sh/include/asm/pgtable_32.h b/arch/sh/include/asm/pgtable_32.h
+index 5f51af18997b5..c8eb9a7a4c4c7 100644
+--- a/arch/sh/include/asm/pgtable_32.h
++++ b/arch/sh/include/asm/pgtable_32.h
+@@ -401,14 +401,9 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
+ #define pmd_page(pmd)		(virt_to_page(pmd_val(pmd)))
+ 
+ #ifdef CONFIG_X2TLB
+-#define pte_ERROR(e) \
+-	printk("%s:%d: bad pte %p(%08lx%08lx).\n", __FILE__, __LINE__, \
+-	       &(e), (e).pte_high, (e).pte_low)
+ #define pgd_ERROR(e) \
+ 	printk("%s:%d: bad pgd %016llx.\n", __FILE__, __LINE__, pgd_val(e))
+ #else
+-#define pte_ERROR(e) \
+-	printk("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, pte_val(e))
+ #define pgd_ERROR(e) \
+ 	printk("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
+ #endif
+diff --git a/arch/sh/mm/init.c b/arch/sh/mm/init.c
+index 110308bdef01d..9466ae6f9f164 100644
+--- a/arch/sh/mm/init.c
++++ b/arch/sh/mm/init.c
+@@ -84,7 +84,11 @@ static void set_pte_phys(unsigned long addr, unsigned long phys, pgprot_t prot)
+ 
+ 	pte = __get_pte_phys(addr);
+ 	if (!pte_none(*pte)) {
+-		pte_ERROR(*pte);
++		char str[PTVAL_STR_MAX];
++
++		ptval_to_str(str, pte_val(*pte));
++		pr_err("unexpected set PTE at %lx in %s: bad pte %p(%s).\n",
++			addr, __func__, pte, str);
+ 		return;
+ 	}
+ 
+-- 
+2.47.3
+

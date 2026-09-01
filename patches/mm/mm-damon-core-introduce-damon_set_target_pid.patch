@@ -1,0 +1,152 @@
+From: Enze Li <lienze@kylinos.cn>
+Date: Mon, 31 Aug 2026 07:26:04 -0700
+Subject: [PATCH] mm/damon/core: introduce damon_set_target_pid()
+
+The logic that finds the struct pid for a given pid number and assigns it
+to a damon_target is duplicated in multiple places.  Including
+damon_sysfs_add_target() of mm/damon/sysfs.c and the start functions of
+the two sample modules, samples/damon/wsse.c and samples/damon/prcl.c.
+Add a function that does the work, and replace the duplicated code in the
+places with calls to the function.
+
+Link: https://lore.kernel.org/20260831142611.77572-3-sj@kernel.org
+Signed-off-by: Enze Li <lienze@kylinos.cn>
+Signed-off-by: SJ Park <sj@kernel.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hari Mishal <harimishal1@gmail.com>
+Cc: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Cc: Li Youhong <liyouhong@kylinos.cn>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+Cc: zhaozhengzhuo <zhaozhengzhuo@uniontech.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 12 ++++++++++++
+ mm/damon/sysfs.c      |  6 ++----
+ samples/damon/prcl.c  |  5 +----
+ samples/damon/wsse.c  |  5 +----
+ 5 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 955b9f614e5bc..7b1b6050a8286 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1057,6 +1057,7 @@ int damos_commit_quota_goals(struct damos_quota *dst, struct damos_quota *src);
+ 
+ struct damon_target *damon_new_target(void);
+ void damon_add_target(struct damon_ctx *ctx, struct damon_target *t);
++int damon_set_target_pid(struct damon_target *t, int pid);
+ void damon_free_target(struct damon_target *t);
+ void damon_destroy_target(struct damon_target *t, struct damon_ctx *ctx);
+ unsigned int damon_nr_regions(struct damon_target *t);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 718195fbeb686..3f89cfdf5f022 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -10,6 +10,7 @@
+ #include <linux/kthread.h>
+ #include <linux/memcontrol.h>
+ #include <linux/mm.h>
++#include <linux/pid.h>
+ #include <linux/psi.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+@@ -795,6 +796,17 @@ void damon_add_target(struct damon_ctx *ctx, struct damon_target *t)
+ 	list_add_tail(&t->list, &ctx->adaptive_targets);
+ }
+ 
++/*
++ * Assign the struct pid of the given pid number to the given target.
++ */
++int damon_set_target_pid(struct damon_target *t, int pid)
++{
++	t->pid = find_get_pid(pid);
++	if (!t->pid)
++		return -EINVAL;
++	return 0;
++}
++
+ static void damon_del_target(struct damon_target *t)
+ {
+ 	list_del(&t->list);
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index e3858ffab4b22..3c81b4c91ac0d 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -3,7 +3,6 @@
+  * DAMON sysfs Interface
+  */
+ 
+-#include <linux/pid.h>
+ #include <linux/sched.h>
+ #include <linux/slab.h>
+ 
+@@ -2035,9 +2034,8 @@ static int damon_sysfs_add_target(struct damon_sysfs_target *sys_target,
+ 		return -ENOMEM;
+ 	damon_add_target(ctx, t);
+ 	if (damon_target_has_pid(ctx)) {
+-		t->pid = find_get_pid(sys_target->pid);
+-		if (!t->pid)
+-			/* caller will destroy targets */
++		/* caller will destroy targets */
++		if (damon_set_target_pid(t, sys_target->pid))
+ 			return -EINVAL;
+ 	}
+ 	t->obsolete = sys_target->obsolete;
+diff --git a/samples/damon/prcl.c b/samples/damon/prcl.c
+index 842099bd62286..83ddf12811d57 100644
+--- a/samples/damon/prcl.c
++++ b/samples/damon/prcl.c
+@@ -32,7 +32,6 @@ module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
+ MODULE_PARM_DESC(enabled, "Enable or disable DAMON_SAMPLE_PRCL");
+ 
+ static struct damon_ctx *ctx;
+-static struct pid *target_pidp;
+ 
+ static int damon_sample_prcl_repeat_call_fn(void *data)
+ {
+@@ -79,12 +78,10 @@ static int damon_sample_prcl_start(void)
+ 		return -ENOMEM;
+ 	}
+ 	damon_add_target(ctx, target);
+-	target_pidp = find_get_pid(target_pid);
+-	if (!target_pidp) {
++	if (damon_set_target_pid(target, target_pid)) {
+ 		damon_destroy_ctx(ctx);
+ 		return -EINVAL;
+ 	}
+-	target->pid = target_pidp;
+ 
+ 	scheme = damon_new_scheme(
+ 			&(struct damos_access_pattern) {
+diff --git a/samples/damon/wsse.c b/samples/damon/wsse.c
+index 37fd5da201588..53944aea8428e 100644
+--- a/samples/damon/wsse.c
++++ b/samples/damon/wsse.c
+@@ -33,7 +33,6 @@ module_param_cb(enabled, &enabled_param_ops, &enabled, 0600);
+ MODULE_PARM_DESC(enabled, "Enable or disable DAMON_SAMPLE_WSSE");
+ 
+ static struct damon_ctx *ctx;
+-static struct pid *target_pidp;
+ 
+ static int damon_sample_wsse_repeat_call_fn(void *data)
+ {
+@@ -79,12 +78,10 @@ static int damon_sample_wsse_start(void)
+ 		return -ENOMEM;
+ 	}
+ 	damon_add_target(ctx, target);
+-	target_pidp = find_get_pid(target_pid);
+-	if (!target_pidp) {
++	if (damon_set_target_pid(target, target_pid)) {
+ 		damon_destroy_ctx(ctx);
+ 		return -EINVAL;
+ 	}
+-	target->pid = target_pidp;
+ 
+ 	err = damon_start(&ctx, 1, true);
+ 	if (err) {
+-- 
+2.47.3
+

@@ -1,0 +1,172 @@
+From: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Date: Sun, 30 Aug 2026 12:29:18 +0800
+Subject: [PATCH] mm: distinguish large folio swap allocation failures
+
+folio_alloc_swap() reports most failures with generic negative error
+codes.  Reclaim callers consequently cannot tell whether splitting a large
+folio could make progress, or whether no swap space is available for even
+a single page.
+
+Classify failures using both the global free swap count and the remaining
+capacity in the folio's memcg swap hierarchy.  Return -ENOSPC when global
+swap space is exhausted, -ENOMEM when splitting cannot overcome the
+failure, and -E2BIG for a large folio when allocating or charging a
+smaller folio might still succeed.
+
+Use this classification for all folio_alloc_swap() failure paths,
+including capability rejection, swap slot allocation failure, and memcg
+swap charge failure.  Callers are updated separately to split large folios
+only on -E2BIG.
+
+Link: https://lore.kernel.org/20260830042920.2280454-3-xueyuan.chen21@gmail.com
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Suggested-by: Kairui Song <ryncsn@gmail.com>
+Suggested-by: Barry Song <baohua@kernel.org>
+Suggested-by: Youngjun Park <youngjun.park@lge.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nanzhe Zhao <zhaonanzhe@xiaomi.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/swap.h |  6 ++++++
+ mm/memcontrol.c      | 23 +++++++++++++++++++++++
+ mm/swapfile.c        | 26 +++++++++++++++++++-------
+ 3 files changed, 48 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 5658a1634b85e..7a43409879cae 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -508,6 +508,7 @@ static inline void mem_cgroup_uncharge_swap(unsigned short id, unsigned int nr_p
+ 	__mem_cgroup_uncharge_swap(id, nr_pages);
+ }
+ 
++long mem_cgroup_get_folio_swap_margin(struct folio *folio);
+ extern long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg);
+ extern bool mem_cgroup_swap_full(struct folio *folio);
+ #else
+@@ -521,6 +522,11 @@ static inline void mem_cgroup_uncharge_swap(unsigned short id,
+ {
+ }
+ 
++static inline long mem_cgroup_get_folio_swap_margin(struct folio *folio)
++{
++	return PAGE_COUNTER_MAX;
++}
++
+ static inline long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
+ {
+ 	return get_nr_swap_pages();
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index ff6e20a002730..7ce50bccf1264 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5832,6 +5832,29 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
+ 	return nr_swap_pages;
+ }
+ 
++/**
++ * mem_cgroup_get_folio_swap_margin - get a folio's memcg swap margin
++ * @folio: folio whose memcg margin is queried
++ *
++ * Return: Remaining chargeable pages in the folio's memcg hierarchy.
++ */
++long mem_cgroup_get_folio_swap_margin(struct folio *folio)
++{
++	struct mem_cgroup *memcg;
++	long margin;
++
++	if (mem_cgroup_disabled() || do_memsw_account() ||
++	    !folio_memcg_charged(folio))
++		return PAGE_COUNTER_MAX;
++
++	rcu_read_lock();
++	memcg = folio_memcg(folio);
++	margin = page_counter_margin(&memcg->swap);
++	rcu_read_unlock();
++
++	return margin;
++}
++
+ bool mem_cgroup_swap_full(struct folio *folio)
+ {
+ 	struct mem_cgroup *memcg;
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 408f6c72fb5a6..01e7b6b046b67 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1735,7 +1735,9 @@ static int swap_dup_entries_cluster(struct swap_info_struct *si,
+  * swap cache.
+  *
+  * Context: Caller needs to hold the folio lock.
+- * Return: Whether the folio was added to the swap cache.
++ * Return: %0 on success, %-E2BIG if splitting the folio might allow swapout,
++ * %-ENOSPC if no global swap space is available, or %-ENOMEM if splitting
++ * would not help.
+  */
+ int folio_alloc_swap(struct folio *folio)
+ {
+@@ -1747,11 +1749,11 @@ int folio_alloc_swap(struct folio *folio)
+ 
+ 	if (order) {
+ 		/*
+-		 * Reject large allocation when THP_SWAP is disabled,
+-		 * the caller should split the folio and try again.
++		 * Reject large allocation when THP_SWAP is disabled. Check below
++		 * whether splitting and retrying can make progress.
+ 		 */
+ 		if (!IS_ENABLED(CONFIG_THP_SWAP))
+-			return -EAGAIN;
++			goto failed;
+ 
+ 		/*
+ 		 * Allocation size should never exceed cluster size
+@@ -1759,7 +1761,7 @@ int folio_alloc_swap(struct folio *folio)
+ 		 */
+ 		if (size > SWAPFILE_CLUSTER) {
+ 			VM_WARN_ON_ONCE(1);
+-			return -EINVAL;
++			goto failed;
+ 		}
+ 	}
+ 
+@@ -1775,13 +1777,23 @@ int folio_alloc_swap(struct folio *folio)
+ 	}
+ 
+ 	/* Need to call this even if allocation failed, for MEMCG_SWAP_FAIL. */
+-	if (unlikely(mem_cgroup_try_charge_swap(folio)))
++	if (unlikely(mem_cgroup_try_charge_swap(folio))) {
+ 		swap_cache_del_folio(folio);
++		goto failed;
++	}
+ 
+ 	if (unlikely(!folio_test_swapcache(folio)))
+-		return -ENOMEM;
++		goto failed;
+ 
+ 	return 0;
++
++failed:
++	if (get_nr_swap_pages() <= 0)
++		return -ENOSPC;
++	if (mem_cgroup_get_folio_swap_margin(folio) <= 0)
++		return -ENOMEM;
++
++	return order ? -E2BIG : -ENOMEM;
+ }
+ 
+ /**
+-- 
+2.47.3
+

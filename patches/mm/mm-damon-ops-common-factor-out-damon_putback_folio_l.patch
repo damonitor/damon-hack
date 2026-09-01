@@ -1,0 +1,82 @@
+From: Li Youhong <liyouhong@kylinos.cn>
+Date: Mon, 31 Aug 2026 07:26:05 -0700
+Subject: [PATCH] mm/damon/ops-common: factor out damon_putback_folio_list()
+
+The putback loop is duplicated in damon_migrate_folio_list() and on the
+invalid-nid path of damon_migrate_pages().  Factor it into a small helper
+for readability.  No functional change.
+
+Link: https://lore.kernel.org/20260831142611.77572-4-sj@kernel.org
+Signed-off-by: Li Youhong <liyouhong@kylinos.cn>
+Signed-off-by: SJ Park <sj@kernel.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Enze Li <lienze@kylinos.cn>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hari Mishal <harimishal1@gmail.com>
+Cc: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+Cc: zhaozhengzhuo <zhaozhengzhuo@uniontech.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/ops-common.c | 30 +++++++++++++++---------------
+ 1 file changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index fbda70d8ea4d0..7a2e40bc7baed 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -330,6 +330,19 @@ static unsigned int __damon_migrate_folio_list(
+ 	return nr_succeeded;
+ }
+ 
++static void damon_putback_folio_list(struct list_head *folio_list)
++{
++	struct folio *folio;
++
++	while (!list_empty(folio_list)) {
++		folio = lru_to_folio(folio_list);
++		list_del(&folio->lru);
++		node_stat_sub_folio(folio, NR_ISOLATED_ANON +
++				folio_is_file_lru(folio));
++		folio_putback_lru(folio);
++	}
++}
++
+ static unsigned int damon_migrate_folio_list(struct list_head *folio_list,
+ 						struct pglist_data *pgdat,
+ 						int target_nid)
+@@ -371,13 +384,7 @@ static unsigned int damon_migrate_folio_list(struct list_head *folio_list,
+ 
+ 	list_splice(&ret_folios, folio_list);
+ 
+-	while (!list_empty(folio_list)) {
+-		folio = lru_to_folio(folio_list);
+-		list_del(&folio->lru);
+-		node_stat_sub_folio(folio, NR_ISOLATED_ANON +
+-				folio_is_file_lru(folio));
+-		folio_putback_lru(folio);
+-	}
++	damon_putback_folio_list(folio_list);
+ 
+ 	return nr_migrated;
+ }
+@@ -394,14 +401,7 @@ unsigned long damon_migrate_pages(struct list_head *folio_list, int target_nid)
+ 
+ 	if (target_nid < 0 || target_nid >= MAX_NUMNODES ||
+ 			!node_state(target_nid, N_MEMORY)) {
+-		while (!list_empty(folio_list)) {
+-			struct folio *folio = lru_to_folio(folio_list);
+-
+-			list_del(&folio->lru);
+-			node_stat_sub_folio(folio, NR_ISOLATED_ANON +
+-					folio_is_file_lru(folio));
+-			folio_putback_lru(folio);
+-		}
++		damon_putback_folio_list(folio_list);
+ 		return nr_migrated;
+ 	}
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,81 @@
+From: David Stevens <stevensd@google.com>
+Date: Mon, 31 Aug 2026 16:43:39 -0700
+Subject: [PATCH] memcg: don't call schedule_work when no spinning is allowed
+
+Memcg charging can be done from any context, but calling schedule_work()
+isn't safe from an NMI.  If memory.high is breached from a context where
+spinning isn't allowed, use irq_work to schedule the reclaim work.
+
+Link: https://lore.kernel.org/20260831234339.280376-1-stevensd@google.com
+Fixes: 3ac4638a734a ("memcg: make memcg_rstat_updated nmi safe")
+Signed-off-by: David Stevens <stevensd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h |  1 +
+ mm/memcontrol.c            | 12 +++++++++++-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index f227348a3f24a..fdf4812e1d818 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -206,6 +206,7 @@ struct mem_cgroup {
+ 	spinlock_t	 peaks_lock;
+ 
+ 	/* Range enforcement for interrupt charges */
++	struct irq_work high_irq_work;
+ 	struct work_struct high_work;
+ 
+ #ifdef CONFIG_ZSWAP
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 256b68ffca70e..27942d9aac899 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2424,6 +2424,11 @@ static void high_work_func(struct work_struct *work)
+ 	reclaim_high(memcg, MEMCG_CHARGE_BATCH, GFP_KERNEL);
+ }
+ 
++static void high_irq_work_func(struct irq_work *work)
++{
++	schedule_work(&container_of(work, struct mem_cgroup, high_irq_work)->high_work);
++}
++
+ /*
+  * Clamp the maximum sleep time per allocation batch to 2 seconds. This is
+  * enough to still cause a significant slowdown in most cases, while still
+@@ -2832,7 +2837,10 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 		/* Don't bother a random interrupted task */
+ 		if (!in_task()) {
+ 			if (mem_high) {
+-				schedule_work(&memcg->high_work);
++				if (allow_spinning)
++					schedule_work(&memcg->high_work);
++				else
++					irq_work_queue(&memcg->high_irq_work);
+ 				break;
+ 			}
+ 			continue;
+@@ -4207,6 +4215,7 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
+ 		goto fail;
+ 
+ 	INIT_WORK(&memcg->high_work, high_work_func);
++	init_irq_work(&memcg->high_irq_work, high_irq_work_func);
+ 	vmpressure_init(&memcg->vmpressure);
+ 	INIT_LIST_HEAD(&memcg->memory_peaks);
+ 	INIT_LIST_HEAD(&memcg->swap_peaks);
+@@ -4415,6 +4424,7 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
+ 		static_branch_dec(&memcg_bpf_enabled_key);
+ 
+ 	vmpressure_cleanup(&memcg->vmpressure);
++	irq_work_sync(&memcg->high_irq_work);
+ 	cancel_work_sync(&memcg->high_work);
+ 	free_shrinker_info(memcg);
+ 	mem_cgroup_free(memcg);
+-- 
+2.47.3
+

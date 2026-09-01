@@ -1,0 +1,72 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Sun, 30 Aug 2026 12:29:19 +0800
+Subject: [PATCH] mm/vmscan: avoid pointless large folio splits without swap
+
+When swap is disabled, exhausted, or unavailable due to memcg swap limits,
+splitting a large anonymous folio cannot make swapout progress.  The
+fallback only destroys the large folio and inflates split statistics.
+
+Use -E2BIG from folio_alloc_swap() as the explicit signal that splitting
+the folio might allow swapout of smaller pieces.  For other allocation
+failures, keep the existing activation path and avoid the split.
+
+This preserves the split fallback for fragmented or partially available
+swap, while avoiding it when there is no backing space for any part of the
+folio.
+
+Link: https://lore.kernel.org/20260830042920.2280454-4-xueyuan.chen21@gmail.com
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reported-by: Nanzhe Zhao <zhaonanzhe@xiaomi.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index b4c9b8f3dfe99..07ba86634b840 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -1262,6 +1262,8 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 		 */
+ 		if (folio_test_anon(folio) && folio_test_swapbacked(folio) &&
+ 				!folio_test_swapcache(folio)) {
++			int ret;
++
+ 			if (!(sc->gfp_mask & __GFP_IO))
+ 				goto keep_locked;
+ 			if (folio_maybe_dma_pinned(folio))
+@@ -1280,11 +1282,14 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 				    split_folio_to_list(folio, folio_list))
+ 					goto activate_locked;
+ 			}
+-			if (folio_alloc_swap(folio)) {
++			ret = folio_alloc_swap(folio);
++			if (ret) {
+ 				int __maybe_unused order = folio_order(folio);
+ 
+ 				if (!folio_test_large(folio))
+ 					goto activate_locked_split;
++				if (ret != -E2BIG)
++					goto activate_locked;
+ 				/* Fallback to swap normal pages */
+ 				if (split_folio_to_list(folio, folio_list))
+ 					goto activate_locked;
+-- 
+2.47.3
+
