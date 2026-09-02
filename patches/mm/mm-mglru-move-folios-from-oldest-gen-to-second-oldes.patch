@@ -1,0 +1,91 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Wed, 2 Sep 2026 07:24:20 +0800
+Subject: [PATCH] mm/mglru: move folios from oldest gen to second-oldest gen
+ from head to tail
+
+For reclamation, it makes sense to reclaim folios from tail to head, as
+folios near the head are relatively hot.  However, when moving folios from
+the oldest generation to the second-oldest generation, using the
+tail-to-head order would effectively cause a cold/hot inversion.
+
+Link: https://lore.kernel.org/20260901232421.40157-7-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Stevens <stevensd@chromium.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 6e51bf20b3817..a75d42db547bf 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -192,11 +192,27 @@ static inline void prefetchw_prev_lru_folio(struct folio *folio,
+ 		prefetchw(&prev->flags);
+ 	}
+ }
++
++static inline void prefetchw_next_lru_folio(struct folio *folio,
++		struct list_head *base)
++{
++	if (folio->lru.next != base) {
++		struct folio *next;
++
++		next = list_entry(folio->lru.next, struct folio, lru);
++		prefetchw(&next->flags);
++	}
++}
+ #else
+ static inline void prefetchw_prev_lru_folio(struct folio *folio,
+ 		struct list_head *base)
+ {
+ }
++
++static inline void prefetchw_next_lru_folio(struct folio *folio,
++		struct list_head *base)
++{
++}
+ #endif
+ 
+ /*
+@@ -3943,10 +3959,11 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 	/* prevent cold/hot inversion if the type is evictable */
+ 	for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+ 		struct list_head *head = &lrugen->folios[old_gen][type][zone];
++		struct list_head *pos = head->next;
+ 		long delta = 0;
+ 
+-		while (!list_empty(head)) {
+-			struct folio *folio = lru_to_folio(head);
++		while (pos != head) {
++			struct folio *folio = list_entry(pos, struct folio, lru);
+ 			long nr_pages = folio_nr_pages(folio);
+ 			int refs = folio_lru_refs(folio);
+ 			bool workingset = folio_test_workingset(folio);
+@@ -3957,6 +3974,8 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 			VM_WARN_ON_ONCE_FOLIO(folio_is_file_lru(folio) != type, folio);
+ 			VM_WARN_ON_ONCE_FOLIO(folio_zonenum(folio) != zone, folio);
+ 
++			prefetchw_next_lru_folio(folio, head);
++			pos = pos->next;
+ 			new_gen = __folio_inc_gen(folio, old_gen, &gen_increased);
+ 			/*
+ 			 * If gen_increased is false, this is a promotion. Put folios
+-- 
+2.47.3
+

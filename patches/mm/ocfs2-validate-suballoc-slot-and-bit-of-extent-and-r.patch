@@ -1,0 +1,151 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Tue, 1 Sep 2026 20:52:21 +0800
+Subject: [PATCH] ocfs2: validate suballoc slot and bit of extent and refcount
+ blocks
+
+ocfs2_validate_extent_block() and ocfs2_validate_refcount_block() do not
+validate h_suballoc_slot, h_suballoc_bit, rf_suballoc_slot and
+rf_suballoc_bit at all.  Since extent blocks and refcount blocks are
+allocated from a per-slot suballocator at runtime, their suballoc slots
+must be within range and their suballoc bits must fit in a block group
+bitmap.
+
+Otherwise a corrupted image can carry an out-of-range slot.  When the
+extent block is freed, ocfs2_cache_extent_block_free() caches it and
+ocfs2_free_cached_blocks() later passes the unvalidated slot to
+ocfs2_get_system_file_inode(); when the refcount block is freed,
+ocfs2_remove_refcount_extent() passes it via ocfs2_cache_block_dealloc().
+get_local_system_inode() will then either hit BUG_ON(slot ==
+OCFS2_INVALID_SLOT) or compute an out-of-bounds index into the
+local_system_inodes array.  Similarly an oversized suballoc bit will error
+out the filesystem in _ocfs2_free_suballoc_bits().
+
+Furthermore group descriptor validation only guarantees bg_bits within the
+physical bitmap size, so a corrupted image can still carry a suballoc bit
+beyond bg_bits, which would let ocfs2_block_group_clear_bits() clear bits
+beyond bg_bitmap.  Convert the remaining BUG_ON against group->bg_bits in
+_ocfs2_free_suballoc_bits() to ocfs2_error() as well.
+
+Reject out-of-range suballoc slots and oversized suballoc bits during
+validation.
+
+Link: https://lore.kernel.org/20260901125221.1634686-5-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Jun Piao <piaojun@huawei.com>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/alloc.c        | 27 +++++++++++++++++++++++++++
+ fs/ocfs2/refcounttree.c | 27 +++++++++++++++++++++++++++
+ fs/ocfs2/suballoc.c     | 15 ++++++++++++++-
+ 3 files changed, 68 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/alloc.c b/fs/ocfs2/alloc.c
+index be09e766ac1fc..2fdc5403b10b0 100644
+--- a/fs/ocfs2/alloc.c
++++ b/fs/ocfs2/alloc.c
+@@ -925,6 +925,33 @@ static int ocfs2_validate_extent_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
++	/*
++	 * Extent blocks are allocated from a per-slot suballocator, so the
++	 * slot must be in range.  Otherwise freeing the block passes it to
++	 * get_local_system_inode(), which hits BUG_ON() for
++	 * OCFS2_INVALID_SLOT or computes an out-of-bounds index otherwise.
++	 */
++	if ((u32)le16_to_cpu(eb->h_suballoc_slot) >= OCFS2_SB(sb)->max_slots) {
++		rc = ocfs2_error(sb,
++				 "Extent block #%llu has an invalid h_suballoc_slot of %u\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(eb->h_suballoc_slot));
++		goto bail;
++	}
++
++	/*
++	 * Similarly the suballoc bit must fit in a block group bitmap.
++	 * Otherwise freeing the block will pass the oversized bit to
++	 * _ocfs2_free_suballoc_bits() and trigger ocfs2_error() there.
++	 */
++	if (le16_to_cpu(eb->h_suballoc_bit) >= ocfs2_suballoc_bits_per_block(sb)) {
++		rc = ocfs2_error(sb,
++				 "Extent block #%llu has an invalid h_suballoc_bit of %u\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(eb->h_suballoc_bit));
++		goto bail;
++	}
++
+ 	if (le16_to_cpu(eb->h_list.l_count) != ocfs2_extent_recs_per_eb(sb)) {
+ 		rc = ocfs2_error(sb,
+ 				 "Extent block #%llu has invalid l_count %u (expected %u)\n",
+diff --git a/fs/ocfs2/refcounttree.c b/fs/ocfs2/refcounttree.c
+index d9f22b4a26546..3e9cccf06e48c 100644
+--- a/fs/ocfs2/refcounttree.c
++++ b/fs/ocfs2/refcounttree.c
+@@ -117,6 +117,33 @@ static int ocfs2_validate_refcount_block(struct super_block *sb,
+ 		goto out;
+ 	}
+ 
++	/*
++	 * Refcount blocks are allocated from a per-slot suballocator, so the
++	 * slot must be in range.  Otherwise freeing the block passes it to
++	 * get_local_system_inode(), which hits BUG_ON() for
++	 * OCFS2_INVALID_SLOT or computes an out-of-bounds index otherwise.
++	 */
++	if ((u32)le16_to_cpu(rb->rf_suballoc_slot) >= OCFS2_SB(sb)->max_slots) {
++		rc = ocfs2_error(sb,
++				 "Refcount block #%llu has an invalid rf_suballoc_slot of %u\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(rb->rf_suballoc_slot));
++		goto out;
++	}
++
++	/*
++	 * Similarly the suballoc bit must fit in a block group bitmap.
++	 * Otherwise freeing the block will pass the oversized bit to
++	 * _ocfs2_free_suballoc_bits() and trigger ocfs2_error() there.
++	 */
++	if (le16_to_cpu(rb->rf_suballoc_bit) >= ocfs2_suballoc_bits_per_block(sb)) {
++		rc = ocfs2_error(sb,
++				 "Refcount block #%llu has an invalid rf_suballoc_bit of %u\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(rb->rf_suballoc_bit));
++		goto out;
++	}
++
+ 	/*
+ 	 * rf_records (rl_count/rl_used/rl_recs[]) is only meaningful when
+ 	 * this block is not an interior tree block (OCFS2_REFCOUNT_TREE_FL);
+diff --git a/fs/ocfs2/suballoc.c b/fs/ocfs2/suballoc.c
+index ce22d0c3d2874..624152e4f7fed 100644
+--- a/fs/ocfs2/suballoc.c
++++ b/fs/ocfs2/suballoc.c
+@@ -3070,7 +3070,20 @@ static int _ocfs2_free_suballoc_bits(handle_t *handle,
+ 	}
+ 	group = (struct ocfs2_group_desc *) group_bh->b_data;
+ 
+-	BUG_ON((count + start_bit) > le16_to_cpu(group->bg_bits));
++	/*
++	 * Group descriptor validation only guarantees bg_bits within the
++	 * physical bitmap size, so double check the freeing range here.
++	 * Otherwise ocfs2_block_group_clear_bits() would clear bits beyond
++	 * bg_bitmap.
++	 */
++	if ((count + start_bit) > le16_to_cpu(group->bg_bits)) {
++		status = ocfs2_error(alloc_inode->i_sb,
++				     "Group descriptor #%llu has %u bits, cannot free bits %u+%u\n",
++				     (unsigned long long)le64_to_cpu(group->bg_blkno),
++				     le16_to_cpu(group->bg_bits),
++				     count, start_bit);
++		goto bail;
++	}
+ 
+ 	if (ocfs2_is_cluster_bitmap(alloc_inode))
+ 		old_bg_contig_free_bits = group->bg_contig_free_bits;
+-- 
+2.47.3
+

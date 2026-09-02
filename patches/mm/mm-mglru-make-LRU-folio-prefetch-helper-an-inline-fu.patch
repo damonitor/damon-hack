@@ -1,0 +1,83 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Wed, 2 Sep 2026 07:24:19 +0800
+Subject: [PATCH] mm/mglru: make LRU folio prefetch helper an inline function
+
+`prefetchw_prev_lru_folio()` is currently implemented as a macro with a
+potentially unused argument.  This makes the helper harder to read and can
+also trigger checkpatch warnings about unused macro arguments.
+
+Make it a `static inline` function and remove the unnecessary `_field`
+argument.  The helper always prefetches the previous folio's `flags`, so
+there is no need to make the field configurable.
+
+Link: https://lore.kernel.org/20260901232421.40157-6-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Stevens <stevensd@chromium.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 8773922b80d9e..6e51bf20b3817 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -182,17 +182,21 @@ struct scan_control {
+ };
+ 
+ #ifdef ARCH_HAS_PREFETCHW
+-#define prefetchw_prev_lru_folio(_folio, _base, _field)			\
+-	do {								\
+-		if ((_folio)->lru.prev != _base) {			\
+-			struct folio *prev;				\
+-									\
+-			prev = lru_to_folio(&(_folio->lru));		\
+-			prefetchw(&prev->_field);			\
+-		}							\
+-	} while (0)
++static inline void prefetchw_prev_lru_folio(struct folio *folio,
++		struct list_head *base)
++{
++	if (folio->lru.prev != base) {
++		struct folio *prev;
++
++		prev = lru_to_folio(&folio->lru);
++		prefetchw(&prev->flags);
++	}
++}
+ #else
+-#define prefetchw_prev_lru_folio(_folio, _base, _field) do { } while (0)
++static inline void prefetchw_prev_lru_folio(struct folio *folio,
++		struct list_head *base)
++{
++}
+ #endif
+ 
+ /*
+@@ -1700,7 +1704,7 @@ static unsigned long isolate_lru_folios(unsigned long nr_to_scan,
+ 		struct folio *folio;
+ 
+ 		folio = lru_to_folio(src);
+-		prefetchw_prev_lru_folio(folio, src, flags);
++		prefetchw_prev_lru_folio(folio, src);
+ 
+ 		nr_pages = folio_nr_pages(folio);
+ 		total_scan += nr_pages;
+-- 
+2.47.3
+

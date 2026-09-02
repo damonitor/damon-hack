@@ -1,0 +1,64 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Wed, 2 Sep 2026 07:24:18 +0800
+Subject: [PATCH] mm/mglru: exclude folios promoted by aging from protected in
+ inc_min_seq()
+
+Some folios may have been promoted during aging, so don't count them as
+protected, similar to sort_folio().
+
+Link: https://lore.kernel.org/20260901232421.40157-5-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reviewed-by: Ridong Chen <ridong.chen@linux.dev>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Stevens <stevensd@chromium.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index c0236ace636bc..8773922b80d9e 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3962,17 +3962,17 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 			if (gen_increased) {
+ 				delta += nr_pages;
+ 				list_move_tail(&folio->lru, &lrugen->folios[new_gen][type][zone]);
++
++				/* don't count the workingset being lazily promoted */
++				if (refs + workingset != BIT(LRU_REFS_WIDTH) + 1) {
++					int tier = lru_tier_from_refs(refs, workingset);
++
++					WRITE_ONCE(lrugen->protected[hist][type][tier],
++						   lrugen->protected[hist][type][tier] + nr_pages);
++				}
+ 			} else {
+ 				list_move(&folio->lru, &lrugen->folios[new_gen][type][zone]);
+ 			}
+-			/* don't count the workingset being lazily promoted */
+-			if (refs + workingset != BIT(LRU_REFS_WIDTH) + 1) {
+-				int tier = lru_tier_from_refs(refs, workingset);
+-
+-				WRITE_ONCE(lrugen->protected[hist][type][tier],
+-					   lrugen->protected[hist][type][tier] + nr_pages);
+-			}
+-
+ 			if (!--remaining)
+ 				break;
+ 		}
+-- 
+2.47.3
+

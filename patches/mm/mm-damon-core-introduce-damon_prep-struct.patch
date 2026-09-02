@@ -1,0 +1,155 @@
+From: SJ Park <sj@kernel.org>
+Date: Tue, 1 Sep 2026 06:24:52 -0700
+Subject: [PATCH] mm/damon/core: introduce damon_prep struct
+
+Some DAMON probe filter types require preparatory actions.  For example,
+pgilde_unset probe filter can say if the page was accessed but when.  To
+answer the second question, the PG_Idle flag should be set at a specific
+time.  It can make life much easier if DAMON can do such preparatory
+actions.  Introduce a new data type called damon_prep.  It specifies each
+of the preparation actions for each probe.  DAMON will execute the action
+for each region per sampling interval, like it clears page table accessed
+bits and unsets PG_Idle flag for access monitoring.
+
+Also introduce DAMON_PREP_SET_PGIDLE as the initial prep action.  As the
+name says, it will do exactly what DAMON was doing as the preparation
+action for the access monitoring.
+
+Link: https://lore.kernel.org/20260901132506.99243-6-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h | 32 ++++++++++++++++++++++++++++++++
+ mm/damon/core.c       | 26 ++++++++++++++++++++++++++
+ 2 files changed, 58 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 7a42cbe791845..1780c14942e63 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -742,6 +742,27 @@ struct damon_intervals_goal {
+ 	unsigned long max_sample_us;
+ };
+ 
++/**
++ * enum damon_prep_action - DAMON probing preparation action.
++ *
++ * @DAMON_PREP_SET_PGIDLE:	Set the probing memory as idle page.
++ */
++enum damon_prep_action {
++	DAMON_PREP_SET_PGIDLE,
++};
++
++/**
++ * struct damon_prep - DAMON probing preparation request.
++ *
++ * @action:	Action to do to the probing memory for the preparation.
++ */
++struct damon_prep {
++	enum damon_prep_action action;
++/* private: */
++	/* siblings list. */
++	struct list_head list;
++};
++
+ /**
+  * enum damon_filter_type - Type of &struct damon_filter
+  *
+@@ -783,6 +804,8 @@ struct damon_filter {
+ struct damon_probe {
+ 	unsigned int weight;
+ /* private: */
++	/* Preparation actions to apply to each probing memory. */
++	struct list_head preps;
+ 	/* Filters for assessing if a given region is for this probe. */
+ 	struct list_head filters;
+ 	/* Siblings list. */
+@@ -962,6 +985,12 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 	return r->ar.end - r->ar.start;
+ }
+ 
++#define damon_for_each_prep(p, probe) \
++	list_for_each_entry(p, &(probe)->preps, list)
++
++#define damon_for_each_prep_safe(p, next, probe) \
++	list_for_each_entry_safe(p, next, &(probe)->preps, list)
++
+ #define damon_for_each_filter(f, p) \
+ 	list_for_each_entry(f, &(p)->filters, list)
+ 
+@@ -1015,6 +1044,9 @@ static inline unsigned long damon_sz_region(struct damon_region *r)
+ 
+ #ifdef CONFIG_DAMON
+ 
++struct damon_prep *damon_new_prep(enum damon_prep_action action);
++void damon_add_prep(struct damon_probe *p, struct damon_prep *prep);
++
+ struct damon_filter *damon_new_filter(enum damon_filter_type type,
+ 		bool matching, bool allow);
+ void damon_add_filter(struct damon_probe *probe, struct damon_filter *f);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0df785e72438f..c74ddf84aa552 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -112,6 +112,28 @@ int damon_select_ops(struct damon_ctx *ctx, enum damon_ops_id id)
+ 	return err;
+ }
+ 
++struct damon_prep *damon_new_prep(enum damon_prep_action action)
++{
++	struct damon_prep *prep;
++
++	prep = kmalloc_obj(*prep);
++	if (!prep)
++		return NULL;
++	prep->action = action;
++	INIT_LIST_HEAD(&prep->list);
++	return prep;
++}
++
++void damon_add_prep(struct damon_probe *p, struct damon_prep *prep)
++{
++	list_add_tail(&prep->list, &p->preps);
++}
++
++static void damon_free_prep(struct damon_prep *p)
++{
++	kfree(p);
++}
++
+ struct damon_filter *damon_new_filter(enum damon_filter_type type,
+ 		bool matching, bool allow)
+ {
+@@ -168,6 +190,7 @@ struct damon_probe *damon_new_probe(void)
+ 	if (!p)
+ 		return NULL;
+ 	p->weight = 0;
++	INIT_LIST_HEAD(&p->preps);
+ 	INIT_LIST_HEAD(&p->filters);
+ 	INIT_LIST_HEAD(&p->list);
+ 	return p;
+@@ -185,8 +208,11 @@ static void damon_del_probe(struct damon_probe *p)
+ 
+ static void damon_free_probe(struct damon_probe *p)
+ {
++	struct damon_prep *prep, *prep_next;
+ 	struct damon_filter *f, *next;
+ 
++	damon_for_each_prep_safe(prep, prep_next, p)
++		damon_free_prep(prep);
+ 	damon_for_each_filter_safe(f, next, p)
+ 		damon_free_filter(f);
+ 	kfree(p);
+-- 
+2.47.3
+

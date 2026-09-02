@@ -1,0 +1,138 @@
+From: SJ Park <sj@kernel.org>
+Date: Tue, 1 Sep 2026 06:24:58 -0700
+Subject: [PATCH] mm/damon/sysfs: create directories for nr_preps writes
+
+Implement nr_preps write action to actually create subdirectories of the
+number.  Each of the directory will be evolved to represent each probe
+preparation action.
+
+Link: https://lore.kernel.org/20260901132506.99243-12-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/sysfs.c | 80 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 79 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index b9722ebffd6f1..4ff473b689535 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -749,12 +749,50 @@ static const struct kobj_type damon_sysfs_intervals_ktype = {
+ 	.default_groups = damon_sysfs_intervals_groups,
+ };
+ 
++/*
++ * prep directory
++ */
++
++struct damon_sysfs_prep {
++	struct kobject kobj;
++};
++
++static struct damon_sysfs_prep *damon_sysfs_prep_alloc(void)
++{
++	struct damon_sysfs_prep *prep;
++
++	prep = kzalloc_obj(struct damon_sysfs_prep);
++	if (!prep)
++		return prep;
++	return prep;
++}
++
++static void damon_sysfs_prep_release(struct kobject *kobj)
++{
++	struct damon_sysfs_prep *prep = container_of(kobj,
++			struct damon_sysfs_prep, kobj);
++
++	kfree(prep);
++}
++
++static struct attribute *damon_sysfs_prep_attrs[] = {
++	NULL,
++};
++ATTRIBUTE_GROUPS(damon_sysfs_prep);
++
++static const struct kobj_type damon_sysfs_prep_ktype = {
++	.release = damon_sysfs_prep_release,
++	.sysfs_ops = &kobj_sysfs_ops,
++	.default_groups = damon_sysfs_prep_groups,
++};
++
+ /*
+  * preps directory
+  */
+ 
+ struct damon_sysfs_preps {
+ 	struct kobject kobj;
++	struct damon_sysfs_prep **preps_arr;
+ 	int nr;
+ };
+ 
+@@ -765,13 +803,53 @@ static struct damon_sysfs_preps *damon_sysfs_preps_alloc(void)
+ 
+ static void damon_sysfs_preps_rm_dirs(struct damon_sysfs_preps *preps)
+ {
++	struct damon_sysfs_prep **preps_arr = preps->preps_arr;
++	int i;
++
++	for (i = 0; i < preps->nr; i++) {
++		kobject_del(&preps_arr[i]->kobj);
++		kobject_put(&preps_arr[i]->kobj);
++	}
+ 	preps->nr = 0;
++	kfree(preps_arr);
++	preps->preps_arr = NULL;
+ }
+ 
+ static int damon_sysfs_preps_add_dirs(struct damon_sysfs_preps *preps,
+ 		int nr_preps)
+ {
+-	preps->nr = nr_preps;
++	struct damon_sysfs_prep **preps_arr, *prep;
++	int err, i;
++
++	damon_sysfs_preps_rm_dirs(preps);
++	if (!nr_preps)
++		return 0;
++
++	preps_arr = kmalloc_objs(*preps_arr, nr_preps,
++				   GFP_KERNEL | __GFP_NOWARN);
++	if (!preps_arr)
++		return -ENOMEM;
++	preps->preps_arr = preps_arr;
++
++	for (i = 0; i < nr_preps; i++) {
++		prep = damon_sysfs_prep_alloc();
++		if (!prep) {
++			damon_sysfs_preps_rm_dirs(preps);
++			return -ENOMEM;
++		}
++
++		err = kobject_init_and_add(&prep->kobj,
++				&damon_sysfs_prep_ktype, &preps->kobj, "%d",
++				i);
++		if (err) {
++			kobject_put(&prep->kobj);
++			damon_sysfs_preps_rm_dirs(preps);
++			return err;
++		}
++
++		preps_arr[i] = prep;
++		preps->nr++;
++	}
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,95 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Wed, 2 Sep 2026 07:24:21 +0800
+Subject: [PATCH] mm/mglru: batch move folios to the second-oldest gen's LRU
+
+Detect folios that need to move from the oldest generation to the
+second-oldest generation, and batch-move them together.  This can
+significantly reduce the sys time of inc_min_seq(), especially when the
+other type is significantly behind the preferred type.
+
+Assisted-by: gemini:gemini-3.6-flash
+Link: https://lore.kernel.org/20260901232421.40157-8-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David Stevens <stevensd@chromium.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index a75d42db547bf..bf2786c7247d4 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3936,6 +3936,19 @@ static void clear_mm_walk(void)
+ 		kfree(walk);
+ }
+ 
++static inline void flush_lru_batch(struct list_head *head, struct list_head **batch_end,
++				   struct list_head *dst)
++{
++	LIST_HEAD(movable);
++
++	if (!*batch_end)
++		return;
++
++	list_cut_position(&movable, head, *batch_end);
++	list_splice_tail_init(&movable, dst);
++	*batch_end = NULL;
++}
++
+ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ {
+ 	int zone;
+@@ -3958,8 +3971,10 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 			lru_gen_is_active(lruvec, target_gen));
+ 	/* prevent cold/hot inversion if the type is evictable */
+ 	for (zone = 0; zone < MAX_NR_ZONES; zone++) {
++		struct list_head *target_list = &lrugen->folios[target_gen][type][zone];
+ 		struct list_head *head = &lrugen->folios[old_gen][type][zone];
+ 		struct list_head *pos = head->next;
++		struct list_head *batch_end = NULL;
+ 		long delta = 0;
+ 
+ 		while (pos != head) {
+@@ -3984,7 +3999,7 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 			 */
+ 			if (gen_increased) {
+ 				delta += nr_pages;
+-				list_move_tail(&folio->lru, &lrugen->folios[new_gen][type][zone]);
++				batch_end = &folio->lru;
+ 
+ 				/* don't count the workingset being lazily promoted */
+ 				if (refs + workingset != BIT(LRU_REFS_WIDTH) + 1) {
+@@ -3994,11 +4009,14 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
+ 						   lrugen->protected[hist][type][tier] + nr_pages);
+ 				}
+ 			} else {
++				flush_lru_batch(head, &batch_end, target_list);
+ 				list_move(&folio->lru, &lrugen->folios[new_gen][type][zone]);
+ 			}
+ 			if (!--remaining)
+ 				break;
+ 		}
++		flush_lru_batch(head, &batch_end, target_list);
++
+ 		WRITE_ONCE(lrugen->nr_pages[old_gen][type][zone],
+ 			   lrugen->nr_pages[old_gen][type][zone] - delta);
+ 		WRITE_ONCE(lrugen->nr_pages[target_gen][type][zone],
+-- 
+2.47.3
+

@@ -1,0 +1,113 @@
+From: SJ Park <sj@kernel.org>
+Date: Tue, 1 Sep 2026 06:24:57 -0700
+Subject: [PATCH] mm/damon/sysfs: implement preps/nr_preps file
+
+Implement nr_preps file under the preps directory.  It will be evolved to
+be used for generating sub directories that will represent each probe
+preparation action.
+
+Link: https://lore.kernel.org/20260901132506.99243-11-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/sysfs.c | 53 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs.c b/mm/damon/sysfs.c
+index 35fb308039b61..b9722ebffd6f1 100644
+--- a/mm/damon/sysfs.c
++++ b/mm/damon/sysfs.c
+@@ -755,6 +755,7 @@ static const struct kobj_type damon_sysfs_intervals_ktype = {
+ 
+ struct damon_sysfs_preps {
+ 	struct kobject kobj;
++	int nr;
+ };
+ 
+ static struct damon_sysfs_preps *damon_sysfs_preps_alloc(void)
+@@ -762,12 +763,60 @@ static struct damon_sysfs_preps *damon_sysfs_preps_alloc(void)
+ 	return kzalloc_obj(struct damon_sysfs_preps);
+ }
+ 
++static void damon_sysfs_preps_rm_dirs(struct damon_sysfs_preps *preps)
++{
++	preps->nr = 0;
++}
++
++static int damon_sysfs_preps_add_dirs(struct damon_sysfs_preps *preps,
++		int nr_preps)
++{
++	preps->nr = nr_preps;
++	return 0;
++}
++
++static ssize_t nr_preps_show(struct kobject *kobj, struct kobj_attribute *attr,
++		char *buf)
++{
++	struct damon_sysfs_preps *preps = container_of(kobj,
++			struct damon_sysfs_preps, kobj);
++
++	return sysfs_emit(buf, "%d\n", preps->nr);
++}
++
++static ssize_t nr_preps_store(struct kobject *kobj,
++		struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	struct damon_sysfs_preps *preps;
++	int nr, err = kstrtoint(buf, 0, &nr);
++
++	if (err)
++		return err;
++	if (nr < 0)
++		return -EINVAL;
++
++	preps = container_of(kobj, struct damon_sysfs_preps, kobj);
++
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	err = damon_sysfs_preps_add_dirs(preps, nr);
++	mutex_unlock(&damon_sysfs_lock);
++	if (err)
++		return err;
++
++	return count;
++}
++
+ static void damon_sysfs_preps_release(struct kobject *kobj)
+ {
+ 	kfree(container_of(kobj, struct damon_sysfs_preps, kobj));
+ }
+ 
++static struct kobj_attribute damon_sysfs_preps_nr_attr =
++		__ATTR_RW_MODE(nr_preps, 0600);
++
+ static struct attribute *damon_sysfs_preps_attrs[] = {
++	&damon_sysfs_preps_nr_attr.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(damon_sysfs_preps);
+@@ -1149,8 +1198,10 @@ static int damon_sysfs_probe_add_dirs(struct damon_sysfs_probe *probe)
+ 
+ static void damon_sysfs_probe_rm_dirs(struct damon_sysfs_probe *probe)
+ {
+-	if (probe->preps)
++	if (probe->preps) {
++		damon_sysfs_preps_rm_dirs(probe->preps);
+ 		kobject_put(&probe->preps->kobj);
++	}
+ 	if (probe->filters) {
+ 		damon_sysfs_filters_rm_dirs(probe->filters);
+ 		kobject_put(&probe->filters->kobj);
+-- 
+2.47.3
+

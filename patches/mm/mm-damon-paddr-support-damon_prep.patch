@@ -1,0 +1,83 @@
+From: SJ Park <sj@kernel.org>
+Date: Tue, 1 Sep 2026 06:24:55 -0700
+Subject: [PATCH] mm/damon/paddr: support damon_prep
+
+Implement damon_operations->prep_probes() callback.  Support the only
+existing prep action, DAMON_PREP_SET_PGIDLE in a way similar to what it
+was doing for the access check preparation: unset page table accessed bits
+and set PG_Idle flag.  Reuse the function for the access check
+preparation.
+
+Link: https://lore.kernel.org/20260901132506.99243-9-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/paddr.c | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 6f756f8493894..c1e7d7a4f40df 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -105,6 +105,40 @@ static unsigned int damon_pa_check_accesses(struct damon_ctx *ctx)
+ 	return max_nr_accesses;
+ }
+ 
++static void damon_pa_prep_probes_region(struct damon_region *r,
++		struct damon_probe *probe, struct damon_ctx *ctx)
++{
++	struct damon_prep *p;
++
++	damon_for_each_prep(p, probe) {
++		switch (p->action) {
++		case DAMON_PREP_SET_PGIDLE:
++			damon_pa_mkold(damon_pa_phys_addr(r->sampling_addr,
++						ctx->addr_unit));
++			break;
++		default:
++			break;
++		}
++	}
++}
++
++static void damon_pa_prep_probes(struct damon_ctx *ctx, bool set_samples)
++{
++	struct damon_target *t;
++	struct damon_region *r;
++	struct damon_probe *p;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region(r, t) {
++			if (set_samples)
++				r->sampling_addr = damon_rand(ctx, r->ar.start,
++						r->ar.end);
++			damon_for_each_probe(p, ctx)
++				damon_pa_prep_probes_region(r, p, ctx);
++		}
++	}
++}
++
+ static bool damon_pa_filter_match(struct damon_filter *filter,
+ 		struct folio *folio)
+ {
+@@ -448,6 +482,7 @@ static int __init damon_pa_initcall(void)
+ 		.update = NULL,
+ 		.prepare_access_checks = damon_pa_prepare_access_checks,
+ 		.check_accesses = damon_pa_check_accesses,
++		.prep_probes = damon_pa_prep_probes,
+ 		.apply_probes = damon_pa_apply_probes,
+ 		.target_valid = NULL,
+ 		.apply_scheme = damon_pa_apply_scheme,
+-- 
+2.47.3
+

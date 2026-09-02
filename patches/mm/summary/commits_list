@@ -4,68 +4,181 @@
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-unstable: 17 total, 5 (17) series, 0 non-series commits
   - author/reviewer role stat
-    - no role, nobody: 1 commits
-    - no role, maintainer: 16 commits
+    - no role, maintainer: 17 commits
   - full commits list
     - series "mm/damon: add kunit tests for probe_hits handling and probe params validation", v2. (2 commits)
-      - 0f1e962720bb "mm/damon/core-kunit: test probe_hits handling at region split and merge" (0/2)
+      - 5cd865e0d54a "mm/damon/core-kunit: test probe_hits handling at region split and merge" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831150650.84829-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260831150650.84829-2-sj@kernel.org
-      - 1ac081d5c8ee "mm/damon/core-kunit: test damon_valid_probe_params()" (1/2)
+      - c1fa7eda6f0d "mm/damon/core-kunit: test damon_valid_probe_params()" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831150650.84829-3-sj@kernel.org
     - series "docs/mm/damon/design: add explanation of nr_snapshots", v3. (3 commits)
-      - f722f4fedce6 "docs/mm/damon/design: accurate semantics of nr_snapshots" (0/3)
+      - 02440ca79115 "docs/mm/damon/design: accurate semantics of nr_snapshots" (0/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831150227.83416-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260831150227.83416-2-sj@kernel.org
-      - b2d8fcb8b36d "docs/mm/damon/design: difference between watermarks and nr_snapshots" (1/3)
+      - 070c43675747 "docs/mm/damon/design: difference between watermarks and nr_snapshots" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831150227.83416-3-sj@kernel.org
-      - 9d3d3356faf0 "docs/mm/damon/design: fix typo of max_nr_snapshots" (2/3)
+      - 4d2d2a67c728 "docs/mm/damon/design: fix typo of max_nr_snapshots" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831150227.83416-4-sj@kernel.org
     - series "mm/damon/core: remove unused helper functions", v2. (2 commits)
-      - 45d2a411a99b "mm/damon/core: remove unused damon_targets_empty()" (0/2)
+      - a7503eb13359 "mm/damon/core: remove unused damon_targets_empty()" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831145724.82387-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260831145724.82387-2-sj@kernel.org
-      - 4e458195f6ad "mm/damon/core: remove unused damon_nr_running_ctxs()" (1/2)
+      - 13f30501f7de "mm/damon/core: remove unused damon_nr_running_ctxs()" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831145724.82387-3-sj@kernel.org
     - series "mm/damon: Introduce a huge page collapsing mechanism using auto tuning", v4. (3 commits)
-      - 870d63dae109 "mm/damon: introduce DAMOS_QUOTA_HUGEPAGE auto tuning" (0/3)
-        - Authored by no role player, reviewed by nobody
-      - 82927fb0b33f "mm/damon/sysfs: support hugepage_mem_bp quota goal metric" (1/3)
+      - a0a02979a2c0 "mm/damon: introduce DAMOS_QUOTA_HUGEPAGE auto tuning" (0/3)
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260831144732.80910-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831144732.80910-2-sj@kernel.org
+        - Link: https://dl.acm.org/doi/pdf/10.1145/3307650.3322227 [1]
+        - Link: https://lore.kernel.org/e67f05ad-dbb9-45e6-ba30-b167a99ac67d@huawei-partners.com [2]
+        - Link: https://lore.kernel.org/20260616150316.580819-3-gutierrez.asier@huawei-partners.com [3]
+        - Link: https://github.com/asierHuawei/damo/commit/79ae1a4ab1c012a7161db85a000d14f08fa36736 [4]
+        - Link: https://lore.kernel.org/all/03f678dd-9ef3-4b97-b753-c2e4554c5159@huawei-partners.com/ [5]
+        - Link: https://lore.kernel.org/all/20260715151615.99767-1-sj@kernel.org/ [6]
+      - 63f65b1bab64 "mm/damon/sysfs: support hugepage_mem_bp quota goal metric" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831144732.80910-3-sj@kernel.org
-      - cf76fb0e3f19 "Docs/mm/damon/design: cocument hugepage_mem_bp target metric" (2/3)
+      - 01b20ab945dd "Docs/mm/damon/design: cocument hugepage_mem_bp target metric" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831144732.80910-4-sj@kernel.org
     - series "mm/damon: misc cleanups". (7 commits)
-      - 603392b87e8b "mm/damon/core: remove declaration of __damon_commit_ctx()" (0/7)
+      - 1e2be9e6faa2 "mm/damon/core: remove declaration of __damon_commit_ctx()" (0/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260831142611.77572-2-sj@kernel.org
-      - 0584d36c010b "mm/damon/core: introduce damon_set_target_pid()" (1/7)
+      - f7e337d9757e "mm/damon/core: introduce damon_set_target_pid()" (1/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-3-sj@kernel.org
-      - 517f1595f8dd "mm/damon/ops-common: factor out damon_putback_folio_list()" (2/7)
+      - 8125143b820d "mm/damon/ops-common: factor out damon_putback_folio_list()" (2/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-4-sj@kernel.org
-      - 417ae6f94509 "selftests/damon/sysfs.py: clean up sh processes used for obsolete_target test" (3/7)
+      - c95d58d2c08c "selftests/damon/sysfs.py: clean up sh processes used for obsolete_target test" (3/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-5-sj@kernel.org
-      - d53ada5b715c "mm/damon/tests: use scoped_guard() for damon_test_ops_registration" (4/7)
+      - 932a945bf5a1 "mm/damon/tests: use scoped_guard() for damon_test_ops_registration" (4/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-6-sj@kernel.org
-      - ccc1075d8aaa "selftests/damon: prevent remaining cross-object state pollution" (5/7)
+      - b8821ae34613 "selftests/damon: prevent remaining cross-object state pollution" (5/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-7-sj@kernel.org
-      - 6ccb5f4a9380 "samples/damon/mtier: add comment for struct region_range" (6/7)
+      - 554e1d8ebebd "samples/damon/mtier: add comment for struct region_range" (6/7)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260831142611.77572-8-sj@kernel.org
-- mm-new: 0 total, 0 (0) series, 0 non-series commits
+- mm-new: 29 total, 3 (13) series, 16 non-series commits
+  - author/reviewer role stat
+    - maintainer, nobody: 29 commits
+  - full commits list
+    - series "mm/damon: fix DAMOS bugs in core, paddr and vaddr". (8 commits)
+      - eeecd34cf0d7 "mm/damon/core: skip applying scheme if region split for quota fails" (0/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260901131850.98037-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260718171523.87547-1-sj@kernel.org [1]
+      - 5f13e27c8319 "mm/damon/paddr: respect folio end for DAMOS_STAT" (1/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-3-sj@kernel.org
+      - 8520998c4dec "mm/damon/paddr: respect folio end for DAMOS actions except STAT" (2/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-4-sj@kernel.org
+        - Link: https://lore.kernel.org/20260517234112.89245-1-sj@kernel.org [1]
+      - e99d71008edb "mm/damon/vaddr: respect folio end for DAMOS_STAT" (3/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260514015053.149396-1-sj@kernel.org [1]
+      - dba00859e9a8 "mm/damon/vaddr: respect folio end for DAMOS_MIGRATE_{HOT,COLD}" (4/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260514015053.149396-1-sj@kernel.org [1]
+      - cfab495b8cad "mm/damon/core: handle extreme memory state in damon_get_node_mem_bp()" (5/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260328133216.9697-1-sj@kernel.org [1]
+      - 0f234d9a384c "mm/damon/core: handle extreme memory state in get_node_memcg_used_bp()" (6/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-8-sj@kernel.org
+        - Link: https://lore.kernel.org/20260329154813.47382-1-sj@kernel.org [1]
+      - 2934cbbed718 "mm/damon/core: handle extreme memory state in get_in_active_mem_bp()" (7/8)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901131850.98037-9-sj@kernel.org
+        - Link: https://lore.kernel.org/20260721034756.147011-1-sj@kernel.org [1]
+      - b78e2b83b80e "mm/damon/core: introduce DAMON_FILTER_TYPE_PGIDLE_UNSET" (None/None)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260901132506.99243-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260901132506.99243-2-sj@kernel.org
+        - Link: https://github.com/damonitor/damo [1]
+        - Link: https://github.com/sjp38/masim [2]
+    - de62dd4310da "mm/damon/paddr: support PGIDLE_UNSET probe filter type"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-3-sj@kernel.org
+    - 60f8d3602808 "mm/damon/sysfs: support pgidle_unset probe filter type"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-4-sj@kernel.org
+    - 1d9f5124bdd8 "Docs/mm/damon/design: document pgidle_unset probe filter type"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-5-sj@kernel.org
+    - 41cf23230411 "mm/damon/core: introduce damon_prep struct"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-6-sj@kernel.org
+    - 5b97273ffbfa "mm/damon/core: commit preps"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-7-sj@kernel.org
+    - dc9e29638843 "mm/damon/core: introduce damon_operations->prep_probes()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-8-sj@kernel.org
+    - bfaab317c251 "mm/damon/paddr: support damon_prep"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-9-sj@kernel.org
+    - a9219c92ea55 "mm/damon/sysfs: implement preps directory"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-10-sj@kernel.org
+    - 5ad28b11a757 "mm/damon/sysfs: implement preps/nr_preps file"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-11-sj@kernel.org
+    - 15be62232ef4 "mm/damon/sysfs: create directories for nr_preps writes"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-12-sj@kernel.org
+    - 03aa14a53676 "mm/damon/sysfs: implement prep_action file"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-13-sj@kernel.org
+    - 8c8daf11f0a2 "mm/damon/sysfs: pass preps to DAMON core"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-14-sj@kernel.org
+    - 54796a9efd1b "selftests/damon/sysfs.sh: test probe prep sysfs files"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-15-sj@kernel.org
+    - 24d0e85966e7 "Docs/mm/damon/design: document probe preps"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-16-sj@kernel.org
+    - 958143fcc80e "Docs/admin-guide/mm/damon/usage: document probe preps sysfs files"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-17-sj@kernel.org
+    - 5e8eeeda633d "Docs/ABI/damon: document probe prep sysfs files"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260901132506.99243-18-sj@kernel.org
+    - series "mm/damon: fix misc bugs in kunit, quota goals and sysfs refresh_ms". (4 commits)
+      - 28e4b97a1267 "mm/damon/tests/core-kunit: test committing psi goal to psi goal" (0/4)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260902002725.108635-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260902002725.108635-2-sj@kernel.org
+      - afccce9775b9 "mm/damon/core: handle uninitialized damos_quota_goal->last_psi_total" (1/4)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260902002725.108635-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260718005316.89585-1-sj@kernel.org [1]
+      - 07f260622fbe "mm/damon/core: copy nid for eligible_mem_bp damos quota goal commit" (2/4)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260902002725.108635-4-sj@kernel.org
+        - Link: https://lore.kkernel.org/20260827045035.94611-1-sj@kernel.org [1]
+      - 1e39b46d26da "mm/damon/sysfs: set next refresh jiffies per sysfs context" (3/4)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260902002725.108635-5-sj@kernel.org
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits
