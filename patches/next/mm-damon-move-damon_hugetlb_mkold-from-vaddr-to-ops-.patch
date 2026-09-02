@@ -1,5 +1,5 @@
-From: Krishna Iyer <kiyer@crusoe.ai>
-Date: Tue, 1 Sep 2026 19:56:58 -0700
+From: SJ Park <sj@kernel.org>
+Date: Tue, 1 Sep 2026 22:35:53 -0700
 Subject: [PATCH] mm/damon: move damon_hugetlb_mkold() from vaddr to ops-common
 
 damon_hugetlb_mkold() clears the accessed bit of a hugetlb-mapping huge
@@ -22,11 +22,11 @@ Signed-off-by: SJ Park <sj@kernel.org>
 ---
  mm/damon/ops-common.c | 30 ++++++++++++++++++++++++++++++
  mm/damon/ops-common.h |  9 +++++++++
- mm/damon/vaddr.c      | 34 ----------------------------------
- 3 files changed, 39 insertions(+), 34 deletions(-)
+ mm/damon/vaddr.c      | 27 ---------------------------
+ 3 files changed, 39 insertions(+), 27 deletions(-)
 
 diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
-index cfcd4edee346a..4570f91df0e16 100644
+index 7219c608b1952..93819039d2a08 100644
 --- a/mm/damon/ops-common.c
 +++ b/mm/damon/ops-common.c
 @@ -3,6 +3,7 @@
@@ -74,7 +74,7 @@ index cfcd4edee346a..4570f91df0e16 100644
  #define DAMON_MAX_AGE_IN_LOG	(32)
  
 diff --git a/mm/damon/ops-common.h b/mm/damon/ops-common.h
-index b832169b1cf8c..ab20d6a98ce2d 100644
+index 38d295488fa18..f7811c9c7a024 100644
 --- a/mm/damon/ops-common.h
 +++ b/mm/damon/ops-common.h
 @@ -9,6 +9,15 @@ struct folio *damon_get_folio(unsigned long pfn);
@@ -94,36 +94,29 @@ index b832169b1cf8c..ab20d6a98ce2d 100644
  bool damon_folio_young(struct folio *folio);
  
 diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
-index 46c84880ef5d8..7063356370c34 100644
+index f884d3f78f30a..af9e1b82454cc 100644
 --- a/mm/damon/vaddr.c
 +++ b/mm/damon/vaddr.c
-@@ -283,40 +283,6 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
+@@ -283,33 +283,6 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
  }
  
  #ifdef CONFIG_HUGETLB_PAGE
--static bool damon_hugetlb_ptep_mkold(pte_t *pte, struct mm_struct *mm,
--		struct vm_area_struct *vma, unsigned long addr, pte_t *entry)
--{
--	unsigned long psize = huge_page_size(hstate_vma(vma));
--
--	if (!pte_young(*entry))
--		return false;
--	*entry = huge_ptep_get_and_clear(mm, addr, pte, psize);
--	*entry = pte_mkold(*entry);
--	set_huge_pte_at(mm, addr, pte, *entry, psize);
--	return true;
--}
--
 -static void damon_hugetlb_mkold(pte_t *pte, struct mm_struct *mm,
 -				struct vm_area_struct *vma, unsigned long addr)
 -{
 -	bool referenced = false;
 -	pte_t entry = huge_ptep_get(mm, addr, pte);
 -	struct folio *folio = pfn_folio(pte_pfn(entry));
+-	unsigned long psize = huge_page_size(hstate_vma(vma));
 -
 -	folio_get(folio);
 -
--	referenced = damon_hugetlb_ptep_mkold(pte, mm, vma, addr, &entry);
+-	if (pte_young(entry)) {
+-		referenced = true;
+-		entry = pte_mkold(entry);
+-		set_huge_pte_at(mm, addr, pte, entry, psize);
+-	}
+-
 -	if (mmu_notifier_clear_young(mm, addr,
 -				     addr + huge_page_size(hstate_vma(vma))))
 -		referenced = true;
