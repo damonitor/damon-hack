@@ -1,0 +1,72 @@
+From: Maximilian Heyne <mheyne@amazon.de>
+Date: Fri, 19 Jun 2026 11:24:29 +0000
+Subject: [PATCH] selftests: uevent filtering: don't shrink the socket buffer
+
+The uevent_filtering test shrinks the uevent socket buffer to 4 KB
+although the default socket buffer size is much higher.  This leads to
+this test being flaky when too many unrelated uevents are fired on the
+machine.  They might fill up the netlink receive buffer leading to ENOBUFS
+errors when trying to receive the uevents.  For example, I could trigger
+test failures when running triggering a lot of udev events in the
+background:
+
+  $ # run multiple of that in the background:
+  $ while :; do sudo udevadm trigger --action=change; done &
+  $ sudo ./uevent_filtering
+    # Starting 1 tests from 1 test cases.
+    #  RUN           global.uevent_filtering ...
+    add@/devices/virtual/mem/fullACTION=addDEVPATH=/devices/virtual/mem/fullSUBSYSTEM=memSYNTH_UUID=0MAJOR=1MINOR=7DEVNAME=fullDEVMODE=0666SEQNUM=304458
+    add@/devices/virtual/mem/fullACTION=addDEVPATH=/devices/virtual/mem/fullSUBSYSTEM=memSYNTH_UUID=0MAJOR=1MINOR=7DEVNAME=fullDEVMODE=0666SEQNUM=304471
+    add@/devices/virtual/mem/fullACTION=addDEVPATH=/devices/virtual/mem/fullSUBSYSTEM=memSYNTH_UUID=0MAJOR=1MINOR=7DEVNAME=fullDEVMODE=0666SEQNUM=304481
+    add@/devices/virtual/mem/fullACTION=addDEVPATH=/devices/virtual/mem/fullSUBSYSTEM=memSYNTH_UUID=0MAJOR=1MINOR=7DEVNAME=fullDEVMODE=0666SEQNUM=349156
+    No buffer space available - Failed to receive uevent
+    # uevent_filtering.c:463:uevent_filtering:Expected 0 (0) == ret (-1)
+    # uevent_filtering: Test failed
+    #          FAIL  global.uevent_filtering
+    not ok 1 global.uevent_filtering
+
+The default receive buffer size (SK_RMEM_MAX) is far larger than the
+requested 4 KB, so keep this to make the test less flaky.
+
+Link: https://lore.kernel.org/20260619-get-swam-a1cd4cca@mheyne-amazon
+Fixes: 9d3df886d17b ("selftests: uevent filtering")
+Signed-off-by: Maximilian Heyne <mheyne@amazon.de>
+Cc: Christian Brauner <christianvanbrauner@gmail.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/uevent/uevent_filtering.c | 8 --------
+ 1 file changed, 8 deletions(-)
+
+diff --git a/tools/testing/selftests/uevent/uevent_filtering.c b/tools/testing/selftests/uevent/uevent_filtering.c
+index 33a09f66d7e22..8c623845e3d04 100644
+--- a/tools/testing/selftests/uevent/uevent_filtering.c
++++ b/tools/testing/selftests/uevent/uevent_filtering.c
+@@ -78,7 +78,6 @@ static int uevent_listener(unsigned long post_flags, bool expect_uevent,
+ {
+ 	int sk_fd, ret;
+ 	socklen_t sk_addr_len;
+-	int rcv_buf_sz = __UEVENT_BUFFER_SIZE;
+ 	uint64_t sync_add = 1;
+ 	struct sockaddr_nl sk_addr = { 0 }, rcv_addr = { 0 };
+ 	char buf[__UEVENT_BUFFER_SIZE] = { 0 };
+@@ -96,13 +95,6 @@ static int uevent_listener(unsigned long post_flags, bool expect_uevent,
+ 		return -1;
+ 	}
+ 
+-	ret = setsockopt(sk_fd, SOL_SOCKET, SO_RCVBUF, &rcv_buf_sz,
+-			 sizeof(rcv_buf_sz));
+-	if (ret < 0) {
+-		fprintf(stderr, "%s - Failed to set socket options\n", strerror(errno));
+-		goto on_error;
+-	}
+-
+ 	sk_addr.nl_family = AF_NETLINK;
+ 	sk_addr.nl_groups = __UEVENT_LISTEN_ALL;
+ 
+-- 
+2.47.3
+

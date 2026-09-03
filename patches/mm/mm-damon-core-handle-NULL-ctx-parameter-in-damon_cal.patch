@@ -1,0 +1,52 @@
+From: SJ Park <sj@kernel.org>
+Date: Wed, 2 Sep 2026 18:03:30 -0700
+Subject: [PATCH] mm/damon/core: handle NULL ctx parameter in damon_call()
+
+Patch series "mm/damon: allow NULL or unstarted damon_ctx parameter for
+damon_call()".
+
+Callers of damon_call() should validate the damon_ctx object parameter.
+If it is NULL or never damon_start()-ed object, damon_call() could
+dereference the NULL pointer or indefinitely hang.  Ensuring all callers
+doing the validation correctly has turned out to be difficult.  Handle the
+corner cases inside the core layer and remove callers' validations.
+
+Patches 1 and 2 respectively allow passing NULL and not yet
+damon_start()-ed ctx parameter to damon_call().  Patches 3 and 4 remove
+the callers side validations in DMON_RECLAIM and DASMON_LRU_SORT,
+respectively.
+
+
+This patch (of 4):
+
+When NULL damon_ctx pointer parameter is passed, damon_call() could do
+NULL dereference.  The caller is responsible to avoid that.  It is easy to
+forget, and there are many damon_call() callers.  Meanwhile, damon_call()
+is never meant to be performance critical.  It uses mutex and completion.
+Add the NULL pointer check inside damon_call() so that callers can pass
+the parameter without NULL checks.
+
+Link: https://lore.kernel.org/20260903010334.93622-1-sj@kernel.org
+Link: https://lore.kernel.org/20260903010334.93622-2-sj@kernel.org
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/damon/core.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f5e7ed9f5e159..03084c758ce1e 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2216,6 +2216,8 @@ int damon_kdamond_pid(struct damon_ctx *ctx)
+  */
+ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control)
+ {
++	if (!ctx)
++		return -EINVAL;
+ 	if (!control->repeat)
+ 		init_completion(&control->completion);
+ 	control->canceled = false;
+-- 
+2.47.3
+

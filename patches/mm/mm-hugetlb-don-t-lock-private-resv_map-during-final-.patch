@@ -1,0 +1,169 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Thu, 3 Sep 2026 13:57:33 -0700
+Subject: [PATCH] mm/hugetlb: don't lock private resv_map during final unmap
+
+Replacing a private hugetlb mapping can trigger a lockdep circular
+locking warning and, if the corresponding reclaim, NBD and socket paths
+run concurrently, can deadlock userspace tasks.
+
+The mmap path holds mmap_lock for write while removing an overlapping
+mapping and then reaches:
+
+  unmap_vmas()
+    hugetlb_zap_begin()
+      hugetlb_vma_lock_write()
+        resv_map->rw_sema
+
+This establishes the lock ordering:
+
+  mmap_lock -> resv_map->rw_sema
+
+Lockdep already knows about a transitive dependency in the other
+direction.  In full, the relevant part of the dependency graph is:
+
+  resv_map->rw_sema
+    -> fs_reclaim
+    -> q->q_usage_counter
+    -> q->elevator_lock
+    -> set->srcu
+    -> cmd->lock
+    -> nsock->tx_lock
+    -> sk_lock-AF_INET6
+    -> mmap_lock
+
+The resv_map->rw_sema -> fs_reclaim edge can be established by a
+private hugetlb fault.  The fault holds the private VMA lock for read
+and huge_pte_alloc() can allocate page-table memory with reclaim
+enabled.  The middle of the chain comes from the block and NBD paths,
+while sk_lock-AF_INET6 -> mmap_lock can be established when an IPv6
+send copies from userspace while holding the socket lock and faults on
+the user buffer.
+
+Consequently, lockdep summarizes the relevant reverse path as:
+
+  resv_map->rw_sema -> sk_lock-AF_INET6 -> mmap_lock
+
+This is a transitive lockdep dependency, not a single call stack
+holding all three locks.
+
+Commit bf4916922c60 ("hugetlbfs: extend hugetlb_vma_lock to private
+VMAs") made hugetlb_vma_lock_write() acquire resv_map->rw_sema for
+private hugetlb mappings.  That lock is needed for partial zaps such as
+MADV_DONTNEED.  It keeps a concurrent fault from running after the PTE
+has been cleared but before the hugepage has actually been returned to
+the pool, which could otherwise result in an unexpected SIGBUS when the
+hugepage pool is fully allocated.
+
+That serialization is unnecessary when the VMA is being finally
+unmapped.  mmap_lock prevents a concurrent fault from entering a VMA
+which is being removed, and private VMAs do not participate in hugetlb
+PMD sharing.
+
+Pass the zap details to hugetlb_zap_begin() so that it can distinguish
+a final unmap.  For final unmaps, continue taking the hugetlb VMA lock
+for shareable mappings, where it protects PMD sharing and the lifetime
+of the VMA lock, but do not take resv_map->rw_sema for a private
+mapping.  Likewise, do not attempt to release the private reservation
+map lock from hugetlb_zap_end().
+
+Non-final zaps continue taking resv_map->rw_sema, preserving the
+MADV_DONTNEED versus page-fault serialization for which private hugetlb
+VMA locking was introduced.
+
+Fixes: bf4916922c60 ("hugetlbfs: extend hugetlb_vma_lock to private VMAs")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: syzbot+bd6aaf99e8443d8a9034@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=bd6aaf99e8443d8a9034
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jane Chu <jane.chu@oracle.com>
+Assisted-by: ChatGPT <chatgpt@openai.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/hugetlb.h |  8 +++++---
+ mm/hugetlb.c            | 16 ++++++++++++++--
+ mm/memory.c             |  2 +-
+ 3 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index 80a5a03e9cee7..63c85f2540c9f 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -245,15 +245,17 @@ void adjust_range_if_pmd_sharing_possible(struct vm_area_struct *vma,
+ 				unsigned long *start, unsigned long *end);
+ 
+ extern void __hugetlb_zap_begin(struct vm_area_struct *vma,
+-				unsigned long *begin, unsigned long *end);
++				unsigned long *begin, unsigned long *end,
++				struct zap_details *details);
+ extern void __hugetlb_zap_end(struct vm_area_struct *vma,
+ 			      struct zap_details *details);
+ 
+ static inline void hugetlb_zap_begin(struct vm_area_struct *vma,
+-				     unsigned long *start, unsigned long *end)
++				     unsigned long *start, unsigned long *end,
++				     struct zap_details *details)
+ {
+ 	if (is_vm_hugetlb_page(vma))
+-		__hugetlb_zap_begin(vma, start, end);
++		__hugetlb_zap_begin(vma, start, end, details);
+ }
+ 
+ static inline void hugetlb_zap_end(struct vm_area_struct *vma,
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index ceb29adc6dc19..f1968b4af0cef 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5403,13 +5403,25 @@ void __unmap_hugepage_range(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ }
+ 
+ void __hugetlb_zap_begin(struct vm_area_struct *vma,
+-			 unsigned long *start, unsigned long *end)
++			 unsigned long *start, unsigned long *end,
++			 struct zap_details *details)
+ {
++	zap_flags_t zap_flags = details ? details->zap_flags : 0;
++
+ 	if (!vma->vm_file)	/* hugetlbfs_file_mmap error */
+ 		return;
+ 
+ 	adjust_range_if_pmd_sharing_possible(vma, start, end);
+-	hugetlb_vma_lock_write(vma);
++
++	/*
++	 * A final unmap cannot race with a fault in this VMA because
++	 * mmap_lock prevents the fault from entering a VMA which is being
++	 * removed.  Skip the private resv_map lock in that case to avoid
++	 * inverting its lock order with mmap_lock.  Shareable mappings
++	 * still need the VMA lock to protect PMD sharing.
++	 */
++	if (!(zap_flags & ZAP_FLAG_UNMAP) || __vma_shareable_lock(vma))
++		hugetlb_vma_lock_write(vma);
+ 	if (vma->vm_file)
+ 		i_mmap_lock_write(vma->vm_file->f_mapping);
+ }
+diff --git a/mm/memory.c b/mm/memory.c
+index ec63dd6212ac5..fdcd2fa718d3a 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -2268,7 +2268,7 @@ void unmap_vmas(struct mmu_gather *tlb, struct unmap_desc *unmap)
+ 		unsigned long start = max(vma->vm_start, unmap->vma_start);
+ 		unsigned long end = min(vma->vm_end, unmap->vma_end);
+ 
+-		hugetlb_zap_begin(vma, &start, &end);
++		hugetlb_zap_begin(vma, &start, &end, &details);
+ 		__zap_vma_range(tlb, vma, start, end, &details);
+ 		hugetlb_zap_end(vma, &details);
+ 		vma = mas_find(unmap->mas, unmap->tree_end - 1);
+-- 
+2.47.3
+

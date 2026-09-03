@@ -1,0 +1,50 @@
+From: Nick Desaulniers <ndesaulniers@google.com>
+Date: Wed, 2 Sep 2026 14:01:53 -0700
+Subject: [PATCH] scripts/checkstack.pl: support llvm-objdump disassembly for
+ x86
+
+When running `make LLVM=1 checkstack`, OBJDUMP is set to llvm-objdump.
+llvm-objdump outputs disassembly with instruction size suffixes (such as
+subq/addq/subl/addl), tabs/whitespace differences, spaces after commas,
+and trailing comments (e.g.  `# imm = 0x...`).
+
+Because scripts/checkstack.pl used rigid regular expressions specifically
+tuned to GNU objdump format (e.g.  requiring exactly four spaces, no
+suffix, and no space after comma), checkstack.pl failed to match any stack
+adjustment instructions and yielded no output when using llvm-objdump on
+x86.
+
+Update the regular expressions for x86 to match optional suffixes,
+variable whitespace, and trailing comments.
+
+Link: https://lore.kernel.org/20260902-checkstack_llvm_objdump-v1-1-edb4eca5f163@google.com
+Signed-off-by: Nick Desaulniers <ndesaulniers@google.com>
+Assisted-by: LLM Gemini
+Cc: Bill Wendling <morbo@google.com>
+Cc: Justin Stitt <justinstitt@google.com>
+Cc: Nathan Chancellor <nathan@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ scripts/checkstack.pl | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/checkstack.pl b/scripts/checkstack.pl
+index 14ce31f732ee8..f8011e789a9b4 100755
+--- a/scripts/checkstack.pl
++++ b/scripts/checkstack.pl
+@@ -66,8 +66,10 @@ my (@stack, $re, $dre, $sub, $x, $xs, $funcre, $min_stack);
+ 		#c0105234:       81 ec ac 05 00 00       sub    $0x5ac,%esp
+ 		# or
+ 		#    2f60:    48 81 ec e8 05 00 00       sub    $0x5e8,%rsp
+-		$re = qr/^.*[as][du][db]    \$(0x$x{1,8}),\%(e|r)sp$/o;
+-		$dre = qr/^.*[as][du][db]    (%.*),\%(e|r)sp$/o;
++		# or
++		#       0: 48 81 ec e8 05 00 00          subq   $0x5e8, %rsp
++		$re = qr/^.*[as][du][db][ql]?\s+\$(0x$x{1,8}),\s*\%(e|r)sp/o;
++		$dre = qr/^.*[as][du][db][ql]?\s+(%.*),\s*\%(e|r)sp/o;
+ 	} elsif ($arch eq 'm68k') {
+ 		#    2b6c:       4e56 fb70       linkw %fp,#-1168
+ 		#  1df770:       defc ffe4       addaw #-28,%sp
+-- 
+2.47.3
+
