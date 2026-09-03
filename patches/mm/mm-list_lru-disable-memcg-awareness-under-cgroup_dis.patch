@@ -1,0 +1,81 @@
+From: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Date: Wed, 2 Sep 2026 17:32:02 +0800
+Subject: [PATCH] mm/list_lru: disable memcg awareness under
+ cgroup_disable=memory
+
+__list_lru_init() only collapses a memcg-aware list_lru into plain
+per-node lists when kmem accounting is disabled (cgroup.memory=nokmem).
+When the memory controller is disabled entirely (cgroup_disable=memory),
+mem_cgroup_kmem_disabled() is false, so the lru stays memcg aware even
+though no object will ever be charged to a memcg.
+
+This is more than a semantic inconsistency.  folio_memcg_list_lru_alloc()
+trusts list_lru_memcg_aware() and dereferences the folio's memcg, which is
+always NULL with the controller disabled.  The only mainline caller,
+folio_memcg_alloc_deferred(), papers over this with an explicit
+mem_cgroup_disabled() check.  The shmem unused-huge shrinker conversion
+("mm: shmem: make unused huge shrinker memcg aware") adds a second caller
+without such a guard, so booting with cgroup_disable=memory and writing to
+a huge=always tmpfs oopses:
+
+  BUG: unable to handle page fault for address: 0000000000000488
+  RIP: 0010:folio_memcg_list_lru_alloc+0x41/0xf0
+  Call Trace:
+   <TASK>
+   shmem_get_folio_gfp+0x1cd/0x7c0
+   shmem_write_begin+0x5d/0x100
+   generic_perform_write+0x89/0x2a0
+   shmem_file_write_iter+0x82/0x90
+   vfs_write+0x256/0x410
+   ksys_write+0x61/0xe0
+   do_syscall_64+0x8d/0x460
+   entry_SYSCALL_64_after_hwframe+0x76/0x7e
+
+The faulting address is the offset of mem_cgroup->kmemcg_id, dereferenced
+on a NULL memcg in memcg_list_lru_allocated():
+
+  folio_memcg_list_lru_alloc()
+    list_lru_memcg_aware()               <- true, only nokmem checked
+    memcg = folio_memcg(folio)           <- NULL
+    memcg_list_lru_allocated(memcg, lru)
+      memcg->kmemcg_id                   <- NULL pointer dereference
+
+Check mem_cgroup_disabled() in __list_lru_init() so that all list_lrus
+fall back to plain per-node lists when the controller is disabled,
+matching what the shrinker side already does (shrinker_memcg_alloc() bails
+out on mem_cgroup_disabled()).  This makes the mem_cgroup_disabled() check
+in callers unnecessary rather than mandatory.
+
+Link: https://lore.kernel.org/20260902093202.609559-1-qinyuntan@linux.alibaba.com
+Signed-off-by: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <zhengqi.arch@bytedance.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/list_lru.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index 36662d02ff963..a4522ca93ebcb 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -671,7 +671,7 @@ int __list_lru_init(struct list_lru *lru, bool memcg_aware, struct shrinker *shr
+ 	else
+ 		lru->shrinker_id = -1;
+ 
+-	if (mem_cgroup_kmem_disabled())
++	if (mem_cgroup_disabled() || mem_cgroup_kmem_disabled())
+ 		memcg_aware = false;
+ #endif
+ 
+-- 
+2.47.3
+

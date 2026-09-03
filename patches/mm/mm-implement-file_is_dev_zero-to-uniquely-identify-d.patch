@@ -1,0 +1,121 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Wed, 2 Sep 2026 19:00:19 +0100
+Subject: [PATCH] mm: implement file_is_dev_zero() to uniquely identify
+ /dev/zero
+
+To lay the foundation for a future change that converts
+MAP_PRIVATE-/dev/zero mappings to be truly anonymous, add the ability to
+uniquely identify these mappings.
+
+With the memory character device now part of mm/ this is trivially
+achievable through a file_is_dev_zero() predicate that simply tests that
+the file operation hooks are zero_fops.
+
+Also update userland VMA tests to expose file_is_dev_zero() and provide a
+stub zero_fops for testing.
+
+Link: https://lore.kernel.org/20260902-map-private-dev-zero-v1-2-a578c730cec7@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/char-mem.c                   | 13 +++++++++++++
+ mm/internal.h                   |  3 +++
+ tools/testing/vma/include/dup.h |  7 +++++++
+ tools/testing/vma/shared.c      |  9 +++++++++
+ 4 files changed, 32 insertions(+)
+
+diff --git a/mm/char-mem.c b/mm/char-mem.c
+index d2e5755450442..e53e89e6ddd81 100644
+--- a/mm/char-mem.c
++++ b/mm/char-mem.c
+@@ -31,6 +31,8 @@
+ #include <linux/uaccess.h>
+ #include <linux/security.h>
+ 
++#include "internal.h"
++
+ #define DEVMEM_MINOR	1
+ #define DEVPORT_MINOR	4
+ 
+@@ -707,6 +709,17 @@ static const struct memdev {
+ #endif
+ };
+ 
++/**
++ * file_is_dev_zero() - is the specified @file associated with the /dev/zero
++ * driver?
++ * @file: File to test.
++ * Returns: true if it is, false otherwise.
++ */
++bool file_is_dev_zero(const struct file *file)
++{
++	return file && file->f_op == &zero_fops;
++}
++
+ static int memory_open(struct inode *inode, struct file *filp)
+ {
+ 	int minor;
+diff --git a/mm/internal.h b/mm/internal.h
+index e16f1250b25c8..5d474e5f77092 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1638,4 +1638,7 @@ static inline bool can_spin_trylock(void)
+ 	return true;
+ }
+ 
++/* char-mem.c */
++bool file_is_dev_zero(const struct file *file);
++
+ #endif	/* __MM_INTERNAL_H */
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index 57046d8ac81d8..0d1a2ac889226 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -1641,3 +1641,10 @@ static inline pgoff_t linear_anon_page_index(const struct vm_area_struct *vma,
+ 
+ 	return pgoff;
+ }
++
++extern const struct file_operations zero_fops;
++
++static inline bool file_is_dev_zero(const struct file *file)
++{
++	return file && file->f_op == &zero_fops;
++}
+diff --git a/tools/testing/vma/shared.c b/tools/testing/vma/shared.c
+index 4a39c9d504896..8c4826499f405 100644
+--- a/tools/testing/vma/shared.c
++++ b/tools/testing/vma/shared.c
+@@ -12,6 +12,15 @@ const struct vm_operations_struct vma_dummy_vm_ops;
+ struct anon_vma dummy_anon_vma;
+ struct task_struct __current;
+ 
++static int mmap_zero_prepare(struct vm_area_desc *desc)
++{
++	return 0;
++}
++
++const struct file_operations zero_fops = {
++	.mmap_prepare = mmap_zero_prepare,
++};
++
+ struct vm_area_struct *alloc_vma(struct mm_struct *mm,
+ 		unsigned long start, unsigned long end,
+ 		pgoff_t pgoff, vma_flags_t vma_flags)
+-- 
+2.47.3
+

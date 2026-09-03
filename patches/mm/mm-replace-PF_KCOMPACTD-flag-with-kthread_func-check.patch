@@ -1,0 +1,130 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Wed, 2 Sep 2026 21:16:53 +0800
+Subject: [PATCH] mm: replace PF_KCOMPACTD flag with kthread_func() check
+
+PF_KCOMPACTD was introduced by commit ce6d9c1c2b5c ("NFS: fix
+nfs_release_folio() to not deadlock via kcompactd writeback") so
+nfs_release_folio() could detect kcompactd context and skip writeback.
+The flag is only consumed by current_is_kcompactd(), whose sole caller is
+nfs_release_folio().
+
+Replace the flag-based check with kthread_func(current) == kcompactd,
+freeing the 0x00010000 PF flag bit.
+
+Link: https://lore.kernel.org/20260902131653.1338227-5-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Carlos Maiolino <cem@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/compaction.h               | 11 ++++++-----
+ include/linux/sched.h                    |  2 +-
+ mm/compaction.c                          |  9 ++++++---
+ tools/sched_ext/include/scx/common.bpf.h |  1 -
+ 4 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/include/linux/compaction.h b/include/linux/compaction.h
+index 66a2f70e9e019..691c09f0a6971 100644
+--- a/include/linux/compaction.h
++++ b/include/linux/compaction.h
+@@ -81,10 +81,6 @@ static inline unsigned long compact_gap(unsigned int order)
+ 	return min(2UL << order, COMPACT_CLUSTER_MAX);
+ }
+ 
+-static inline int current_is_kcompactd(void)
+-{
+-	return current->flags & PF_KCOMPACTD;
+-}
+ 
+ #ifdef CONFIG_COMPACTION
+ 
+@@ -103,7 +99,7 @@ extern void compaction_defer_reset(struct zone *zone, int order,
+ 
+ bool compaction_zonelist_suitable(struct alloc_context *ac, int order,
+ 					int alloc_flags, gfp_t gfp_mask);
+-
++bool current_is_kcompactd(void);
+ extern void __meminit kcompactd_run(int nid);
+ extern void __meminit kcompactd_stop(int nid);
+ extern void wakeup_kcompactd(pg_data_t *pgdat, int order, int highest_zoneidx);
+@@ -120,6 +116,11 @@ static inline bool compaction_suitable(struct zone *zone, int order,
+ 	return false;
+ }
+ 
++static inline bool current_is_kcompactd(void)
++{
++	return false;
++}
++
+ static inline void kcompactd_run(int nid)
+ {
+ }
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 86394121b6c00..eb12ff4cea6c2 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1808,7 +1808,7 @@ extern struct pid *cad_pid;
+ #define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
+ #define PF_USER_WORKER		0x00004000	/* Kernel thread cloned from userspace thread */
+ #define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
+-#define PF_KCOMPACTD		0x00010000	/* I am kcompactd */
++#define PF__HOLE__00010000	0x00010000
+ #define PF__HOLE__00020000	0x00020000
+ #define PF_MEMALLOC_NOFS	0x00040000	/* All allocations inherit GFP_NOFS. See memalloc_nfs_save() */
+ #define PF_MEMALLOC_NOIO	0x00080000	/* All allocations inherit GFP_NOIO. See memalloc_noio_save() */
+diff --git a/mm/compaction.c b/mm/compaction.c
+index a049415512c67..4994e200bbecd 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -3197,7 +3197,6 @@ static int kcompactd(void *p)
+ 	long default_timeout = msecs_to_jiffies(HPAGE_FRAG_CHECK_INTERVAL_MSEC);
+ 	long timeout = default_timeout;
+ 
+-	current->flags |= PF_KCOMPACTD;
+ 	set_freezable();
+ 
+ 	pgdat->kcompactd_max_order = 0;
+@@ -3254,11 +3253,15 @@ static int kcompactd(void *p)
+ 			pgdat->proactive_compact_trigger = false;
+ 	}
+ 
+-	current->flags &= ~PF_KCOMPACTD;
+-
+ 	return 0;
+ }
+ 
++bool current_is_kcompactd(void)
++{
++	return kthread_func(current) == kcompactd;
++}
++EXPORT_SYMBOL_GPL(current_is_kcompactd);
++
+ /*
+  * This kcompactd start function will be called by init and node-hot-add.
+  * On node-hot-add, kcompactd will moved to proper cpus if cpus are hot-added.
+diff --git a/tools/sched_ext/include/scx/common.bpf.h b/tools/sched_ext/include/scx/common.bpf.h
+index 3e095343ae849..807ef881ce2d4 100644
+--- a/tools/sched_ext/include/scx/common.bpf.h
++++ b/tools/sched_ext/include/scx/common.bpf.h
+@@ -31,7 +31,6 @@
+ #define PF_IDLE				0x00000002	/* I am an IDLE thread */
+ #define PF_IO_WORKER			0x00000010	/* Task is an IO worker */
+ #define PF_WQ_WORKER			0x00000020	/* I'm a workqueue worker */
+-#define PF_KCOMPACTD			0x00010000      /* I am kcompactd */
+ #define PF_KTHREAD			0x00200000	/* I am a kernel thread */
+ #define PF_EXITING			0x00000004
+ #define CLOCK_MONOTONIC			1
+-- 
+2.47.3
+

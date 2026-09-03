@@ -1,0 +1,73 @@
+From: Meijing Zhao <zhaomeijing@lixiang.com>
+Date: Wed, 2 Sep 2026 14:45:09 +0800
+Subject: [PATCH] mm: trace: decode MTE and shadow stack VMA flags
+
+show_vma_flags(), which is used by VMA tracepoints and %pGv, leaves
+architecture-specific HIGH_ARCH_* bits unnamed.  Arm64 MTE flags and user
+shadow stack flags are therefore printed as raw hexadecimal values.
+
+These bit positions are shared between architectures.  For example, bit 37
+represents VM_MTE_ALLOWED on arm64 but VM_SHADOW_STACK on x86, so a shared
+HIGH_ARCH_* bit cannot be given an unconditional name.
+
+Add conditionally compiled names for VM_MTE, VM_MTE_ALLOWED and
+VM_SHADOW_STACK.  Keep the configuration guards aligned with the
+definitions of these aliases so each shared bit position is decoded
+according to the target architecture.
+
+For example, an arm64 VMA containing VM_MTE_ALLOWED is now printed as:
+
+  ...|account|mte_allowed|...
+
+instead of:
+
+  ...|account|0x2000000000
+
+Link: https://lore.kernel.org/1c7f7003cff8d00209baa8498f1efee113f5b5a4.1788330432.git.zhaomeijing@lixiang.com
+Signed-off-by: Meijing Zhao <zhaomeijing@lixiang.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/trace/events/mmflags.h | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/include/trace/events/mmflags.h b/include/trace/events/mmflags.h
+index 02caeaf359ab1..2f980d20a9f64 100644
+--- a/include/trace/events/mmflags.h
++++ b/include/trace/events/mmflags.h
+@@ -202,6 +202,19 @@ IF_HAVE_PG_ARCH_3(arch_3)
+ # define IF_HAVE_VM_DROPPABLE(flag, name)
+ #endif
+ 
++#ifdef CONFIG_ARM64_MTE
++# define IF_HAVE_VM_MTE(flag, name) {flag, name},
++#else
++# define IF_HAVE_VM_MTE(flag, name)
++#endif
++
++#if defined(CONFIG_X86_USER_SHADOW_STACK) || defined(CONFIG_RISCV_USER_CFI) || \
++	defined(CONFIG_ARM64_GCS)
++# define IF_HAVE_VM_SHADOW_STACK(flag, name) {flag, name},
++#else
++# define IF_HAVE_VM_SHADOW_STACK(flag, name)
++#endif
++
+ #define __def_vmaflag_names						\
+ 	{VM_READ,			"read"		},		\
+ 	{VM_WRITE,			"write"		},		\
+@@ -237,6 +250,9 @@ IF_HAVE_VM_SOFTDIRTY(VM_SOFTDIRTY,	"softdirty"	)		\
+ 	{VM_HUGEPAGE,			"hugepage"	},		\
+ 	{VM_NOHUGEPAGE,			"nohugepage"	},		\
+ IF_HAVE_VM_DROPPABLE(VM_DROPPABLE,	"droppable"	)		\
++IF_HAVE_VM_MTE(VM_MTE,			"mte")			\
++IF_HAVE_VM_MTE(VM_MTE_ALLOWED,		"mte_allowed")		\
++IF_HAVE_VM_SHADOW_STACK(VM_SHADOW_STACK, "shadow_stack")	\
+ 	{VM_MERGEABLE,			"mergeable"	}		\
+ 
+ #define show_vma_flags(flags)						\
+-- 
+2.47.3
+

@@ -1,0 +1,125 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Wed, 2 Sep 2026 21:16:50 +0800
+Subject: [PATCH] xfs: remove dead kswapd flag inheritance from btree split
+ worker
+
+Patch series "mm: replace PF_KCOMPACTD/PF_KSWAPD with kthread_func()".
+
+The task_struct->flags field is a limited 32-bit resource.  Two flag bits,
+PF_KCOMPACTD and PF_KSWAPD, are used to identify whether a kernel thread
+is kcompactd or kswapd.  Converting these to use kthread_func() frees up
+two valuable flag bits for future use.
+
+
+This patch (of 4):
+
+Commit 1f6d64829db7 ("xfs: block allocation work needs to be kswapd
+aware") added PF_MEMALLOC | PF_KSWAPD inheritance to
+xfs_btree_split_worker() so that block allocation offloaded from kswapd to
+a workqueue thread could access emergency memory reserves and avoid
+reclaim throttling.
+
+pageout() no longer calls ->writepage() for filesystem folios -- it
+returns PAGE_ACTIVATE for non-shmem, non-anon pages.  kswapd therefore
+never enters XFS writeback and cannot reach btree split.  The only path
+that offloads btree splits is unwritten extent conversion at IO completion
+(xfs_end_io -> xfs_iomap_write_unwritten), which runs in a workqueue
+context where current_is_kswapd() is always false.
+
+Let's remove the dead kswapd flag and related codes.
+
+Link: https://lore.kernel.org/20260902131653.1338227-1-wangkefeng.wang@huawei.com
+Link: https://lore.kernel.org/20260902131653.1338227-2-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Reviewed-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Carlos Maiolino <cem@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: "Darrick J. Wong" <djwong@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/xfs/libxfs/xfs_btree.c | 18 +-----------------
+ fs/xfs/xfs_platform.h     |  4 ----
+ 2 files changed, 1 insertion(+), 21 deletions(-)
+
+diff --git a/fs/xfs/libxfs/xfs_btree.c b/fs/xfs/libxfs/xfs_btree.c
+index 60ef7f08b1d30..6738d9d1511bc 100644
+--- a/fs/xfs/libxfs/xfs_btree.c
++++ b/fs/xfs/libxfs/xfs_btree.c
+@@ -2994,7 +2994,6 @@ struct xfs_btree_split_args {
+ 	struct xfs_btree_cur	**curp;
+ 	int			*stat;		/* success/failure */
+ 	int			result;
+-	bool			kswapd;	/* allocation in kswapd context */
+ 	struct completion	*done;
+ 	struct work_struct	work;
+ };
+@@ -3008,33 +3007,18 @@ xfs_btree_split_worker(
+ {
+ 	struct xfs_btree_split_args	*args = container_of(work,
+ 						struct xfs_btree_split_args, work);
+-	unsigned long		pflags;
+-	unsigned long		new_pflags = 0;
+-
+-	/*
+-	 * we are in a transaction context here, but may also be doing work
+-	 * in kswapd context, and hence we may need to inherit that state
+-	 * temporarily to ensure that we don't block waiting for memory reclaim
+-	 * in any way.
+-	 */
+-	if (args->kswapd)
+-		new_pflags |= PF_MEMALLOC | PF_KSWAPD;
+-
+-	current_set_flags_nested(&pflags, new_pflags);
+ 	xfs_trans_set_context(args->cur->bc_tp);
+ 
+ 	args->result = __xfs_btree_split(args->cur, args->level, args->ptrp,
+ 					 args->key, args->curp, args->stat);
+ 
+ 	xfs_trans_clear_context(args->cur->bc_tp);
+-	current_restore_flags_nested(&pflags, new_pflags);
+ 
+ 	/*
+ 	 * Do not access args after complete() has run here. We don't own args
+ 	 * and the owner may run and free args before we return here.
+ 	 */
+ 	complete(args->done);
+-
+ }
+ 
+ /*
+@@ -3078,7 +3062,7 @@ xfs_btree_split(
+ 	args.curp = curp;
+ 	args.stat = stat;
+ 	args.done = &done;
+-	args.kswapd = current_is_kswapd();
++
+ 	INIT_WORK_ONSTACK(&args.work, xfs_btree_split_worker);
+ 	queue_work(xfs_alloc_wq, &args.work);
+ 	wait_for_completion(&done);
+diff --git a/fs/xfs/xfs_platform.h b/fs/xfs/xfs_platform.h
+index 5d542e95fe444..a49fa159894de 100644
+--- a/fs/xfs/xfs_platform.h
++++ b/fs/xfs/xfs_platform.h
+@@ -115,10 +115,6 @@ typedef __u32			xfs_nlink_t;
+ #define xfs_blockgc_secs	xfs_params.blockgc_timer.val
+ 
+ #define current_cpu()		(raw_smp_processor_id())
+-#define current_set_flags_nested(sp, f)		\
+-		(*(sp) = current->flags, current->flags |= (f))
+-#define current_restore_flags_nested(sp, f)	\
+-		(current->flags = ((current->flags & ~(f)) | (*(sp) & (f))))
+ 
+ #define NBBY		8		/* number of bits per byte */
+ 
+-- 
+2.47.3
+

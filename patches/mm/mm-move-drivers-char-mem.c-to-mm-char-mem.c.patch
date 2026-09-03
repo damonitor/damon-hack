@@ -1,0 +1,166 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Wed, 2 Sep 2026 19:00:18 +0100
+Subject: [PATCH] mm: move drivers/char/mem.c to mm/char-mem.c
+
+Patch series "mm: make MAP_PRIVATE-/dev/zero mappings truly anonymous".
+
+Historically anonymous memory was obtained in linux by MAP_PRIVATE-mapping
+/dev/zero.
+
+The canonical way of doing these now is mmap() specifying MAP_PRIVATE |
+MAP_ANON, but we must continue to support the legacy means of obtaining
+these mappings.
+
+As-is these mappings are an unusual edge-case - they satisfy
+vma_is_anonymous() but have non-NULL vma->vm_file, and their page offset
+is the offset into the /dev/zero file.
+
+Commit 93c0c8dc87f6 ("mm/rmap: use anon pgoff to track MAP_PRIVATE
+file-backed anon folios") causes all other anonymous folios to be tracked
+by their anon index (vma->vm_start >> PAGE_SHIFT at the point of first
+fault), leaving MAP_PRIVATE-/dev/zero as the outlier.
+
+This series remedies the situation by making MAP_PRIVATE-/dev/zero
+mappings truly anonymous with !vma->vm_file and correct anonymous page
+offset.
+
+It starts by bringing the memory character driver into mm/ - this file
+implements /dev/zero, /dev/mem among other things and is already (as
+clearly indicated by its name) within the remit of memory management.
+
+By doing this, the file_is_dev_zero() function can be provided, internal
+to mm, which allows for positive identification of these mappings.
+
+Using this, first prevent any other mappings from mapping memory
+anonymously, then make these mappings truly anonymous and eliminate all
+code in the kernel that previously had to account for these strange
+beasts.
+
+Finally, it adds userland VMA tests to assert the behaviour and selftests
+to assert expected merge behaviour.
+
+
+This patch (of 6):
+
+The memory character driver implements several mm-specific features and is
+always compiled into the kernel, so move it to mm/ where it belongs.
+
+Among other things the driver implements /dev/mem which provides raw
+access to physical memory, and /dev/zero which either allows mapping of a
+shmem region (if mapped with MAP_SHARED) or, uniquely, anonymous memory
+(if mapped MAP_PRIVATE).
+
+This change lays the foundations to allow MAP_PRIVATE-/dev/zero to be
+mapped precisely the same as anonymous memory is mapped as currently it is
+an edge case within mm.
+
+Also update a couple of comments that reference 'drivers/char/mem.c' to
+reference 'mm/char-mem.c'.
+
+Link: https://lore.kernel.org/20260902-map-private-dev-zero-v1-0-a578c730cec7@kernel.org
+Link: https://lore.kernel.org/20260902-map-private-dev-zero-v1-1-a578c730cec7@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ MAINTAINERS                         | 4 ++--
+ drivers/char/Makefile               | 2 +-
+ mm/Makefile                         | 3 ++-
+ drivers/char/mem.c => mm/char-mem.c | 2 +-
+ mm/shmem.c                          | 2 +-
+ 5 files changed, 7 insertions(+), 6 deletions(-)
+ rename drivers/char/mem.c => mm/char-mem.c (99%)
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 2133aec4a2004..ebadf4cef0765 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -17272,7 +17272,7 @@ F:	Documentation/ABI/testing/sysfs-kernel-mm-memory-tiers
+ F:	Documentation/ABI/testing/sysfs-kernel-mm-numa
+ F:	Documentation/admin-guide/mm/
+ F:	Documentation/mm/
+-F:	drivers/char/mem.c
++F:	mm/char-mem.c
+ F:	include/linux/cma.h
+ F:	include/linux/dmapool.h
+ F:	include/linux/ioremap.h
+@@ -17477,7 +17477,7 @@ L:	linux-mm@kvack.org
+ S:	Maintained
+ W:	http://www.linux-mm.org
+ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm
+-F:	drivers/char/mem.c
++F:	mm/char-mem.c
+ F:	include/trace/events/mmap.h
+ F:	fs/proc/task_mmu.c
+ F:	fs/proc/task_nommu.c
+diff --git a/drivers/char/Makefile b/drivers/char/Makefile
+index a46d7bf7c4c82..bb3bf66937b37 100644
+--- a/drivers/char/Makefile
++++ b/drivers/char/Makefile
+@@ -3,7 +3,7 @@
+ # Makefile for the kernel character device drivers.
+ #
+ 
+-obj-y				+= mem.o random.o
++obj-y				+= random.o
+ obj-$(CONFIG_TTY_PRINTK)	+= ttyprintk.o
+ obj-y				+= misc.o
+ obj-$(CONFIG_TEST_MISC_MINOR)	+= misc_minor_kunit.o
+diff --git a/mm/Makefile b/mm/Makefile
+index e7245cb88c665..2a3ec53d62eef 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -55,7 +55,8 @@ obj-y			:= filemap.o mempool.o oom_kill.o fadvise.o \
+ 			   mm_init.o percpu.o slab_common.o \
+ 			   compaction.o show_mem.o \
+ 			   interval_tree.o list_lru.o workingset.o \
+-			   debug.o gup.o mmap_lock.o vma_init.o $(mmu-y)
++			   debug.o gup.o mmap_lock.o vma_init.o char-mem.o \
++			   $(mmu-y)
+ 
+ # Give 'page_alloc' its own module-parameter namespace
+ page-alloc-y := page_alloc.o
+diff --git a/drivers/char/mem.c b/mm/char-mem.c
+similarity index 99%
+rename from drivers/char/mem.c
+rename to mm/char-mem.c
+index 63253d1de5d70..d2e5755450442 100644
+--- a/drivers/char/mem.c
++++ b/mm/char-mem.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- *  linux/drivers/char/mem.c
++ *  mm/char-mem.c
+  *
+  *  Copyright (C) 1991, 1992  Linus Torvalds
+  *
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 255d69ebceba0..c92ed17dbc4a2 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -2981,7 +2981,7 @@ unsigned long shmem_get_unmapped_area(struct file *file,
+ 			sb = file_inode(file)->i_sb;
+ 		} else {
+ 			/*
+-			 * Called directly from mm/mmap.c, or drivers/char/mem.c
++			 * Called directly from mm/mmap.c, or mm/char-mem.c
+ 			 * for "/dev/zero", to create a shared anonymous object.
+ 			 */
+ 			if (IS_ERR(shm_mnt))
+-- 
+2.47.3
+
