@@ -1,27 +1,24 @@
 From: SJ Park <sj@kernel.org>
-Date: Thu, 6 Aug 2026 07:16:23 -0700
+Date: Sat, 5 Sep 2026 11:37:28 -0700
 Subject: [PATCH] mm/damon/paddr: move probe filter handling to ops-common
-
-It will be used in vaddr.
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/ops-common.c | 54 +++++++++++++++++++++++++++++++++++++++++
- mm/damon/ops-common.h |  1 +
- mm/damon/paddr.c      | 56 +------------------------------------------
- 3 files changed, 56 insertions(+), 55 deletions(-)
+ mm/damon/ops-common.c | 32 ++++++++++++++++++++++++++++++++
+ mm/damon/ops-common.h |  2 ++
+ mm/damon/paddr.c      | 23 +----------------------
+ 3 files changed, 35 insertions(+), 22 deletions(-)
 
 diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
-index 441d45679eaf2..124368ca00500 100644
+index 441d45679eaf2..76b663a4be610 100644
 --- a/mm/damon/ops-common.c
 +++ b/mm/damon/ops-common.c
-@@ -524,3 +524,57 @@ bool damos_ops_has_filter(struct damos *s)
+@@ -524,3 +524,35 @@ bool damos_ops_has_filter(struct damos *s)
  		return true;
  	return false;
  }
 +
-+static bool damon_ops_filter_match(struct damon_filter *filter,
-+		struct folio *folio)
++bool damon_ops_filter_match(struct damon_filter *filter, struct folio *folio)
 +{
 +	bool matched = false;
 +	struct mem_cgroup *memcg;
@@ -47,56 +44,32 @@ index 441d45679eaf2..124368ca00500 100644
 +			matched = filter->memcg_id == mem_cgroup_id(memcg);
 +		rcu_read_unlock();
 +		break;
-+	case DAMON_FILTER_TYPE_PGIDLE_UNSET:
-+		if (!folio)
-+			matched = false;
-+		else
-+			matched = damon_folio_young(folio);
-+		break;
 +	default:
 +		break;
 +	}
 +	return matched == filter->matching;
 +}
-+
-+bool damon_ops_filter_pass(struct folio *folio, struct damon_probe *p)
-+{
-+	struct damon_filter *f;
-+	bool pass = true;
-+
-+	damon_for_each_filter(f, p) {
-+		if (damon_ops_filter_match(f, folio)) {
-+			pass = f->allow;
-+			break;
-+		}
-+		pass = !f->allow;
-+	}
-+	return pass;
-+}
 diff --git a/mm/damon/ops-common.h b/mm/damon/ops-common.h
-index 172f0f17c4a84..acf7a0e4280f6 100644
+index 172f0f17c4a84..ee27058251005 100644
 --- a/mm/damon/ops-common.h
 +++ b/mm/damon/ops-common.h
-@@ -31,3 +31,4 @@ bool damos_folio_filter_match(struct damos_filter *filter, struct folio *folio);
+@@ -31,3 +31,5 @@ bool damos_folio_filter_match(struct damos_filter *filter, struct folio *folio);
  unsigned long damon_migrate_pages(struct list_head *folio_list, int target_nid);
  
  bool damos_ops_has_filter(struct damos *s);
-+bool damon_ops_filter_pass(struct folio *folio, struct damon_probe *p);
++
++bool damon_ops_filter_match(struct damon_filter *filter, struct folio *folio);
 diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
-index 1ed8e721fada3..55a74c7a157c3 100644
+index 1ed8e721fada3..e99448cee0c7a 100644
 --- a/mm/damon/paddr.c
 +++ b/mm/damon/paddr.c
-@@ -139,60 +139,6 @@ static void damon_pa_prep_probes(struct damon_ctx *ctx, bool set_samples)
- 	}
- }
- 
--static bool damon_pa_filter_match(struct damon_filter *filter,
--		struct folio *folio)
--{
--	bool matched = false;
+@@ -143,29 +143,8 @@ static bool damon_pa_filter_match(struct damon_filter *filter,
+ 		struct folio *folio)
+ {
+ 	bool matched = false;
 -	struct mem_cgroup *memcg;
--
--	switch (filter->type) {
+ 
+ 	switch (filter->type) {
 -	case DAMON_FILTER_TYPE_ANON:
 -		if (!folio) {
 -			matched = false;
@@ -117,45 +90,18 @@ index 1ed8e721fada3..55a74c7a157c3 100644
 -			matched = filter->memcg_id == mem_cgroup_id(memcg);
 -		rcu_read_unlock();
 -		break;
--	case DAMON_FILTER_TYPE_PGIDLE_UNSET:
--		if (!folio)
--			matched = false;
--		else
--			matched = damon_folio_young(folio);
+ 	case DAMON_FILTER_TYPE_PGIDLE_UNSET:
+ 		if (!folio)
+ 			matched = false;
+@@ -173,7 +152,7 @@ static bool damon_pa_filter_match(struct damon_filter *filter,
+ 			matched = damon_folio_young(folio);
+ 		break;
+ 	default:
 -		break;
--	default:
--		break;
--	}
--	return matched == filter->matching;
--}
--
--static bool damon_pa_filter_pass(struct folio *folio, struct damon_probe *p)
--{
--	struct damon_filter *f;
--	bool pass = true;
--
--	damon_for_each_filter(f, p) {
--		if (damon_pa_filter_match(f, folio)) {
--			pass = f->allow;
--			break;
--		}
--		pass = !f->allow;
--	}
--	return pass;
--}
--
- static unsigned int damon_pa_apply_probes(struct damon_ctx *ctx,
- 		bool set_samples, bool return_max_wsum)
- {
-@@ -214,7 +160,7 @@ static unsigned int damon_pa_apply_probes(struct damon_ctx *ctx,
- 					ctx->addr_unit);
- 			folio = damon_get_folio(PHYS_PFN(pa));
- 			damon_for_each_probe(p, ctx) {
--				if (damon_pa_filter_pass(folio, p))
-+				if (damon_ops_filter_pass(folio, p))
- 					r->probe_hits[i]++;
- 				i++;
- 			}
++		return damon_ops_filter_match(filter, folio);
+ 	}
+ 	return matched == filter->matching;
+ }
 -- 
 2.47.3
 
