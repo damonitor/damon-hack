@@ -1,20 +1,21 @@
 From: SJ Park <sj@kernel.org>
-Date: Sat, 5 Sep 2026 11:38:03 -0700
+Date: Sat, 5 Sep 2026 11:37:57 -0700
 Subject: [PATCH] mm/damon/vaddr: support pgidle_unset
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/vaddr.c | 36 +++++++++++++++++++++++++++++++++++-
- 1 file changed, 35 insertions(+), 1 deletion(-)
+ mm/damon/vaddr.c | 55 ++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 48 insertions(+), 7 deletions(-)
 
 diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
-index 98cfa049b64a7..9a38dc89a156e 100644
+index 45239f05e113b..9a38dc89a156e 100644
 --- a/mm/damon/vaddr.c
 +++ b/mm/damon/vaddr.c
-@@ -522,6 +522,40 @@ static void damon_va_prep_probes(struct damon_ctx *ctx, bool set_samples)
+@@ -522,13 +522,49 @@ static void damon_va_prep_probes(struct damon_ctx *ctx, bool set_samples)
  	}
  }
  
+-static bool damon_va_filter_pass(struct folio *folio, struct damon_probe *p)
 +static bool damon_va_young_addr(struct folio *folio, pte_t *pte, pmd_t *pmd,
 +		struct mm_struct *mm, unsigned long addr)
 +{
@@ -49,10 +50,11 @@ index 98cfa049b64a7..9a38dc89a156e 100644
 +	return matched == filter->matching;
 +}
 +
- static bool damon_va_filter_pass(struct folio *folio, struct damon_probe *p,
- 		pte_t *pte, pmd_t *pmd, struct mm_struct *mm,
- 		unsigned long addr)
-@@ -530,7 +564,7 @@ static bool damon_va_filter_pass(struct folio *folio, struct damon_probe *p,
++static bool damon_va_filter_pass(struct folio *folio, struct damon_probe *p,
++		pte_t *pte, pmd_t *pmd, struct mm_struct *mm,
++		unsigned long addr)
+ {
+ 	struct damon_filter *f;
  	bool pass = true;
  
  	damon_for_each_filter(f, p) {
@@ -61,6 +63,54 @@ index 98cfa049b64a7..9a38dc89a156e 100644
  			pass = f->allow;
  			break;
  		}
+@@ -543,13 +579,15 @@ struct damon_va_probe_walk_private {
+ };
+ 
+ static void damon_va_probe_folio(struct damon_ctx *ctx,
+-		struct damon_region *r, struct folio *folio)
++		struct damon_region *r, struct folio *folio,
++		pte_t *pte, pmd_t *pmd, struct mm_struct *mm)
+ {
+ 	struct damon_probe *probe;
+ 	int i = 0;
+ 
+ 	damon_for_each_probe(probe, ctx) {
+-		if (damon_va_filter_pass(folio, probe))
++		if (damon_va_filter_pass(folio, probe, pte, pmd, mm,
++					r->sampling_addr))
+ 			r->probe_hits[i]++;
+ 		i++;
+ 	}
+@@ -574,7 +612,8 @@ static int damon_va_probe_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 		folio = vm_normal_folio_pmd(walk->vma, addr, pmde);
+ 		if (!folio)
+ 			goto huge_out;
+-		damon_va_probe_folio(priv->ctx, priv->r, folio);
++		damon_va_probe_folio(priv->ctx, priv->r, folio, NULL, &pmde,
++				walk->vma->vm_mm);
+ 
+ huge_out:
+ 		spin_unlock(ptl);
+@@ -591,7 +630,8 @@ static int damon_va_probe_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	folio = vm_normal_folio(walk->vma, addr, ptent);
+ 	if (!folio)
+ 		goto out;
+-	damon_va_probe_folio(priv->ctx, priv->r, folio);
++	damon_va_probe_folio(priv->ctx, priv->r, folio, &ptent, NULL,
++			walk->vma->vm_mm);
+ 
+ out:
+ 	pte_unmap_unlock(pte, ptl);
+@@ -615,7 +655,8 @@ static int damon_va_probe_hugetlb_entry(pte_t *pte, unsigned long hmask,
+ 
+ 	folio = pfn_folio(pte_pfn(entry));
+ 	folio_get(folio);
+-	damon_va_probe_folio(priv->ctx, priv->r, folio);
++	damon_va_probe_folio(priv->ctx, priv->r, folio, &entry, NULL,
++			walk->vma->vm_mm);
+ 	folio_put(folio);
+ 
+ out:
 -- 
 2.47.3
 
