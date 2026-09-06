@@ -1,0 +1,97 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Sun, 30 Aug 2026 11:49:48 -0700
+Subject: [RFC PATCH] mm/damon/core: reset invalid quota->charge_target_from
+Cc: <stable@vger.kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Enze Li <lienze@kylinos.cn>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260906183654.95634-1-sj@kernel.org>
+
+DAMOS can suddenly stop working if a target process that quota just
+fully charged in it is terminated.  Fix by catching and processing the
+corner case.
+
+When DAMOS quota is fully charged, the target and the region to continue
+applying the action in the next round is saved in
+damos_quota->charge_{target,addr}_from.  In the next round, DAMOS
+iterates targets and regions from the beginning.  It skips applying the
+action to the regions until it visits and skips the saved target/region.
+
+Virtual address space targets become invalid if the process is
+terminated.  Trying to apply the scheme to invalid target is just a
+waste of time.  Hence commit 6e4930e33329 ("mm/damon/core: fix wasteful
+CPU calls by skipping non-existent targets") made the logic to skip
+invalid targets.  However, it does skip before the charged target/region
+skipping/updating.
+
+Let's suppose the user runs DAMOS for multiple virtual address spaces
+with a quota.  The quota exceeded in the middle of a virtual address
+space.  And the process of the address space is terminated.  Then the
+charge_target_from points to the invalid target.  The pointer update
+logic is skipped for the invalid target, so the charge_target_from is
+never updated.  DAMOS action to every target/region is skipped.  From
+the user's perspective, it would look like suddenly DAMOS has stopped
+working.
+
+No critical leak or crash can happen.  The user could reinstall the
+scheme.  But this makes use of DAMOS under certain setups quite
+unreliable.
+
+Catch the corner case and reset the pointer in damos_adjust_quota(),
+which is called for adjustment of the quota for every round.
+
+This issue was discovered [1] by Sashiko.
+
+[1] https://lore.kernel.org/20260830064708.40CA61F000E9@smtp.kernel.org
+
+Fixes: 6e4930e33329 ("mm/damon/core: fix wasteful CPU calls by skipping non-existent targets")
+Cc: <stable@vger.kernel.org> # 7.0.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index ce8c6f99106ed..2c58be9edbde4 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3283,6 +3283,22 @@ static void damos_trace_esz(struct damon_ctx *c, struct damos *s,
+ 	trace_damos_esz(cidx, sidx, quota->esz);
+ }
+ 
++static void damos_reset_invalid_charge_target_from(struct damos_quota *quota,
++		struct damon_ctx *c)
++{
++	struct damon_target *t;
++
++	t = quota->charge_target_from;
++	if (!t)
++		return;
++	if (!c->ops.target_valid)
++		return;
++	if (c->ops.target_valid(t))
++		return;
++	quota->charge_target_from = NULL;
++	quota->charge_addr_from = 0;
++}
++
+ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ {
+ 	struct damos_quota *quota = &s->quota;
+@@ -3318,6 +3334,8 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 			damos_trace_esz(c, s, quota);
+ 	}
+ 
++	damos_reset_invalid_charge_target_from(quota, c);
++
+ 	if (!c->ops.get_scheme_score)
+ 		return;
+ 
+
+base-commit: 98a7a286b6060dce5e93b37e28f2e0be80304027
+-- 
+2.47.3
