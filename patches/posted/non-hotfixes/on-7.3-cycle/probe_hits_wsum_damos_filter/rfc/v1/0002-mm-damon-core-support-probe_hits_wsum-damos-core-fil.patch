@@ -1,0 +1,71 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Tue, 25 Aug 2026 07:21:45 -0700
+Subject: [RFC PATCH 2/6] mm/damon/core: support probe_hits_wsum damos core filter
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260906210513.106895-3-sj@kernel.org>
+
+Implement probe_hits_wsum DAMOS core filter support in the core layer.
+Make three small changes for the support.  First, update
+damos_filter_for_ops() to treat probe_hits_wsum filter as core filter.
+Second, Update destination damos_filter->range_{min,max} for
+probe_hits_wsum type damos filter commits.  Third, extend
+damos_filter_match() to handle probe_hits_wsum type filter. Calculate
+the weighted sum of the given region and compare it with the given
+filter's target weighted sum range.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 1752afede01e2..5b976162c5eed 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -654,6 +654,7 @@ bool damos_filter_for_ops(enum damos_filter_type type)
+ 	switch (type) {
+ 	case DAMOS_FILTER_TYPE_ADDR:
+ 	case DAMOS_FILTER_TYPE_TARGET:
++	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
+ 		return false;
+ 	default:
+ 		break;
+@@ -1328,6 +1329,10 @@ static void damos_commit_filter_arg(
+ 	case DAMOS_FILTER_TYPE_HUGEPAGE_SIZE:
+ 		dst->sz_range = src->sz_range;
+ 		break;
++	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
++		dst->range_min = src->range_min;
++		dst->range_max = src->range_max;
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -2506,7 +2511,7 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 	bool matched = false;
+ 	struct damon_target *ti;
+ 	int target_idx = 0;
+-	unsigned long start, end;
++	unsigned long start, end, wsum;
+ 
+ 	switch (filter->type) {
+ 	case DAMOS_FILTER_TYPE_TARGET:
+@@ -2541,6 +2546,11 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 		damon_split_region_at(t, r, end - r->ar.start);
+ 		matched = true;
+ 		break;
++	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
++		wsum = damon_probe_hits_wsum(r, false, ctx);
++		matched = filter->range_min <= wsum &&
++			wsum <= filter->range_max;
++		break;
+ 	default:
+ 		return false;
+ 	}
+-- 
+2.47.3
