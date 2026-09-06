@@ -1,0 +1,95 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Thu, 3 Sep 2026 18:49:59 +0300
+Subject: [PATCH] mm/execmem: handle potential allocation errors in the maple
+ tree
+
+execmem_cache_clean() and execmem_cache_alloc_locked() ignore potential
+allocation failures in mas_store_gfp().
+
+While in practice they are unlikely to happen, it's better to handle those
+errors and ensure the integrity of the ROX cache.
+
+Preallocate the maple tree nodes for the stores that must not fail and
+order the maple tree updates so that there won't be any failures once a
+tree has been modified.
+
+Assisted-by: copilot:claude-opus-5
+Link: https://lore.kernel.org/20260903-execmem-rox-cache-pmd-v1-v1-2-11beb2a3d249@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Benjamin Tissoires <bentiss@kernel.org>
+Cc: Jiri Kosina <jikos@kernel.org>
+Cc: Luis Chamberalin <mcgrof@kernel.org>
+Cc: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/execmem.c | 32 ++++++++++++++++++++++----------
+ 1 file changed, 22 insertions(+), 10 deletions(-)
+
+diff --git a/mm/execmem.c b/mm/execmem.c
+index ba277790e3132..00dd6324cae01 100644
+--- a/mm/execmem.c
++++ b/mm/execmem.c
+@@ -149,7 +149,15 @@ static void execmem_cache_clean(struct work_struct *work)
+ 		if (vm && get_vm_area_size(vm) == size &&
+ 		    IS_ALIGNED(size, PMD_SIZE) &&
+ 		    IS_ALIGNED(mas.index, PMD_SIZE)) {
+-			mas_store_gfp(&mas, NULL, GFP_KERNEL);
++			/*
++			 * Preallocate to ensure mas_store does not fail
++			 * If there is no memory for the tree update, bail out,
++			 * next execmem_free() might be more lucky
++			 */
++			if (mas_preallocate(&mas, NULL, GFP_KERNEL))
++				break;
++
++			mas_store_prealloc(&mas, NULL);
+ 			vfree(area);
+ 		}
+ 	}
+@@ -219,30 +227,34 @@ static void *execmem_cache_alloc_locked(struct execmem_range *range, size_t size
+ 	addr = mas_free.index;
+ 	last = mas_free.last;
+ 
++	mas_set_range(&mas_free, addr, addr + size - 1);
++	if (mas_preallocate(&mas_free, NULL, GFP_KERNEL))
++		return NULL;
++
+ 	/* insert allocated size to busy_areas at range [addr, addr + size) */
+ 	mas_set_range(&mas_busy, addr, addr + size - 1);
+ 	err = mas_store_gfp(&mas_busy, (void *)addr, GFP_KERNEL);
+ 	if (err)
+-		return NULL;
++		goto err_destroy_mas_free;
+ 
+-	mas_store_gfp(&mas_free, NULL, GFP_KERNEL);
++	mas_store_prealloc(&mas_free, NULL);
+ 	if (area_size > size) {
+-		void *ptr = (void *)(addr + size);
+-
+ 		/*
+ 		 * re-insert remaining free size to free_areas at range
+ 		 * [addr + size, last]
++		 * the range matches an existing entry, so this cannot allocate
+ 		 */
++		ptr = (void *)(addr + size);
+ 		mas_set_range(&mas_free, addr + size, last);
+-		err = mas_store_gfp(&mas_free, ptr, GFP_KERNEL);
+-		if (err) {
+-			mas_store_gfp(&mas_busy, NULL, GFP_KERNEL);
+-			return NULL;
+-		}
++		mas_store_gfp(&mas_free, ptr, GFP_KERNEL);
+ 	}
+ 	ptr = (void *)addr;
+ 
+ 	return ptr;
++
++err_destroy_mas_free:
++	mas_destroy(&mas_free);
++	return NULL;
+ }
+ 
+ static void *__execmem_cache_alloc(struct execmem_range *range, size_t size)
+-- 
+2.47.3
+

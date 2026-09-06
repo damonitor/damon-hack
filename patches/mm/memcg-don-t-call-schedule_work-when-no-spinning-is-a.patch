@@ -1,0 +1,102 @@
+From: David Stevens <stevensd@google.com>
+Date: Fri, 4 Sep 2026 10:31:45 -0700
+Subject: [PATCH] memcg: don't call schedule_work when no spinning is allowed
+
+Memcg charging can be done from any context, but calling schedule_work()
+isn't safe from an NMI.  If memory.high is breached from a context where
+spinning isn't allowed, use irq_work to schedule the reclaim work.
+
+Found this via code inspection.  I spent a little bit trying to trigger it
+for real, but the only way I managed was by writing a hacky driver absuing
+alloc_pages_nolock().
+
+Link: https://lore.kernel.org/20260904173145.2028377-1-stevensd@google.com
+Fixes: 3ac4638a734a ("memcg: make memcg_rstat_updated nmi safe")
+Signed-off-by: David Stevens <stevensd@google.com>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h |  2 ++
+ mm/memcontrol.c            | 13 ++++++++++++-
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index c0c9805b6f032..4f720791a31c9 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -23,6 +23,7 @@
+ #include <linux/writeback.h>
+ #include <linux/page-flags.h>
+ #include <linux/shrinker.h>
++#include <linux/irq_work_types.h>
+ 
+ struct mem_cgroup;
+ struct obj_cgroup;
+@@ -233,6 +234,7 @@ struct mem_cgroup {
+ #endif
+ 
+ 	/* Range enforcement for interrupt charges */
++	struct irq_work high_irq_work;
+ 	struct work_struct high_work;
+ 
+ 	__cacheline_group_end_aligned(memcg_write_hot);
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index e539881f58f14..3e14e0ce9e7ec 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -62,6 +62,7 @@
+ #include <linux/seq_buf.h>
+ #include <linux/sched/isolation.h>
+ #include <linux/kmemleak.h>
++#include <linux/irq_work.h>
+ #include "internal.h"
+ #include "swap.h"
+ #include "swap_table.h"
+@@ -2424,6 +2425,11 @@ static void high_work_func(struct work_struct *work)
+ 	reclaim_high(memcg, MEMCG_CHARGE_BATCH, GFP_KERNEL);
+ }
+ 
++static void high_irq_work_func(struct irq_work *work)
++{
++	schedule_work(&container_of(work, struct mem_cgroup, high_irq_work)->high_work);
++}
++
+ /*
+  * Clamp the maximum sleep time per allocation batch to 2 seconds. This is
+  * enough to still cause a significant slowdown in most cases, while still
+@@ -2832,7 +2838,10 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 		/* Don't bother a random interrupted task */
+ 		if (!in_task()) {
+ 			if (mem_high) {
+-				schedule_work(&memcg->high_work);
++				if (allow_spinning)
++					schedule_work(&memcg->high_work);
++				else
++					irq_work_queue(&memcg->high_irq_work);
+ 				break;
+ 			}
+ 			continue;
+@@ -4207,6 +4216,7 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
+ 		goto fail;
+ 
+ 	INIT_WORK(&memcg->high_work, high_work_func);
++	init_irq_work(&memcg->high_irq_work, high_irq_work_func);
+ 	vmpressure_init(&memcg->vmpressure);
+ 	INIT_LIST_HEAD(&memcg->memory_peaks);
+ 	INIT_LIST_HEAD(&memcg->swap_peaks);
+@@ -4415,6 +4425,7 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
+ 		static_branch_dec(&memcg_bpf_enabled_key);
+ 
+ 	vmpressure_cleanup(&memcg->vmpressure);
++	irq_work_sync(&memcg->high_irq_work);
+ 	cancel_work_sync(&memcg->high_work);
+ 	free_shrinker_info(memcg);
+ 	mem_cgroup_free(memcg);
+-- 
+2.47.3
+

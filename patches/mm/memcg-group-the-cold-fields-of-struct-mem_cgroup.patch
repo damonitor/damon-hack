@@ -1,0 +1,152 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 4 Sep 2026 20:05:20 -0700
+Subject: [PATCH] memcg: group the cold fields of struct mem_cgroup
+
+These fields are only touched by the cgroup control paths:
+
+  memory_peaks, swap_peaks, peaks_lock   memory.peak open/read/release
+  events_file, events_local_file,
+  swap_events_file                       cgroup_file_notify()
+  cgwb_list, cgwb_domain, cgwb_frn       writeback setup and the
+                                         foreign dirty slow path
+  mm_list                                MGLRU mm list
+
+They sit in the middle of the struct today.  The three cgroup_file members
+alone are 192 bytes of notify state next to the vmstats pointer.  Put them
+in one cache line group.
+
+No functional change.
+
+Link: https://lore.kernel.org/20260905030522.1887837-5-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 49 ++++++++++++++++++++++----------------
+ mm/memcontrol.c            | 25 +++++++++++++++++++
+ 2 files changed, 53 insertions(+), 21 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 66431981f4f76..3a7f809713025 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -228,11 +228,37 @@ struct mem_cgroup {
+ 
+ 	__cacheline_group_end_aligned(memcg_write_hot);
+ 
++	/*
++	 * Off the charge and fault paths.  Not write free: cgwb_domain is
++	 * written on every writeout completion and mm_list on fork, exit and
++	 * MGLRU aging.  They are grouped here so those writes cannot land on
++	 * a line that the fast paths read.
++	 */
++	__cacheline_group_begin_aligned(memcg_cold);
+ 	/* registered local peak watchers */
+ 	struct list_head memory_peaks;
+ 	struct list_head swap_peaks;
+ 	spinlock_t	 peaks_lock;
+ 
++	/* memory.events and memory.events.local */
++	struct cgroup_file events_file;
++	struct cgroup_file events_local_file;
++
++	/* handle for "memory.swap.events" */
++	struct cgroup_file swap_events_file;
++
++#ifdef CONFIG_CGROUP_WRITEBACK
++	struct list_head cgwb_list;
++	struct wb_domain cgwb_domain;
++	struct memcg_cgwb_frn cgwb_frn[MEMCG_CGWB_FRN_CNT];
++#endif
++
++#ifdef CONFIG_LRU_GEN_WALKS_MMU
++	/* per-memcg mm_struct list */
++	struct lru_gen_mm_list mm_list;
++#endif
++	__cacheline_group_end_aligned(memcg_cold);
++
+ #ifdef CONFIG_ZSWAP
+ 	unsigned long zswap_max;
+ 
+@@ -248,37 +274,18 @@ struct mem_cgroup {
+ 	 */
+ 	bool oom_group;
+ 
+-	/* memory.events and memory.events.local */
+-	struct cgroup_file events_file;
+-	struct cgroup_file events_local_file;
+-
+-	/* handle for "memory.swap.events" */
+-	struct cgroup_file swap_events_file;
+-
+ 	/* memory.stat */
+ 	struct memcg_vmstats	*vmstats;
+ 
+ 	int kmemcg_id;
+ 
+-#ifdef CONFIG_CGROUP_WRITEBACK
+-	struct list_head cgwb_list;
+-#endif
+-
+ 	/* Keep the hot per-CPU stats pointer away from memory event counters. */
+ 	struct memcg_vmstats_percpu __percpu *vmstats_percpu
+ 		____cacheline_aligned_in_smp;
+ 
+-#ifdef CONFIG_CGROUP_WRITEBACK
+-	struct wb_domain cgwb_domain;
+-	struct memcg_cgwb_frn cgwb_frn[MEMCG_CGWB_FRN_CNT];
+-#endif
+-
+-#ifdef CONFIG_LRU_GEN_WALKS_MMU
+-	/* per-memcg mm_struct list */
+-	struct lru_gen_mm_list mm_list;
+-#endif
+-
+ #ifdef CONFIG_MEMCG_V1
++	/* v1 only. Not grouped: v1 is legacy, sorting it is not worth it. */
++
+ 	/* Legacy consumer-oriented counters */
+ 	struct page_counter kmem;		/* v1 only */
+ 	struct page_counter tcpmem;		/* v1 only */
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 56fc6d8c02a86..51539265bfa9d 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5728,6 +5728,31 @@ static void __init memcg_struct_check(void)
+ 				      high_irq_work);
+ 	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_write_hot,
+ 				      high_work);
++
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      memory_peaks);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      swap_peaks);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      peaks_lock);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      events_file);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      events_local_file);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      swap_events_file);
++#ifdef CONFIG_CGROUP_WRITEBACK
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      cgwb_list);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      cgwb_domain);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      cgwb_frn);
++#endif
++#ifdef CONFIG_LRU_GEN_WALKS_MMU
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
++				      mm_list);
++#endif
+ }
+ 
+ int __init mem_cgroup_init(void)
+-- 
+2.47.3
+

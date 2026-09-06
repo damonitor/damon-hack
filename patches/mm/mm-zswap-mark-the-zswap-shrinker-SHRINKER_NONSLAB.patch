@@ -1,0 +1,70 @@
+From: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Date: Fri, 4 Sep 2026 11:35:03 +0800
+Subject: [PATCH] mm: zswap: mark the zswap shrinker SHRINKER_NONSLAB
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With kmem accounting disabled (cgroup.memory=nokmem), memcg reclaim never
+invokes the zswap shrinker: a cgroup under memory pressure does not write
+back its own zswapped pages to make room; they are only written back by
+global reclaim or once the global pool limit kicks in.
+
+The zswap shrinker is registered memcg-aware but without SHRINKER_NONSLAB,
+so under nokmem it is treated as a slab shrinker: before commit
+03375203e1da ("mm: do not allocate shrinker info with
+cgroup.memory=nokmem") it was skipped by the !memcg_kmem_online() check in
+shrink_slab_memcg(); since that commit it is demoted to non-memcg-aware at
+registration.  But the zswap shrinker is not a slab shrinker: it tracks
+zswap entries and resolves the owning memcg from the folio's objcg,
+independent of kmem accounting.
+
+This was noticed by Michal during review of the patch "mm/list_lru: don't
+copy stale shrinker id from non-memcg-aware shrinkers" [1].
+
+Mark it SHRINKER_NONSLAB so it keeps its memcg awareness and runs under
+memcg reclaim with nokmem.
+
+Link: https://lore.kernel.org/20260904033503.4067283-3-qinyuntan@linux.alibaba.com
+Link: https://lore.kernel.org/lkml/697713c4-0857-485b-aba7-c74f37a3c8b4@linux.alibaba.com/ [1]
+Fixes: b5ba474f3f51 ("zswap: shrink zswap pool based on memory pressure")
+Signed-off-by: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Suggested-by: Michal Koutný <mkoutny@suse.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Xunlei Pang <xlpang@linux.alibaba.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zswap.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index cfe4674d83b8e..5d0d8bd72193a 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -1254,8 +1254,8 @@ static struct shrinker *zswap_alloc_shrinker(void)
+ {
+ 	struct shrinker *shrinker;
+ 
+-	shrinker =
+-		shrinker_alloc(SHRINKER_NUMA_AWARE | SHRINKER_MEMCG_AWARE, "mm-zswap");
++	shrinker = shrinker_alloc(SHRINKER_NUMA_AWARE | SHRINKER_MEMCG_AWARE |
++				  SHRINKER_NONSLAB, "mm-zswap");
+ 	if (!shrinker)
+ 		return NULL;
+ 
+-- 
+2.47.3
+

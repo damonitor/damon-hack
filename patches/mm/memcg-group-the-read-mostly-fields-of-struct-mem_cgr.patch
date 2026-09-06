@@ -1,0 +1,157 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 4 Sep 2026 20:05:21 -0700
+Subject: [PATCH] memcg: group the read-mostly fields of struct mem_cgroup
+
+These fields are set when the memcg is created and only read after
+that:
+
+  vmstats_percpu   read on every stat update
+  vmstats
+  zswap_max, zswap_writeback
+  private_id       read on every eviction and refault
+  kmemcg_id        read on every list_lru lookup
+  oom_group
+
+Put them in one cache line group at the end of the struct, right before
+nodeinfo[].  nodeinfo[] is read-mostly too but it is a flexible array, so
+it cannot sit inside a group.  The group ends without padding so the two
+share a line.
+
+This also drops the ____cacheline_aligned_in_smp on vmstats_percpu added
+by commit c1afbd5de131 ("mm/memcontrol: avoid false sharing between
+vmstats and events").  That only aligned the start of the field.
+cgwb_domain followed it on the same line and is written on every writeout
+completion.  A group boundary covers both sides.
+
+No functional change.
+
+Link: https://lore.kernel.org/20260905030522.1887837-6-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/memcontrol.h | 62 +++++++++++++++++++++-----------------
+ mm/memcontrol.c            | 17 +++++++++++
+ 2 files changed, 52 insertions(+), 27 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 3a7f809713025..73594783a2ef0 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -183,9 +183,6 @@ struct obj_cgroup {
+ struct mem_cgroup {
+ 	struct cgroup_subsys_state css;
+ 
+-	/* Private memcg ID. Used to ID objects that outlive the cgroup */
+-	int private_id;
+-
+ 	/* Accounted resources */
+ 	struct page_counter memory;		/* Both v1 & v2 */
+ 
+@@ -259,30 +256,6 @@ struct mem_cgroup {
+ #endif
+ 	__cacheline_group_end_aligned(memcg_cold);
+ 
+-#ifdef CONFIG_ZSWAP
+-	unsigned long zswap_max;
+-
+-	/*
+-	 * Prevent pages from this memcg from being written back from zswap to
+-	 * swap, and from being swapped out on zswap store failures.
+-	 */
+-	bool zswap_writeback;
+-#endif
+-
+-	/*
+-	 * Should the OOM killer kill all belonging tasks, had it kill one?
+-	 */
+-	bool oom_group;
+-
+-	/* memory.stat */
+-	struct memcg_vmstats	*vmstats;
+-
+-	int kmemcg_id;
+-
+-	/* Keep the hot per-CPU stats pointer away from memory event counters. */
+-	struct memcg_vmstats_percpu __percpu *vmstats_percpu
+-		____cacheline_aligned_in_smp;
+-
+ #ifdef CONFIG_MEMCG_V1
+ 	/* v1 only. Not grouped: v1 is legacy, sorting it is not worth it. */
+ 
+@@ -322,6 +295,41 @@ struct mem_cgroup {
+ 	int swappiness;
+ #endif /* CONFIG_MEMCG_V1 */
+ 
++	/*
++	 * Set when the memcg is created and cleared when it is offlined.
++	 * Never written on a hot path.
++	 */
++	__cacheline_group_begin_aligned(memcg_read_mostly);
++	/* Read on every stat update */
++	struct memcg_vmstats_percpu __percpu *vmstats_percpu;
++
++	/* memory.stat */
++	struct memcg_vmstats	*vmstats;
++
++#ifdef CONFIG_ZSWAP
++	unsigned long zswap_max;
++#endif
++
++	/* Private memcg ID. Used to ID objects that outlive the cgroup */
++	int private_id;
++
++	int kmemcg_id;
++
++	/*
++	 * Should the OOM killer kill all belonging tasks, had it kill one?
++	 */
++	bool oom_group;
++
++#ifdef CONFIG_ZSWAP
++	/*
++	 * Prevent pages from this memcg from being written back from zswap to
++	 * swap, and from being swapped out on zswap store failures.
++	 */
++	bool zswap_writeback;
++#endif
++	/* Not padded: nodeinfo[] is read-mostly too, let it share the line. */
++	__cacheline_group_end(memcg_read_mostly);
++
+ 	struct mem_cgroup_per_node *nodeinfo[];
+ };
+ 
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 51539265bfa9d..a392f06a52134 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5753,6 +5753,23 @@ static void __init memcg_struct_check(void)
+ 	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_cold,
+ 				      mm_list);
+ #endif
++
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      vmstats_percpu);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      vmstats);
++#ifdef CONFIG_ZSWAP
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      zswap_max);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      zswap_writeback);
++#endif
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      private_id);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      kmemcg_id);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct mem_cgroup, memcg_read_mostly,
++				      oom_group);
+ }
+ 
+ int __init mem_cgroup_init(void)
+-- 
+2.47.3
+

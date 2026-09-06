@@ -1,0 +1,53 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Sat, 5 Sep 2026 22:21:43 +0800
+Subject: [PATCH] ocfs2: validate dr_fs_generation of dir index root blocks
+
+ocfs2_validate_dx_root() does not verify dr_fs_generation against the
+superblock generation, unlike the extent and xattr block validators which
+check h_fs_generation and xb_fs_generation respectively.  The field is
+documented as "Must match super block".
+
+Without the check, a stale dir index root block left on the device from
+a previously formatted filesystem at the same physical block number can
+pass validation as long as its signature, dr_blkno and checksum match.
+Its index entries and suballocator information would then be used in
+the new filesystem context.
+
+Reject dir index root blocks whose dr_fs_generation does not match the
+mounted filesystem, like the extent and xattr block validators do.
+
+Link: https://lore.kernel.org/20260905142144.2869105-1-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Reviewed-by: Heming Zhao <heming.zhao@suse.com>
+Cc: Changwei Ge <gechangwei@live.cn>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Jun Piao <piaojun@huawei.com>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/ocfs2/dir.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/fs/ocfs2/dir.c b/fs/ocfs2/dir.c
+index 6bb6aa133f015..329680b462273 100644
+--- a/fs/ocfs2/dir.c
++++ b/fs/ocfs2/dir.c
+@@ -613,6 +613,14 @@ static int ocfs2_validate_dx_root(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
++	if (le32_to_cpu(dx_root->dr_fs_generation) != OCFS2_SB(sb)->fs_generation) {
++		ret = ocfs2_error(sb,
++				  "Dir Index Root # %llu has an invalid dr_fs_generation of #%u\n",
++				  (unsigned long long)bh->b_blocknr,
++				  le32_to_cpu(dx_root->dr_fs_generation));
++		goto bail;
++	}
++
+ 	/*
+ 	 * Dir index root blocks are allocated from a per-slot suballocator,
+ 	 * so the slot must be in range.  Otherwise removing the index passes
+-- 
+2.47.3
+

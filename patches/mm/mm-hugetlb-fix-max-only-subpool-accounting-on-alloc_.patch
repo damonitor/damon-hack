@@ -1,0 +1,91 @@
+From: Zhao Li <enderaoelyther@gmail.com>
+Date: Tue, 28 Apr 2026 19:30:38 +0800
+Subject: [PATCH] mm/hugetlb: fix max-only subpool accounting on
+ alloc_hugetlb_folio failure
+
+Failed hugetlbfs page allocations can permanently consume the mount's
+size= quota without allocating a huge page.  Repeated failures can make
+the filesystem appear full and cause later huge-page faults or allocations
+to fail with SIGBUS/allocation failure despite available huge pages and
+unused real filesystem capacity.
+
+alloc_hugetlb_folio() calls hugepage_subpool_get_pages() when map_chg is
+set.  For a subpool with max_hpages != -1, that bumps used_hpages
+regardless of whether it returns gbl_chg = 0 (rsv slot consumed) or
+gbl_chg > 0 (used_hpages slot only).  If the allocation later fails before
+a folio is returned, the unwind must undo the used_hpages bump.  The old
+cleanup only ran for !gbl_chg, leaking used_hpages on the gbl_chg > 0
+path.
+
+For gbl_chg > 0 on max-only subpools (max_hpages != -1, min_hpages == -1),
+hugepage_subpool_get_pages() took only a speculative used_hpages slot.
+Drop that slot directly under spool->lock.  In that configuration
+hugepage_subpool_put_pages() cannot restore rsv_hpages, so the direct
+decrement is the exact inverse and is race-free against concurrent puts.
+This matches the used_hpages-only part of hugetlb_reserve_pages()'s
+out_put_pages cleanup, but restricts it to the max-only case where no
+rsv_hpages restoration is possible.
+
+Mounts with min_hpages != -1 are left unchanged for now.  v2's approach
+(hugepage_subpool_put_pages() + h->resv_huge_pages++ to back a restored
+rsv_hpages slot) double-counts global backing under concurrent
+free_huge_folio() and creates phantom reservations under concurrent
+hugetlb_unreserve_pages().  Safe cleanup of that quadrant needs a
+coordinated fix across multiple call sites.
+
+Reproduced on size=20M hugetlbfs with the faulting task in a hugetlb
+cgroup whose limit is exceeded.  Vanilla leaks 6/8 hugepages of subpool
+quota; this patch leaks 0/8.  Verified under QEMU.
+
+Link: https://lore.kernel.org/20260428113037.88766-2-enderaoelyther@gmail.com
+Fixes: a833a693a490 ("mm: hugetlb: fix incorrect fallback for subpool")
+Signed-off-by: Zhao Li <enderaoelyther@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Ma Wupeng <mawupeng1@huawei.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: <stable@vger.kernel.org> # v6.15+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/hugetlb.c | 25 ++++++++++++++++++-------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index d28972cd33f58..aaee6ebcc1ca8 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3070,13 +3070,24 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
+ 	return folio;
+ 
+ out_subpool_put:
+-	/*
+-	 * put page to subpool iff the quota of subpool's rsv_hpages is used
+-	 * during hugepage_subpool_get_pages.
+-	 */
+-	if (map_chg && !gbl_chg) {
+-		gbl_reserve = hugepage_subpool_put_pages(spool, 1);
+-		hugetlb_acct_memory(h, -gbl_reserve);
++	if (map_chg) {
++		if (!gbl_chg) {
++			/* Full inverse when subpool_get_pages() consumed rsv_hpages. */
++			gbl_reserve = hugepage_subpool_put_pages(spool, 1);
++			hugetlb_acct_memory(h, -gbl_reserve);
++		} else if (gbl_chg > 0 && spool && spool->min_hpages == -1 &&
++			   spool->max_hpages != -1) {
++			unsigned long flags;
++
++			/*
++			 * For max-only subpools, subpool_get_pages() took only a
++			 * speculative used_hpages slot. Drop that slot directly.
++			 */
++			spin_lock_irqsave(&spool->lock, flags);
++			if (spool->used_hpages > 0)
++				spool->used_hpages--;
++			unlock_or_release_subpool(spool, flags);
++		}
+ 	}
+ 
+ out_end_reservation:
+-- 
+2.47.3
+

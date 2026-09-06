@@ -1,18 +1,58 @@
-- baseline: v7.3-rc1-71-g786262be6048d -> v7.3-rc1-475-g0d9ff90a5422c
+- baseline: v7.3-rc1-475-g0d9ff90a5422c -> v7.3-rc1-475-g0d9ff90a5422c (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 0 commits (no change)
+- mm-hotfixes-unstable: 0 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 0 -> 1 commits
+  - new commits
+    - 2101f10b107e "mm/damon/ops-common: use a page-aligned address in damon_ptep_mkold()"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260904002829.116381-1-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 65 -> 65 commits (no change)
-  - series: 10 (64) -> 10 (64) (no change)
+- mm-unstable: 65 -> 72 commits
+  - series: 10 (64) -> 12 (71)
     - no role, maintainer: 17 -> 17 commits (no change)
-    - maintainer, nobody: 36 -> 36 commits (no change)
+    - maintainer, nobody: 36 -> 43 commits
     - maintainer, no role : 12 -> 12 commits (no change)
-- mm-new: 7 -> 7 commits (no change)
-  - series: 2 (7) -> 2 (7) (no change)
-    - maintainer, nobody: 7 -> 7 commits (no change)
+  - changed commits
+    - series "mm/damon: move zero damos quota target_value handling to the core layer". (3)
+      - 435984f061e0 "mm/damon/core: error damos_commit_quota_goal() for zero target_value (0/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010722.94244-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260903010722.94244-2-sj@kernel.org
+        - Link: https://lore.kernel.org/20260803134034.15217-1-sj@kernel.org [1]
+      - 2b78b08d1cd6 "Revert "mm/damon/lru_sort: error out for >10000 active_mem_bp" (1/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010722.94244-3-sj@kernel.org
+      - d047eda563aa "Revert "samples/damon/mtier: error out for zero quota goal target values" (2/3)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010722.94244-4-sj@kernel.org
+    - series "mm/damon: allow NULL or unstarted damon_ctx parameter for damon_call()". (4)
+      - e1a8dbe8b1fb "mm/damon/core: handle NULL ctx parameter in damon_call() (0/4)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010334.93622-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260903010334.93622-2-sj@kernel.org
+      - 2b6449312ffd "mm/damon/core: set ctx->call_controls_obsolete in damon_new_ctx() (1/4)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010334.93622-3-sj@kernel.org
+        - Link: https://lore.kernel.org/20260803134646.16640-1-sj@kernel.org [1]
+      - 0f5b2a7b9883 "mm/damon/reclaim: remove unnecessary damon_call() param validation (2/4)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010334.93622-4-sj@kernel.org
+      - d118502628f8 "mm/damon/lru_sort: remove unnecessary damon_call() param validation (3/4)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260903010334.93622-5-sj@kernel.org
+- mm-new: 7 -> 0 commits
+  - series: 2 (7) -> 0 (0)
+    - maintainer, nobody: 7 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

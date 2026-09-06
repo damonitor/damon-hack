@@ -1,0 +1,56 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 3 Sep 2026 20:08:39 +0100
+Subject: [PATCH] mm/madvise: swap in CoW'd MAP_PRIVATE-file mappings on
+ MADV_WILLNEED
+
+Currently MADV_WILLNEED treats file-backed and pure anonymous mappings
+entirely separately - using POSIX_FADV_WILLNEED (equivalent of a
+readahead) for the former and a tree walk and swap in to swap cache for
+the latter.
+
+MAP_PRIVATE-file backed mappings straddle the two and currently get
+treated as if they were purely file-backed, meaning any swapped out
+private pages remain swapped out.
+
+Resolve the issue by explicitly checking for CoW'd MAP_PRIVATE-file backed
+mappings and performing both walks in this case.
+
+Since the logic checks for vma->anon_vma this means un-CoW'd
+MAP_PRIVATE-file backed mappings retain only the single file walk.
+
+Link: https://lore.kernel.org/aprjOxDy3JCPb2oa@gremlin
+Reported-by: Mike Kaplinskiy <mike@recall.ai>
+Closes: https://lore.kernel.org/all/CABeknB_S2XJSHFgnHdgnN0rjzHhH4oQJs_APq9fvxHztQ_pgiA@mail.gmail.com/
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/madvise.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 73c2901b9adbf..963337f93a7a1 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -297,11 +297,12 @@ static long madvise_willneed(struct madvise_behavior *madv_behavior)
+ 	loff_t offset;
+ 
+ #ifdef CONFIG_SWAP
+-	if (!file) {
++	if (vma_is_cow_mapping(vma) && vma->anon_vma) {
+ 		walk_page_range_vma(vma, start, end, &swapin_walk_ops, vma);
+ 		lru_add_drain(); /* Push any new pages onto the LRU now */
+-		return 0;
+ 	}
++	if (!file)
++		return 0;
+ 
+ 	if (shmem_mapping(file->f_mapping)) {
+ 		shmem_swapin_range(vma, start, end, file->f_mapping);
+-- 
+2.47.3
+

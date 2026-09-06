@@ -1,0 +1,93 @@
+From: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Date: Fri, 4 Sep 2026 11:35:02 +0800
+Subject: [PATCH] mm: thp: restore SHRINKER_NONSLAB on the deferred split
+ shrinker
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm: restore SHRINKER_NONSLAB on THP and zswap shrinkers".
+
+While reviewing the patch "mm/list_lru: don't copy stale shrinker id from
+non-memcg-aware shrinkers" (now in mm-unstable), Michal noticed that the
+two non-slab memcg-aware shrinkers, the THP deferred split shrinker and
+the zswap shrinker, are registered without SHRINKER_NONSLAB [1].
+
+Without that flag, booting with cgroup.memory=nokmem silently demotes both
+shrinkers to non-memcg-aware ones: memcg (limit-induced) reclaim neither
+splits partially unmapped THPs nor writes back zswapped pages of the
+cgroup under pressure.
+
+Patch 1 restores the flag on the deferred split shrinker; it was lost when
+commit fafaeceb89a5 ("mm: switch deferred split shrinker to list_lru")
+re-registered the shrinker.
+
+Patch 2 adds the flag to the zswap shrinker, which has never carried it
+since its introduction in commit b5ba474f3f51 ("zswap: shrink zswap pool
+based on memory pressure").
+
+
+This patch (of 2):
+
+On a system booted with cgroup.memory=nokmem, the deferred split shrinker
+is quietly demoted to a non-memcg-aware one.  As a result, partially
+unmapped THPs are only split under global reclaim; memcg (limit-induced)
+reclaim never splits them, so a cgroup under memory pressure keeps its
+underused THPs intact.
+
+This is a regression from commit fafaeceb89a5 ("mm: switch deferred split
+shrinker to list_lru"), which re-registered the shrinker without
+SHRINKER_NONSLAB.  The shrinker had carried this flag since commit
+0a432dcbeb32 ("mm: shrinker: make shrinker not depend on memcg kmem")
+precisely so it would keep working with kmem accounting disabled.  Without
+the flag, shrinker_memcg_alloc() fails with -ENOSYS under nokmem and the
+shrinker loses its memcg awareness.
+
+This was noticed by Michal during review of the patch "mm/list_lru: don't
+copy stale shrinker id from non-memcg-aware shrinkers" [1].
+
+Restore the flag.
+
+Link: https://lore.kernel.org/20260904033503.4067283-1-qinyuntan@linux.alibaba.com
+Link: https://lore.kernel.org/20260904033503.4067283-2-qinyuntan@linux.alibaba.com
+Link: https://lore.kernel.org/lkml/697713c4-0857-485b-aba7-c74f37a3c8b4@linux.alibaba.com/ [1]
+Fixes: fafaeceb89a5 ("mm: switch deferred split shrinker to list_lru")
+Signed-off-by: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Suggested-by: Michal Koutný <mkoutny@suse.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Xunlei Pang <xlpang@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/huge_memory.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index dd66c6ad5af13..d1ce061601bcd 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1064,7 +1064,8 @@ int folio_memcg_alloc_deferred(struct folio *folio)
+ static int __init thp_shrinker_init(void)
+ {
+ 	deferred_split_shrinker = shrinker_alloc(SHRINKER_NUMA_AWARE |
+-						 SHRINKER_MEMCG_AWARE,
++						 SHRINKER_MEMCG_AWARE |
++						 SHRINKER_NONSLAB,
+ 						 "thp-deferred_split");
+ 	if (!deferred_split_shrinker)
+ 		return -ENOMEM;
+-- 
+2.47.3
+
