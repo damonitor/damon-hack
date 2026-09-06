@@ -1,5 +1,5 @@
 From: Krishna Iyer <kiyer@crusoe.ai>
-Date: Tue, 1 Sep 2026 22:35:53 -0700
+Date: Sun, 6 Sep 2026 12:50:31 -0700
 Subject: [PATCH] mm/damon: move damon_hugetlb_mkold() from vaddr to ops-common
 
 damon_hugetlb_mkold() clears the accessed bit of a hugetlb-mapping huge
@@ -20,13 +20,13 @@ Signed-off-by: Krishna Iyer <kiyer@crusoe.ai>
 Reviewed-by: SJ Park <sj@kernel.org>
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/ops-common.c | 30 ++++++++++++++++++++++++++++++
+ mm/damon/ops-common.c | 37 +++++++++++++++++++++++++++++++++++++
  mm/damon/ops-common.h |  9 +++++++++
- mm/damon/vaddr.c      | 27 ---------------------------
- 3 files changed, 39 insertions(+), 27 deletions(-)
+ mm/damon/vaddr.c      | 34 ----------------------------------
+ 3 files changed, 46 insertions(+), 34 deletions(-)
 
 diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
-index 7219c608b1952..93819039d2a08 100644
+index 7219c608b1952..995cc1f3b9f32 100644
 --- a/mm/damon/ops-common.c
 +++ b/mm/damon/ops-common.c
 @@ -3,6 +3,7 @@
@@ -37,27 +37,34 @@ index 7219c608b1952..93819039d2a08 100644
  #include <linux/migrate.h>
  #include <linux/mmu_notifier.h>
  #include <linux/page_idle.h>
-@@ -103,6 +104,35 @@ void damon_pmdp_mkold(pmd_t *pmd, struct vm_area_struct *vma, unsigned long addr
+@@ -103,6 +104,42 @@ void damon_pmdp_mkold(pmd_t *pmd, struct vm_area_struct *vma, unsigned long addr
  #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
  }
  
 +#ifdef CONFIG_HUGETLB_PAGE
++static bool damon_hugetlb_ptep_mkold(pte_t *pte, struct mm_struct *mm,
++		struct vm_area_struct *vma, unsigned long addr, pte_t *entry)
++{
++	unsigned long psize = huge_page_size(hstate_vma(vma));
++
++	if (!pte_young(*entry))
++		return false;
++	*entry = huge_ptep_get_and_clear(mm, addr, pte, psize);
++	*entry = pte_mkold(*entry);
++	set_huge_pte_at(mm, addr, pte, *entry, psize);
++	return true;
++}
++
 +void damon_hugetlb_mkold(pte_t *pte, struct mm_struct *mm,
 +		struct vm_area_struct *vma, unsigned long addr)
 +{
 +	bool referenced = false;
 +	pte_t entry = huge_ptep_get(mm, addr, pte);
 +	struct folio *folio = pfn_folio(pte_pfn(entry));
-+	unsigned long psize = huge_page_size(hstate_vma(vma));
 +
 +	folio_get(folio);
 +
-+	if (pte_young(entry)) {
-+		referenced = true;
-+		entry = pte_mkold(entry);
-+		set_huge_pte_at(mm, addr, pte, entry, psize);
-+	}
-+
++	referenced = damon_hugetlb_ptep_mkold(pte, mm, vma, addr, &entry);
 +	if (mmu_notifier_clear_young(mm, addr,
 +				     addr + huge_page_size(hstate_vma(vma))))
 +		referenced = true;
@@ -94,29 +101,36 @@ index 38d295488fa18..f7811c9c7a024 100644
  bool damon_folio_young(struct folio *folio);
  
 diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
-index f884d3f78f30a..af9e1b82454cc 100644
+index 91a0d441c1f94..af9e1b82454cc 100644
 --- a/mm/damon/vaddr.c
 +++ b/mm/damon/vaddr.c
-@@ -283,33 +283,6 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
+@@ -283,40 +283,6 @@ static int damon_mkold_pmd_entry(pmd_t *pmd, unsigned long addr,
  }
  
  #ifdef CONFIG_HUGETLB_PAGE
+-static bool damon_hugetlb_ptep_mkold(pte_t *pte, struct mm_struct *mm,
+-		struct vm_area_struct *vma, unsigned long addr, pte_t *entry)
+-{
+-	unsigned long psize = huge_page_size(hstate_vma(vma));
+-
+-	if (!pte_young(*entry))
+-		return false;
+-	*entry = huge_ptep_get_and_clear(mm, addr, pte, psize);
+-	*entry = pte_mkold(*entry);
+-	set_huge_pte_at(mm, addr, pte, *entry, psize);
+-	return true;
+-}
+-
 -static void damon_hugetlb_mkold(pte_t *pte, struct mm_struct *mm,
 -				struct vm_area_struct *vma, unsigned long addr)
 -{
 -	bool referenced = false;
 -	pte_t entry = huge_ptep_get(mm, addr, pte);
 -	struct folio *folio = pfn_folio(pte_pfn(entry));
--	unsigned long psize = huge_page_size(hstate_vma(vma));
 -
 -	folio_get(folio);
 -
--	if (pte_young(entry)) {
--		referenced = true;
--		entry = pte_mkold(entry);
--		set_huge_pte_at(mm, addr, pte, entry, psize);
--	}
--
+-	referenced = damon_hugetlb_ptep_mkold(pte, mm, vma, addr, &entry);
 -	if (mmu_notifier_clear_young(mm, addr,
 -				     addr + huge_page_size(hstate_vma(vma))))
 -		referenced = true;
