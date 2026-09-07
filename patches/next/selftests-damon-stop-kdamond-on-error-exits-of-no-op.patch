@@ -1,0 +1,79 @@
+From: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+Date: Mon, 7 Sep 2026 20:34:55 +0800
+Subject: [PATCH] selftests/damon: stop kdamond on error exits of no-op commit
+ test
+
+The sysfs_no_op_commit_break test starts a kdamond via sysfs, but its error
+paths (e.g., drgn not installed) exit without stopping it.  The leaked
+kdamond then makes subsequent tests, e.g. lru_sort.sh and reclaim.sh, skip
+with "Another kdamond is running".
+
+Wrap the post-start logic in try-finally so that kdamonds.stop() is
+executed on every exit path.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/20260907123455.67246-1-zenghui.yu@linux.dev
+- Collect R-b: from SJ
+
+Fixes: 10725cd2b09a ("selftests/damon: test no-op commit broke DAMON status")
+Assisted-by: GLM-5.3 OpenCode
+Signed-off-by: Zenghui Yu (Huawei) <zenghui.yu@linux.dev>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ .../damon/sysfs_no_op_commit_break.py         | 35 ++++++++++---------
+ 1 file changed, 18 insertions(+), 17 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/sysfs_no_op_commit_break.py b/tools/testing/selftests/damon/sysfs_no_op_commit_break.py
+index 2c65cffe6b545..81774ddc55ac4 100755
+--- a/tools/testing/selftests/damon/sysfs_no_op_commit_break.py
++++ b/tools/testing/selftests/damon/sysfs_no_op_commit_break.py
+@@ -47,26 +47,27 @@ def main():
+         print('kdamond start failed: %s' % err)
+         exit(1)
+ 
+-    before_commit_status, err = \
+-        dump_damon_status_dict(kdamonds.kdamonds[0].pid)
+-    if err is not None:
+-        print('before-commit status dump failed: %s' % err)
+-        exit(1)
++    try:
++        before_commit_status, err = \
++            dump_damon_status_dict(kdamonds.kdamonds[0].pid)
++        if err is not None:
++            print('before-commit status dump failed: %s' % err)
++            exit(1)
+ 
+-    kdamonds.kdamonds[0].commit()
++        kdamonds.kdamonds[0].commit()
+ 
+-    after_commit_status, err = \
+-        dump_damon_status_dict(kdamonds.kdamonds[0].pid)
+-    if err is not None:
+-        print('after-commit status dump failed: %s' % err)
+-        exit(1)
+-
+-    if before_commit_status != after_commit_status:
+-        print(f'before: {json.dumps(before_commit_status, indent=2)}')
+-        print(f'after: {json.dumps(after_commit_status, indent=2)}')
+-        exit(1)
++        after_commit_status, err = \
++            dump_damon_status_dict(kdamonds.kdamonds[0].pid)
++        if err is not None:
++            print('after-commit status dump failed: %s' % err)
++            exit(1)
+ 
+-    kdamonds.stop()
++        if before_commit_status != after_commit_status:
++            print(f'before: {json.dumps(before_commit_status, indent=2)}')
++            print(f'after: {json.dumps(after_commit_status, indent=2)}')
++            exit(1)
++    finally:
++        kdamonds.stop()
+ 
+ if __name__ == '__main__':
+     main()
+-- 
+2.47.3
+
