@@ -2,8 +2,8 @@ From: SJ Park <sj@kernel.org>
 Date: Sun, 30 Aug 2026 11:49:48 -0700
 Subject: [PATCH] mm/damon/core: reset invalid quota->charge_target_from
 
-DAMOS can suddenly stop working if a target process that quota just
-fully charged in it is terminated.  Fix by catching and processing the
+DAMOS can suddenly stop working if a target process that the quota is
+just fully charged on is terminated.  Fix by catching and processing the
 corner case.
 
 When DAMOS quota is fully charged, the target and the region to continue
@@ -32,8 +32,8 @@ No critical leak or crash can happen.  The user could reinstall the
 scheme.  But this makes use of DAMOS under certain setups quite
 unreliable.
 
-Catch the corner case and reset the pointer in damos_adjust_quota(),
-which is called for adjustment of the quota for every round.
+When the invalid target is found, further check the corner case and
+reset the pointer.
 
 This issue was discovered [1] by Sashiko.
 
@@ -41,7 +41,8 @@ This issue was discovered [1] by Sashiko.
 
 Changes from v1
 - v1: https://lore.kernel.org/20260907165529.98874-1-sj@kernel.org
-- None.
+- Move the corner case check to invalid target found case, to handle
+  dynamic quota uninstall case.
 Changes from RFC v1
 - RFC v1: https://lore.kernel.org/20260906183654.95634-1-sj@kernel.org
 - Drop RFC tag.
@@ -49,12 +50,16 @@ Changes from RFC v1
 Fixes: 6e4930e33329 ("mm/damon/core: fix wasteful CPU calls by skipping non-existent targets")
 Cc: <stable@vger.kernel.org> # 7.0.x
 Signed-off-by: SJ Park <sj@kernel.org>
+
+mm/damon/core: cleanup invalid charge_target_from when invalid target is found
+
+Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 18 ++++++++++++++++++
- 1 file changed, 18 insertions(+)
+ mm/damon/core.c | 27 ++++++++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index ce8c6f99106ed..2c58be9edbde4 100644
+index ce8c6f99106ed..53b007fd1534e 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -3283,6 +3283,22 @@ static void damos_trace_esz(struct damon_ctx *c, struct damos *s,
@@ -88,6 +93,23 @@ index ce8c6f99106ed..2c58be9edbde4 100644
 +
  	if (!c->ops.get_scheme_score)
  		return;
+ 
+@@ -3389,8 +3407,15 @@ static void kdamond_apply_schemes(struct damon_ctx *c)
+ 	max_region_sz = damon_region_sz_limit(c);
+ 	mutex_lock(&c->walk_control_lock);
+ 	damon_for_each_target(t, c) {
+-		if (c->ops.target_valid && c->ops.target_valid(t) == false)
++		if (c->ops.target_valid && c->ops.target_valid(t) == false) {
++			damon_for_each_scheme(s, c) {
++				if (s->quota.charge_target_from != t)
++					continue;
++				s->quota.charge_target_from = NULL;
++				s->quota.charge_addr_from = 0;
++			}
+ 			continue;
++		}
+ 		damos_apply_target(c, t, max_region_sz);
+ 	}
  
 -- 
 2.47.3
