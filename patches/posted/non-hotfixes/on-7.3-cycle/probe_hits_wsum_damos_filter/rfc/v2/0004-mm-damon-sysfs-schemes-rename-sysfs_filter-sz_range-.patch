@@ -1,0 +1,105 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Tue, 25 Aug 2026 07:41:17 -0700
+Subject: [RFC PATCH v2 4/7] mm/damon/sysfs-schemes: rename sysfs_filter->sz_range to range_{min,max}
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260907171218.101430-5-sj@kernel.org>
+
+DAMON sysfs interface provides 'min' and 'max' files under the DAMOS
+filter directory.  The purpose is setting the general range arguments
+for hugepage_size like filters that require range arguments.  So far,
+hugepage_size was the only filter using it.  Hence sz_range field of
+damon_sysfs_scheme_filter struct was connected to the files.
+
+In future, we could add a new filter that can reuse the 'min' and 'max'
+files.  And the filter might use a range of a type that is not size. For
+example, probe_hits weighted sum.  In this case, simply reusing the
+sz_range field would make it a little confusing.  Rename sz_range to
+range_{min,max} to avoid such confusion.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index d9b81d7b5910e..4d9147d2a269e 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -534,7 +534,8 @@ struct damon_sysfs_scheme_filter {
+ 	bool allow;
+ 	char *memcg_path;
+ 	struct damon_addr_range addr_range;
+-	struct damon_size_range sz_range;
++	unsigned long range_min;
++	unsigned long range_max;
+ 	int target_idx;
+ };
+ 
+@@ -588,6 +589,7 @@ damos_sysfs_filter_type_names[] = {
+ 		.type = DAMOS_FILTER_TYPE_TARGET,
+ 		.name = "target",
+ 	},
++
+ };
+ 
+ static ssize_t type_show(struct kobject *kobj,
+@@ -778,7 +780,7 @@ static ssize_t min_show(struct kobject *kobj,
+ 	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
+ 			struct damon_sysfs_scheme_filter, kobj);
+ 
+-	return sysfs_emit(buf, "%lu\n", filter->sz_range.min);
++	return sysfs_emit(buf, "%lu\n", filter->range_min);
+ }
+ 
+ static ssize_t min_store(struct kobject *kobj,
+@@ -786,7 +788,7 @@ static ssize_t min_store(struct kobject *kobj,
+ {
+ 	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
+ 			struct damon_sysfs_scheme_filter, kobj);
+-	int err = kstrtoul(buf, 0, &filter->sz_range.min);
++	int err = kstrtoul(buf, 0, &filter->range_min);
+ 
+ 	return err ? err : count;
+ }
+@@ -797,7 +799,7 @@ static ssize_t max_show(struct kobject *kobj,
+ 	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
+ 			struct damon_sysfs_scheme_filter, kobj);
+ 
+-	return sysfs_emit(buf, "%lu\n", filter->sz_range.max);
++	return sysfs_emit(buf, "%lu\n", filter->range_max);
+ }
+ 
+ static ssize_t max_store(struct kobject *kobj,
+@@ -805,7 +807,7 @@ static ssize_t max_store(struct kobject *kobj,
+ {
+ 	struct damon_sysfs_scheme_filter *filter = container_of(kobj,
+ 			struct damon_sysfs_scheme_filter, kobj);
+-	int err = kstrtoul(buf, 0, &filter->sz_range.max);
++	int err = kstrtoul(buf, 0, &filter->range_max);
+ 
+ 	return err ? err : count;
+ }
+@@ -2835,12 +2837,13 @@ static int damon_sysfs_add_scheme_filters(struct damos *scheme,
+ 		} else if (filter->type == DAMOS_FILTER_TYPE_TARGET) {
+ 			filter->target_idx = sysfs_filter->target_idx;
+ 		} else if (filter->type == DAMOS_FILTER_TYPE_HUGEPAGE_SIZE) {
+-			if (sysfs_filter->sz_range.min >
+-					sysfs_filter->sz_range.max) {
++			if (sysfs_filter->range_min >
++					sysfs_filter->range_max) {
+ 				damos_destroy_filter(filter);
+ 				return -EINVAL;
+ 			}
+-			filter->sz_range = sysfs_filter->sz_range;
++			filter->sz_range.min = sysfs_filter->range_min;
++			filter->sz_range.max = sysfs_filter->range_max;
+ 		}
+ 
+ 		damos_add_filter(scheme, filter);
+-- 
+2.47.3
