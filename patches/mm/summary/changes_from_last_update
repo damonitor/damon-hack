@@ -1,21 +1,10 @@
 - baseline: v7.3-rc1-475-g0d9ff90a5422c -> v7.3-rc1-475-g0d9ff90a5422c (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 1 -> 4 commits
+- mm-hotfixes-unstable: 4 -> 4 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 1 -> 3 commits
-    - maintainer, nobody: 0 -> 1 commits
-  - new commits
-    - abda8524acd1 "mm/damon/core: allow esz to be set to zero"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260908135413.97570-1-sj@kernel.org
-    - 2472b8bb7887 "mm/damon/vaddr: avoid hw-driven pte updates during damon_hugetlb_mkold()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260907170358.100168-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260830160545.98969-1-sj@kernel.org [1]
-    - 204a7ed0d3a7 "mm/damon/core: fix unconditionally skip last region"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260908134739.96919-1-sj@kernel.org
+    - no role, maintainer: 3 -> 3 commits (no change)
+    - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 72 -> 72 commits (no change)
@@ -23,27 +12,9 @@
     - no role, maintainer: 17 -> 17 commits (no change)
     - maintainer, nobody: 43 -> 43 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-- mm-new: 0 -> 4 commits
-  - series: 0 (0) -> 1 (3)
-    - no role, maintainer: 0 -> 4 commits
-  - new commits
-    - be8e37b1a7c4 "Docs/mm/damon/design: fix broken :ref: usage and a typo"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260908135257.97523-1-sj@kernel.org
-    - series "mm/damon: support access monitoring of hugetlb-backed memory", v3. (3)
-      - 6be448c1a25a "mm/damon: move damon_hugetlb_mkold() from vaddr to ops-common (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260908135156.97481-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260902025700.17975-2-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-2-sj@kernel.org
-      - 0f1bcb2f8fc2 "mm/damon/ops-common: handle hugetlb folios in folio mkold/young rmap walkers (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260902025700.17975-3-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-3-sj@kernel.org
-      - e539caf741ea "mm/damon/paddr: support hugetlb folios in access monitoring (2/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260902025700.17975-4-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-4-sj@kernel.org
+- mm-new: 4 -> 4 commits (no change)
+  - series: 1 (3) -> 1 (3) (no change)
+    - no role, maintainer: 4 -> 4 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
