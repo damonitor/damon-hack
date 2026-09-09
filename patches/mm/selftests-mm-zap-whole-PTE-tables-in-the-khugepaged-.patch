@@ -1,0 +1,72 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:51:05 +0100
+Subject: [PATCH] selftests/mm: zap whole PTE tables in the khugepaged race
+ harness
+
+The harness's MADV_DONTNEED thread zaps 1 to 32 pages at a time, never a
+whole PMD-aligned area, and only a zap that covers a full table frees the
+table itself (CONFIG_PT_RECLAIM).
+
+Make the thread zap a whole PMD-aligned area about one iteration in 64,
+and keep the fine-grained zaps as the common case.  The new case frees
+page tables, racing that against a collapse walking the same table.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-20-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged_race.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged_race.c b/tools/testing/selftests/mm/khugepaged_race.c
+index 51c8023a2f666..fc80ec2a88e69 100644
+--- a/tools/testing/selftests/mm/khugepaged_race.c
++++ b/tools/testing/selftests/mm/khugepaged_race.c
+@@ -118,8 +118,21 @@ static void *dontneed_fn(void *arg)
+ 		unsigned long page_idx = rand_page(&seed);
+ 		unsigned long nr = 1UL << (rand_r(&seed) % 6);	/* 1..32 pages */
+ 
+-		madvise(region + page_idx * page_size,
+-			room_from(page_idx, nr) * page_size, MADV_DONTNEED);
++		/*
++		 * Now and then zap a whole PMD-aligned area: only a zap that
++		 * covers the full table frees the table itself (CONFIG_PT_RECLAIM).
++		 */
++		if (!(rand_r(&seed) % 64)) {
++			unsigned long area = page_idx /
++					(hpage_pmd_size / page_size);
++
++			madvise(region + area * hpage_pmd_size,
++				hpage_pmd_size, MADV_DONTNEED);
++		} else {
++			madvise(region + page_idx * page_size,
++				room_from(page_idx, nr) * page_size,
++				MADV_DONTNEED);
++		}
+ 		usleep(rand_r(&seed) % 500);
+ 	}
+ 	return NULL;
+-- 
+2.47.3
+

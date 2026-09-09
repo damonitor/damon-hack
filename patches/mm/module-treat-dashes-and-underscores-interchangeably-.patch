@@ -1,0 +1,212 @@
+From: Aaron Tomlin <atomlin@atomlin.com>
+Date: Tue, 8 Sep 2026 16:32:28 -0400
+Subject: [PATCH] module: treat dashes and underscores interchangeably in
+ module_blacklist
+
+Patch series "module: Extend module_blacklist parameter to built-in
+modules", v11.
+
+This patch series extends the module_blacklist= command-line parameter
+(and its modern alias module_denylist=) to intercept built-in modules
+during early boot.  Currently, when a driver is compiled statically into
+the kernel (=y), the parameter is silently ignored, precluding
+administrators from suppressing problematic drivers during boot-time
+disaster recovery.  This series resolves that discrepancy by mapping
+built-in modules to their initialisation routines via transient metadata
+that is freed post-boot, providing a predictable and consistent
+administrative interface regardless of whether a driver is built as a
+loadable module or compiled into the kernel image.  Below is a detailed
+breakdown of the motivation, operational rationale, and concrete use cases
+addressed by this work.
+
+1.  The Core Problem and User Experience Gap
+============================================
+
+Today, module_blacklist= works strictly on loadable modules.  When a user
+or system administrator encounters a driver bug, hang during device probe,
+or hardware fault during boot, the natural and widely documented remedy is
+to pass module_blacklist=[driver] via the bootloader (GRUB, systemd-boot,
+etc.).  However, if that driver is built into the kernel, the parameter is
+silently ignored.  The kernel proceeds to run the driver's initialisation
+routine anyway, leading to the same panic, hang, or hardware misbehaviour.
+>From the user's standpoint, whether a driver was packaged by their
+distribution or built by their provider as =m or =y is an internal
+implementation detail.  Having module_blacklist= silently fail solely
+based on compilation configuration violates the principle of least
+surprise and complicates system recovery.
+
+2.  Why initcall_blacklist= is not an adequate substitute
+=========================================================
+
+The kernel does provide initcall_blacklist=, but it is impractical for
+general users, sysadmins, and automated fleet management tools for several
+reasons:
+
+    Obscure symbol names
+
+        - initcall_blacklist= requires the exact function name of the
+          initcall (e.g., snb_pci_uarch_init and e1000_init_module). Users
+          typically know the module name, not the internal function name.
+
+    Internal instability
+
+        - Initcall function names are internal kernel implementation
+          details. They change across kernel releases, refactors, or macro
+          rewrites, making it impossible to write stable bootloader
+          configurations or recovery documentation across multiple kernel
+          versions.
+
+    Mangled names (Rust)
+
+        - For modern drivers written in Rust, the initcall symbol names are
+          compiler-mangled symbols (e.g. "_RNvX"), making
+          initcall_blacklist= practically impossible for a human user to
+          specify manually at a boot prompt.
+
+module_blacklist= (or module_denylist=) resolves this by allowing users to
+specify the canonical, user-facing module name (KBUILD_MODNAME) that they
+already know.
+
+3.  Concrete use cases
+======================
+
+    A.  Disaster recovery and triage on production systems
+
+        When a kernel update introduces a regression in a built-in driver
+        (e.g., a storage controller), administrators need a way to bypass
+        that driver at boot time to get the system into a usable emergency
+        shell or collect diagnostic logs, without having to rebuild the
+        kernel on another machine.
+
+    B.  Monolithic/Hardened environments (CONFIG_MODULES=n)
+
+        In security-sensitive environments, kernels are frequently compiled
+        without loadable module support (CONFIG_MODULES=n) to eliminate
+        module loading attack vectors. On these systems, all drivers are
+        built-in. If a hardware erratum or firmware bug triggers a hang in
+        a built-in driver, administrators previously had no
+        module-name-based mechanism to disable the offending driver.
+
+    C. Hardware Errata and Conflicting Devices
+
+       On systems with buggy firmware or conflicting device IDs where two
+       drivers attempt to bind to the same hardware, users can prevent the
+       conflicting built-in driver from initializing without patching and
+       recompiling the entire kernel image.
+
+4. Implementation and Overhead Considerations
+=============================================
+
+We took great care to ensure this change introduces virtually zero runtime
+overhead:
+
+    Scoped to module_init()
+
+        - Only built-in drivers that explicitly use module_init() are
+          tracked. Core kernel subsystems using core_initcall(),
+          subsys_initcall(), etc. are unaffected.
+
+    Zero Resident Memory
+
+        - The metadata table (.initcall.modnames) and the module name
+          strings (.init.rodata) are placed entirely in init sections and
+          are completely freed from memory after boot via free_initmem().
+
+    Fast Path
+
+        - During boot, if neither module_blacklist= nor module_denylist=
+          was supplied on the kernel command line, the lookup is bypassed
+          entirely.
+
+In summary, this patch brings parity between modular and built-in drivers,
+removes a pain point in boot-time disaster recovery, and provides users
+with a predictable, consistent interface.
+
+Following review feedback, the implementation is structured as three
+separate changes to isolate a pre-existing bugfix, decouple the
+introduction of the new feature, and handle the terminology renaming:
+
+    1.  The first patch is a standalone prerequisite bugfix addressing a
+        pre-existing flaw in the module blacklisting logic where hyphens
+        and underscores are not treated interchangeably. Because the kernel
+        build system normalises module names to use underscores (e.g.
+        "my_module"), specifying a module with hyphens on the command line
+        (such as "module_blacklist=my-module") failed to match due to a
+        strict byte-for-byte memcmp(). It replaces memcmp() with
+        parameqn(), carries a Fixes: tag, and is CC'd to stable.
+
+    2.  The second patch extends the "module_blacklist=" parameter to
+        built-in modules using the original blacklist terminology. It
+        introduces the ".initcall.modnames" section to map initcall
+        function pointers to their associated KBUILD_MODNAME strings
+        (restricted only to module_init() invocations to save memory and
+        avoid matching core kernel subsystems). It also restricts the check
+        to a boot-time __init wrapper to eliminate Use-After-Free (UAF) and
+        Spectre v1 vulnerability risks when loading dynamic modules at
+        runtime, and adds a fast-path check to eliminate lookup overhead
+        when the parameter is not in use.
+
+    3   The third patch renames the variables and helper functions to adopt
+        the preferred "module_denylist=" and module_is_denylisted()
+        terminology in the codebase. To preserve the existing user-space
+        ABI, "module_blacklist=" is kept as a legacy alias pointing to the
+        same module_denylist variable.
+
+
+This patch (of 3):
+
+The "module_blacklist=" command-line parameter allows administrators to
+prevent specific modules from loading by specifying a comma-separated list
+of module names.  The blacklisted() helper checks candidate modules
+against this list using a strict byte-for-byte comparison via memcmp().
+
+However, the kernel build system normalises module names to use
+underscores (e.g., "my_module"), whereas administrators and user-space
+utilities may use hyphens (e.g., "my-module") interchangeably.
+
+Because of the strict memcmp(), specifying a module name with a hyphen on
+the kernel command line (e.g., "module_blacklist=my-module") fails to
+match the internal module name ("my_module").  Consequently, the module is
+loaded despite having been explicitly blacklisted, defeating the intended
+administrative mitigation.
+
+Replace memcmp() with parameqn(), which treats dashes and underscores as
+equivalent.  This ensures that module names match correctly regardless of
+whether hyphens or underscores are supplied, matching standard kernel
+parameter and modprobe behaviour.
+
+Link: https://lore.kernel.org/20260908203230.401020-1-atomlin@atomlin.com
+Link: https://lore.kernel.org/20260908203230.401020-2-atomlin@atomlin.com
+Signed-off-by: Aaron Tomlin <atomlin@atomlin.com>
+Fixes: be7de5f91fdc ("modules: Add kernel parameter to blacklist modules")
+Reported-by: sashiko-bot <sashiko-bot@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Luis Chamberalin <mcgrof@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Miguel Ojeda <ojeda@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Petr Pavlu <petr.pavlu@suse.com>
+Cc: Sami Tolvanen <samitolvanen@google.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/module/main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/module/main.c b/kernel/module/main.c
+index c1b34dc1e89ac..9546f9c1c57cc 100644
+--- a/kernel/module/main.c
++++ b/kernel/module/main.c
+@@ -2942,7 +2942,7 @@ static bool blacklisted(const char *module_name)
+ 
+ 	for (p = module_blacklist; *p; p += len) {
+ 		len = strcspn(p, ",");
+-		if (strlen(module_name) == len && !memcmp(module_name, p, len))
++		if (strlen(module_name) == len && parameqn(module_name, p, len))
+ 			return true;
+ 		if (p[len] == ',')
+ 			len++;
+-- 
+2.47.3
+

@@ -1,0 +1,169 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:50:59 +0100
+Subject: [PATCH] selftests/mm: cover a shared-source collapse write race
+
+collapse_fork() checks that a fork-shared range collapses in the child
+while the parent keeps its own pages, but the parent sits still while that
+happens.  Nothing checks that CoW isolation survives a collapse racing
+with writes to the shared source.
+
+Add a case where the parent writes to the shared range throughout the
+child's collapse.  CoW has to keep the two apart: the child must see the
+content from before the fork, and the parent only its own writes.
+
+The parent unshares one page every 10ms, starting only once the child says
+it is about to collapse.  Writing the range in a burst would break CoW on
+all of it before the collapse begins, leaving the child to collapse pages
+that are already exclusive to it.
+
+Preparation for changing how collapse handles fork-shared sources.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-14-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged.c | 100 ++++++++++++++++++++++++
+ 1 file changed, 100 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index d66303516cd04..0a4ab9fd8c0cf 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -1169,6 +1169,103 @@ static void collapse_max_ptes_shared(struct collapse_context *c, struct mem_ops
+ 	ksft_test_result_report(exit_status, "%s\n", __func__);
+ }
+ 
++/*
++ * The parent writes to the fork-shared range throughout the child's
++ * collapse.  CoW must keep the two apart: the child sees the pre-fork
++ * content, the parent only its own writes.
++ */
++static void collapse_fork_cow_race(struct collapse_context *c, struct mem_ops *ops)
++{
++	const int stride = page_size / sizeof(int);
++	int wstatus, child_status, i, n;
++	unsigned long shared;
++	volatile int *ip;
++	pid_t child;
++	int sync[2];
++	char go = 1;
++	void *p;
++
++	/* At a page per 10 ms, 64 pages spread the writes across the collapse */
++	n = 64;
++	shared = n * page_size;
++
++	p = ops->setup_area(1);
++	/* Shared prefix, with the pre-fork pattern */
++	ops->fault(p, 0, shared);
++	if (pipe(sync))
++		ksft_exit_fail_perror("pipe()");
++
++	/* A volatile pointer so the stores are not merged or dropped */
++	ip = p;
++
++	ksft_print_msg("Fork, collapse in the child while the parent rewrites...");
++	child = fork();
++	if (!child) {
++		int collapse_status;
++
++		close(sync[0]);
++		/* Private remainder */
++		ops->fault(p, shared, hpage_pmd_size);
++		/* Start the parent unsharing, and give it a head start */
++		if (write(sync[1], &go, 1) != 1)
++			_exit(KSFT_FAIL);
++		usleep(5000);
++		c->collapse("Collapse a range the parent is writing to",
++			    p, 1, ops, true);
++		collapse_status = exit_status;
++		for (i = 0; i < n; i++)
++			if (ip[i * stride] != i + 0xdead0000)
++				break;
++		if (i == n)
++			success("OK");
++		else
++			fail("Fail: child content");
++		/* The content check must not bury a failed collapse */
++		if (exit_status != KSFT_FAIL)
++			exit_status = collapse_status;
++		ops->cleanup_area(p, hpage_pmd_size);
++		_exit(exit_status);
++	}
++
++	close(sync[1]);
++	if (read(sync[0], &go, 1) != 1)
++		ksft_exit_fail_msg("child never reached the collapse\n");
++
++	/*
++	 * Unshare one page at a time: a burst would break CoW on the whole
++	 * range before the collapse starts, leaving nothing shared to collapse.
++	 */
++	i = 0;
++	for (;;) {
++		if (i < n)
++			ip[i * stride] = i + 0xbeef0000;
++		i++;
++		usleep(10 * 1000);
++		if (waitpid(child, &wstatus, WNOHANG))
++			break;
++	}
++
++	/* Finish whatever the paced sweep did not reach */
++	for (; i < n; i++)
++		ip[i * stride] = i + 0xbeef0000;
++	/* A child that died reading the racing pages is a failure, not a zero */
++	child_status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : KSFT_FAIL;
++
++	ksft_print_msg("Check the parent sees only its own writes...");
++	for (i = 0; i < n; i++)
++		if (ip[i * stride] != i + 0xbeef0000)
++			break;
++	if (i == n)
++		success("OK");
++	else
++		fail("Fail: parent content");
++	ops->cleanup_area(p, hpage_pmd_size);
++	/* The parent's check must not bury the child's verdict */
++	if (exit_status != KSFT_FAIL)
++		exit_status = child_status;
++	ksft_test_result_report(exit_status, "%s\n", __func__);
++}
++
+ static void madvise_collapse_existing_thps(struct collapse_context *c,
+ 					   struct mem_ops *ops)
+ {
+@@ -1700,6 +1797,9 @@ int main(int argc, char **argv)
+ 	TEST(collapse_max_ptes_shared, khugepaged_context, anon_ops);
+ 	TEST(collapse_max_ptes_shared, madvise_context, anon_ops);
+ 
++	TEST(collapse_fork_cow_race, khugepaged_context, anon_ops);
++	TEST(collapse_fork_cow_race, madvise_context, anon_ops);
++
+ 	TEST(madvise_collapse_existing_thps, madvise_context, anon_ops);
+ 	TEST(madvise_collapse_existing_thps, madvise_context, read_only_file_ops);
+ 	TEST(madvise_collapse_existing_thps, madvise_context, read_write_file_read_ops);
+-- 
+2.47.3
+

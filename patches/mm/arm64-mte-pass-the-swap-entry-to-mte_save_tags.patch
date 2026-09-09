@@ -1,0 +1,120 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 8 Sep 2026 11:16:37 -0400
+Subject: [PATCH] arm64: mte: pass the swap entry to mte_save_tags()
+
+arch_prepare_to_swap() derives a page from the folio only for
+mte_save_tags() to recompute the folio's swap entry from that page.  Pass
+the entry in directly with folio_swap_entry(), matching
+mte_restore_tags(), and move the page_mte_tagged() check into the caller
+so we only compute the entry for tagged pages.
+
+__mte_invalidate_tags() loses its only user, so remove it and call
+mte_invalidate_tags() directly in the error path.  This removes two calls
+to compound_head().
+
+No functional change.
+
+Link: https://lore.kernel.org/20260908-folio_swap_entry-v2-7-ee6d01dfa5e1@columbia.edu
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/arm64/mm/mteswap.c | 30 +++++++++++++-----------------
+ 1 file changed, 13 insertions(+), 17 deletions(-)
+
+diff --git a/arch/arm64/mm/mteswap.c b/arch/arm64/mm/mteswap.c
+index 3c54afc8b7585..f64202b69309a 100644
+--- a/arch/arm64/mm/mteswap.c
++++ b/arch/arm64/mm/mteswap.c
+@@ -20,22 +20,17 @@ void mte_free_tag_storage(char *storage)
+ 	kfree(storage);
+ }
+ 
+-static int mte_save_tags(struct page *page)
++static int mte_save_tags(swp_entry_t entry, struct page *page)
+ {
+ 	void *tag_storage, *ret;
+ 
+-	if (!page_mte_tagged(page))
+-		return 0;
+-
+ 	tag_storage = mte_allocate_tag_storage();
+ 	if (!tag_storage)
+ 		return -ENOMEM;
+ 
+ 	mte_save_page_tags(page_address(page), tag_storage);
+ 
+-	/* lookup the swap entry.val from the page */
+-	ret = xa_store(&mte_pages, page_swap_entry(page).val, tag_storage,
+-		       GFP_KERNEL);
++	ret = xa_store(&mte_pages, entry.val, tag_storage, GFP_KERNEL);
+ 	if (WARN(xa_is_err(ret), "Failed to store MTE tags")) {
+ 		mte_free_tag_storage(tag_storage);
+ 		return xa_err(ret);
+@@ -68,13 +63,6 @@ void mte_invalidate_tags(int type, pgoff_t offset)
+ 	mte_free_tag_storage(tags);
+ }
+ 
+-static inline void __mte_invalidate_tags(struct page *page)
+-{
+-	swp_entry_t entry = page_swap_entry(page);
+-
+-	mte_invalidate_tags(swp_type(entry), swp_offset(entry));
+-}
+-
+ void mte_invalidate_tags_area(int type)
+ {
+ 	swp_entry_t entry = swp_entry(type, 0);
+@@ -102,15 +90,23 @@ int arch_prepare_to_swap(struct folio *folio)
+ 	nr = folio_nr_pages(folio);
+ 
+ 	for (i = 0; i < nr; i++) {
+-		err = mte_save_tags(folio_page(folio, i));
++		struct page *page = folio_page(folio, i);
++
++		if (!page_mte_tagged(page))
++			continue;
++
++		err = mte_save_tags(folio_swap_entry(folio, i), page);
+ 		if (err)
+ 			goto out;
+ 	}
+ 	return 0;
+ 
+ out:
+-	while (i--)
+-		__mte_invalidate_tags(folio_page(folio, i));
++	while (i--) {
++		swp_entry_t swap = folio_swap_entry(folio, i);
++
++		mte_invalidate_tags(swp_type(swap), swp_offset(swap));
++	}
+ 	return err;
+ }
+ 
+-- 
+2.47.3
+

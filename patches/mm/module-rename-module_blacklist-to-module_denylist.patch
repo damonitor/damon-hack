@@ -1,0 +1,130 @@
+From: Aaron Tomlin <atomlin@atomlin.com>
+Date: Tue, 8 Sep 2026 16:32:30 -0400
+Subject: [PATCH] module: rename module_blacklist to module_denylist
+
+To preserve the existing user-space ABI, "module_blacklist=" is kept as a
+legacy alias pointing to the same module_denylist variable.
+
+This patch addresses the documentation by marking "module_blacklist=" as
+deprecated in admin-guide/kernel-parameters.txt, and documents the new
+"module_denylist=" parameter.  All internal symbols, such as
+module_is_blacklisted(), have been renamed to use "denylist" and all log
+messages now use "denylisted".
+
+Link: https://lore.kernel.org/20260908203230.401020-4-atomlin@atomlin.com
+Signed-off-by: Aaron Tomlin <atomlin@atomlin.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Luis Chamberalin <mcgrof@kernel.org>
+Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Cc: Miguel Ojeda <ojeda@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Petr Pavlu <petr.pavlu@suse.com>
+Cc: Sami Tolvanen <samitolvanen@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../admin-guide/kernel-parameters.txt         |  6 +++++-
+ include/linux/module.h                        |  2 +-
+ init/main.c                                   | 19 ++++++++++---------
+ kernel/module/main.c                          |  4 ++--
+ 4 files changed, 18 insertions(+), 13 deletions(-)
+
+diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
+index 68647ff4bdd24..aae1da11a592b 100644
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -4232,7 +4232,11 @@ Kernel parameters
+ 			Note that if CONFIG_MODULE_SIG_FORCE is set, that
+ 			is always true, so this option does nothing.
+ 
+-	module_blacklist=  [KNL] Do not load a comma-separated list of
++	module_blacklist=  [KNL] (deprecated)
++			This parameter has been renamed to module_denylist=.
++			Please use module_denylist= instead.
++
++	module_denylist=  [KNL] Do not load a comma-separated list of
+ 			modules.  Useful for debugging problem modules.
+ 
+ 	mousedev.tap_time=
+diff --git a/include/linux/module.h b/include/linux/module.h
+index bcc54edbde7d7..39386a18285bf 100644
+--- a/include/linux/module.h
++++ b/include/linux/module.h
+@@ -879,7 +879,7 @@ static inline void module_for_each_mod(int(*func)(struct module *mod, void *data
+ }
+ #endif /* CONFIG_MODULES */
+ 
+-bool module_is_blacklisted(const char *module_name);
++bool module_is_denylisted(const char *module_name);
+ 
+ #ifdef CONFIG_SYSFS
+ extern struct kset *module_kset;
+diff --git a/init/main.c b/init/main.c
+index db5c690677482..d276e194393b1 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1347,17 +1347,17 @@ static inline void do_trace_initcall_level(const char *level)
+ extern struct initcall_modname __start_initcall_modnames[];
+ extern struct initcall_modname __stop_initcall_modnames[];
+ 
+-/* module_blacklist is a comma-separated list of module names */
+-static char *module_blacklist;
+-bool __init_or_module module_is_blacklisted(const char *module_name)
++/* module_denylist is a comma-separated list of module names */
++static char *module_denylist;
++bool __init_or_module module_is_denylisted(const char *module_name)
+ {
+ 	const char *p;
+ 	size_t len;
+ 
+-	if (!module_blacklist)
++	if (!module_denylist)
+ 		return false;
+ 
+-	for (p = module_blacklist; *p; p += len) {
++	for (p = module_denylist; *p; p += len) {
+ 		len = strcspn(p, ",");
+ 		if (strlen(module_name) == len && parameqn(module_name, p, len))
+ 			return true;
+@@ -1366,7 +1366,8 @@ bool __init_or_module module_is_blacklisted(const char *module_name)
+ 	}
+ 	return false;
+ }
+-core_param(module_blacklist, module_blacklist, charp, 0400);
++core_param(module_denylist, module_denylist, charp, 0400);
++core_param(module_blacklist, module_denylist, charp, 0400);
+ 
+ static const char *__init get_builtin_modname(initcall_t fn)
+ {
+@@ -1383,10 +1384,10 @@ static void __init do_one_initcall_builtin(initcall_t fn)
+ {
+ 	const char *modname;
+ 
+-	if (module_blacklist) {
++	if (module_denylist) {
+ 		modname = get_builtin_modname(fn);
+-		if (modname && module_is_blacklisted(modname)) {
+-			pr_info("Skipping initcall for blacklisted built-in module %s\n",
++		if (modname && module_is_denylisted(modname)) {
++			pr_info("Skipping initcall for denylisted built-in module %s\n",
+ 				modname);
+ 			return;
+ 		}
+diff --git a/kernel/module/main.c b/kernel/module/main.c
+index d6749fa384901..de3161f6189e5 100644
+--- a/kernel/module/main.c
++++ b/kernel/module/main.c
+@@ -3382,8 +3382,8 @@ static int early_mod_check(struct load_info *info, int flags)
+ 	 * Now that we know we have the correct module name, check
+ 	 * if it's blacklisted.
+ 	 */
+-	if (module_is_blacklisted(info->name)) {
+-		pr_err("Module %s is blacklisted\n", info->name);
++	if (module_is_denylisted(info->name)) {
++		pr_err("Module %s is denylisted\n", info->name);
+ 		return -EPERM;
+ 	}
+ 
+-- 
+2.47.3
+

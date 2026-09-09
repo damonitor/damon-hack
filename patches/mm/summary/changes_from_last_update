@@ -1,58 +1,49 @@
 - baseline: v7.3-rc1-475-g0d9ff90a5422c -> v7.3-rc1-475-g0d9ff90a5422c (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 1 commits
+- mm-hotfixes-unstable: 1 -> 4 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 0 -> 1 commits
+    - no role, maintainer: 1 -> 3 commits
+    - maintainer, nobody: 0 -> 1 commits
   - new commits
-    - 2101f10b107e "mm/damon/ops-common: use a page-aligned address in damon_ptep_mkold()"
+    - abda8524acd1 "mm/damon/core: allow esz to be set to zero"
       - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260904002829.116381-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260908135413.97570-1-sj@kernel.org
+    - 2472b8bb7887 "mm/damon/vaddr: avoid hw-driven pte updates during damon_hugetlb_mkold()"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260907170358.100168-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260830160545.98969-1-sj@kernel.org [1]
+    - 204a7ed0d3a7 "mm/damon/core: fix unconditionally skip last region"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260908134739.96919-1-sj@kernel.org
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 65 -> 72 commits
-  - series: 10 (64) -> 12 (71)
+- mm-unstable: 72 -> 72 commits (no change)
+  - series: 12 (71) -> 12 (71) (no change)
     - no role, maintainer: 17 -> 17 commits (no change)
-    - maintainer, nobody: 36 -> 43 commits
+    - maintainer, nobody: 43 -> 43 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-  - changed commits
-    - series "mm/damon: move zero damos quota target_value handling to the core layer". (3)
-      - 435984f061e0 "mm/damon/core: error damos_commit_quota_goal() for zero target_value (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010722.94244-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260903010722.94244-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260803134034.15217-1-sj@kernel.org [1]
-      - 2b78b08d1cd6 "Revert "mm/damon/lru_sort: error out for >10000 active_mem_bp" (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010722.94244-3-sj@kernel.org
-      - d047eda563aa "Revert "samples/damon/mtier: error out for zero quota goal target values" (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010722.94244-4-sj@kernel.org
-    - series "mm/damon: allow NULL or unstarted damon_ctx parameter for damon_call()". (4)
-      - e1a8dbe8b1fb "mm/damon/core: handle NULL ctx parameter in damon_call() (0/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010334.93622-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260903010334.93622-2-sj@kernel.org
-      - 2b6449312ffd "mm/damon/core: set ctx->call_controls_obsolete in damon_new_ctx() (1/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010334.93622-3-sj@kernel.org
-        - Link: https://lore.kernel.org/20260803134646.16640-1-sj@kernel.org [1]
-      - 0f5b2a7b9883 "mm/damon/reclaim: remove unnecessary damon_call() param validation (2/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010334.93622-4-sj@kernel.org
-      - d118502628f8 "mm/damon/lru_sort: remove unnecessary damon_call() param validation (3/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260903010334.93622-5-sj@kernel.org
-- mm-new: 7 -> 0 commits
-  - series: 2 (7) -> 0 (0)
-    - maintainer, nobody: 7 -> 0 commits
+- mm-new: 0 -> 4 commits
+  - series: 0 (0) -> 1 (3)
+    - no role, maintainer: 0 -> 4 commits
+  - new commits
+    - be8e37b1a7c4 "Docs/mm/damon/design: fix broken :ref: usage and a typo"
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20260908135257.97523-1-sj@kernel.org
+    - series "mm/damon: support access monitoring of hugetlb-backed memory", v3. (3)
+      - 6be448c1a25a "mm/damon: move damon_hugetlb_mkold() from vaddr to ops-common (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260908135156.97481-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260902025700.17975-2-kiyer@crusoe.ai
+        - Link: https://lore.kernel.org/20260908135156.97481-2-sj@kernel.org
+      - 0f1bcb2f8fc2 "mm/damon/ops-common: handle hugetlb folios in folio mkold/young rmap walkers (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260902025700.17975-3-kiyer@crusoe.ai
+        - Link: https://lore.kernel.org/20260908135156.97481-3-sj@kernel.org
+      - e539caf741ea "mm/damon/paddr: support hugetlb folios in access monitoring (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260902025700.17975-4-kiyer@crusoe.ai
+        - Link: https://lore.kernel.org/20260908135156.97481-4-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

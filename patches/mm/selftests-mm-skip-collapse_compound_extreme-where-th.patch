@@ -1,0 +1,71 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:50:48 +0100
+Subject: [PATCH] selftests/mm: skip collapse_compound_extreme() where the PMD
+ is too large
+
+collapse_compound_extreme() builds a PTE table full of distinct PTE-mapped
+compound pages by cycling hpage_pmd_nr fault-time THPs through mremap.  It
+therefore needs hpage_pmd_nr PMD-order allocations in a row.  That is fine
+at a 2M PMD (4K base pages) or a 32M one (16K).  A 512M PMD -- arm64 with
+64K base pages -- makes each of those an order-13 allocation, which the
+allocator cannot reliably hand out even once, let alone 8192 times.
+
+The failure is not a quiet one: the case calls ksft_exit_fail_msg(), so
+the whole binary stops and every case after it is lost.
+
+Skip the case where the PMD is larger than 32M.  The MADV_COLLAPSE cases
+still cover PMD-order collapse on those configurations, and 4K and 16K
+PMDs are unaffected.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-3-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/khugepaged.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index c44bc18f75365..8a6d708026b72 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -940,6 +940,16 @@ static void collapse_compound_extreme(struct collapse_context *c, struct mem_ops
+ 	void *p;
+ 	int i;
+ 
++	/*
++	 * This needs hpage_pmd_nr PMD-order allocations in a row, which the
++	 * allocator will not supply if the PMD is very large.
++	 */
++	if (hpage_pmd_size > (32UL << 20)) {
++		ksft_test_result_skip("%s: PMD too large for fault-time THP construction\n",
++				      __func__);
++		return;
++	}
++
+ 	p = ops->setup_area(1);
+ 	ksft_print_msg("Construct PTE page table full of different PTE-mapped compound pages\n");
+ 	for (i = 0; i < hpage_pmd_nr; i++) {
+-- 
+2.47.3
+

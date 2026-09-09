@@ -1,0 +1,121 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:50:54 +0100
+Subject: [PATCH] selftests/mm: add folio-order check for address ranges
+
+An mTHP collapse test needs to know that a range is backed by folios of
+the target order, and that they sit where a collapse would put them.
+Nothing answers that today: is_backed_by_folio() classifies the folio
+behind a single page, and check_huge_anon() reads smaps AnonHugePages,
+which only accounts PMD mappings.
+
+Add is_range_backed_by_order().  It requires every folio-sized, folio-
+aligned part of the range to map one folio of that order, head to tail,
+with the head at the start of the part.
+
+A part backed by two smaller folios fails, and so does a folio mapped off
+its natural alignment.  The mTHP cases need both to tell a collapsed range
+from the one beside it.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-9-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/vm_util.c | 47 ++++++++++++++++++++++++++++
+ tools/testing/selftests/mm/vm_util.h |  2 ++
+ 2 files changed, 49 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index 505e97b16ca83..b08f4828d71a2 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -552,6 +552,53 @@ bool is_backed_by_folio(char *vaddr, int order, int pagemap_fd,
+ 	return false;
+ }
+ 
++/**
++ * is_range_backed_by_order() - check that a range is backed by @order folios
++ * @start: start of the range, a multiple of the folio size
++ * @len: length of the range in bytes, a multiple of the folio size
++ * @order: the folio order to check for
++ * @pagemap_fd: open /proc/<pid>/pagemap of the range's owner
++ * @kpageflags_fd: open /proc/kpageflags
++ *
++ * Every folio-sized, folio-aligned part of the range must map one folio of
++ * @order, head to tail, with the head at the start of the part.  A part
++ * backed by several smaller folios fails, and so does a folio mapped off
++ * its natural alignment.
++ *
++ * Returns: true if the whole range is backed that way, false otherwise.
++ */
++bool is_range_backed_by_order(char *start, size_t len, int order,
++			      int pagemap_fd, int kpageflags_fd)
++{
++	const unsigned long nr_pages = 1UL << order;
++	const size_t folio_size = nr_pages * psize();
++	char *vaddr;
++
++	if ((uintptr_t)start % folio_size || len % folio_size)
++		return false;
++
++	for (vaddr = start; vaddr < start + len; vaddr += folio_size) {
++		const unsigned long pfn = pagemap_get_pfn(pagemap_fd, vaddr);
++		unsigned long i;
++
++		/* Not present, or a tail page */
++		if (pfn == -1UL || pfn % nr_pages)
++			return false;
++
++		for (i = 1; i < nr_pages; i++) {
++			char *page = vaddr + i * psize();
++
++			if (pagemap_get_pfn(pagemap_fd, page) != pfn + i)
++				return false;
++		}
++
++		if (!is_backed_by_folio(vaddr, order, pagemap_fd, kpageflags_fd))
++			return false;
++	}
++
++	return true;
++}
++
+ /* If `ioctls' non-NULL, the allowed ioctls will be returned into the var */
+ int uffd_register_with_ioctls(int uffd, void *addr, uint64_t len,
+ 			      bool miss, bool wp, bool minor, uint64_t *ioctls)
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index f12979a70135c..0172003c16dcb 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -101,6 +101,8 @@ int gather_folio_orders(char *vaddr_start, size_t len,
+ 		int pagemap_fd, int kpageflags_fd, int orders[], int nr_orders);
+ bool is_backed_by_folio(char *vaddr, int order, int pagemap_fd,
+ 			int kpageflags_fd);
++bool is_range_backed_by_order(char *start, size_t len, int order,
++			      int pagemap_fd, int kpageflags_fd);
+ 
+ int uffd_register(int uffd, void *addr, uint64_t len,
+ 		  bool miss, bool wp, bool minor);
+-- 
+2.47.3
+

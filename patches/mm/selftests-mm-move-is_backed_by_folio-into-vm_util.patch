@@ -1,0 +1,205 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:50:53 +0100
+Subject: [PATCH] selftests/mm: move is_backed_by_folio() into vm_util
+
+Checking that an address range is backed by a folio of a given order is
+useful to any test that builds or collapses large folios.  mTHP collapse
+coverage in the khugepaged selftest needs exactly that.
+
+split_huge_page_test.c already has the building block:
+is_backed_by_folio() reads the compound head and tail flags from
+/proc/kpageflags to classify the folio behind a page.
+
+Move it into vm_util so other tests can use it.  No functional change.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-8-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ .../selftests/mm/split_huge_page_test.c       | 61 ------------------
+ tools/testing/selftests/mm/vm_util.c          | 62 +++++++++++++++++++
+ tools/testing/selftests/mm/vm_util.h          |  2 +
+ 3 files changed, 64 insertions(+), 61 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/split_huge_page_test.c b/tools/testing/selftests/mm/split_huge_page_test.c
+index 68f508c9a355f..c5d96a4b1db35 100644
+--- a/tools/testing/selftests/mm/split_huge_page_test.c
++++ b/tools/testing/selftests/mm/split_huge_page_test.c
+@@ -41,67 +41,6 @@ const char *kpageflags_proc = "/proc/kpageflags";
+ int pagemap_fd;
+ int kpageflags_fd;
+ 
+-static bool is_backed_by_folio(char *vaddr, int order, int pagemap_fd,
+-		int kpageflags_fd)
+-{
+-	const uint64_t folio_head_flags = KPF_THP | KPF_COMPOUND_HEAD;
+-	const uint64_t folio_tail_flags = KPF_THP | KPF_COMPOUND_TAIL;
+-	const unsigned long nr_pages = 1UL << order;
+-	unsigned long pfn_head;
+-	uint64_t pfn_flags;
+-	unsigned long pfn;
+-	unsigned long i;
+-
+-	pfn = pagemap_get_pfn(pagemap_fd, vaddr);
+-
+-	/* non present page */
+-	if (pfn == -1UL)
+-		return false;
+-
+-	if (pageflags_get(pfn, kpageflags_fd, &pfn_flags))
+-		goto fail;
+-
+-	/* check for order-0 pages */
+-	if (!order) {
+-		if (pfn_flags & (folio_head_flags | folio_tail_flags))
+-			return false;
+-		return true;
+-	}
+-
+-	/* non THP folio */
+-	if (!(pfn_flags & KPF_THP))
+-		return false;
+-
+-	pfn_head = pfn & ~(nr_pages - 1);
+-
+-	if (pageflags_get(pfn_head, kpageflags_fd, &pfn_flags))
+-		goto fail;
+-
+-	/* head PFN has no compound_head flag set */
+-	if ((pfn_flags & folio_head_flags) != folio_head_flags)
+-		return false;
+-
+-	/* check all tail PFN flags */
+-	for (i = 1; i < nr_pages; i++) {
+-		if (pageflags_get(pfn_head + i, kpageflags_fd, &pfn_flags))
+-			goto fail;
+-		if ((pfn_flags & folio_tail_flags) != folio_tail_flags)
+-			return false;
+-	}
+-
+-	/*
+-	 * check the PFN after this folio, but if its flags cannot be obtained,
+-	 * assume this folio has the expected order
+-	 */
+-	if (pageflags_get(pfn_head + nr_pages, kpageflags_fd, &pfn_flags))
+-		return true;
+-
+-	/* If we find another tail page, then the folio is larger. */
+-	return (pfn_flags & folio_tail_flags) != folio_tail_flags;
+-fail:
+-	ksft_exit_fail_msg("Failed to get folio info\n");
+-}
+-
+ static int check_after_split_folio_orders(char *vaddr_start, size_t len,
+ 		int pagemap_fd, int kpageflags_fd, int orders[], int nr_orders)
+ {
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index f8916b2abc2ef..505e97b16ca83 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -490,6 +490,68 @@ int pageflags_get(unsigned long pfn, int kpageflags_fd, uint64_t *flags)
+ 	return 0;
+ }
+ 
++bool is_backed_by_folio(char *vaddr, int order, int pagemap_fd,
++			int kpageflags_fd)
++{
++	const uint64_t folio_head_flags = KPF_THP | KPF_COMPOUND_HEAD;
++	const uint64_t folio_tail_flags = KPF_THP | KPF_COMPOUND_TAIL;
++	const unsigned long nr_pages = 1UL << order;
++	unsigned long pfn_head;
++	uint64_t pfn_flags;
++	unsigned long pfn;
++	unsigned long i;
++
++	pfn = pagemap_get_pfn(pagemap_fd, vaddr);
++
++	/* non present page */
++	if (pfn == -1UL)
++		return false;
++
++	if (pageflags_get(pfn, kpageflags_fd, &pfn_flags))
++		goto fail;
++
++	/* check for order-0 pages */
++	if (!order) {
++		if (pfn_flags & (folio_head_flags | folio_tail_flags))
++			return false;
++		return true;
++	}
++
++	/* non THP folio */
++	if (!(pfn_flags & KPF_THP))
++		return false;
++
++	pfn_head = pfn & ~(nr_pages - 1);
++
++	if (pageflags_get(pfn_head, kpageflags_fd, &pfn_flags))
++		goto fail;
++
++	/* head PFN has no compound_head flag set */
++	if ((pfn_flags & folio_head_flags) != folio_head_flags)
++		return false;
++
++	/* check all tail PFN flags */
++	for (i = 1; i < nr_pages; i++) {
++		if (pageflags_get(pfn_head + i, kpageflags_fd, &pfn_flags))
++			goto fail;
++		if ((pfn_flags & folio_tail_flags) != folio_tail_flags)
++			return false;
++	}
++
++	/*
++	 * check the PFN after this folio, but if its flags cannot be obtained,
++	 * assume this folio has the expected order
++	 */
++	if (pageflags_get(pfn_head + nr_pages, kpageflags_fd, &pfn_flags))
++		return true;
++
++	/* If we find another tail page, then the folio is larger. */
++	return (pfn_flags & folio_tail_flags) != folio_tail_flags;
++fail:
++	ksft_exit_fail_msg("Failed to get folio info\n");
++	return false;
++}
++
+ /* If `ioctls' non-NULL, the allowed ioctls will be returned into the var */
+ int uffd_register_with_ioctls(int uffd, void *addr, uint64_t len,
+ 			      bool miss, bool wp, bool minor, uint64_t *ioctls)
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index 64a86e8a0c41b..f12979a70135c 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -99,6 +99,8 @@ int64_t allocate_transhuge(void *ptr, int pagemap_fd);
+ int pageflags_get(unsigned long pfn, int kpageflags_fd, uint64_t *flags);
+ int gather_folio_orders(char *vaddr_start, size_t len,
+ 		int pagemap_fd, int kpageflags_fd, int orders[], int nr_orders);
++bool is_backed_by_folio(char *vaddr, int order, int pagemap_fd,
++			int kpageflags_fd);
+ 
+ int uffd_register(int uffd, void *addr, uint64_t len,
+ 		  bool miss, bool wp, bool minor);
+-- 
+2.47.3
+

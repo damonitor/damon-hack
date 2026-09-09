@@ -1,0 +1,363 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 8 Sep 2026 13:32:18 +0100
+Subject: [PATCH] mm: enable MMU_GATHER_RCU_TABLE_FREE for m68k-motorola
+
+sun3 and coldfire are already supported, however motorola requires a
+little more care.
+
+Here, custom table removal logic is required, so
+CONFIG_HAVE_ARCH_TLB_REMOVE_TABLE is enabled for m68k-motorola.
+
+Firstly as part of this change, the page table level must be communicated
+to the underlying __tlb_remove_table() implementation.
+
+Take advantage of the fact that page tables are aligned by more than
+enough to permit setting TABLE_PTE or TABLE_PMD in the low bits of the
+pointer, and store this there.
+
+Then update __pte_free_tlb() and __pmd_free_tlb() to pass this through,
+then have __tlb_remove_table() decode this and pass it to
+free_pointer_table().
+
+The page table freeing is performed via call_rcu(), so
+free_pointer_table() now will be invoked from softirq context, and as such
+may be re-entrant.
+
+Introduce an irq save/restore spinlock to handle this, and hold it over
+the time a given ptable entry is being referenced in both
+get_pointer_table() and free_pointer_table().
+
+In order to make things a little easier in this respect, separate out the
+logic for adding a new ptable entry into add_pointer_table() and only hold
+the lock during ptable entry insertion in this case.
+
+Note that original list_add_tail(new, dp) added new prior to dp, which is
+ptable_list[type].next, i.e.  after ptable_list[type].
+
+The equivalent therefore is list_add(new, &ptable_list[type]), which adds
+new after ptable_list[type], only without needing to make reference to dp.
+
+Note that, as m68k-motorola specifies CONFIG_HAVE_ARCH_TLB_REMOVE_TABLE,
+it does not enable CONFIG_PT_RECLAIM.  This isn't meaningfully impactful.
+
+With this applied, all of m68k implements
+CONFIG_MMU_GATHER_RCU_TABLE_FREE.
+
+This forms part of an overall effort to switch every architecture to this
+mode.
+
+Link: https://lore.kernel.org/20260908-rcu-pagetable-freeing-v2-9-1f60b64e878e@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: "Aneesh Kumar K.V" <aneesh.kumar@kernel.org>
+Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Christian Zankel <chris@zankel.net>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Dinh Nguyen <dinguyen@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Guo Ren <guoren@kernel.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Helge Deller <deller@gmx.de>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: James Bottomley <james.bottomley@HansenPartnership.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: Jonas Bonn <jonas@southpole.se>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Magnus Lindholm <linmag7@gmail.com>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Matt Turner <mattst88@gmail.com>
+Cc: Max Filippov <jcmvbkbc@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Simek <monstr@monstr.eu>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Richard Henderson <richard.henderson@linaro.org>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Rich Felker <dalias@libc.org>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Stafford Horne <shorne@gmail.com>
+Cc: Stefan Kristiansson <stefan.kristiansson@saunalahti.fi>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Vineet Gupta <vgupta@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Will Deacon <will@kernel.org>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/m68k/Kconfig                        |   3 +-
+ arch/m68k/include/asm/motorola_pgalloc.h |   9 +-
+ arch/m68k/mm/motorola.c                  | 121 +++++++++++++++--------
+ 3 files changed, 86 insertions(+), 47 deletions(-)
+
+diff --git a/arch/m68k/Kconfig b/arch/m68k/Kconfig
+index 6b8ec67c86fde..fa5d39549da96 100644
+--- a/arch/m68k/Kconfig
++++ b/arch/m68k/Kconfig
+@@ -29,6 +29,7 @@ config M68K
+ 	select HAVE_ARCH_LIBGCC_H
+ 	select HAVE_ARCH_SECCOMP
+ 	select HAVE_ARCH_SECCOMP_FILTER
++	select HAVE_ARCH_TLB_REMOVE_TABLE if MMU_MOTOROLA
+ 	select HAVE_ASM_MODVERSIONS
+ 	select HAVE_DEBUG_BUGVERBOSE
+ 	select HAVE_EFFICIENT_UNALIGNED_ACCESS if !CPU_HAS_NO_UNALIGNED
+@@ -36,7 +37,7 @@ config M68K
+ 	select HAVE_MOD_ARCH_SPECIFIC
+ 	select HAVE_UID16
+ 	select MMU_GATHER_NO_RANGE if MMU
+-	select MMU_GATHER_RCU_TABLE_FREE if MMU && (SUN3 || COLDFIRE)
++	select MMU_GATHER_RCU_TABLE_FREE if MMU
+ 	select MODULES_USE_ELF_REL
+ 	select MODULES_USE_ELF_RELA
+ 	select NO_DMA if !MMU && !COLDFIRE
+diff --git a/arch/m68k/include/asm/motorola_pgalloc.h b/arch/m68k/include/asm/motorola_pgalloc.h
+index 1091fb0affbee..dcde40e8b5c6a 100644
+--- a/arch/m68k/include/asm/motorola_pgalloc.h
++++ b/arch/m68k/include/asm/motorola_pgalloc.h
+@@ -17,6 +17,7 @@ enum m68k_table_types {
+ extern void init_pointer_table(void *table, int type);
+ extern void *get_pointer_table(struct mm_struct *mm, int type);
+ extern int free_pointer_table(void *table, int type);
++extern void __tlb_remove_table(void *table);
+ 
+ /*
+  * Allocate and free page tables. The xxx_kernel() versions are
+@@ -47,7 +48,7 @@ static inline void pte_free(struct mm_struct *mm, pgtable_t pgtable)
+ static inline void __pte_free_tlb(struct mmu_gather *tlb, pgtable_t pgtable,
+ 				  unsigned long address)
+ {
+-	free_pointer_table(pgtable, TABLE_PTE);
++	tlb_remove_table(tlb, (void *)((unsigned long)pgtable | TABLE_PTE));
+ }
+ 
+ 
+@@ -61,10 +62,10 @@ static inline int pmd_free(struct mm_struct *mm, pmd_t *pmd)
+ 	return free_pointer_table(pmd, TABLE_PMD);
+ }
+ 
+-static inline int __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd,
+-				 unsigned long address)
++static inline void __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmd,
++				  unsigned long address)
+ {
+-	return free_pointer_table(pmd, TABLE_PMD);
++	tlb_remove_table(tlb, (void *)((unsigned long)pmd | TABLE_PMD));
+ }
+ 
+ 
+diff --git a/arch/m68k/mm/motorola.c b/arch/m68k/mm/motorola.c
+index b30aa69a73a6a..ffc80483440bc 100644
+--- a/arch/m68k/mm/motorola.c
++++ b/arch/m68k/mm/motorola.c
+@@ -20,6 +20,7 @@
+ #include <linux/init.h>
+ #include <linux/memblock.h>
+ #include <linux/gfp.h>
++#include <linux/cleanup.h>
+ 
+ #include <asm/setup.h>
+ #include <linux/uaccess.h>
+@@ -103,6 +104,8 @@ static struct list_head ptable_list[3] = {
+ 	LIST_HEAD_INIT(ptable_list[2]),
+ };
+ 
++static DEFINE_SPINLOCK(ptable_lock);
++
+ #define PD_PTABLE(ptdesc) ((ptable_desc *)&(virt_to_ptdesc((void *)(ptdesc))->pt_list))
+ #define PD_PTDESC(ptable) (list_entry(ptable, struct ptdesc, pt_list))
+ #define PD_MARKBITS(dp) (*(unsigned int *)&PD_PTDESC(dp)->pt_index)
+@@ -139,52 +142,66 @@ void __init init_pointer_table(void *table, int type)
+ 	return;
+ }
+ 
+-void *get_pointer_table(struct mm_struct *mm, int type)
++/*
++ * For a pointer table for a user process address space, a
++ * table is taken from a ptdesc allocated for the purpose.  Each
++ * ptdesc can hold 8 pointer tables.  The ptdesc is remapped in
++ * virtual address space to be noncacheable.
++ */
++static void *add_pointer_table(struct mm_struct *mm, int type)
+ {
+-	ptable_desc *dp = ptable_list[type].next;
+-	unsigned int mask = list_empty(&ptable_list[type]) ? 0 : PD_MARKBITS(dp);
+-	unsigned int tmp, off;
++	struct ptdesc *ptdesc;
++	ptable_desc *new;
++	void *pt_addr;
+ 
+-	/*
+-	 * For a pointer table for a user process address space, a
+-	 * table is taken from a ptdesc allocated for the purpose.  Each
+-	 * ptdesc can hold 8 pointer tables.  The ptdesc is remapped in
+-	 * virtual address space to be noncacheable.
+-	 */
+-	if (mask == 0) {
+-		struct ptdesc *ptdesc;
+-		ptable_desc *new;
+-		void *pt_addr;
+-
+-		ptdesc = pagetable_alloc(GFP_KERNEL | __GFP_ZERO, 0);
+-		if (!ptdesc)
+-			return NULL;
+-
+-		pt_addr = ptdesc_address(ptdesc);
+-
+-		switch (type) {
+-		case TABLE_PTE:
+-			/*
+-			 * m68k doesn't have SPLIT_PTE_PTLOCKS for not having
+-			 * SMP.
+-			 */
+-			pagetable_pte_ctor(mm, ptdesc);
+-			break;
+-		case TABLE_PMD:
+-			pagetable_pmd_ctor(mm, ptdesc);
+-			break;
+-		case TABLE_PGD:
+-			pagetable_pgd_ctor(ptdesc);
+-			break;
+-		}
++	ptdesc = pagetable_alloc(GFP_KERNEL | __GFP_ZERO, 0);
++	if (!ptdesc)
++		return NULL;
++
++	pt_addr = ptdesc_address(ptdesc);
++
++	switch (type) {
++	case TABLE_PTE:
++		/*
++		 * m68k doesn't have SPLIT_PTE_PTLOCKS for not having
++		 * SMP.
++		 */
++		pagetable_pte_ctor(mm, ptdesc);
++		break;
++	case TABLE_PMD:
++		pagetable_pmd_ctor(mm, ptdesc);
++		break;
++	case TABLE_PGD:
++		pagetable_pgd_ctor(ptdesc);
++		break;
++	}
++
++	mmu_page_ctor(pt_addr);
++
++	new = PD_PTABLE(pt_addr);
+ 
+-		mmu_page_ctor(pt_addr);
++	PD_MARKBITS(new) = ptable_mask(type) - 1;
++	scoped_guard(spinlock_irqsave, &ptable_lock)
++		list_add(new, &ptable_list[type]);
+ 
+-		new = PD_PTABLE(pt_addr);
+-		PD_MARKBITS(new) = ptable_mask(type) - 1;
+-		list_add_tail(new, dp);
++	return (pmd_t *)pt_addr;
++}
++
++void *get_pointer_table(struct mm_struct *mm, int type)
++{
++	unsigned int tmp, off;
++	unsigned long mask;
++	unsigned long flags;
++	ptable_desc *dp;
++	void *ret;
+ 
+-		return (pmd_t *)pt_addr;
++	spin_lock_irqsave(&ptable_lock, flags);
++	dp = ptable_list[type].next;
++	mask = list_empty(&ptable_list[type]) ? 0 : PD_MARKBITS(dp);
++
++	if (mask == 0) {
++		spin_unlock_irqrestore(&ptable_lock, flags);
++		return add_pointer_table(mm, type);
+ 	}
+ 
+ 	for (tmp = 1, off = 0; (mask & tmp) == 0; tmp <<= 1, off += ptable_size(type))
+@@ -194,7 +211,10 @@ void *get_pointer_table(struct mm_struct *mm, int type)
+ 		/* move to end of list */
+ 		list_move_tail(dp, &ptable_list[type]);
+ 	}
+-	return ptdesc_address(PD_PTDESC(dp)) + off;
++
++	ret = ptdesc_address(PD_PTDESC(dp)) + off;
++	spin_unlock_irqrestore(&ptable_lock, flags);
++	return ret;
+ }
+ 
+ int free_pointer_table(void *table, int type)
+@@ -203,6 +223,9 @@ int free_pointer_table(void *table, int type)
+ 	unsigned long ptable = (unsigned long)table;
+ 	unsigned long pt_addr = ptable & PAGE_MASK;
+ 	unsigned int mask = 1U << ((ptable - pt_addr)/ptable_size(type));
++	unsigned long flags;
++
++	spin_lock_irqsave(&ptable_lock, flags);
+ 
+ 	dp = PD_PTABLE(pt_addr);
+ 	if (PD_MARKBITS (dp) & mask)
+@@ -213,6 +236,8 @@ int free_pointer_table(void *table, int type)
+ 	if (PD_MARKBITS(dp) == ptable_mask(type)) {
+ 		/* all tables in ptdesc are free, free ptdesc */
+ 		list_del(dp);
++		spin_unlock_irqrestore(&ptable_lock, flags);
++
+ 		mmu_page_dtor((void *)pt_addr);
+ 		pagetable_dtor_free(virt_to_ptdesc((void *)pt_addr));
+ 		return 1;
+@@ -223,9 +248,21 @@ int free_pointer_table(void *table, int type)
+ 		 */
+ 		list_move(dp, &ptable_list[type]);
+ 	}
++
++	spin_unlock_irqrestore(&ptable_lock, flags);
+ 	return 0;
+ }
+ 
++void __tlb_remove_table(void *table)
++{
++	/* The bottom 2 bits are used to encode page table type. */
++	const unsigned long encoded = (unsigned long)table;
++	void *addr = (void *)(encoded & ~3UL);
++	const int type = encoded & 3;
++
++	free_pointer_table(addr, type);
++}
++
+ /* size of memory already mapped in head.S */
+ extern __initdata unsigned long m68k_init_mapped_size;
+ 
+-- 
+2.47.3
+

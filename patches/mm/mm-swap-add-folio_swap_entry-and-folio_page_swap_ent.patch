@@ -1,0 +1,108 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 8 Sep 2026 11:16:31 -0400
+Subject: [PATCH] mm/swap: add folio_swap_entry() and folio_page_swap_entry()
+
+Patch series "mm: remove page_swap_entry()", v2.
+
+A folio in the swap cache occupies folio_nr_pages() contiguous swap
+entries starting at folio->swap, so a page's swap entry is just
+folio->swap plus the page's index in the folio.  The swap entry is folio
+state, but the only helper for it is page-based: page_swap_entry() takes a
+page and recomputes the folio its callers already hold.  Several callers
+avoid it by open-coding the arithmetic on folio->swap instead.
+
+Add folio_swap_entry() and folio_page_swap_entry(), convert all users, and
+remove page_swap_entry(), with a few other cleanups along the way.
+
+
+This patch (of 8):
+
+A folio in the swap cache occupies folio_nr_pages() contiguous swap
+entries starting at folio->swap, so a page's swap entry is just
+folio->swap plus the page's index in the folio.  page_swap_entry() hides
+this behind a compound_head() call, and callers that already have the
+folio sometimes open-code the arithmetic instead.
+
+Add folio_swap_entry(), which takes a folio and a page index, and
+folio_page_swap_entry() for callers that have the page.
+
+Link: https://lore.kernel.org/20260908-folio_swap_entry-v2-0-ee6d01dfa5e1@columbia.edu
+Link: https://lore.kernel.org/20260908-folio_swap_entry-v2-1-ee6d01dfa5e1@columbia.edu
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Marc Rutland <mark.rutland@arm.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/swap.h | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/include/linux/swap.h b/include/linux/swap.h
+index 74ce794042474..3da4e5843c010 100644
+--- a/include/linux/swap.h
++++ b/include/linux/swap.h
+@@ -272,6 +272,39 @@ struct swap_info_struct {
+ 	const struct swap_ops *ops;
+ };
+ 
++/**
++ * folio_swap_entry - Return the swap entry for a page within a folio.
++ * @folio: The folio.
++ * @idx: The index of the page within the folio.
++ *
++ * A folio in the swap cache occupies folio_nr_pages() contiguous swap
++ * entries starting at folio->swap. The caller must ensure the folio is
++ * in the swap cache and that @idx is within the folio.
++ */
++static inline
++swp_entry_t folio_swap_entry(const struct folio *folio, unsigned long idx)
++{
++	swp_entry_t entry = folio->swap;
++
++	VM_WARN_ON_ONCE_FOLIO(idx >= folio_nr_pages(folio), folio);
++	entry.val += idx;
++	return entry;
++}
++
++/**
++ * folio_page_swap_entry - Return the swap entry of a page in a folio.
++ * @folio: The folio containing @page.
++ * @page: A page within @folio.
++ *
++ * The caller must ensure the folio is in the swap cache and that @page
++ * is part of @folio.
++ */
++static inline swp_entry_t folio_page_swap_entry(const struct folio *folio,
++		const struct page *page)
++{
++	return folio_swap_entry(folio, folio_page_idx(folio, page));
++}
++
+ static inline swp_entry_t page_swap_entry(struct page *page)
+ {
+ 	struct folio *folio = page_folio(page);
+-- 
+2.47.3
+

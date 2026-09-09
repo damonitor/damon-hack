@@ -1,0 +1,184 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Tue, 8 Sep 2026 11:03:30 +0800
+Subject: [PATCH] mm/sparse-vmemmap: switch device DAX to shared tail vmemmap
+ pages
+
+HugeTLB vmemmap optimization now uses per-zone shared tail vmemmap pages.
+Device DAX has not been switched to that mechanism yet.
+
+Switch device DAX to vmemmap_shared_tail_page() as well.  This aligns DAX
+with HugeTLB by using the common per-zone shared tail vmemmap page.
+
+The optimization is enabled only for DEV-DAX through pgmap->vmemmap_shift,
+which is assigned when a DEV-DAX device is initialized.  Unlike FS-DAX,
+DEV-DAX does not modify tail struct pages, so sharing them is safe.
+
+Since the shared tail page can now back ZONE_DEVICE vmemmap mappings,
+initialize its entries with PG_reserved for device zones.  Also skip
+poisoning vmemmap-optimizable sections while their struct pages may be
+shared.
+
+Link:
+https://lore.kernel.org/20260908030335.96549-7-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mmzone.h | 10 +++++++++
+ mm/memory_hotplug.c    |  5 +++--
+ mm/sparse-vmemmap.c    | 47 ++++++++++++++----------------------------
+ 3 files changed, 28 insertions(+), 34 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index d3778ba976a5b..03ed9232f186b 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -1686,11 +1686,21 @@ static inline bool zone_is_zone_device(const struct zone *zone)
+ {
+ 	return zone_idx(zone) == ZONE_DEVICE;
+ }
++
++static inline struct zone *device_zone(int nid)
++{
++	return &NODE_DATA(nid)->node_zones[ZONE_DEVICE];
++}
+ #else
+ static inline bool zone_is_zone_device(const struct zone *zone)
+ {
+ 	return false;
+ }
++
++static inline struct zone *device_zone(int nid)
++{
++	return NULL;
++}
+ #endif
+ 
+ /*
+diff --git a/mm/memory_hotplug.c b/mm/memory_hotplug.c
+index b428da66d279c..0db0379826df2 100644
+--- a/mm/memory_hotplug.c
++++ b/mm/memory_hotplug.c
+@@ -554,8 +554,9 @@ void remove_pfn_range_from_zone(struct zone *zone,
+ 		/* Select all remaining pages up to the next section boundary */
+ 		cur_nr_pages =
+ 			min(end_pfn - pfn, SECTION_ALIGN_UP(pfn + 1) - pfn);
+-		page_init_poison(pfn_to_page(pfn),
+-				 sizeof(struct page) * cur_nr_pages);
++		if (!section_vmemmap_optimizable(__pfn_to_section(pfn)))
++			page_init_poison(pfn_to_page(pfn),
++					 sizeof(struct page) * cur_nr_pages);
+ 	}
+ 
+ 	/*
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index aed1e7429daaf..0201877a7f800 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -193,6 +193,8 @@ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zon
+ 		set_page_node(page, zone_to_nid(zone));
+ 		set_page_zone(page, zone_idx(zone));
+ 		prep_compound_tail(page, NULL, order);
++		if (zone_is_zone_device(zone))
++			__SetPageReserved(page);
+ 	}
+ 
+ 	page = virt_to_page(addr);
+@@ -490,23 +492,6 @@ static bool __meminit reuse_compound_section(unsigned long start_pfn,
+ 	return !IS_ALIGNED(offset, nr_pages) && nr_pages > PAGES_PER_SUBSECTION;
+ }
+ 
+-static pte_t * __meminit compound_section_tail_page(unsigned long addr)
+-{
+-	pte_t *pte;
+-
+-	addr -= PAGE_SIZE;
+-
+-	/*
+-	 * Assuming sections are populated sequentially, the previous section's
+-	 * page data can be reused.
+-	 */
+-	pte = pte_offset_kernel(pmd_off_k(addr), addr);
+-	if (!pte)
+-		return NULL;
+-
+-	return pte;
+-}
+-
+ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 						     unsigned long start,
+ 						     unsigned long end, int node,
+@@ -516,21 +501,18 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 	pte_t *pte;
+ 	int rc;
+ 	unsigned long flags = VMEMMAP_POPULATE_DAX;
++	struct page *page;
++	unsigned int order = pfn_to_section_order(start_pfn);
+ 
+-	if (reuse_compound_section(start_pfn, pgmap)) {
+-		pte = compound_section_tail_page(start);
+-		if (!pte)
+-			return -ENOMEM;
++	page = vmemmap_shared_tail_page(order, device_zone(node));
++	if (!page)
++		return -ENOMEM;
+ 
+-		/*
+-		 * Reuse the page that was populated in the prior iteration
+-		 * with just tail struct pages.
+-		 */
++	if (reuse_compound_section(start_pfn, pgmap))
+ 		return vmemmap_populate_range(start, end, node, NULL,
+-					      pte_pfn(ptep_get(pte)), flags);
+-	}
++					      page_to_pfn(page), flags);
+ 
+-	size = min(end - start, pgmap_vmemmap_nr(pgmap) * sizeof(struct page));
++	size = min(end - start, (1UL << order) * sizeof(struct page));
+ 	for (addr = start; addr < end; addr += size) {
+ 		unsigned long next, last = addr + size;
+ 
+@@ -546,12 +528,12 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 			return -ENOMEM;
+ 
+ 		/*
+-		 * Reuse the previous page for the rest of tail pages
++		 * Reuse the shared page for the rest of tail pages
+ 		 * See layout diagram in Documentation/mm/vmemmap_dedup.rst
+ 		 */
+ 		next += PAGE_SIZE;
+ 		rc = vmemmap_populate_range(next, last, node, NULL,
+-					    pte_pfn(ptep_get(pte)), flags);
++					    page_to_pfn(page), flags);
+ 		if (rc)
+ 			return -ENOMEM;
+ 	}
+@@ -883,13 +865,14 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
+ 	if (IS_ERR(memmap))
+ 		return PTR_ERR(memmap);
+ 
++	ms = __nr_to_section(section_nr);
+ 	/*
+ 	 * Poison uninitialized struct pages in order to catch invalid flags
+ 	 * combinations.
+ 	 */
+-	page_init_poison(memmap, sizeof(struct page) * nr_pages);
++	if (!section_vmemmap_optimizable(ms))
++		page_init_poison(memmap, sizeof(struct page) * nr_pages);
+ 
+-	ms = __nr_to_section(section_nr);
+ 	__section_mark_present(ms, section_nr);
+ 
+ 	/* Align memmap to section boundary in the subsection case */
+-- 
+2.47.3
+

@@ -1,0 +1,248 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Tue, 8 Sep 2026 13:50:55 +0100
+Subject: [PATCH] selftests/mm: add folio-order detection self-check
+
+The khugepaged mTHP tests detect collapse results with the vm_util
+folio-order helpers rather than smaps AnonHugePages, which only sees PMD
+mappings.  If those helpers are wrong, every case built on them is wrong
+the same way, and nothing says so.
+
+Check them directly.  For every anon THP order the kernel supports, fault
+memory in with only that order enabled.  Require the helpers to classify
+the backing as exactly that order: not the order below it, and base-page
+memory as order 0.
+
+Run it in the thp category, ahead of ./khugepaged, so a broken helper is
+reported as itself rather than as a collapse failure.  Verified on x86-64
+4K (orders 0, 2-9) and arm64 64K (orders 0, 2-13).
+
+The test needs ALIGN(), which hmm-tests.c and migration.c each defined
+privately.  Move it to vm_util.h and drop both copies.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260908125105.1510704-10-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/Makefile           |   1 +
+ .../testing/selftests/mm/folio_order_check.c  | 122 ++++++++++++++++++
+ tools/testing/selftests/mm/hmm-tests.c        |   1 -
+ tools/testing/selftests/mm/migration.c        |   1 -
+ tools/testing/selftests/mm/run_vmtests.sh     |   2 +
+ tools/testing/selftests/mm/vm_util.h          |   2 +
+ 6 files changed, 127 insertions(+), 2 deletions(-)
+ create mode 100644 tools/testing/selftests/mm/folio_order_check.c
+
+diff --git a/tools/testing/selftests/mm/Makefile b/tools/testing/selftests/mm/Makefile
+index 9c03624fd2936..7571d80a123e4 100644
+--- a/tools/testing/selftests/mm/Makefile
++++ b/tools/testing/selftests/mm/Makefile
+@@ -105,6 +105,7 @@ TEST_GEN_FILES += guard-regions
+ TEST_GEN_FILES += merge
+ TEST_GEN_FILES += rmap
+ TEST_GEN_FILES += folio_split_race_test
++TEST_GEN_FILES += folio_order_check
+ 
+ ifneq ($(ARCH),arm64)
+ TEST_GEN_FILES += soft-dirty
+diff --git a/tools/testing/selftests/mm/folio_order_check.c b/tools/testing/selftests/mm/folio_order_check.c
+new file mode 100644
+index 0000000000000..fa736c9f701a4
+--- /dev/null
++++ b/tools/testing/selftests/mm/folio_order_check.c
+@@ -0,0 +1,122 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Self-check for the vm_util folio-order helpers, is_backed_by_folio() and
++ * is_range_backed_by_order(), which the khugepaged mTHP cases use to detect
++ * collapse results.  For every anon THP order the kernel supports, fault
++ * memory in with only that order enabled and require the helpers to report
++ * exactly that order.
++ */
++#define _GNU_SOURCE
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#include "kselftest.h"
++#include "vm_util.h"
++#include "hugepage_settings.h"
++
++static int pagemap_fd;
++static int kpageflags_fd;
++
++static char *alloc_aligned(size_t size)
++{
++	size_t len = size * 2;
++	char *p, *aligned;
++
++	p = mmap(NULL, len, PROT_READ | PROT_WRITE,
++		 MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (p == MAP_FAILED)
++		ksft_exit_fail_perror("mmap()");
++
++	aligned = (char *)ALIGN((uintptr_t)p, size);
++	if (aligned != p)
++		munmap(p, aligned - p);
++	if (aligned + size != p + len)
++		munmap(aligned + size, p + len - aligned - size);
++
++	return aligned;
++}
++
++static void check_order(int order)
++{
++	struct thp_settings settings = *thp_current_settings();
++	size_t size = psize() << order;
++	bool ok = true;
++	char *p;
++	int i;
++
++	for (i = 0; i < NR_ORDERS; i++)
++		settings.hugepages[i].enabled = THP_NEVER;
++	if (order)
++		settings.hugepages[order].enabled = THP_ALWAYS;
++	thp_push_settings(&settings);
++
++	p = alloc_aligned(size);
++	*p = 1;
++
++	if (!is_range_backed_by_order(p, size, order, pagemap_fd, kpageflags_fd)) {
++		ksft_print_msg("order %d not detected after fault\n", order);
++		ok = false;
++	}
++
++	/* A lower order must be rejected: the folio is larger */
++	if (order && is_range_backed_by_order(p, size, order - 1,
++					      pagemap_fd, kpageflags_fd)) {
++		ksft_print_msg("order %d also reported as order %d\n",
++			       order, order - 1);
++		ok = false;
++	}
++
++	/* A large folio must not pass as order 0 */
++	if (order && is_range_backed_by_order(p, size, 0,
++					      pagemap_fd, kpageflags_fd)) {
++		ksft_print_msg("order %d also reported as order 0\n", order);
++		ok = false;
++	}
++
++	munmap(p, size);
++	thp_pop_settings();
++
++	ksft_test_result(ok, "order %d classified\n", order);
++}
++
++int main(void)
++{
++	struct thp_settings settings;
++	unsigned long orders;
++	int order;
++
++	ksft_print_header();
++
++	if (!thp_available())
++		ksft_exit_skip("Transparent Hugepages not available\n");
++
++	pagemap_fd = open("/proc/self/pagemap", O_RDONLY);
++	if (pagemap_fd < 0)
++		ksft_exit_fail_perror("open(/proc/self/pagemap)");
++	kpageflags_fd = open("/proc/kpageflags", O_RDONLY);
++	if (kpageflags_fd < 0)
++		ksft_exit_skip("open(/proc/kpageflags) requires root\n");
++
++	orders = thp_supported_orders();
++	if (!orders)
++		ksft_exit_skip("No supported THP orders\n");
++
++	ksft_set_plan(__builtin_popcountl(orders) + 1);
++
++	thp_save_settings();
++	thp_read_settings(&settings);
++	/* Base of the settings stack; the bottom entry is never popped */
++	thp_push_settings(&settings);
++
++	check_order(0);
++	for (order = 1; order < NR_ORDERS; order++) {
++		if (!(orders & (1UL << order)))
++			continue;
++		check_order(order);
++	}
++
++	ksft_finished();
++}
+diff --git a/tools/testing/selftests/mm/hmm-tests.c b/tools/testing/selftests/mm/hmm-tests.c
+index fa1a651963fd0..e5f273ca84c10 100644
+--- a/tools/testing/selftests/mm/hmm-tests.c
++++ b/tools/testing/selftests/mm/hmm-tests.c
+@@ -65,7 +65,6 @@ enum {
+ #define HMM_PATH_MAX    64
+ #define NTIMES		10
+ 
+-#define ALIGN(x, a) (((x) + (a - 1)) & (~((a) - 1)))
+ /* Just the flags we need, copied from mm.h: */
+ 
+ #ifndef FOLL_WRITE
+diff --git a/tools/testing/selftests/mm/migration.c b/tools/testing/selftests/mm/migration.c
+index a35e2b57e05b2..d1d0989ed2cad 100644
+--- a/tools/testing/selftests/mm/migration.c
++++ b/tools/testing/selftests/mm/migration.c
+@@ -20,7 +20,6 @@
+ 
+ #define TWOMEG		(2<<20)
+ #define RUNTIME		(20)
+-#define ALIGN(x, a)	(((x) + (a - 1)) & (~((a) - 1)))
+ 
+ HUGETLB_SETUP_DEFAULT_PAGES(1)
+ 
+diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
+index ae0ab5efabae6..5886ad9f68063 100755
+--- a/tools/testing/selftests/mm/run_vmtests.sh
++++ b/tools/testing/selftests/mm/run_vmtests.sh
+@@ -367,6 +367,8 @@ CATEGORY="pfnmap" run_test ./pfnmap
+ # COW tests
+ CATEGORY="cow" run_test ./cow
+ 
++CATEGORY="thp" run_test ./folio_order_check
++
+ CATEGORY="thp" run_test ./khugepaged
+ 
+ CATEGORY="thp" run_test ./khugepaged -s 2
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index 0172003c16dcb..ea48e6a7527e1 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -12,6 +12,8 @@
+ #include <mm/hugepage_settings.h>
+ 
+ #define BIT_ULL(nr)                   (1ULL << (nr))
++#define ALIGN(x, a)                   (((x) + (a) - 1) & ~((a) - 1))
++
+ #define PM_SOFT_DIRTY                 BIT_ULL(55)
+ #define PM_MMAP_EXCLUSIVE             BIT_ULL(56)
+ #define PM_UFFD_WP                    BIT_ULL(57)
+-- 
+2.47.3
+
