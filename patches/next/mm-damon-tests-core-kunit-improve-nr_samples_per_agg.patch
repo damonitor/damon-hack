@@ -1,0 +1,72 @@
+From: Kunwu Chan <kunwu.chan@gmail.com>
+Date: Wed, 9 Sep 2026 15:07:11 +0800
+Subject: [PATCH] mm/damon/tests/core-kunit: improve nr_samples_per_aggr test
+ isolation
+
+Test the zero sample interval case with a non-zero aggregation
+interval, and keep the zero/zero case to cover the zero-result
+fallback.
+
+Also make the overflow case use an explicit sample interval so that
+it does not depend on the zero sample interval fallback.
+
+/* TODO: move below to commentary */
+Changes from v2
+- v2: https://lore.kernel.org/20260909070711.2448346-1-kunwu.chan@gmail.com
+- Collect R-b: from SJ.
+Changes from v1
+- v1: https://lore.kernel.org/damon/20260908063635.2208922-1-kunwu.chan@gmail.com/
+- Use 0/0 for the zero-result case, consistent with damon_set_attrs().
+- Update commit msg and add Reviewed-by tag.
+
+Signed-off-by: Kunwu Chan <kunwu.chan@gmail.com>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 1c8c8ee25bba3..8b72180c3fee8 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -627,12 +627,20 @@ static void damon_test_set_regions(struct kunit *test)
+ 
+ static void damon_test_nr_samples_per_aggr(struct kunit *test)
+ {
+-	struct damon_attrs attrs = {
++	struct damon_attrs attrs;
++
++	/* Zero sample interval is treated as one. */
++	attrs = (struct damon_attrs){
+ 		.sample_interval = 0,
+-		.aggr_interval = 0,
++		.aggr_interval = 5000,
+ 	};
++	KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs), 5000);
+ 
+-	/* Zero aggregation interval doesn't cause division by zero */
++	/* Zero sample and aggregation intervals cover the zero-result fallback. */
++	attrs = (struct damon_attrs){
++		.sample_interval = 0,
++		.aggr_interval = 0,
++	};
+ 	KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs), 1);
+ 
+ 	/*
+@@ -640,7 +648,10 @@ static void damon_test_nr_samples_per_aggr(struct kunit *test)
+ 	 * overflow
+ 	 */
+ 	if (ULONG_MAX > UINT_MAX) {
+-		attrs.aggr_interval = (unsigned long)UINT_MAX + 1;
++		attrs = (struct damon_attrs){
++			.sample_interval = 1,
++			.aggr_interval = (unsigned long)UINT_MAX + 1,
++		};
+ 		KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs),
+ 				UINT_MAX);
+ 	}
+-- 
+2.47.3
+
