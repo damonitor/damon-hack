@@ -1,0 +1,69 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Sat, 5 Sep 2026 11:37:51 -0700
+Subject: [PATCH REPOST 4/5] mm/damon/vaddr: extend apply_probes() for hugetlb
+To: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260909140408.104699-5-sj@kernel.org>
+
+DAMON virtual address space operation set(vaddr) does not support
+hugetlb pages in apply_probes.  Extend it for hugetlb pages.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/vaddr.c | 30 +++++++++++++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index 7c548ec0cf6b5..45239f05e113b 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -598,6 +598,34 @@ static int damon_va_probe_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_HUGETLB_PAGE
++static int damon_va_probe_hugetlb_entry(pte_t *pte, unsigned long hmask,
++		unsigned long addr, unsigned long end, struct mm_walk *walk)
++{
++	struct damon_va_probe_walk_private *priv = walk->private;
++	struct hstate *h = hstate_vma(walk->vma);
++	struct folio *folio;
++	spinlock_t *ptl;
++	pte_t entry;
++
++	ptl = huge_pte_lock(h, walk->mm, pte);
++	entry = huge_ptep_get(walk->mm, addr, pte);
++	if (!pte_present(entry))
++		goto out;
++
++	folio = pfn_folio(pte_pfn(entry));
++	folio_get(folio);
++	damon_va_probe_folio(priv->ctx, priv->r, folio);
++	folio_put(folio);
++
++out:
++	spin_unlock(ptl);
++	return 0;
++}
++#else
++#define damon_va_probe_hugetlb_entry NULL
++#endif /* CONFIG_HUGETLB_PAGE */
++
+ static void __damon_va_apply_probes(struct damon_ctx *ctx,
+ 		struct mm_struct *mm,  struct damon_region *r)
+ {
+@@ -607,7 +635,7 @@ static void __damon_va_apply_probes(struct damon_ctx *ctx,
+ 	};
+ 	struct mm_walk_ops damon_probe_walk_ops = {
+ 		.pmd_entry = damon_va_probe_pmd_entry,
+-		.hugetlb_entry = NULL,
++		.hugetlb_entry = damon_va_probe_hugetlb_entry,
+ 	};
+ 	unsigned long addr = r->sampling_addr;
+ 
+-- 
+2.47.3
