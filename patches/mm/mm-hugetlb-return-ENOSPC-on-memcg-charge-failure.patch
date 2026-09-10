@@ -1,30 +1,17 @@
 From: Ackerley Tng <ackerleytng@google.com>
-Date: Wed, 2 Sep 2026 01:22:56 -0700
+Date: Wed, 9 Sep 2026 10:11:00 -0700
 Subject: [PATCH] mm: hugetlb: return -ENOSPC on memcg charge failure
 
 Patch series "Fix bugs in HugeTLB allocation when
-mem_cgroup_charge_hugetlb() fails".
+mem_cgroup_charge_hugetlb() fails", v2.
 
-In hugetlb_alloc_folio(), when mem_cgroup_charge_hugetlb() fails, there are
-2 issues:
+In hugetlb_alloc_folio(), when mem_cgroup_charge_hugetlb() fails, there
+are 2 issues:
 
 1. free_huge_folio() expects a non-refcounted folio and will
    VM_BUG_ON_FOLIO().
 
 2. -ENOMEM is returned, causing an infinite loop retrying the fault.
-
-This patch series is a subset of patches in [1].
-
-Note: [1] was applied on an earlier version of HugeTLB allocation.  In
-that earlier version, VMA reservations were not undone on
-mem_cgroup_charge_hugetlb() failure.
-
-5737df3826dee: ("mm: hugetlb: refactor out hugetlb_alloc_folio()") fixed
-that, since returning an error from hugetlb_alloc_folio() causes
-alloc_hugetlb_folio() to execute vma_end_reservation().
-
-At the Link: there is a reproducer to trigger mem_cgroup_charge_hugetlb()
-failure.
 
 
 This patch (of 2):
@@ -46,9 +33,8 @@ handling path, the same handling used for
 hugetlb_cgroup_uncharge_cgroup{,_rsvd}(), which also don't trigger the OOM
 killer and hence opt to terminate the process with a SIGBUS.
 
-Link: https://lore.kernel.org/20260902-hugetlb-alloc-folio-memcg-charge-error-handling-v1-0-e3e8942c141b@google.com
-Link: https://lore.kernel.org/20260902-hugetlb-alloc-folio-memcg-charge-error-handling-v1-1-e3e8942c141b@google.com
-Fixes: 991135774c0e ("memcg/hugetlb: introduce mem_cgroup_charge_hugetlb")
+Link: https://lore.kernel.org/20260909-hugetlb-alloc-folio-memcg-charge-error-handling-v2-1-4b4a8a19a7f7@google.com
+Fixes: 991135774c0e0 ("memcg/hugetlb: introduce mem_cgroup_charge_hugetlb")
 Signed-off-by: Ackerley Tng <ackerleytng@google.com>
 Reviewed-by: Muchun Song <muchun.song@linux.dev>
 Reviewed-by: Joshua Hahn <joshua.hahnjy@gmail.com>
@@ -79,11 +65,11 @@ Cc: Yanteng Si <si.yanteng@linux.dev>
 Cc: <stable@vger.kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 ---
- mm/hugetlb.c | 14 ++++++++++++--
- 1 file changed, 12 insertions(+), 2 deletions(-)
+ mm/hugetlb.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/mm/hugetlb.c b/mm/hugetlb.c
-index c631c629bd5a3..cd857a6285a3c 100644
+index c631c629bd5a3..65a96e4bd58d9 100644
 --- a/mm/hugetlb.c
 +++ b/mm/hugetlb.c
 @@ -2851,7 +2851,6 @@ void wait_for_freed_hugetlb_folios(void)
@@ -94,21 +80,14 @@ index c631c629bd5a3..cd857a6285a3c 100644
   */
  struct folio *hugetlb_alloc_folio(struct hstate *h,
  		struct mempolicy_interpreted *mpoli, u8 alloc_flags)
-@@ -2924,7 +2923,18 @@ struct folio *hugetlb_alloc_folio(struct hstate *h,
+@@ -2924,7 +2923,11 @@ struct folio *hugetlb_alloc_folio(struct hstate *h,
  		 * were committed to the folio and freeing the folio
  		 * would have cleared those up.
  		 */
 -		return ERR_PTR(ret);
 +		/*
-+		 * Return -ENOSPC when this function fails to allocate
-+		 * or charge a huge page. If a standard (PAGE_SIZE)
-+		 * page allocation fails, the OOM killer is given a
-+		 * chance to run, which may resolve the failure on
-+		 * retry. However, for HugeTLB allocations, the OOM
-+		 * killer is not triggered.  Returning -ENOMEM (or
-+		 * anything resulting in VM_FAULT_OOM) would leak to
-+		 * the #PF handler, causing it to loop indefinitely
-+		 * retrying the fault.
++		 * Return -ENOSPC, since retrying the fault is futile:
++		 * the OOM killer is not triggered for HugeTLB.
 +		 */
 +		return ERR_PTR(-ENOSPC);
  	}

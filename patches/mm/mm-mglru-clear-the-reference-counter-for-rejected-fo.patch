@@ -1,0 +1,82 @@
+From: Baolin Wang <baolin.wang@linux.alibaba.com>
+Date: Wed, 9 Sep 2026 09:57:04 +0800
+Subject: [PATCH] mm: mglru: clear the reference counter for rejected folios
+
+As per the comment on LRU_REFS_FLAGS, when accessed folios are promoted to
+a new generation, LRU_REFS_FLAGS should be cleared so that the reference
+counter can start over.
+
+For folios rejected by shrink_folio_list(), we clear LRU_REFS_FLAGS and
+set the PG_active flag when lru_gen_folio_seq() would place them in the
+oldest generation.  That's fine.
+
+But for rejected folios where lru_gen_folio_seq() returns a generation
+other than the oldest one (which can be treated as a promotion), we do not
+clear LRU_REFS_FLAGS.  This can violate the promotion mechanism.  And this
+means the rejected folio enters the new generation with stale, inflated
+tier bits, which can inflate reference counts and distort eviction
+statistics for these rejected folios.
+
+Fix this by clearing LRU_REFS_FLAGS for rejected folios.  Of course, I
+need to evaluate the impact of the changes, which mainly falls into 3
+cases:
+
+1. When lru_gen_folio_seq() returns the oldest generation for rejected
+   folios, there are no logic changes, and they will be put back into the
+   2nd youngest generation.
+
+2. For rejected folios with PG_active set by shrink_folio_list(), we
+   only clear the LRU_REFS_FLAGS and do not change the generation.
+
+3. For rejected folios with PG_referenced set, the original code would
+   put them back into the 2nd oldest generation.  After this patch, we
+   will put them back into the 2nd youngest generation.
+
+I think case 3 is also reasonable, before commmit 6cbdd9726fb5 ("mm/mglru:
+use folio_mark_accessed to replace folio_set_active"), a rejected
+referenced folio was also put back to the 2nd youngest gen.  Meanwhile, I
+didn't see any noticeable performance impact on my 32-core Arm machine
+when running 'make -j32' to build the kernel inside a 3G-limited memcg
+with either zram or NVMe swap.
+
+Link: https://lore.kernel.org/9214e36bf738fcfba86acc8cea85dff4010f66b0.1788918714.git.baolin.wang@linux.alibaba.com
+Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 5354eb8d3a07b..19f1cd1e1814e 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5072,11 +5072,12 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 			continue;
+ 		}
+ 
++		/* See the comments on LRU_REFS_FLAGS */
++		folio_set_lru_refs(folio, 0);
++
+ 		/* don't add rejected folios to the oldest generation */
+-		if (lru_gen_folio_seq(lruvec, folio, false) == min_seq[type]) {
+-			folio_set_lru_refs(folio, 0);
++		if (lru_gen_folio_seq(lruvec, folio, false) == min_seq[type])
+ 			folio_set_active(folio);
+-		}
+ 	}
+ 
+ 	move_folios_to_lru(&list);
+-- 
+2.47.3
+

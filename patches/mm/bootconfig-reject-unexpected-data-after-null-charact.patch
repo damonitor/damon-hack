@@ -1,0 +1,103 @@
+From: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Date: Thu, 10 Sep 2026 00:53:45 +0900
+Subject: [PATCH] bootconfig: reject unexpected data after null character
+
+Patch series "bootconfig: Reject unexpected data after null character and
+cleanups".
+
+Patches for bootconfig to reject unexpected config data after null
+character and other cleanups including tools/bootconfig to consolidate
+bootconfig initialization with errors, and skipping internal tree sanity
+checks in kernel.
+
+
+This patch (of 3):
+
+If a bootconfig buffer contains an intermediate null character in the
+middle of the configuration, xbc_parse_tree() stops at the null character
+because string delimiter searches (e.g.  strpbrk()) stop at '\0', and
+cleanly breaks out of the loop without error.  As a result, any
+configuration data following the intermediate null character is silently
+ignored, allowing unparsed or potentially malicious data to be hidden
+after an early termination.
+
+Fix this in xbc_parse_tree() by checking that no non-null data remains
+between the parser termination point and the end of the input buffer.
+Trailing null characters (such as alignment padding in initrd) continue to
+be accepted as valid.
+
+Also update apply_xbc() in tools/bootconfig/main.c to calculate the buffer
+size based on the loaded file size rather than strlen(), so that files
+with intermediate null characters are not truncated before validation.
+
+Assisted-by: Antigravity:gemini-3.8-flash
+Link: https://lore.kernel.org/178896921555.177508.434402948295885560.stgit@devnote2
+Link: https://lore.kernel.org/178896922501.177508.6894964926791268965.stgit@devnote2
+Signed-off-by: Masami Hiramatsu (Google) <mhiramat@kernel.org>
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ lib/bootconfig.c                    |  7 +++++++
+ tools/bootconfig/main.c             |  4 +++-
+ tools/bootconfig/test-bootconfig.sh | 12 ++++++++++++
+ 3 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/lib/bootconfig.c b/lib/bootconfig.c
+index 89c88e359179f..61cae6d6e3f84 100644
+--- a/lib/bootconfig.c
++++ b/lib/bootconfig.c
+@@ -1119,6 +1119,13 @@ static int __init xbc_parse_tree(void)
+ 		}
+ 	} while (!ret);
+ 
++	if (!ret) {
++		while (p < xbc_data + xbc_data_size - 1 && *p == '\0')
++			p++;
++		if (p < xbc_data + xbc_data_size - 1)
++			ret = xbc_parse_error("Unexpected data after null character", p);
++	}
++
+ 	return ret;
+ }
+ 
+diff --git a/tools/bootconfig/main.c b/tools/bootconfig/main.c
+index 7dc9fff9b6370..6035404733c38 100644
+--- a/tools/bootconfig/main.c
++++ b/tools/bootconfig/main.c
+@@ -422,7 +422,9 @@ static int apply_xbc(const char *path, const char *xbc_path)
+ 		pr_err("Failed to load %s : %d\n", xbc_path, ret);
+ 		return ret;
+ 	}
+-	size = strlen(buf) + 1;
++	size = ret;
++	if (size == 0 || buf[size - 1] != '\0')
++		size++;
+ 	csum = xbc_calc_checksum(buf, size);
+ 
+ 	/* Backup the bootconfig data */
+diff --git a/tools/bootconfig/test-bootconfig.sh b/tools/bootconfig/test-bootconfig.sh
+index fc69f815ce4af..530ce7e28d634 100755
+--- a/tools/bootconfig/test-bootconfig.sh
++++ b/tools/bootconfig/test-bootconfig.sh
+@@ -180,6 +180,18 @@ EOF
+ $BOOTCONF -a $TEMPCONF $INITRD 2> $OUTFILE
+ xpass grep -q "1:1" $OUTFILE
+ 
++echo "Intermediate null character test"
++printf "key = value\n\0extra = data\n" > $TEMPCONF
++xfail $BOOTCONF -a $TEMPCONF $INITRD
++$BOOTCONF -a $TEMPCONF $INITRD 2> $OUTFILE
++xpass grep -q "Unexpected" $OUTFILE
++
++echo "Trailing null character test"
++printf "key = value\n\0" > $TEMPCONF
++xpass $BOOTCONF -a $TEMPCONF $INITRD
++$BOOTCONF $INITRD > $OUTFILE
++xpass grep -q "value" $OUTFILE
++
+ echo "=== expected failure cases ==="
+ for i in samples/bad-* ; do
+   xfail $BOOTCONF -a $i $INITRD
+-- 
+2.47.3
+
