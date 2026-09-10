@@ -10,7 +10,7 @@
     - no role, maintainer: 21 commits
     - maintainer, nobody: 43 commits
     - maintainer, no role : 12 commits
-- mm-new: 5 total, 1 (1) series, 4 non-series commits
+- mm-new: 5 total, 1 (5) series, 0 non-series commits
   - author/reviewer role stat
     - maintainer, nobody: 5 commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits

@@ -1,0 +1,57 @@
+From: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
+Date: Thu, 10 Sep 2026 09:45:45 +0900
+Subject: [PATCH] tools/bootconfig: fix integer overflow in size check
+
+Sashiko reported that on 32-bit systems, if an attacker crafts size in the
+bootconfig footer such that adding BOOTCONFIG_FOOTER_SIZE wraps around
+(for instance, if size is 0xFFFFFFFF), the size check in
+load_xbc_from_initrd() can be bypassed:
+
+    if (stat.st_size < size + BOOTCONFIG_FOOTER_SIZE) {
+        pr_err("bootconfig size is too big\n");
+        return -E2BIG;
+    }
+
+This would lead to load_xbc_fd() being called with a negative size,
+resulting in an undersized allocation, heap overflow on read, and
+out-of-bounds write on the terminating null byte.
+
+Avoid the integer overflow by checking whether size is greater than
+stat.st_size - BOOTCONFIG_FOOTER_SIZE.  Since stat.st_size is already
+verified to be at least BOOTCONFIG_FOOTER_SIZE earlier in the function,
+this subtraction will never underflow.
+
+Also reject size > XBC_DATA_MAX upfront in load_xbc_from_initrd() to avoid
+allocating and reading oversized configurations into memory before
+xbc_init() validation.
+
+Link: https://lore.kernel.org/178900114498.187028.9558747732041210116.stgit@devnote2
+Fixes: 950313ebf79c ("tools: bootconfig: Add bootconfig command")
+Signed-off-by: Masami Hiramatsu (Google) <mhiramat@kernel.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://lore.kernel.org/all/20260909161113.16C691F00A3A@smtp.kernel.org/
+Assisted-by: Antigravity:gemini-3.8-flash
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/bootconfig/main.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/bootconfig/main.c b/tools/bootconfig/main.c
+index 7dc9fff9b6370..bf6a4e2163154 100644
+--- a/tools/bootconfig/main.c
++++ b/tools/bootconfig/main.c
+@@ -218,7 +218,8 @@ static int load_xbc_from_initrd(int fd, char **buf)
+ 	csum = le32toh(csum);
+ 
+ 	/* Wrong size error  */
+-	if (stat.st_size < size + BOOTCONFIG_FOOTER_SIZE) {
++	if (size > XBC_DATA_MAX ||
++	    size > stat.st_size - BOOTCONFIG_FOOTER_SIZE) {
+ 		pr_err("bootconfig size is too big\n");
+ 		return -E2BIG;
+ 	}
+-- 
+2.47.3
+

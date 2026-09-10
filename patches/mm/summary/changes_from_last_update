@@ -7,56 +7,14 @@
     - maintainer, nobody: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 72 -> 76 commits
-  - series: 12 (71) -> 13 (74)
-    - no role, maintainer: 17 -> 21 commits
+- mm-unstable: 76 -> 76 commits (no change)
+  - series: 13 (74) -> 13 (74) (no change)
+    - no role, maintainer: 21 -> 21 commits (no change)
     - maintainer, nobody: 43 -> 43 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-  - changed commits
-    - ff51182eccff "Docs/mm/damon/design: fix broken :ref: usage and a typo"
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260908135257.97523-1-sj@kernel.org
-    - series "mm/damon: support access monitoring of hugetlb-backed memory", v3. (3)
-      - 25826eb0e712 "mm/damon: move damon_hugetlb_mkold() from vaddr to ops-common (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260908135156.97481-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260902025700.17975-2-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-2-sj@kernel.org
-      - d38e84bc83cb "mm/damon/ops-common: handle hugetlb folios in folio mkold/young rmap walkers (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260902025700.17975-3-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-3-sj@kernel.org
-      - c4668ab68384 "mm/damon/paddr: support hugetlb folios in access monitoring (2/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260902025700.17975-4-kiyer@crusoe.ai
-        - Link: https://lore.kernel.org/20260908135156.97481-4-sj@kernel.org
-- mm-new: 4 -> 5 commits
-  - series: 1 (3) -> 1 (1)
-    - no role, maintainer: 4 -> 0 commits
-    - maintainer, nobody: 0 -> 5 commits
-  - new commits
-    - series "mm/damon/vaddr: support {prep,apply}_probes". (None)
-      - 0b4a1d4d16d8 "mm/damon/vaddr: support prep_probes (None/None)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260909140408.104699-2-sj@kernel.org
-        - Link: https://github.com/sjp38/masim [1]
-        - Link: https://github.com/damonitor/damo [2]
-    - 509c562b518c "mm/damon/paddr: move probe filter handling to ops-common"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260909140408.104699-3-sj@kernel.org
-    - 1c69a8e27327 "mm/damon/vaddr: support apply_probe"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260909140408.104699-4-sj@kernel.org
-    - 76838427c98f "mm/damon/vaddr: extend apply_probes() for hugetlb"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260909140408.104699-5-sj@kernel.org
-    - 92fa3fd28752 "mm/damon/vaddr: support pgidle_unset probe filter type"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260909140408.104699-6-sj@kernel.org
+- mm-new: 5 -> 5 commits (no change)
+  - series: 1 (1) -> 1 (5)
+    - maintainer, nobody: 5 -> 5 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
