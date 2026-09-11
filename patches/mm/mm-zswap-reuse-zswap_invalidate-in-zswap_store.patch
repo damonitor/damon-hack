@@ -1,0 +1,50 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Thu, 10 Sep 2026 20:35:44 +0800
+Subject: [PATCH] mm: zswap: reuse zswap_invalidate() in zswap_store()
+
+Reuse zswap_invalidate() in zswap_store() check_old path.  Its
+zswap_never_enabled() and xa_empty() guards avoid redundant xarray lookups
+and deduplicate the per-slot free logic.
+
+Link: https://lore.kernel.org/20260910123544.818146-4-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zswap.c | 15 ++-------------
+ 1 file changed, 2 insertions(+), 13 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index c92a497b3c0a7..03f986882d06e 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -1543,19 +1543,8 @@ bool zswap_store(struct folio *folio)
+ 	 * offsets corresponding to each page of the folio. Otherwise,
+ 	 * writeback could overwrite the new data in the swapfile.
+ 	 */
+-	if (!ret) {
+-		unsigned type = swp_type(swp);
+-		pgoff_t offset = swp_offset(swp);
+-		struct zswap_entry *entry;
+-		struct xarray *tree;
+-
+-		for (index = 0; index < nr_pages; ++index) {
+-			tree = swap_zswap_tree(swp_entry(type, offset + index));
+-			entry = xa_erase(tree, offset + index);
+-			if (entry)
+-				zswap_entry_free(entry);
+-		}
+-	}
++	if (!ret)
++		zswap_invalidate(swp_type(swp), swp_offset(swp), nr_pages);
+ 
+ 	return ret;
+ }
+-- 
+2.47.3
+

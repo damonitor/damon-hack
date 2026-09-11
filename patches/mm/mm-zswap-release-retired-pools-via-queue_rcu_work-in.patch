@@ -1,0 +1,128 @@
+From: Jianyue Wu <wujianyue000@gmail.com>
+Date: Sun, 6 Sep 2026 15:47:17 +0800
+Subject: [PATCH] mm/zswap: release retired pools via queue_rcu_work() instead
+ of synchronize_rcu()
+
+Patch series "mm/zswap: shrink zswap_entry via a pool id", v6.
+
+Every stored page has a struct zswap_entry, so its size is pure per-page
+overhead.  On 64-bit it is currently 56 bytes, of which 8 bytes are a
+pointer to the owning zswap_pool.
+
+Only a handful of pools are ever live: a new pool is created only when the
+compressor is (re)set, and pools are reused across compressor switches.  A
+list cannot look a pool up by id.  An allocating xarray can, which lets
+each zswap_entry store a u8 instead of a pointer.
+
+This series:
+
+  1. Releases retired pools with queue_rcu_work() instead of a worker
+     calling synchronize_rcu(), so the release worker no longer blocks
+     on an RCU grace period.
+  2. Replaces the zswap_pools list with an allocating xarray
+     (XA_FLAGS_ALLOC1 | XA_FLAGS_LOCK_BH) and a separate RCU-protected
+     current-pool pointer, giving each pool a stable small id.  Ids
+     start at 1.  The reserved id 0 is never allocated, so looking it
+     up resolves to NULL.  The table grows as needed up to 255 live
+     pools (u8 pool_idx), not a fixed slot array.
+  3. Stores that u8 pool id in each zswap_entry instead of the pool
+     pointer.  The u8 fits in padding after the bool referenced field.
+
+On 64-bit that shrinks the entry from 56 to 48 bytes, which fits 73 to 85
+objects in a 4K slab (~2MiB of metadata saved per 1GiB of data held in
+zswap).
+
+The 255-id cap counts every pool still in the xarray.  Switching
+compressor kills the old pool, but that pool stays in the table until its
+last entry drops the pool's ref, so a draining pool still occupies an id.
+The id is reused only after xa_erase.  Switching back to a compressor
+whose pool is still in the table resurrects it instead of allocating a new
+id.  If every id is occupied, creating a pool for another compressor fails
+and the switch is rejected.
+
+Pool table locking: xa_for_each() walks and the current-pool pointer use
+an explicit rcu_read_lock(), because xa_for_each()'s own RCU does not span
+the loop body.  xa_load() takes RCU around the lookup itself, so
+zswap_entry_pool() needs no extra rcu_read_lock().  The returned pool
+stays valid because a live entry pins it via percpu_ref, so the id cannot
+be reused under it.  xa_lock is taken only in xa_alloc_bh() and
+xa_erase_bh().
+
+Benchmark (x86_64, compressor=lzo, MADV_PAGEOUT store + fault-in load):
+
+  - e2e store+load median latency: no measurable regression vs baseline
+    at matched stored_delta
+
+Each store, free, and decompress looks up the pool with xa_load() instead
+of following a pointer.  With only a handful of live pools the xarray walk
+is short.
+
+
+This patch (of 3):
+
+When a pool's last reference is dropped, __zswap_pool_empty() removes it
+from the pool list and schedules __zswap_pool_release(), which calls
+synchronize_rcu() to wait for readers before tearing the pool down.
+
+synchronize_rcu() is a synchronous, potentially long wait.  Replace it
+with queue_rcu_work(): __zswap_pool_empty() hands the pool to
+queue_rcu_work(), which waits for a grace period asynchronously and then
+runs __zswap_pool_release() from a worker for the sleepable teardown
+(__zswap_pool_empty() can run in atomic context and must not block).  The
+grace-period guarantee is unchanged; the retirement path just no longer
+blocks on it.
+
+Link: https://lore.kernel.org/20260906-shrink_zswap_entry_v6-v6-0-ac4cf61565fb@gmail.com
+Link: https://lore.kernel.org/20260906-shrink_zswap_entry_v6-v6-1-ac4cf61565fb@gmail.com
+Signed-off-by: Jianyue Wu <wujianyue000@gmail.com>
+Suggested-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/zswap.c | 12 +++++-------
+ 1 file changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index c8c04ee29a0f4..90b66e23db3ee 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -155,7 +155,7 @@ struct zswap_pool {
+ 	struct crypto_acomp_ctx __percpu *acomp_ctx;
+ 	struct percpu_ref ref;
+ 	struct list_head list;
+-	struct work_struct release_work;
++	struct rcu_work release_rwork;
+ 	struct hlist_node node;
+ 	char tfm_name[CRYPTO_MAX_ALG_NAME];
+ };
+@@ -386,10 +386,8 @@ static void zswap_pool_destroy(struct zswap_pool *pool)
+ 
+ static void __zswap_pool_release(struct work_struct *work)
+ {
+-	struct zswap_pool *pool = container_of(work, typeof(*pool),
+-						release_work);
+-
+-	synchronize_rcu();
++	struct zswap_pool *pool = container_of(to_rcu_work(work),
++					       typeof(*pool), release_rwork);
+ 
+ 	/* nobody should have been able to get a ref... */
+ 	WARN_ON(!percpu_ref_is_zero(&pool->ref));
+@@ -413,8 +411,8 @@ static void __zswap_pool_empty(struct percpu_ref *ref)
+ 
+ 	list_del_rcu(&pool->list);
+ 
+-	INIT_WORK(&pool->release_work, __zswap_pool_release);
+-	schedule_work(&pool->release_work);
++	INIT_RCU_WORK(&pool->release_rwork, __zswap_pool_release);
++	queue_rcu_work(system_percpu_wq, &pool->release_rwork);
+ 
+ 	spin_unlock_bh(&zswap_pools_lock);
+ }
+-- 
+2.47.3
+

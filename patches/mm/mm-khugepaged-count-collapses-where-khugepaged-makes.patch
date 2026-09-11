@@ -1,0 +1,69 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Thu, 10 Sep 2026 13:02:22 +0100
+Subject: [PATCH] mm/khugepaged: count collapses where khugepaged makes them
+
+collapse_single_pmd() bumps khugepaged_pages_collapsed for its caller, and
+tests cc->is_khugepaged to know whether it should: the counter belongs to
+the daemon, and MADV_COLLAPSE must not touch it.
+
+The daemon sees every result of every collapse it asks for, so it can keep
+its own counter without the shared path testing who called.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260910120238.2529819-3-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Jann Horn <jannh@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/khugepaged.c | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 049c7dd338209..645af71be7332 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -2808,10 +2808,8 @@ static enum scan_result collapse_single_pmd(unsigned long addr,
+ 
+ 	mmap_assert_locked(mm);
+ 
+-	if (vma_is_anonymous(vma)) {
+-		result = collapse_scan_pmd(mm, vma, addr, lock_dropped, cc);
+-		goto end;
+-	}
++	if (vma_is_anonymous(vma))
++		return collapse_scan_pmd(mm, vma, addr, lock_dropped, cc);
+ 
+ 	file = get_file(vma->vm_file);
+ 	pgoff = linear_page_index(vma, addr);
+@@ -2847,9 +2845,6 @@ static enum scan_result collapse_single_pmd(unsigned long addr,
+ 			result = SCAN_SUCCEED;
+ 		mmap_read_unlock(mm);
+ 	}
+-end:
+-	if (cc->is_khugepaged && result == SCAN_SUCCEED)
+-		++khugepaged_pages_collapsed;
+ 	return result;
+ }
+ 
+@@ -2926,6 +2921,8 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+ 
+ 			*result = collapse_single_pmd(khugepaged_scan.address,
+ 						      vma, &lock_dropped, cc);
++			if (*result == SCAN_SUCCEED)
++				khugepaged_pages_collapsed++;
+ 			/* move to next address */
+ 			khugepaged_scan.address += HPAGE_PMD_SIZE;
+ 			if (lock_dropped)
+-- 
+2.47.3
+

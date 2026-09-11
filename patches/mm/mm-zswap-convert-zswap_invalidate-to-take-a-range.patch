@@ -1,0 +1,133 @@
+From: Kefeng Wang <wangkefeng.wang@huawei.com>
+Date: Thu, 10 Sep 2026 20:35:42 +0800
+Subject: [PATCH] mm: zswap: convert zswap_invalidate() to take a range
+
+Patch series "mm: zswap: optimize zswap invalidate and store", v3.
+
+This series range-ifies zswap_invalidate() to skip xarray lookups when
+zswap is unused, and reuses it in zswap_store() to eliminate redundant
+per-slot lookups and open-coded logic.
+
+
+This patch (of 3):
+
+zswap_invalidate() takes a swp_entry_t only to unpack it right back into
+type and offset, and both callers already have those values in hand.  Pass
+type, offset, and nr_entries directly so swap_range_free() can invalidate
+an entire range in one call instead of looping in the caller.
+
+Link: https://lore.kernel.org/20260910123544.818146-1-wangkefeng.wang@huawei.com
+Link: https://lore.kernel.org/20260910123544.818146-2-wangkefeng.wang@huawei.com
+Signed-off-by: Kefeng Wang <wangkefeng.wang@huawei.com>
+Suggested-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosryahmed@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/zswap.h |  8 ++++++--
+ mm/swapfile.c         |  4 +---
+ mm/zswap.c            | 29 +++++++++++++++++++----------
+ 3 files changed, 26 insertions(+), 15 deletions(-)
+
+diff --git a/include/linux/zswap.h b/include/linux/zswap.h
+index 30c193a1207e1..df6cafbe95dc0 100644
+--- a/include/linux/zswap.h
++++ b/include/linux/zswap.h
+@@ -27,7 +27,7 @@ struct zswap_lruvec_state {
+ unsigned long zswap_total_pages(void);
+ bool zswap_store(struct folio *folio);
+ int zswap_load(struct folio *folio);
+-void zswap_invalidate(swp_entry_t swp);
++void zswap_invalidate(int type, pgoff_t offset, unsigned long nr_entries);
+ int zswap_swapon(int type, unsigned long nr_pages);
+ void zswap_swapoff(int type);
+ void zswap_memcg_offline_cleanup(struct mem_cgroup *memcg);
+@@ -49,7 +49,11 @@ static inline int zswap_load(struct folio *folio)
+ 	return -ENOENT;
+ }
+ 
+-static inline void zswap_invalidate(swp_entry_t swp) {}
++static inline void zswap_invalidate(int type, pgoff_t offset,
++		unsigned long nr_entries)
++{
++}
++
+ static inline int zswap_swapon(int type, unsigned long nr_pages)
+ {
+ 	return 0;
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index a8118f095f4d9..2c263563b70eb 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -1316,10 +1316,8 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
+ {
+ 	unsigned long end = offset + nr_entries - 1;
+ 	void (*swap_slot_free_notify)(struct block_device *, unsigned long);
+-	unsigned int i;
+ 
+-	for (i = 0; i < nr_entries; i++)
+-		zswap_invalidate(swp_entry(si->type, offset + i));
++	zswap_invalidate(si->type, offset, nr_entries);
+ 
+ 	if (si->flags & SWP_BLKDEV)
+ 		swap_slot_free_notify =
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 15cea0e8ce365..4b8aa503afd1f 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -228,10 +228,15 @@ static bool zswap_has_pool;
+ /* One swap address space for each 64M swap space */
+ #define ZSWAP_ADDRESS_SPACE_SHIFT 14
+ #define ZSWAP_ADDRESS_SPACE_PAGES (1 << ZSWAP_ADDRESS_SPACE_SHIFT)
++
++static inline struct xarray *zswap_tree(int type, pgoff_t offset)
++{
++	return &zswap_trees[type][offset >> ZSWAP_ADDRESS_SPACE_SHIFT];
++}
++
+ static inline struct xarray *swap_zswap_tree(swp_entry_t swp)
+ {
+-	return &zswap_trees[swp_type(swp)][swp_offset(swp)
+-		>> ZSWAP_ADDRESS_SPACE_SHIFT];
++	return zswap_tree(swp_type(swp), swp_offset(swp));
+ }
+ 
+ #define zswap_pool_debug(msg, p)			\
+@@ -1656,18 +1661,22 @@ int zswap_load(struct folio *folio)
+ 	return 0;
+ }
+ 
+-void zswap_invalidate(swp_entry_t swp)
++void zswap_invalidate(int type, pgoff_t offset, unsigned long nr_entries)
+ {
+-	pgoff_t offset = swp_offset(swp);
+-	struct xarray *tree = swap_zswap_tree(swp);
+ 	struct zswap_entry *entry;
++	struct xarray *tree;
++	unsigned long i;
+ 
+-	if (xa_empty(tree))
+-		return;
++	for (i = 0; i < nr_entries; i++) {
++		tree = zswap_tree(type, offset + i);
+ 
+-	entry = xa_erase(tree, offset);
+-	if (entry)
+-		zswap_entry_free(entry);
++		if (xa_empty(tree))
++			continue;
++
++		entry = xa_erase(tree, offset + i);
++		if (entry)
++			zswap_entry_free(entry);
++	}
+ }
+ 
+ int zswap_swapon(int type, unsigned long nr_pages)
+-- 
+2.47.3
+
