@@ -1,0 +1,57 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Fri, 11 Sep 2026 17:13:54 -0700
+Subject: [RFC PATCH 1/8] mm/damon/sysfs-schemes: read sysfs_filter->addr_range only once
+Cc: <stable@vger.kernel.org>
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260912191807.138502-2-sj@kernel.org>
+
+DAMON sysfs interface reads the user-provided address range arguments
+for addr type DAMOS filter twice.  Once for validation, and once again
+for assignments to the variable that will be passed to the core
+layer. If the user updates the argument in parallel, an invalid address
+range could be passed to the core layer.  Avoid it by doing the
+assignments first, and then validating the assigned variables before
+passing those to the core layer.
+
+User impact of the bug should be trivial.  From the core layer's
+perspective, the invalid address range is not really invalid.  It just
+works as having a weird address range.  No critical issues such as a
+crash or a leak could happen.  And sane users ain't do such parallel
+arguments update anyway.  If they do, such racy behavior is arguably
+somewhat expected and deserved.  That said, there is no reason to keep
+such races.
+
+Fixes: 2f1abcfccd86 ("mm/damon/sysfs-schemes: support address range type DAMOS filter")
+Cc: <stable@vger.kernel.org> # 6.6.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 3de4d804e049f..3c1c1cb387fec 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -2831,12 +2831,12 @@ static int damon_sysfs_add_scheme_filters(struct damos *scheme,
+ 				return err;
+ 			}
+ 		} else if (filter->type == DAMOS_FILTER_TYPE_ADDR) {
+-			if (sysfs_filter->addr_range.end <
+-					sysfs_filter->addr_range.start) {
++			filter->addr_range = sysfs_filter->addr_range;
++			if (filter->addr_range.end <
++					filter->addr_range.start) {
+ 				damos_destroy_filter(filter);
+ 				return -EINVAL;
+ 			}
+-			filter->addr_range = sysfs_filter->addr_range;
+ 		} else if (filter->type == DAMOS_FILTER_TYPE_TARGET) {
+ 			filter->target_idx = sysfs_filter->target_idx;
+ 		} else if (filter->type == DAMOS_FILTER_TYPE_HUGEPAGE_SIZE) {
+-- 
+2.47.3

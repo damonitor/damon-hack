@@ -1,0 +1,75 @@
+From hackermail Thu Jan  1 00:00:00 1970
+From: SJ Park <sj@kernel.org>
+Date: Thu, 10 Sep 2026 18:00:46 -0700
+Subject: [RFC PATCH 3/8] mm/damon/core: return an error from damos_commit_filter_arg()
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: damon@lists.linux.dev
+Cc: linux-kernel@vger.kernel.org
+Cc: linux-mm@kvack.org
+Message-Id: <20260912191807.138502-4-sj@kernel.org>
+
+damos_commit_filter_arg() is supposed to always succeed.  It may not in
+future, for example, if the given filter is invalid.  Prepare the case
+by modifying its signature to return an error when it failed.  Also pipe
+the return value to its callers and let them handle the error.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0c98f7e267d07..3ad1fb2f21f3f 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1317,7 +1317,7 @@ static struct damos_filter *damos_nth_ops_filter(int n, struct damos *s)
+ 	return NULL;
+ }
+ 
+-static void damos_commit_filter_arg(
++static int damos_commit_filter_arg(
+ 		struct damos_filter *dst, struct damos_filter *src)
+ {
+ 	switch (dst->type) {
+@@ -1340,28 +1340,32 @@ static void damos_commit_filter_arg(
+ 	default:
+ 		break;
+ 	}
++	return 0;
+ }
+ 
+-static void damos_commit_filter(
++static int damos_commit_filter(
+ 		struct damos_filter *dst, struct damos_filter *src)
+ {
+ 	dst->type = src->type;
+ 	dst->matching = src->matching;
+ 	dst->allow = src->allow;
+-	damos_commit_filter_arg(dst, src);
++	return damos_commit_filter_arg(dst, src);
+ }
+ 
+ static int damos_commit_core_filters(struct damos *dst, struct damos *src)
+ {
+ 	struct damos_filter *dst_filter, *next, *src_filter, *new_filter;
+-	int i = 0, j = 0;
++	int i = 0, j = 0, err;
+ 
+ 	damos_for_each_core_filter_safe(dst_filter, next, dst) {
+ 		src_filter = damos_nth_core_filter(i++, src);
+-		if (src_filter)
+-			damos_commit_filter(dst_filter, src_filter);
+-		else
++		if (src_filter) {
++			err = damos_commit_filter(dst_filter, src_filter);
++			if (err)
++				return err;
++		} else {
+ 			damos_destroy_filter(dst_filter);
++		}
+ 	}
+ 
+ 	damos_for_each_core_filter_safe(src_filter, next, src) {
+-- 
+2.47.3
