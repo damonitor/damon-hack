@@ -1,0 +1,69 @@
+From: Jaewook You <jaewook376@gmail.com>
+Date: Sat, 12 Sep 2026 03:24:08 +0900
+Subject: [PATCH] mm/hugetlb: preserve mremap address delta when skipping page
+ tables
+
+In move_hugetlb_page_tables(), optimize mremap() by advancing to the end
+of the page table when the source page table does not exist, either
+initially or after unsharing a PMD table.
+
+However, the code advances both the source and destination addresses to
+the end of their respective page tables, which is wrong.  The destination
+address must be advanced only by the same amount as the source address.
+
+If the source and destination offsets within their page tables differ, the
+destination address can be advanced too far, causing follow-up issues.
+Fix this by advancing the destination address by the source advance
+distance.
+
+With a reproducer, we were able to trigger a kernel panic on x86-64.  With
+this fix in place, we can no longer reproduce the issue.
+
+Link: https://lore.kernel.org/20260911182408.75821-1-jaewook376@gmail.com
+Fixes: e95a9851787b ("hugetlb: skip to end of PT page mapping when pte not present")
+Fixes: 4ddb4d91b82f ("hugetlb: do not update address in huge_pmd_unshare")
+Signed-off-by: Jaewook You <jaewook376@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Assisted-by: LLM
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johan Hovold <johan@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: <stable@vger.kernel.org>
+---
+ mm/hugetlb.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 7af55e1544e9f..d3a0650ff6905 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5226,18 +5226,21 @@ int move_hugetlb_page_tables(struct vm_area_struct *vma,
+ 	hugetlb_vma_lock_write(vma);
+ 	i_mmap_lock_write(mapping);
+ 	for (; old_addr < old_end; old_addr += sz, new_addr += sz) {
++		const unsigned long remaining_size =
++			(old_addr | last_addr_mask) - old_addr;
++
+ 		src_pte = hugetlb_walk(vma, old_addr, sz);
+ 		if (!src_pte) {
+-			old_addr |= last_addr_mask;
+-			new_addr |= last_addr_mask;
++			old_addr += remaining_size;
++			new_addr += remaining_size;
+ 			continue;
+ 		}
+ 		if (huge_pte_none(huge_ptep_get(mm, old_addr, src_pte)))
+ 			continue;
+ 
+ 		if (huge_pmd_unshare(&tlb, vma, old_addr, src_pte)) {
+-			old_addr |= last_addr_mask;
+-			new_addr |= last_addr_mask;
++			old_addr += remaining_size;
++			new_addr += remaining_size;
+ 			continue;
+ 		}
+ 
+-- 
+2.47.3
+

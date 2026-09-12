@@ -1,0 +1,171 @@
+From: Gregory Price <gourry@gourry.net>
+Date: Fri, 11 Sep 2026 23:04:23 -0400
+Subject: [PATCH] mm: refactor find_next_best_node to find_next_best_node_in
+
+Patch series "mm: refactor zonelist constructors and iterators", v2.
+
+find_next_best_node() picks the next-closest node when building a fallback
+list, and hardcodes N_MEMORY as the set it picks from.
+
+Refactor it into find_next_best_node_in(), which takes the candidate set
+explicitly.
+
+This makes the existing behaviour explicit at both mm/memory-tiers.c call
+sites - they select demotion targets in fallback order from N_MEMORY - and
+lets callers narrow that set.
+
+Then extract the per-node construction loop out of build_zonelists() into
+build_node_zonelist(),i parameterised on the candidate nodemask and
+destination zonelist index.
+
+Together these allow a zonelist to be built over a candidate set other
+than N_MEMORY, into a zonelist other than FALLBACK, and iterated in
+fallback order over a caller-defined subset.
+
+These are prerequisites for generating a private node zonelist (nodes
+unreachable by default), but are otherwise general improvements to the
+existing interfaces so I'm proposing them separately.
+
+No functional change intended - purely refactor commits.
+
+
+This patch (of 2):
+
+find_next_best_node() picks the next-closest node for a fallback list from
+the full N_MEMORY set.  Refactor it into find_next_best_node_in(), which
+takes an explicit candidates nodemask.
+
+This enables building fallback lists with non-N_MEMORY candidates.
+
+No functional change: every caller still selects from N_MEMORY.
+
+Link: https://lore.kernel.org/20260912030424.2889731-2-gourry@gourry.net
+Signed-off-by: Gregory Price <gourry@gourry.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Acked-by: Balbir Singh <balbirs@nvidia.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+---
+ mm/internal.h     |  6 ++++--
+ mm/memory-tiers.c |  7 ++++---
+ mm/page_alloc.c   | 13 ++++++++-----
+ 3 files changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 0dca33db068f6..05179c4b2090e 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1124,7 +1124,8 @@ extern int node_reclaim_mode;
+ 
+ extern unsigned long node_reclaim(struct pglist_data *pgdat,
+ 				  gfp_t gfp_mask, unsigned int order);
+-extern int find_next_best_node(int node, nodemask_t *used_node_mask);
++int find_next_best_node_in(int node, nodemask_t *used_node_mask,
++		const nodemask_t *candidates);
+ #else
+ #define node_reclaim_mode 0
+ 
+@@ -1133,7 +1134,8 @@ static inline unsigned long node_reclaim(struct pglist_data *pgdat,
+ {
+ 	return 0;
+ }
+-static inline int find_next_best_node(int node, nodemask_t *used_node_mask)
++static inline int find_next_best_node_in(int node, nodemask_t *used_node_mask,
++		const nodemask_t *candidates)
+ {
+ 	return NUMA_NO_NODE;
+ }
+diff --git a/mm/memory-tiers.c b/mm/memory-tiers.c
+index 54851d8a195b0..25e121851b586 100644
+--- a/mm/memory-tiers.c
++++ b/mm/memory-tiers.c
+@@ -370,7 +370,7 @@ int next_demotion_node(int node, const nodemask_t *allowed_mask)
+ 	 * closest demotion target.
+ 	 */
+ 	nodes_complement(mask, *allowed_mask);
+-	return find_next_best_node(node, &mask);
++	return find_next_best_node_in(node, &mask, &node_states[N_MEMORY]);
+ }
+ 
+ static void disable_all_demotion_targets(void)
+@@ -450,7 +450,7 @@ static void establish_demotion_targets(void)
+ 		memtier = list_next_entry(memtier, list);
+ 		tier_nodes = get_memtier_nodemask(memtier);
+ 		/*
+-		 * find_next_best_node, use 'used' nodemask as a skip list.
++		 * find_next_best_node_in, use 'used' nodemask as a skip list.
+ 		 * Add all memory nodes except the selected memory tier
+ 		 * nodelist to skip list so that we find the best node from the
+ 		 * memtier nodelist.
+@@ -463,7 +463,8 @@ static void establish_demotion_targets(void)
+ 		 * in the preferred mask when allocating pages during demotion.
+ 		 */
+ 		do {
+-			target = find_next_best_node(node, &tier_nodes);
++			target = find_next_best_node_in(node, &tier_nodes,
++							&node_states[N_MEMORY]);
+ 			if (target == NUMA_NO_NODE)
+ 				break;
+ 
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 267e3a90131d7..408150ab3969f 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5793,9 +5793,10 @@ static int numa_zonelist_order_handler(const struct ctl_table *table, int write,
+ static int node_load[MAX_NUMNODES];
+ 
+ /**
+- * find_next_best_node - find the next node that should appear in a given node's fallback list
++ * find_next_best_node_in - find the next node that should appear in a given node's fallback list
+  * @node: node whose fallback list we're appending
+  * @used_node_mask: nodemask_t of already used nodes
++ * @candidates: nodemask_t of nodes eligible for selection
+  *
+  * We use a number of factors to determine which is the next node that should
+  * appear on a given node's fallback list.  The node should not have appeared
+@@ -5807,7 +5808,8 @@ static int node_load[MAX_NUMNODES];
+  *
+  * Return: node id of the found node or %NUMA_NO_NODE if no node is found.
+  */
+-int find_next_best_node(int node, nodemask_t *used_node_mask)
++int find_next_best_node_in(int node, nodemask_t *used_node_mask,
++			   const nodemask_t *candidates)
+ {
+ 	int n, val;
+ 	int min_val = INT_MAX;
+@@ -5817,12 +5819,12 @@ int find_next_best_node(int node, nodemask_t *used_node_mask)
+ 	 * Use the local node if we haven't already, but for memoryless local
+ 	 * node, we should skip it and fall back to other nodes.
+ 	 */
+-	if (!node_isset(node, *used_node_mask) && node_state(node, N_MEMORY)) {
++	if (!node_isset(node, *used_node_mask) && node_isset(node, *candidates)) {
+ 		node_set(node, *used_node_mask);
+ 		return node;
+ 	}
+ 
+-	for_each_node_state(n, N_MEMORY) {
++	for_each_node_mask(n, *candidates) {
+ 
+ 		/* Don't want a node to appear more than once */
+ 		if (node_isset(n, *used_node_mask))
+@@ -5907,7 +5909,8 @@ static void build_zonelists(pg_data_t *pgdat)
+ 	prev_node = local_node;
+ 
+ 	memset(node_order, 0, sizeof(node_order));
+-	while ((node = find_next_best_node(local_node, &used_mask)) >= 0) {
++	while ((node = find_next_best_node_in(local_node, &used_mask,
++					      &node_states[N_MEMORY])) >= 0) {
+ 		/*
+ 		 * We don't want to pressure a particular node.
+ 		 * So adding penalty to the first node in same
+-- 
+2.47.3
+

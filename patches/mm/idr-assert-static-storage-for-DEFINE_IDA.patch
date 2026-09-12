@@ -1,0 +1,149 @@
+From: Yury Norov <ynorov@nvidia.com>
+Date: Fri, 11 Sep 2026 18:14:42 -0400
+Subject: [PATCH] idr: assert static storage for DEFINE_IDA()
+
+DEFINE_IDA() uses IDA_INIT(), which initializes the embedded XArray lock
+with a static spinlock initializer.  For an automatic local IDA, lockdep
+cannot use the lock address as a persistent class key and reports "INFO:
+trying to register non-static key" before disabling itself.
+
+Apply ASSERT_STATIC_STORAGE() to DEFINE_IDA() so that this misuse is
+rejected at compile time.  For example:
+
+  void example(void)
+  {
+          DEFINE_IDA(ida);
+          ida_destroy(&ida);
+  }
+
+GCC reports:
+
+  error: initializer element is not constant
+    name##_storage_check = &(name)
+                           ^
+  note: in expansion of macro 'ASSERT_STATIC_STORAGE'
+    ASSERT_STATIC_STORAGE(name)
+  note: in expansion of macro 'DEFINE_IDA'
+    DEFINE_IDA(ida);
+
+File-scope definitions and static DEFINE_IDA() within a function remain
+valid.  Automatic local IDAs must instead be initialized with ida_init().
+Direct uses of IDA_INIT() are not covered by this declaration check.
+
+Convert the five automatic local IDAs in the userspace radix-tree tests to
+ida_init() so they satisfy the new requirement.
+
+Validated file-scope and static local definitions with a kernel object
+build, and confirmed that an automatic local definition fails to compile.
+
+Link: https://lore.kernel.org/20260911221444.1523311-3-ynorov@nvidia.com
+Signed-off-by: Yury Norov <ynorov@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: Christopher Li <sparse@chrisli.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ include/linux/idr.h                 |  5 ++++-
+ tools/testing/radix-tree/idr-test.c | 20 +++++++++++++++-----
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/include/linux/idr.h b/include/linux/idr.h
+index 789e23e674441..e2a4b6298511c 100644
+--- a/include/linux/idr.h
++++ b/include/linux/idr.h
+@@ -16,6 +16,7 @@
+ #include <linux/gfp.h>
+ #include <linux/percpu.h>
+ #include <linux/cleanup.h>
++#include <linux/compiler.h>
+ 
+ struct idr {
+ 	struct radix_tree_root	idr_rt;
+@@ -269,7 +270,9 @@ struct ida {
+ #define IDA_INIT(name)	{						\
+ 	.xa = XARRAY_INIT(name, IDA_INIT_FLAGS)				\
+ }
+-#define DEFINE_IDA(name)	struct ida name = IDA_INIT(name)
++#define DEFINE_IDA(name)							\
++	struct ida name = IDA_INIT(name);					\
++	ASSERT_STATIC_STORAGE(name)
+ 
+ int ida_alloc_range(struct ida *, unsigned int min, unsigned int max, gfp_t);
+ void ida_free(struct ida *, unsigned int id);
+diff --git a/tools/testing/radix-tree/idr-test.c b/tools/testing/radix-tree/idr-test.c
+index 945144e985072..6fcba5b5870b4 100644
+--- a/tools/testing/radix-tree/idr-test.c
++++ b/tools/testing/radix-tree/idr-test.c
+@@ -460,9 +460,11 @@ void ida_dump(struct ida *);
+  */
+ void ida_check_nomem(void)
+ {
+-	DEFINE_IDA(ida);
++	struct ida ida;
+ 	int id;
+ 
++	ida_init(&ida);
++
+ 	id = ida_alloc_min(&ida, 256, GFP_NOWAIT);
+ 	IDA_BUG_ON(&ida, id != -ENOMEM);
+ 	id = ida_alloc_min(&ida, 1UL << 30, GFP_NOWAIT);
+@@ -475,9 +477,11 @@ void ida_check_nomem(void)
+  */
+ void ida_check_conv_user(void)
+ {
+-	DEFINE_IDA(ida);
++	struct ida ida;
+ 	unsigned long i;
+ 
++	ida_init(&ida);
++
+ 	for (i = 0; i < 1000000; i++) {
+ 		int id = ida_alloc(&ida, GFP_NOWAIT);
+ 		if (id == -ENOMEM) {
+@@ -496,11 +500,13 @@ void ida_check_conv_user(void)
+ 
+ void ida_check_random(void)
+ {
+-	DEFINE_IDA(ida);
++	struct ida ida;
+ 	DECLARE_BITMAP(bitmap, 2048);
+ 	unsigned int i;
+ 	time_t s = time(NULL);
+ 
++	ida_init(&ida);
++
+  repeat:
+ 	memset(bitmap, 0, sizeof(bitmap));
+ 	for (i = 0; i < 100000; i++) {
+@@ -522,9 +528,11 @@ void ida_check_random(void)
+ 
+ void ida_alloc_free_test(void)
+ {
+-	DEFINE_IDA(ida);
++	struct ida ida;
+ 	unsigned long i;
+ 
++	ida_init(&ida);
++
+ 	for (i = 0; i < 10000; i++)
+ 		assert(ida_alloc_max(&ida, 20000, GFP_KERNEL) == i);
+ 	assert(ida_alloc_range(&ida, 5, 30, GFP_KERNEL) < 0);
+@@ -576,10 +584,12 @@ static void *ida_leak_fn(void *arg)
+ 
+ void ida_thread_tests(void)
+ {
+-	DEFINE_IDA(ida);
++	struct ida ida;
+ 	pthread_t threads[20];
+ 	int i;
+ 
++	ida_init(&ida);
++
+ 	for (i = 0; i < ARRAY_SIZE(threads); i++)
+ 		if (pthread_create(&threads[i], NULL, ida_random_fn, NULL)) {
+ 			perror("creating ida thread");
+-- 
+2.47.3
+

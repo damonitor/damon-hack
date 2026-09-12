@@ -1,0 +1,136 @@
+From: Gregory Price <gourry@gourry.net>
+Date: Fri, 11 Sep 2026 23:04:24 -0400
+Subject: [PATCH] mm/page_alloc: refactor build_node_zonelist() out of
+ build_zonelists()
+
+Extract per-node fallback-list construction into build_node_zonelist().
+Build each selected node directly into the destination zonelist so no
+intermediate node_order array or node count is needed.  Print the fallback
+order as each node is added.
+
+This lets us build new zonelists from candidate nodemasks instead of just
+the default N_MEMORY node state list.
+
+No functional change: build_zonelists() builds and prints the same
+FALLBACK list over N_MEMORY with node_load updates as before.
+
+Link: https://lore.kernel.org/20260912030424.2889731-3-gourry@gourry.net
+Signed-off-by: Gregory Price <gourry@gourry.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+---
+ mm/page_alloc.c | 63 ++++++++++++++++++-------------------------------
+ 1 file changed, 23 insertions(+), 40 deletions(-)
+
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 408150ab3969f..0d405765aea1b 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -5857,31 +5857,6 @@ int find_next_best_node_in(int node, nodemask_t *used_node_mask,
+ }
+ 
+ 
+-/*
+- * Build zonelists ordered by node and zones within node.
+- * This results in maximum locality--normal zone overflows into local
+- * DMA zone, if any--but risks exhausting DMA zone.
+- */
+-static void build_zonelists_in_node_order(pg_data_t *pgdat, int *node_order,
+-		unsigned nr_nodes)
+-{
+-	struct zoneref *zonerefs;
+-	int i;
+-
+-	zonerefs = pgdat->node_zonelists[ZONELIST_FALLBACK]._zonerefs;
+-
+-	for (i = 0; i < nr_nodes; i++) {
+-		int nr_zones;
+-
+-		pg_data_t *node = NODE_DATA(node_order[i]);
+-
+-		nr_zones = build_zonerefs_node(node, zonerefs);
+-		zonerefs += nr_zones;
+-	}
+-	zonerefs->zone = NULL;
+-	zonerefs->zone_idx = 0;
+-}
+-
+ /*
+  * Build __GFP_THISNODE zonelists
+  */
+@@ -5897,20 +5872,24 @@ static void build_thisnode_zonelists(pg_data_t *pgdat)
+ 	zonerefs->zone_idx = 0;
+ }
+ 
+-static void build_zonelists(pg_data_t *pgdat)
++/*
++ * Build one zonelist ordered by node and zones within node. This results in
++ * maximum locality--normal zone overflows into local DMA zone, if any--but
++ * risks exhausting DMA zone.
++ */
++static void build_node_zonelist(pg_data_t *pgdat, const nodemask_t *candidates,
++				int zlidx)
+ {
+-	static int node_order[MAX_NUMNODES];
+-	int node, nr_nodes = 0;
++	struct zoneref *zonerefs = pgdat->node_zonelists[zlidx]._zonerefs;
+ 	nodemask_t used_mask = NODE_MASK_NONE;
+-	int local_node, prev_node;
++	int local_node = pgdat->node_id;
++	int prev_node = local_node;
++	int node;
+ 
+-	/* NUMA-aware ordering of nodes */
+-	local_node = pgdat->node_id;
+-	prev_node = local_node;
++	pr_info("Fallback order for Node %d: ", local_node);
+ 
+-	memset(node_order, 0, sizeof(node_order));
+ 	while ((node = find_next_best_node_in(local_node, &used_mask,
+-					      &node_states[N_MEMORY])) >= 0) {
++					      candidates)) >= 0) {
+ 		/*
+ 		 * We don't want to pressure a particular node.
+ 		 * So adding penalty to the first node in same
+@@ -5920,18 +5899,22 @@ static void build_zonelists(pg_data_t *pgdat)
+ 		    node_distance(local_node, prev_node))
+ 			node_load[node] += 1;
+ 
+-		node_order[nr_nodes++] = node;
++		zonerefs += build_zonerefs_node(NODE_DATA(node), zonerefs);
++		pr_cont("%d ", node);
+ 		prev_node = node;
+ 	}
+ 
+-	build_zonelists_in_node_order(pgdat, node_order, nr_nodes);
+-	build_thisnode_zonelists(pgdat);
+-	pr_info("Fallback order for Node %d: ", local_node);
+-	for (node = 0; node < nr_nodes; node++)
+-		pr_cont("%d ", node_order[node]);
++	zonerefs->zone = NULL;
++	zonerefs->zone_idx = 0;
+ 	pr_cont("\n");
+ }
+ 
++static void build_zonelists(pg_data_t *pgdat)
++{
++	build_node_zonelist(pgdat, &node_states[N_MEMORY], ZONELIST_FALLBACK);
++	build_thisnode_zonelists(pgdat);
++}
++
+ #ifdef CONFIG_HAVE_MEMORYLESS_NODES
+ /*
+  * Return node id of node used for "local" allocations.
+-- 
+2.47.3
+

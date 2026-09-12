@@ -1,0 +1,143 @@
+From: Yury Norov <ynorov@nvidia.com>
+Date: Fri, 11 Sep 2026 18:14:41 -0400
+Subject: [PATCH] compiler.h: add ASSERT_STATIC_STORAGE()
+
+Patch series "Catch automatic storage in IDA and Maple Tree definitions".
+
+A 0day report [1] from the region allocation benchmark exposed a lockdep
+initialization bug: a stack-local Maple Tree used MTREE_INIT(), whose
+embedded lock has a static initializer.  On the first allocation, lockdep
+rejected the lock address as a non-static class key and disabled locking
+validation.  The IDA benchmark had the same issue, masked because it ran
+after Maple Tree had already disabled lockdep.
+
+The fix [2] switches the test to using mt_init_flags() and ida_init().
+This series adds a compile-time check to the related DEFINE_IDA() and
+DEFINE_MTREE() declaration macros to catch the same class of mistake
+earlier.
+
+Patch 1 introduces ASSERT_STATIC_STORAGE().  It declares an unused static
+pointer initialized with the object's address, requiring that address to
+be a valid static initializer.  Patches 2 and 3 apply the helper to IDA
+and Maple Tree definitions, respectively.
+
+The helper is mirrored in the tools compiler header.  The existing
+automatic local IDAs and Maple Trees in the userspace radix-tree tests are
+converted to runtime initialization.  The interval-tree span test keeps
+its existing mt_init_flags() call and uses a plain Maple Tree declaration.
+
+For example, an automatic local definition:
+
+  void example(void)
+  {
+          DEFINE_IDA(ida);
+          ida_destroy(&ida);
+  }
+
+now produces:
+
+  error: initializer element is not constant
+  note: in expansion of macro 'ASSERT_STATIC_STORAGE'
+  note: in expansion of macro 'DEFINE_IDA'
+
+File-scope definitions and static local definitions remain valid.
+Automatic local objects should use ida_init(), mt_init(), or
+mt_init_flags().
+
+The check is limited to declaration macros.  Direct uses of IDA_INIT(),
+MTREE_INIT(), and MTREE_INIT_EXT() remain unchanged.  The helper cannot be
+inserted directly into those initializer expressions because it expands to
+a declaration.
+
+Validated by GCC and Clang checks accepting static storage and rejecting
+automatic storage The userspace IDR/IDA and Maple Tree test are passed as
+well.
+
+
+This patch (of 3):
+
+Static lock initializers rely on a persistent object address when lockdep
+assigns a lock-class key.  Using such an initializer for an automatic
+local object can compile successfully but disable lockdep on the first
+lock acquisition.
+
+Add ASSERT_STATIC_STORAGE() for declaration macros that require static
+storage duration.  It declares an unused static pointer initialized with
+the object's address.  An automatic local object's address is not a valid
+static initializer, so the compiler rejects it.
+
+Mirror the helper in tools/include/linux/compiler.h because the userspace
+radix-tree tests include the kernel IDA and Maple Tree headers with the
+tools compiler definitions.
+
+For example:
+
+  void example(void)
+  {
+          int object;
+          ASSERT_STATIC_STORAGE(object);
+  }
+
+GCC reports:
+
+  error: initializer element is not constant
+    name##_storage_check = &(name)
+                           ^
+  note: in expansion of macro 'ASSERT_STATIC_STORAGE'
+    ASSERT_STATIC_STORAGE(object);
+
+File-scope objects and static local objects remain valid.  The helper
+takes an object identifier and must be used as a declaration after that
+object has been declared.
+
+Link: https://lore.kernel.org/all/20260911155244.1406122-1-ynorov@nvidia.com/
+Link: https://lore.kernel.org/20260911221444.1523311-2-ynorov@nvidia.com
+Link: https://download.01.org/0day-ci/archive/20260910/202609101106.771b567e-lkp@intel.com/ [1]
+Link: https://lore.kernel.org/all/20260911155244.1406122-1-ynorov@nvidia.com/ [2]
+Signed-off-by: Yury Norov <ynorov@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: Christopher Li <sparse@chrisli.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ include/linux/compiler.h       | 5 +++++
+ tools/include/linux/compiler.h | 5 +++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/include/linux/compiler.h b/include/linux/compiler.h
+index cb2f6050bdf7d..ef9036fa5413d 100644
+--- a/include/linux/compiler.h
++++ b/include/linux/compiler.h
+@@ -275,6 +275,11 @@ static inline void *offset_to_ptr(const int *off)
+ #define __ADDRESSABLE(sym) \
+ 	___ADDRESSABLE(sym, __section(".discard.addressable"))
+ 
++/* Enforce static storage duration. */
++#define ASSERT_STATIC_STORAGE(name) \
++	static typeof(name) * const __always_unused \
++		name##_storage_check = &(name)
++
+ /*
+  * This returns a constant expression while determining if an argument is
+  * a constant expression, most importantly without evaluating the argument.
+diff --git a/tools/include/linux/compiler.h b/tools/include/linux/compiler.h
+index f2f54b0381680..03ecf90866436 100644
+--- a/tools/include/linux/compiler.h
++++ b/tools/include/linux/compiler.h
+@@ -73,6 +73,11 @@
+ # define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
+ #endif
+ 
++/* Enforce static storage duration. */
++#define ASSERT_STATIC_STORAGE(name) \
++	static typeof(name) * const __always_unused \
++		name##_storage_check = &(name)
++
+ /*
+  * This returns a constant expression while determining if an argument is
+  * a constant expression, most importantly without evaluating the argument.
+-- 
+2.47.3
+

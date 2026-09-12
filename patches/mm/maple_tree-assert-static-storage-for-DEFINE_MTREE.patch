@@ -1,0 +1,136 @@
+From: Yury Norov <ynorov@nvidia.com>
+Date: Fri, 11 Sep 2026 18:14:43 -0400
+Subject: [PATCH] maple_tree: assert static storage for DEFINE_MTREE()
+
+DEFINE_MTREE() uses MTREE_INIT(), which initializes the tree's embedded
+lock with a static spinlock initializer.  If the tree is an automatic
+local object, lockdep rejects its address as a non-static class key and
+disables locking validation on the first lock acquisition.
+
+Apply ASSERT_STATIC_STORAGE() to DEFINE_MTREE() to catch automatic local
+definitions at compile time.  For example:
+
+  void example(void)
+  {
+          DEFINE_MTREE(mt);
+          mtree_destroy(&mt);
+  }
+
+GCC reports:
+
+  error: initializer element is not constant
+    name##_storage_check = &(name)
+                           ^
+  note: in expansion of macro 'ASSERT_STATIC_STORAGE'
+    ASSERT_STATIC_STORAGE(name)
+  note: in expansion of macro 'DEFINE_MTREE'
+    DEFINE_MTREE(mt);
+
+File-scope definitions and static local trees remain valid.  Automatic
+local trees must instead use mt_init() or mt_init_flags().  Direct uses of
+MTREE_INIT() and MTREE_INIT_EXT() are unchanged.
+
+Replace the local DEFINE_MTREE() in the interval-tree span test with a
+plain declaration; the test already initializes the tree with
+mt_init_flags() before use.  Convert the three local Maple Trees in the
+userspace radix-tree tests to mt_init().
+
+Validated file-scope and static local definitions with a kernel object
+build, and confirmed that an automatic local definition fails to compile.
+The Maple Tree test and region allocation benchmark objects also build
+with lockdep enabled.
+
+Link: https://lore.kernel.org/20260911221444.1523311-4-ynorov@nvidia.com
+Signed-off-by: Yury Norov <ynorov@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: Christopher Li <sparse@chrisli.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ include/linux/maple_tree.h       |  4 +++-
+ lib/interval_tree_test.c         |  2 +-
+ tools/testing/radix-tree/maple.c | 12 +++++++++---
+ 3 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/maple_tree.h b/include/linux/maple_tree.h
+index e595ae5cd0eed..e30e57f5f3df9 100644
+--- a/include/linux/maple_tree.h
++++ b/include/linux/maple_tree.h
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <linux/kernel.h>
++#include <linux/compiler.h>
+ #include <linux/rcupdate.h>
+ #include <linux/spinlock.h>
+ 
+@@ -297,7 +298,8 @@ struct maple_tree {
+ #endif
+ 
+ #define DEFINE_MTREE(name)						\
+-	struct maple_tree name = MTREE_INIT(name, 0)
++	struct maple_tree name = MTREE_INIT(name, 0);		\
++	ASSERT_STATIC_STORAGE(name)
+ 
+ #define mtree_lock(mt)		spin_lock((&(mt)->ma_lock))
+ #define mtree_lock_nested(mas, subclass) \
+diff --git a/lib/interval_tree_test.c b/lib/interval_tree_test.c
+index b0b07270ce7c3..06f77fb3179fc 100644
+--- a/lib/interval_tree_test.c
++++ b/lib/interval_tree_test.c
+@@ -244,7 +244,7 @@ static int span_iteration_check(void)
+ 	unsigned long start, last;
+ 	struct interval_tree_span_iter span, mas_span;
+ 
+-	DEFINE_MTREE(tree);
++	struct maple_tree tree;
+ 
+ 	MA_STATE(mas, &tree, 0, 0);
+ 
+diff --git a/tools/testing/radix-tree/maple.c b/tools/testing/radix-tree/maple.c
+index d967e76a3c065..bfe4b8626c429 100644
+--- a/tools/testing/radix-tree/maple.c
++++ b/tools/testing/radix-tree/maple.c
+@@ -36022,10 +36022,12 @@ static noinline void __init check_erase_rebalance(struct maple_tree *mt)
+ 
+ static noinline void __init check_mtree_dup(struct maple_tree *mt)
+ {
+-	DEFINE_MTREE(new);
++	struct maple_tree new;
+ 	int i, j, ret, count = 0;
+ 	unsigned int rand_seed = 17, rand;
+ 
++	mt_init(&new);
++
+ 	/* store a value at [0, 0] */
+ 	mt_init_flags(mt, 0);
+ 	mtree_store_range(mt, 0, 0, xa_mk_value(0), GFP_KERNEL);
+@@ -36319,7 +36321,9 @@ static inline int check_vma_modification(struct maple_tree *mt)
+ void farmer_tests(void)
+ {
+ 	struct maple_node *node;
+-	DEFINE_MTREE(tree);
++	struct maple_tree tree;
++
++	mt_init(&tree);
+ 
+ 	mt_dump(&tree, mt_dump_dec);
+ 
+@@ -36432,9 +36436,11 @@ static unsigned long get_last_index(struct ma_state *mas)
+ static void test_spanning_store_regression(void)
+ {
+ 	unsigned long from = 0, to = 0;
+-	DEFINE_MTREE(tree);
++	struct maple_tree tree;
+ 	MA_STATE(mas, &tree, 0, 0);
+ 
++	mt_init(&tree);
++
+ 	/*
+ 	 * Build a 3-level tree. We require a parent node below the root node
+ 	 * and 2 leaf nodes under it, so we can span the entirety of the right
+-- 
+2.47.3
+

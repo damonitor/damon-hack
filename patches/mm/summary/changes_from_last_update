@@ -1,43 +1,71 @@
 - baseline: v7.3-rc1-475-g0d9ff90a5422c -> v7.3-rc1-475-g0d9ff90a5422c (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 4 -> 5 commits
+- mm-hotfixes-unstable: 5 -> 5 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 3 -> 3 commits (no change)
-    - maintainer, nobody: 1 -> 2 commits
-  - new commits
-    - a4e685632c50 "mm/damon/core: reset invalid quota->charge_target_from"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260910142846.172957-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260830064708.40CA61F000E9@smtp.kernel.org [1]
+    - maintainer, nobody: 2 -> 2 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 76 -> 76 commits (no change)
-  - series: 13 (74) -> 13 (74) (no change)
+- mm-unstable: 76 -> 81 commits
+  - series: 13 (74) -> 14 (79)
     - no role, maintainer: 21 -> 21 commits (no change)
-    - maintainer, nobody: 43 -> 43 commits (no change)
+    - maintainer, nobody: 43 -> 48 commits
     - maintainer, no role : 12 -> 12 commits (no change)
-- mm-new: 5 -> 10 commits
-  - series: 1 (5) -> 2 (10)
-    - maintainer, nobody: 5 -> 10 commits
+  - changed commits
+    - series "mm/damon/vaddr: support {prep,apply}_probes". (5)
+      - 82f83810106b "mm/damon/vaddr: support prep_probes (0/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260909140408.104699-2-sj@kernel.org
+        - Link: https://github.com/sjp38/masim [1]
+        - Link: https://github.com/damonitor/damo [2]
+      - 6b898be0e976 "mm/damon/paddr: move probe filter handling to ops-common (1/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260909140408.104699-3-sj@kernel.org
+      - 9844d75519ca "mm/damon/vaddr: support apply_probe (2/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260909140408.104699-4-sj@kernel.org
+      - 2149a9350db3 "mm/damon/vaddr: extend apply_probes() for hugetlb (3/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260909140408.104699-5-sj@kernel.org
+      - e6dfb1402ea4 "mm/damon/vaddr: support pgidle_unset probe filter type (4/5)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260909140408.104699-6-sj@kernel.org
+- mm-new: 10 -> 13 commits
+  - series: 2 (10) -> 2 (12)
+    - maintainer, nobody: 10 -> 13 commits
   - new commits
-    - series "mm/damon: introduce pgidle_set probe filter type". (5)
-      - 852c304951ab "mm/damon/api: introduce DAMON_FILTER_TYPE_PGIDLE_SET (0/5)"
+    - series "mm/damon: introduce probe_hits_wsum DAMOS core filter", v2. (7)
+      - b66db304e2e5 "mm/damon/api: introduce DAMOS_FILTER_TYPE_PROBE_HITS_WSUM (0/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260910142234.171562-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260910142234.171562-2-sj@kernel.org
-      - ddd319c9a4e1 "mm/damon/paddr: support DAMON_FILTER_TYPE_PGIDLE_SET (1/5)"
+        - Link: https://lore.kernel.org/20260911135510.96914-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260911135510.96914-2-sj@kernel.org
+      - 7123d2a90e6d "mm/damon/api: clarify DAMOS_FILTER_TYPE_PROBE_HITS_WSUM behavior (1/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260910142234.171562-3-sj@kernel.org
-      - b17304489980 "mm/damon/vaddr: support DAMON_FILTER_TYPE_PGIDLE_SET (2/5)"
+        - Link: https://lore.kernel.org/20260911142522.98013-1-sj@kernel.org
+      - a5b8f304ff75 "mm/damon/core: extend probe_hits_wsum() for moving sum based calculation (2/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260910142234.171562-4-sj@kernel.org
-      - 213591c9128d "mm/damon/sysfs: support DAMON_FILTER_TYPE_PGIDLE_SET (3/5)"
+        - Link: https://lore.kernel.org/20260911135510.96914-3-sj@kernel.org
+      - 5319aee07a0d "mm/damon/core: support probe_hits_wsum damos core filter (3/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260910142234.171562-5-sj@kernel.org
-      - 8053c9a12f04 "Docs/mm/damon/design: update for pgidle_set probe filter (4/5)"
+        - Link: https://lore.kernel.org/20260911135510.96914-4-sj@kernel.org
+      - 1b3506e2688e "mm/damon/sysfs-schemes: rename sysfs_filter->sz_range to range_{min,max} (4/7)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260910142234.171562-6-sj@kernel.org
+        - Link: https://lore.kernel.org/20260911135510.96914-5-sj@kernel.org
+      - 62d111aa8d3a "mm/damon/sysfs-schemes: support probe_hits_wsum damos core filter (5/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260911135510.96914-6-sj@kernel.org
+      - 2ab780b212b3 "Docs/mm/damon/design: update for probe_hits_wsum DAMOS core filter (6/7)"
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20260911135510.96914-7-sj@kernel.org
+    - 4a594eee5ab6 "Docs/admin-guide/mm/damon/usage: update for probe_hits_wsum DAMOS filter"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260911135510.96914-8-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
