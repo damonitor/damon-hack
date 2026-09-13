@@ -2,15 +2,36 @@ From: SJ Park <sj@kernel.org>
 Date: Sat, 12 Sep 2026 11:17:32 -0700
 Subject: [PATCH] ==== hugepage_size probe filter ====
 
+mm/damon: introduce hugepage_size probe filter
+
+Knowing whether a given memory is backed by a hugepage of specific size
+is useful for efficient utilization of hugepages.  For easy monitoring
+of the information, introduce a new data attribute probe filter type,
+hugepage_size.  It works similar to the DAMOS filter of the same name.
+It works for memory that is backed by a hugepage of a given size range.
+
+Patch 1 introduces the new probe filter type to DAMON API and extends
+related data structures.  Patch 2 updates probe filter commit logic to
+handle the size range.  Patch 3 Updates the filtering logic to support
+the new type.  Patch 4 adds new DAMON sysfs files for the size range.
+Patch 5 updates DAMON sysfs interface to fully support the new filter
+type.  Patches 6-8 updates design, usage and ABI documents for the new
+feature.
+
 Test
 ====
 
-Start masim.
+Set THP always and start a test workload using masim [1].
 
+    $ echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
     $ ./masim.py run --config_file ./configs/stairs-500mb.cfg --repeat 10
 
-Start DAMON with two probes.  The primary probe monitors access.  The secondary
-probe monitors 2 MiB sized hugepages.
+Using the DAMON user-space tool, damo [2], start DAMON with two probes.
+The primary probe monitors access.  The secondary probe monitors 2 MiB
+sized hugepages.  The region adjustment weight is given to only the
+primary probe.  That is, this setup is for showing access temperature
+and additionally how many 2 MiB hugepages are being used for the region
+of the access temperature.
 
     $ sudo ./damo start $(pidof masim) \
             --probe_prep set_pgidle --probe_filter allow pgidle_unset \
@@ -42,7 +63,20 @@ Show the monitoring results.
     total size: 5.009 GiB
     record DAMON intervals: sample 5 ms, aggr 100 ms
 
-Not only hot, but also cold regions are using hugepages.
+The first probe_hits count and the age show the access temperature of
+each region.  The second probe_hits count shows the ratio of 2 MiB
+hugepages in the region.
+
+For example, region 2, which has 936 MiB size, is quite cold (not
+accessed for 4.6 seconds) but uses 2 MiB THP for ~80% (16/20) of the
+region.  Maybe not a very efficient use of THP.
+
+On the other hand, region 49, which is 812 KiB size, is somewhat hot
+(accessed about 9 times per 100 ms for the last 500 ms) and fully backed
+by 2 MiB hugepage.  Maybe this is a good use of THP.
+
+[1] https://github.com/sjp38/masim
+[2] https://github.com/damonitor/damo
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
