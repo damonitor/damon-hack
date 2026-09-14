@@ -1,0 +1,175 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Sun, 13 Sep 2026 22:24:06 -0400
+Subject: [PATCH] erofs: mm/pagemap: add readahead_folio_last() to avoid
+ folio->private
+
+erofs needs to traverse readahead folios in reverse order to achieve
+maximum performance by
+1. reading all folios from readahead_folio();
+2. storing the prior folio pointer in folio->private;
+3. traverse from the last folio to the first one.
+
+Add readahead_folio_last() to achieve the same function without using
+folio->private.  __readahead_advance() helper shares readahead_control
+adjustment code among __readahead_folio(), readahead_folio_last(), and
+__readahead_batch() by checking new private member, _forward, of
+readahead_control.
+
+It prepares for a future commit that replaces PG_private checks with
+!folio->private checks.  After switching the checks, erofs's use of
+folio->private without bumping folio refcount can cause unexpected
+outcomes, e.g., in filemap_release_folio(), try_to_free_buffers() becomes
+reachable.
+
+No functional change intended.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260913-remove-pg_private-v4-8-848550f7574e@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Yue Hu <zbestahu@gmail.com>
+Cc: Jeffle Xu <jefflexu@linux.alibaba.com>
+Cc: Sandeep Dhavale <dhavale@google.com>
+Cc: Hongbo Li <hongbohbli@tencent.com>
+Cc: Chunhai Guo <guochunhai@vivo.com>
+Cc: Gao Xiang <xiang@kernel.org>
+Cc: Chao Yu <chao@kernel.org>
+Cc: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+---
+ fs/erofs/zdata.c        | 13 +++------
+ include/linux/pagemap.h | 60 +++++++++++++++++++++++++++++++++++------
+ 2 files changed, 55 insertions(+), 18 deletions(-)
+
+diff --git a/fs/erofs/zdata.c b/fs/erofs/zdata.c
+index e1e25ca0d1904..78fd7d980e957 100644
+--- a/fs/erofs/zdata.c
++++ b/fs/erofs/zdata.c
+@@ -1898,21 +1898,14 @@ static void z_erofs_readahead(struct readahead_control *rac)
+ 	struct inode *realinode = erofs_real_inode(sharedinode, &need_iput);
+ 	Z_EROFS_DEFINE_FRONTEND(f, realinode, sharedinode, readahead_pos(rac));
+ 	unsigned int nrpages = readahead_count(rac);
+-	struct folio *head = NULL, *folio;
++	struct folio *folio;
+ 	int err;
+ 
+ 	trace_erofs_readahead(realinode, readahead_index(rac), nrpages, false);
+ 	z_erofs_pcluster_readmore(&f, rac, true);
+-	while ((folio = readahead_folio(rac))) {
+-		folio->private = head;
+-		head = folio;
+-	}
+-
+-	/* traverse in reverse order for best metadata I/O performance */
+-	while (head) {
+-		folio = head;
+-		head = folio_get_private(folio);
+ 
++	/* traverse from last to first for best metadata I/O performance */
++	while ((folio = readahead_folio_last(rac))) {
+ 		err = z_erofs_scan_folio(&f, folio, true);
+ 		if (err && err != -EINTR)
+ 			erofs_err(realinode->i_sb, "readahead error at folio %lu @ nid %llu",
+diff --git a/include/linux/pagemap.h b/include/linux/pagemap.h
+index 939f3a5e973f6..1e3462357aaa4 100644
+--- a/include/linux/pagemap.h
++++ b/include/linux/pagemap.h
+@@ -1415,6 +1415,7 @@ struct readahead_control {
+ 	bool dropbehind;
+ 	bool _workingset;
+ 	unsigned long _pflags;
++	bool _forward;
+ };
+ 
+ #define DEFINE_READAHEAD(ractl, f, r, m, i)				\
+@@ -1479,18 +1480,29 @@ void page_cache_async_readahead(struct address_space *mapping,
+ 	page_cache_async_ra(&ractl, folio, req_count);
+ }
+ 
++/*
++ * Adjust readahead_control to ensure next folio comes from
++ * [_index, _index + _nr_pages) afterwards and reset _batch_count.
++ */
++static inline void __readahead_advance(struct readahead_control *rac)
++{
++	if (rac->_forward)
++		rac->_index += rac->_batch_count;
++
++	rac->_nr_pages -= rac->_batch_count;
++	rac->_batch_count = 0;
++}
++
+ static inline struct folio *__readahead_folio(struct readahead_control *ractl)
+ {
+ 	struct folio *folio;
+ 
+ 	BUG_ON(ractl->_batch_count > ractl->_nr_pages);
+-	ractl->_nr_pages -= ractl->_batch_count;
+-	ractl->_index += ractl->_batch_count;
++	__readahead_advance(ractl);
++	ractl->_forward = true;
+ 
+-	if (!ractl->_nr_pages) {
+-		ractl->_batch_count = 0;
++	if (!ractl->_nr_pages)
+ 		return NULL;
+-	}
+ 
+ 	folio = xa_load(&ractl->mapping->i_pages, ractl->_index);
+ 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+@@ -1516,6 +1528,39 @@ static inline struct folio *readahead_folio(struct readahead_control *ractl)
+ 	return folio;
+ }
+ 
++/**
++ * readahead_folio_last - Get the next folio to read, from the tail.
++ * @ractl: The current readahead request.
++ *
++ * Like readahead_folio(), but walks the range back-to-front. The folio is
++ * returned locked with its refcount dropped; the caller unlocks it once I/O
++ * completes. Compound folios are returned once, at their head index.
++ *
++ * Context: The folio is locked.
++ * Return: A pointer to the next folio, or %NULL when done.
++ */
++static inline struct folio *readahead_folio_last(struct readahead_control *ractl)
++{
++	struct folio *folio;
++
++	/* Drop the previously returned batch from the remaining range. */
++	__readahead_advance(ractl);
++	ractl->_forward = false;
++
++	if (!ractl->_nr_pages)
++		return NULL;
++
++	/* xa_load() follows sibling entries, so a tail index returns the head */
++	folio = xa_load(&ractl->mapping->i_pages,
++			ractl->_index + ractl->_nr_pages - 1);
++	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
++
++	ractl->_batch_count = folio_nr_pages(folio);
++
++	folio_put(folio);
++	return folio;
++}
++
+ static inline unsigned int __readahead_batch(struct readahead_control *rac,
+ 		struct page **array, unsigned int array_sz)
+ {
+@@ -1524,9 +1569,8 @@ static inline unsigned int __readahead_batch(struct readahead_control *rac,
+ 	struct folio *folio;
+ 
+ 	BUG_ON(rac->_batch_count > rac->_nr_pages);
+-	rac->_nr_pages -= rac->_batch_count;
+-	rac->_index += rac->_batch_count;
+-	rac->_batch_count = 0;
++	__readahead_advance(rac);
++	rac->_forward = true;
+ 
+ 	xas_set(&xas, rac->_index);
+ 	rcu_read_lock();
+-- 
+2.47.3
+

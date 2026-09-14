@@ -1,0 +1,109 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Sun, 13 Sep 2026 22:24:00 -0400
+Subject: [PATCH] perf/ring_buffer: stop using PG_private as AUX page
+ high-order marker
+
+A high-order AUX page sets PG_private on its first page and stores the
+order in first_page->private.  Stop using PG_private and check
+first_page->private for AUX page order only in the ring buffer and its
+users.  This is fine because page->private is 0 for order-0 AUX pages,
+matching the page order.
+
+It prepares for a future commit that remove PG_private.
+
+No functional change intended.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260913-remove-pg_private-v4-2-848550f7574e@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+Cc: Jiri Olsa <jolsa@kernel.org>
+Cc: Ian Rogers <irogers@google.com>
+Cc: Adrian Hunter <adrian.hunter@intel.com>
+Cc: James Clark <james.clark@linaro.org>
+Cc: "H. Peter Anvin" <hpa@zytor.com>
+To: Peter Zijlstra <peterz@infradead.org>
+To: Ingo Molnar <mingo@redhat.com>
+To: Arnaldo Carvalho de Melo <acme@kernel.org>
+To: Namhyung Kim <namhyung@kernel.org>
+To: Thomas Gleixner <tglx@kernel.org>
+To: Borislav Petkov <bp@alien8.de>
+To: Dave Hansen <dave.hansen@linux.intel.com>
+---
+ arch/x86/events/intel/bts.c | 3 ---
+ arch/x86/events/intel/pt.c  | 6 ++----
+ kernel/events/ring_buffer.c | 7 +++----
+ 3 files changed, 5 insertions(+), 11 deletions(-)
+
+diff --git a/arch/x86/events/intel/bts.c b/arch/x86/events/intel/bts.c
+index cbac54cb3a9ec..5849392cf26d5 100644
+--- a/arch/x86/events/intel/bts.c
++++ b/arch/x86/events/intel/bts.c
+@@ -66,9 +66,6 @@ static struct pmu bts_pmu;
+ 
+ static int buf_nr_pages(struct page *page)
+ {
+-	if (!PagePrivate(page))
+-		return 1;
+-
+ 	return 1 << page_private(page);
+ }
+ 
+diff --git a/arch/x86/events/intel/pt.c b/arch/x86/events/intel/pt.c
+index 5754cd4055628..49349afee6119 100644
+--- a/arch/x86/events/intel/pt.c
++++ b/arch/x86/events/intel/pt.c
+@@ -781,8 +781,7 @@ static int topa_insert_pages(struct pt_buffer *buf, int cpu, gfp_t gfp)
+ 	struct page *p;
+ 
+ 	p = virt_to_page(buf->data_pages[buf->nr_pages]);
+-	if (PagePrivate(p))
+-		order = page_private(p);
++	order = page_private(p);
+ 
+ 	if (topa_table_full(topa)) {
+ 		topa = topa_alloc(cpu, gfp);
+@@ -1296,8 +1295,7 @@ static int pt_buffer_try_single(struct pt_buffer *buf, int nr_pages)
+ 	if (!intel_pt_validate_hw_cap(PT_CAP_single_range_output))
+ 		goto out;
+ 
+-	if (PagePrivate(p))
+-		order = page_private(p);
++	order = page_private(p);
+ 
+ 	if (1 << order != nr_pages)
+ 		goto out;
+diff --git a/kernel/events/ring_buffer.c b/kernel/events/ring_buffer.c
+index 9fe92161715e0..061b5cb222266 100644
+--- a/kernel/events/ring_buffer.c
++++ b/kernel/events/ring_buffer.c
+@@ -630,11 +630,10 @@ static struct page *rb_alloc_aux_page(int node, int order)
+ 		/*
+ 		 * Communicate the allocation size to the driver:
+ 		 * if we managed to secure a high-order allocation,
+-		 * set its first page's private to this order;
+-		 * !PagePrivate(page) means it's just a normal page.
++		 * set its first page's private to this order, otherwise page's
++		 * private remains zero.
+ 		 */
+ 		split_page(page, order);
+-		SetPagePrivate(page);
+ 		set_page_private(page, order);
+ 	}
+ 
+@@ -645,7 +644,7 @@ static void rb_free_aux_page(struct perf_buffer *rb, int idx)
+ {
+ 	struct page *page = virt_to_page(rb->aux_pages[idx]);
+ 
+-	ClearPagePrivate(page);
++	set_page_private(page, 0);
+ 	__free_page(page);
+ }
+ 
+-- 
+2.47.3
+

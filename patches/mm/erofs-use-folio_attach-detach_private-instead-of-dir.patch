@@ -1,0 +1,93 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Sun, 13 Sep 2026 22:24:07 -0400
+Subject: [PATCH] erofs: use folio_attach/detach_private() instead of direct
+ assignment
+
+erofs_onlinefolio_init/split/end() use folio->private without setting
+PG_private or increasing folio refcount and it works.  But after
+PG_private is replaced by checking folio->private in a future commit, it
+can break folio_expected_ref_count(), since the folio has private data
+without elevated refcount.  Change them to use
+folio_attach/detach_private().  Folios during this process are locked as
+they are in the process of readahead, so no parallel migration/folio split
+can happen.
+
+Furthermore, because folio->private is used to store in-flight I/O counter
+and the counter reaches 0 when all I/O completes successfully without
+error or being dirty, ->private=0 causes folio_detach_private() to not
+drop the elevated folio refcount.  Solve this issue by using bias=1 for
+the counter, so that ->private stays non NULL throughout every
+attach-to-detach process.  Add a macro EROFS_ONLINEFOLIO_BIAS=1.  While at
+it, fix the comment about ->private bit layout and add
+EROFS_ONLINEFOLIO_COUNT_MASK.
+
+It prepares for a future commit that removes PG_private.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260913-remove-pg_private-v4-9-848550f7574e@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Gao Xiang <xiang@kernel.org>
+Cc: Yue Hu <zbestahu@gmail.com>
+Cc: Jeffle Xu <jefflexu@linux.alibaba.com>
+Cc: Sandeep Dhavale <dhavale@google.com>
+Cc: Hongbo Li <hongbohbli@tencent.com>
+Cc: Chunhai Guo <guochunhai@vivo.com>
+Cc: Gao Xiang <xiang@kernel.org>
+Cc: Chao Yu <chao@kernel.org>
+---
+ fs/erofs/data.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/fs/erofs/data.c b/fs/erofs/data.c
+index 0885b1f2fc925..f71c7b51bb720 100644
+--- a/fs/erofs/data.c
++++ b/fs/erofs/data.c
+@@ -239,19 +239,23 @@ int erofs_map_dev(struct super_block *sb, struct erofs_map_dev *map)
+ /*
+  * bit 30: I/O error occurred on this folio
+  * bit 29: CPU has dirty data in D-cache (needs aliasing handling);
+- * bit 0 - 29: remaining parts to complete this folio
++ * bit 0 - 28: remaining parts to complete this folio, biased by 1 so that
++ *	       ->private stays non-NULL while the folio is attached
+  */
+ #define EROFS_ONLINEFOLIO_EIO		30
+ #define EROFS_ONLINEFOLIO_DIRTY		29
++#define EROFS_ONLINEFOLIO_COUNT_MASK	(BIT(EROFS_ONLINEFOLIO_DIRTY) - 1)
++#define EROFS_ONLINEFOLIO_BIAS		1
+ 
+ void erofs_onlinefolio_init(struct folio *folio)
+ {
+ 	union {
+ 		atomic_t o;
+ 		void *v;
+-	} u = { .o = ATOMIC_INIT(1) };
++	} u = { .o = ATOMIC_INIT(1 + EROFS_ONLINEFOLIO_BIAS) };
+ 
+-	folio->private = u.v;	/* valid only if file-backed folio is locked */
++	/* valid only if file-backed folio is locked */
++	folio_attach_private(folio, u.v);
+ }
+ 
+ void erofs_onlinefolio_split(struct folio *folio)
+@@ -265,14 +269,14 @@ void erofs_onlinefolio_end(struct folio *folio, int err, bool dirty)
+ 
+ 	do {
+ 		orig = atomic_read((atomic_t *)&folio->private);
+-		DBG_BUGON(orig <= 0);
++		DBG_BUGON((orig & EROFS_ONLINEFOLIO_COUNT_MASK) <= EROFS_ONLINEFOLIO_BIAS);
+ 		v = dirty << EROFS_ONLINEFOLIO_DIRTY;
+ 		v |= (orig - 1) | (!!err << EROFS_ONLINEFOLIO_EIO);
+ 	} while (atomic_cmpxchg((atomic_t *)&folio->private, orig, v) != orig);
+ 
+-	if (v & (BIT(EROFS_ONLINEFOLIO_DIRTY) - 1))
++	if ((v & EROFS_ONLINEFOLIO_COUNT_MASK) != EROFS_ONLINEFOLIO_BIAS)
+ 		return;
+-	folio->private = 0;
++	folio_detach_private(folio);
+ 	if (v & BIT(EROFS_ONLINEFOLIO_DIRTY))
+ 		flush_dcache_folio(folio);
+ 	folio_end_read(folio, !(v & BIT(EROFS_ONLINEFOLIO_EIO)));
+-- 
+2.47.3
+

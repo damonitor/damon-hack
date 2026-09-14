@@ -1,0 +1,72 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Sun, 13 Sep 2026 22:24:01 -0400
+Subject: [PATCH] xen/grant-table: stop setting PG_private on pages for grant
+ mapping
+
+gnttab_alloc_pages() stores xen_page_foreign in page->private.  On 32-bit,
+a pointer to an allocated xen_page_foreign is stored; on 64-bit,
+xen_page_foreign is stored inline.  Checking page->private != NULL is
+enough to tell whether a xen_page_foreign needs to be freed on 32-bit and
+page->private is zeroed unconditionally on 64-bit.
+
+It prepares for a future commit that remove PG_private.
+
+No functional change intended.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260913-remove-pg_private-v4-3-848550f7574e@nvidia.com
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+---
+ drivers/xen/grant-table.c | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/xen/grant-table.c b/drivers/xen/grant-table.c
+index 69922be28b54c..993f89f048e21 100644
+--- a/drivers/xen/grant-table.c
++++ b/drivers/xen/grant-table.c
+@@ -863,10 +863,10 @@ EXPORT_SYMBOL_GPL(gnttab_free_auto_xlat_frames);
+ 
+ int gnttab_pages_set_private(int nr_pages, struct page **pages)
+ {
++#if BITS_PER_LONG < 64
+ 	int i;
+ 
+ 	for (i = 0; i < nr_pages; i++) {
+-#if BITS_PER_LONG < 64
+ 		struct xen_page_foreign *foreign;
+ 
+ 		foreign = kzalloc_obj(*foreign);
+@@ -874,9 +874,9 @@ int gnttab_pages_set_private(int nr_pages, struct page **pages)
+ 			return -ENOMEM;
+ 
+ 		set_page_private(pages[i], (unsigned long)foreign);
+-#endif
+-		SetPagePrivate(pages[i]);
+ 	}
++#endif
++	/* Data is stored in page->private on 64-bit */
+ 
+ 	return 0;
+ }
+@@ -1031,12 +1031,11 @@ void gnttab_pages_clear_private(int nr_pages, struct page **pages)
+ 	int i;
+ 
+ 	for (i = 0; i < nr_pages; i++) {
+-		if (PagePrivate(pages[i])) {
+ #if BITS_PER_LONG < 64
++		if (page_private(pages[i]))
+ 			kfree((void *)page_private(pages[i]));
+ #endif
+-			ClearPagePrivate(pages[i]);
+-		}
++		set_page_private(pages[i], 0);
+ 	}
+ }
+ EXPORT_SYMBOL_GPL(gnttab_pages_clear_private);
+-- 
+2.47.3
+
