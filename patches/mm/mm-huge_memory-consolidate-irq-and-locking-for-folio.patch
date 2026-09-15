@@ -1,0 +1,170 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Tue, 15 Sep 2026 01:14:47 +0800
+Subject: [PATCH] mm/huge_memory: consolidate irq and locking for folio split
+
+Let each split helper handle its own locking instead of relying on the
+caller, so both helpers manage their own irq and locking state.  This lets
+__folio_split() drop its local irq handling and fail label, preparing for
+further cleanup.
+
+The file path now uses xas_lock_irq() instead of local_irq_disable() with
+xas_lock().  The two are equivalent on non-RT, and TRANSPARENT_HUGEPAGE
+cannot be enabled on RT anyway.  This conversion also buys consistency:
+every other place in mm/ that freezes a folio while it is still reachable
+through the page cache already takes the lock this way.  This was actually
+the last plain xas_lock() on mapping->i_pages left in mm.  If we are going
+to support RT, spinning on frozen folio refs could be a problem, but it
+already exists in many places and should be fixed generically.
+
+The anon helper keeps a single local_irq_disable() as before, because it
+has to cover several plain spinlocks at once.
+
+The dropped xas_reset() was a no-op as the xa_state is not walked before
+the xas_load() under the lock.
+
+Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-6-39878b37dfb0@tencent.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+---
+ mm/huge_memory.c | 58 ++++++++++++++++++++++--------------------------
+ 1 file changed, 27 insertions(+), 31 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 35c48eaf038fa..d0e2f1801d6f3 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -4021,8 +4021,12 @@ static int __folio_freeze_split_anon(struct folio *folio,
+ 	struct lruvec *lruvec;
+ 	int ret = 0;
+ 
+-	if (!folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1))
++	local_irq_disable();
++
++	if (!folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1)) {
++		local_irq_enable();
+ 		return -EAGAIN;
++	}
+ 
+ 	/* Take off the deferred split queue while frozen and memcg set */
+ 	folio_unqueue_deferred_split(folio);
+@@ -4070,6 +4074,7 @@ static int __folio_freeze_split_anon(struct folio *folio,
+ 		lruvec_unlock(lruvec);
+ 	if (ci)
+ 		swap_cluster_unlock(ci);
++	local_irq_enable();
+ 
+ 	return ret;
+ }
+@@ -4088,8 +4093,21 @@ static int __folio_freeze_split_file(struct folio *folio,
+ 	/* Currently device private folios can only back anonymous memory. */
+ 	VM_WARN_ON_ONCE_FOLIO(folio_is_device_private(folio), folio);
+ 
+-	if (!folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1))
+-		return -EAGAIN;
++	xas_lock_irq(xas);
++
++	/*
++	 * Check if the folio is present in page cache.
++	 * We assume all tail are present too, if folio is there.
++	 */
++	if (xas_load(xas) != folio) {
++		ret = -EAGAIN;
++		goto fail;
++	}
++
++	if (!folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1)) {
++		ret = -EAGAIN;
++		goto fail;
++	}
+ 
+ 	if (folio_test_pmd_mappable(folio) &&
+ 	    new_order < HPAGE_PMD_ORDER) {
+@@ -4161,6 +4179,8 @@ static int __folio_freeze_split_file(struct folio *folio,
+ 	if (do_lru)
+ 		lruvec_unlock(lruvec);
+ 
++fail:
++	xas_unlock_irq(xas);
+ 	return ret;
+ }
+ 
+@@ -4300,32 +4320,13 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+ 
+ 	unmap_folio(folio);
+ 
+-	/* block interrupt reentry in xa_lock and spinlock */
+-	local_irq_disable();
+-	if (is_anon) {
++	if (is_anon)
+ 		ret = __folio_freeze_split_anon(folio, new_order, split_at,
+ 						true, list, split_type);
+-	} else {
+-		/*
+-		 * Check if the folio is present in page cache.
+-		 * We assume all tail are present too, if folio is there.
+-		 */
+-		xas_lock(&xas);
+-		xas_reset(&xas);
+-		if (xas_load(&xas) != folio) {
+-			ret = -EAGAIN;
+-			goto fail;
+-		}
++	else
+ 		ret = __folio_freeze_split_file(folio, new_order, split_at, &xas, mapping,
+ 						true, list, split_type, end,
+ 						&nr_shmem_dropped);
+-	}
+-
+-fail:
+-	if (mapping)
+-		xas_unlock(&xas);
+-
+-	local_irq_enable();
+ 
+ 	if (nr_shmem_dropped)
+ 		shmem_uncharge(mapping->host, nr_shmem_dropped);
+@@ -4409,8 +4410,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+  */
+ int folio_split_unmapped(struct folio *folio, unsigned int new_order)
+ {
+-	int ret = 0;
+-
+ 	VM_WARN_ON_ONCE_FOLIO(folio_mapped(folio), folio);
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_large(folio), folio);
+@@ -4419,11 +4418,8 @@ int folio_split_unmapped(struct folio *folio, unsigned int new_order)
+ 	if (folio_expected_ref_count(folio) != folio_ref_count(folio) - 1)
+ 		return -EAGAIN;
+ 
+-	local_irq_disable();
+-	ret = __folio_freeze_split_anon(folio, new_order, &folio->page,
+-					false, NULL, SPLIT_TYPE_UNIFORM);
+-	local_irq_enable();
+-	return ret;
++	return __folio_freeze_split_anon(folio, new_order, &folio->page,
++					 false, NULL, SPLIT_TYPE_UNIFORM);
+ }
+ 
+ /*
+-- 
+2.47.3
+

@@ -1,0 +1,79 @@
+From: Kunwu Chan <kunwu.chan@gmail.com>
+Date: Mon, 14 Sep 2026 07:19:49 -0700
+Subject: [PATCH] mm/damon/tests/core-kunit: improve nr_samples_per_aggr test
+ isolation
+
+Test the zero sample interval case with a non-zero aggregation interval,
+and keep the zero/zero case to cover the zero-result fallback.
+
+Also make the overflow case use an explicit sample interval so that it
+does not depend on the zero sample interval fallback.
+
+Link: https://lore.kernel.org/20260914141952.91465-5-sj@kernel.org
+Signed-off-by: Kunwu Chan <kunwu.chan@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lian Wang <lianux.mm@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <davidgow@davidgow.net>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Eva Kurchatova <eva.kurchatova@virtuozzo.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Liew Rui Yan <aethernet65535@gmail.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+---
+ mm/damon/tests/core-kunit.h | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 527abc2570616..5da84caf4124d 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -627,12 +627,20 @@ static void damon_test_set_regions(struct kunit *test)
+ 
+ static void damon_test_nr_samples_per_aggr(struct kunit *test)
+ {
+-	struct damon_attrs attrs = {
++	struct damon_attrs attrs;
++
++	/* Zero sample interval is treated as one. */
++	attrs = (struct damon_attrs){
+ 		.sample_interval = 0,
+-		.aggr_interval = 0,
++		.aggr_interval = 5000,
+ 	};
++	KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs), 5000);
+ 
+-	/* Zero aggregation interval doesn't cause division by zero */
++	/* Zero sample and aggregation intervals cover the zero-result fallback. */
++	attrs = (struct damon_attrs){
++		.sample_interval = 0,
++		.aggr_interval = 0,
++	};
+ 	KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs), 1);
+ 
+ 	/*
+@@ -640,7 +648,10 @@ static void damon_test_nr_samples_per_aggr(struct kunit *test)
+ 	 * overflow
+ 	 */
+ 	if (ULONG_MAX > UINT_MAX) {
+-		attrs.aggr_interval = (unsigned long)UINT_MAX + 1;
++		attrs = (struct damon_attrs){
++			.sample_interval = 1,
++			.aggr_interval = (unsigned long)UINT_MAX + 1,
++		};
+ 		KUNIT_EXPECT_EQ(test, damon_nr_samples_per_aggr(&attrs),
+ 				UINT_MAX);
+ 	}
+-- 
+2.47.3
+

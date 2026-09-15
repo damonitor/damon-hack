@@ -1,0 +1,115 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Mon, 14 Sep 2026 13:51:30 +0800
+Subject: [PATCH] mm: remove unused exact_nid parameter from memmap_alloc()
+
+Commit ffe55393137c ("mm/sparse: remove sparse buffer pre-allocation
+mechanism") removed sparse_buffer_init(), which was the only caller of
+memmap_alloc() that passed true for exact_nid.
+
+All remaining callers pass false, leaving the exact-node allocation branch
+unreachable.  Remove the exact_nid parameter and unconditionally use
+memblock_alloc_try_nid_raw().
+
+This has no functional impact.
+
+Link: https://lore.kernel.org/20260914055130.44543-1-kaitao.cheng@linux.dev
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+---
+ mm/mm_init.c        | 14 ++++----------
+ mm/mm_init.h        |  4 ++--
+ mm/sparse-vmemmap.c |  2 +-
+ mm/sparse.c         |  2 +-
+ 4 files changed, 8 insertions(+), 14 deletions(-)
+
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 56bb4567a4940..36bbfdf431c19 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1606,7 +1606,7 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
+ }
+ 
+ void __init *memmap_alloc(phys_addr_t size, phys_addr_t align,
+-			  phys_addr_t min_addr, int nid, bool exact_nid)
++			  phys_addr_t min_addr, int nid)
+ {
+ 	void *ptr;
+ 
+@@ -1614,14 +1614,8 @@ void __init *memmap_alloc(phys_addr_t size, phys_addr_t align,
+ 	 * Kmemleak will explicitly scan mem_map by traversing all valid
+ 	 * `struct *page`,so memblock does not need to be added to the scan list.
+ 	 */
+-	if (exact_nid)
+-		ptr = memblock_alloc_exact_nid_raw(size, align, min_addr,
+-						   MEMBLOCK_ALLOC_NOLEAKTRACE,
+-						   nid);
+-	else
+-		ptr = memblock_alloc_try_nid_raw(size, align, min_addr,
+-						 MEMBLOCK_ALLOC_NOLEAKTRACE,
+-						 nid);
++	ptr = memblock_alloc_try_nid_raw(size, align, min_addr,
++					 MEMBLOCK_ALLOC_NOLEAKTRACE, nid);
+ 
+ 	if (ptr && size > 0)
+ 		page_init_poison(ptr, size);
+@@ -1649,7 +1643,7 @@ static void __init alloc_node_mem_map(struct pglist_data *pgdat)
+ 	end = ALIGN(pgdat_end_pfn(pgdat), MAX_ORDER_NR_PAGES);
+ 	size =  (end - start) * sizeof(struct page);
+ 	map = memmap_alloc(size, SMP_CACHE_BYTES, MEMBLOCK_LOW_LIMIT,
+-			   pgdat->node_id, false);
++			   pgdat->node_id);
+ 	if (!map)
+ 		panic("Failed to allocate %ld bytes for node %d memory map\n",
+ 		      size, pgdat->node_id);
+diff --git a/mm/mm_init.h b/mm/mm_init.h
+index c9fc35e7e9f1f..a8ed5c20851bc 100644
+--- a/mm/mm_init.h
++++ b/mm/mm_init.h
+@@ -31,8 +31,8 @@ static inline void clear_zone_contiguous(struct zone *zone)
+ 
+ void memblock_free_pages(unsigned long pfn, unsigned int order);
+ 
+-void *memmap_alloc(phys_addr_t size, phys_addr_t align, phys_addr_t min_addr,
+-		int nid, bool exact_nid);
++void *memmap_alloc(phys_addr_t size, phys_addr_t align,
++		   phys_addr_t min_addr, int nid);
+ 
+ void memmap_init_range(unsigned long size, int nid, unsigned long zone,
+ 		unsigned long start_pfn, unsigned long zone_end_pfn,
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 96506f594924c..dbd1ebe93fe9d 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -62,7 +62,7 @@ void __ref *vmemmap_alloc_block(unsigned long size, int node)
+ 		}
+ 		return NULL;
+ 	} else
+-		return memmap_alloc(size, size, __pa(MAX_DMA_ADDRESS), node, false);
++		return memmap_alloc(size, size, __pa(MAX_DMA_ADDRESS), node);
+ }
+ 
+ static void * __meminit altmap_alloc_block_buf(unsigned long size,
+diff --git a/mm/sparse.c b/mm/sparse.c
+index b75921c622ede..36692b1dd7333 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -215,7 +215,7 @@ struct page __init *__populate_section_memmap(unsigned long pfn,
+ {
+ 	const unsigned long size = PAGE_ALIGN(sizeof(struct page) * PAGES_PER_SECTION);
+ 
+-	return memmap_alloc(size, size, __pa(MAX_DMA_ADDRESS), nid, false);
++	return memmap_alloc(size, size, __pa(MAX_DMA_ADDRESS), nid);
+ }
+ #endif /* !CONFIG_SPARSEMEM_VMEMMAP */
+ 
+-- 
+2.47.3
+

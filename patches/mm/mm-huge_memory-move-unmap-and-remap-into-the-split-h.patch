@@ -1,0 +1,143 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Tue, 15 Sep 2026 01:14:49 +0800
+Subject: [PATCH] mm/huge_memory: move unmap and remap into the split helpers
+
+To prepare for further cleanup, move the unmap/remap handling from
+__folio_split() into the split helpers.  Only anon folios need to be
+remapped, so remap_page() is now only called for anon splits and the anon
+check in remap_page() is redundant and can be removed.
+
+Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-8-39878b37dfb0@tencent.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+---
+ mm/huge_memory.c | 36 ++++++++++++++++++++++--------------
+ 1 file changed, 22 insertions(+), 14 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 5ba3bcdfc42db..1749905ade6a5 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3641,9 +3641,6 @@ static void remap_page(struct folio *folio, unsigned long nr, int flags)
+ {
+ 	int i = 0;
+ 
+-	/* If unmap_folio() uses try_to_migrate() on file, remove this check */
+-	if (!folio_test_anon(folio))
+-		return;
+ 	for (;;) {
+ 		remove_migration_ptes(folio, folio, TTU_RMAP_LOCKED | flags);
+ 		i += folio_nr_pages(folio);
+@@ -4017,15 +4014,23 @@ static int __folio_freeze_split_anon(struct folio *folio,
+ {
+ 	struct folio *end_folio = folio_next(folio);
+ 	struct swap_cluster_info *ci = NULL;
++	int old_order = folio_order(folio);
+ 	struct folio *new_folio, *next;
++	enum ttu_flags ttu_flags = 0;
+ 	struct lruvec *lruvec;
++	bool need_remap = false;
+ 	int ret = 0;
+ 
++	if (folio_mapped(folio)) {
++		need_remap = true;
++		unmap_folio(folio);
++	}
++
+ 	local_irq_disable();
+ 
+ 	if (!folio_ref_freeze(folio, folio_cache_ref_count(folio) + 1)) {
+-		local_irq_enable();
+-		return -EAGAIN;
++		ret = -EAGAIN;
++		goto out_no_split;
+ 	}
+ 
+ 	/* Take off the deferred split queue while frozen and memcg set */
+@@ -4074,7 +4079,13 @@ static int __folio_freeze_split_anon(struct folio *folio,
+ 		lruvec_unlock(lruvec);
+ 	if (ci)
+ 		swap_cluster_unlock(ci);
++out_no_split:
+ 	local_irq_enable();
++	if (need_remap) {
++		if (!ret && !folio_is_device_private(folio))
++			ttu_flags = TTU_USE_SHARED_ZEROPAGE;
++		remap_page(folio, 1 << old_order, ttu_flags);
++	}
+ 
+ 	return ret;
+ }
+@@ -4106,6 +4117,8 @@ static int __folio_freeze_split_file(struct folio *folio,
+ 	if (shmem_mapping(mapping))
+ 		end = shmem_fallocend(mapping->host, end);
+ 
++	unmap_folio(folio);
++
+ 	xas_lock_irq(xas);
+ 
+ 	/*
+@@ -4190,8 +4203,11 @@ static int __folio_freeze_split_file(struct folio *folio,
+ 
+ 	if (do_lru)
+ 		lruvec_unlock(lruvec);
+-
+ fail:
++	/*
++	 * If we want to use try_to_migrate() on file in unmap_folio,
++	 * remember to add remap_page() and adapt it.
++	 */
+ 	xas_unlock_irq(xas);
+ 	if (nr_shmem_dropped)
+ 		shmem_uncharge(mapping->host, nr_shmem_dropped);
+@@ -4231,7 +4247,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+ 	struct anon_vma *anon_vma = NULL;
+ 	int old_order = folio_order(folio);
+ 	struct folio *new_folio, *next;
+-	enum ttu_flags ttu_flags = 0;
+ 	int ret;
+ 
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
+@@ -4319,8 +4334,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+ 		goto out_unlock;
+ 	}
+ 
+-	unmap_folio(folio);
+-
+ 	if (is_anon)
+ 		ret = __folio_freeze_split_anon(folio, new_order, split_at,
+ 						true, list, split_type);
+@@ -4328,11 +4341,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+ 		ret = __folio_freeze_split_file(folio, new_order, split_at, &xas, mapping,
+ 						true, list, split_type);
+ 
+-	if (!ret && is_anon && !folio_is_device_private(folio))
+-		ttu_flags = TTU_USE_SHARED_ZEROPAGE;
+-
+-	remap_page(folio, 1 << old_order, ttu_flags);
+-
+ 	/*
+ 	 * Drop the mapping while the inode is still pinned. @folio stays
+ 	 * locked and present in the page cache until the loop below, so
+-- 
+2.47.3
+

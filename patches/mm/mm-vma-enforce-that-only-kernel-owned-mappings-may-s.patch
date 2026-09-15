@@ -1,0 +1,42 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:45 +0100
+Subject: [PATCH] mm/vma: enforce that only kernel-owned mappings may set
+ VMA_IO_BIT
+
+It makes no sense for a mapping whose contents the kernel does not own to
+specify that the range is MMIO.
+
+Prior to this patch, all in-tree drivers which did so have been updated
+such that they are marked as kernel-owned.  The check WARNs and fails the
+mmap for any out-of-tree driver that still sets VMA_IO_BIT without a
+kernel mapping.
+
+No functional change intended for in-tree code.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-25-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index c6ed04d27351a..fa429771bea88 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2787,6 +2787,12 @@ static int mmap_validate_vma_flags(const vma_flags_t *flags)
+ 		return -EINVAL;
+ #endif
+ 
++	if (!vma_flags_test_any(flags, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT)) {
++		/* Only kernel-owned mappings may set VMA_IO_BIT. */
++		if (WARN_ON_ONCE(vma_flags_test(flags, VMA_IO_BIT)))
++			return -EINVAL;
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,51 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:22 +0100
+Subject: [PATCH] mm/vma: predicate setting mmap_prepare VMA fields on new vma
+ alloc
+
+It only makes sense to manipulate VMA fields if we allocated a new VMA,
+rather than merged it.
+
+VMA merging does not compare vm_ops or vm_private_data, so a merged VMA
+keeps its own, which is also what the legacy f_op->mmap path does since it
+never touches an existing VMA.  Previously set_vma_user_defined_fields()
+overwrote the merged VMA's fields with those set for the new mapping.  In
+practice these are the same values, with rare exceptions such as shmem
+selecting vm_ops based on whether the file has been unlinked, so no
+user-visible change is expected.
+
+Make this dependency explicit, and additionally constify have_mmap_prepare
+while we're here.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-2-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index a319a9fc2f29a..cd9e2113f66ef 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2892,7 +2892,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+ {
+ 	struct mm_struct *mm = current->mm;
+ 	struct vm_area_struct *vma = NULL;
+-	bool have_mmap_prepare = file && file->f_op->mmap_prepare;
++	const bool have_mmap_prepare = file && file->f_op->mmap_prepare;
+ 	VMA_ITERATOR(vmi, mm, addr);
+ 	const pgoff_t anon_pgoff = addr >> PAGE_SHIFT;
+ 	MMAP_STATE(map, mm, &vmi, addr, len, pgoff, anon_pgoff, vma_flags, file);
+@@ -2935,7 +2935,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+ 		allocated_new = true;
+ 	}
+ 
+-	if (have_mmap_prepare && !map_is_anon(&map))
++	if (have_mmap_prepare && allocated_new && !map_is_anon(&map))
+ 		set_vma_user_defined_fields(vma, &map);
+ 
+ 	__mmap_complete(&map, vma);
+-- 
+2.47.3
+

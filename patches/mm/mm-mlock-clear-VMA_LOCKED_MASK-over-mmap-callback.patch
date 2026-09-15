@@ -1,0 +1,86 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:43 +0100
+Subject: [PATCH] mm/mlock: clear VMA_LOCKED_MASK over mmap callback
+
+Currently there's a confusing mess around VMA_LOCKED_BIT and
+VMA_LOCKONFAULT_BIT.
+
+It is permitted for drivers to set any flags they like, with the VMA
+already possessing lock flags.
+
+This results in the absurd situation of a VMA possessing both
+VMA_SPECIAL_FLAGS and VMA_LOCKED_MASK flags, which is not permitted.
+
+This has resulted in mlock_vma_folio() having a very silly check for this
+scenario to work around it.
+
+There is no need for this - just clear the flags before invoking the hook
+and reinstate them afterwards if they are required.
+
+Nothing relies upon this being set during the mmap operation.
+
+mmap_prepare is unaffected by this so requires no fix.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-23-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/internal.h |  9 +--------
+ mm/vma.c      | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index bafc09842850e..118ee0f5c6837 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -969,14 +969,7 @@ void mlock_folio(struct folio *folio);
+ static inline void mlock_vma_folio(struct folio *folio,
+ 				struct vm_area_struct *vma)
+ {
+-	/*
+-	 * The VM_SPECIAL check here serves two purposes.
+-	 * 1) VM_IO check prevents migration from double-counting during mlock.
+-	 * 2) Although mmap_region() and mlock_fixup() take care that VM_LOCKED
+-	 *    is never left set on a VM_SPECIAL vma, there is an interval while
+-	 *    file->f_op->mmap() is using vm_insert_page(s), when VM_LOCKED may
+-	 *    still be set while VM_SPECIAL bits are added: so ignore it then.
+-	 */
++	/* The VM_IO check prevents migration from double-counting during mlock. */
+ 	if (unlikely((vma->vm_flags & (VM_LOCKED|VM_SPECIAL)) == VM_LOCKED))
+ 		mlock_folio(folio);
+ }
+diff --git a/mm/vma.c b/mm/vma.c
+index d71ec51255b18..c6ed04d27351a 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2607,6 +2607,11 @@ static int __mmap_new_file_vma(struct mmap_state *map,
+ 	if (!map->vm_file->f_op->mmap)
+ 		return 0;
+ 
++	/*
++	 * Driver-specified flags may make the lock flags invalid, so clear
++	 * VMA_LOCKED_MASK and reinstate it afterwards if appropriate.
++	 */
++	vma_clear_flags_mask(vma, VMA_LOCKED_MASK);
+ 	error = mmap_file(vma->vm_file, vma);
+ 	map->vm_file = vma->vm_file;
+ 
+@@ -2623,6 +2628,15 @@ static int __mmap_new_file_vma(struct mmap_state *map,
+ 		return error;
+ 	}
+ 
++	/* If VMA flags still valid for locked mask, reinstate. */
++	if (vma_supports_mlock(vma)) {
++		const vma_flags_t mask =
++			vma_flags_and_mask(&map->vma_flags,
++					   VMA_LOCKED_MASK);
++
++		vma_set_flags_mask(vma, mask);
++	}
++
+ 	map->vma_flags = vma->flags;
+ 
+ 	return 0;
+-- 
+2.47.3
+

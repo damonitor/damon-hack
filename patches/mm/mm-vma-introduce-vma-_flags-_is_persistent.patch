@@ -1,0 +1,113 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:51 +0100
+Subject: [PATCH] mm/vma: introduce vma[_flags]_is_persistent()
+
+Introduce vma[_flags]_is_persistent() for the purposes of identifying
+mappings that are persistent in the sense that bytes to the mapping stay
+there, and bytes read from the mapping are the same unless changed by
+actions taken by userland.
+
+Kernel-owned mappings do not fall into this category, as their owner may
+change the contents without the user having initiated it, and nor of
+course does memory-mapped I/O.
+
+We exclude fixed mappings as these are singled out as being unmergeable
+and so cannot be guaranteed to persist user data.
+
+hugetlb mappings are fixed mappings, but their contents are entirely the
+user's, so they are explicitly carved out as persistent, as the
+MADV_DODUMP check already does.
+
+It excludes droppable mappings, which by their nature are ephemeral.
+
+Use this functionality to update the madvise MADV_DODUMP check to test for
+persistence rather than open-coding this.
+
+This replaces the VM_SPECIAL check which means it no longer checks for
+VMA_IO_BIT, however this is safe as we have established the invariant that
+only kernel-owned mappings may set VMA_IO_BIT, so we implicitly include
+these.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-31-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm.h | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ mm/madvise.c       |  4 ++--
+ 2 files changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 21acf145ec104..003d3f91140bd 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -1741,6 +1741,50 @@ static inline bool vma_can_merge(const struct vm_area_struct *vma)
+ 	return vma_flags_can_merge(&vma->flags);
+ }
+ 
++/**
++ * vma_flags_is_persistent() - Do the specified VMA flags imply that the VMA
++ * contains persistent data?
++ * @flags: The VMA flags to test.
++ *
++ * Persistent in the sense that - if you write bytes to the mapping - do they
++ * stay written?
++ *
++ * If the kernel or a device could write to the memory independently of
++ * userland, or the kernel could arbitrarily discard it, then it is not
++ * persistent.
++ *
++ * Returns: true if the flags imply this VMA is persistent, otherwise false.
++ */
++static inline bool vma_flags_is_persistent(const vma_flags_t *flags)
++{
++	/* hugetlb is a fixed mapping, but its contents are the user's own. */
++	if (vma_flags_is_hugetlb(flags))
++		return true;
++	/*
++	 * MMIO mappings may not store what is written and may be changed by the
++	 * device. Kernel-owned and fixed mappings may be changed by their owner
++	 * without the user having initiated it.
++	 */
++	if (vma_flags_is_kernel_owned(flags) ||
++	    vma_flags_is_fixed_mapping(flags))
++		return false;
++	/* Droppable memory is discardable by definition. */
++	return !vma_flags_test_single_mask(flags, VMA_DROPPABLE);
++}
++
++/**
++ * vma_is_persistent() - Does the VMA contain persistent data?
++ * @vma: The VMA to test.
++ *
++ * See vma_flags_is_persistent() for details.
++ *
++ * Returns: true if the VMA is persistent, otherwise false.
++ */
++static inline bool vma_is_persistent(const struct vm_area_struct *vma)
++{
++	return vma_flags_is_persistent(&vma->flags);
++}
++
+ /**
+  * vma_kernel_pagesize - Default page size granularity for this VMA.
+  * @vma: The user mapping.
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 0922d5f07a124..e15973292f946 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -1584,8 +1584,8 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
+ 		new_flags |= VM_DONTDUMP;
+ 		break;
+ 	case MADV_DODUMP:
+-		if ((!vma_is_hugetlb(vma) && (new_flags & VM_SPECIAL)) ||
+-		    (new_flags & VM_DROPPABLE))
++		/* Non-persistent memory cannot be dumped. */
++		if (!vma_is_persistent(vma))
+ 			return -EINVAL;
+ 		new_flags &= ~VM_DONTDUMP;
+ 		break;
+-- 
+2.47.3
+

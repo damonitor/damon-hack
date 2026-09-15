@@ -1,0 +1,102 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Tue, 15 Sep 2026 01:14:42 +0800
+Subject: [PATCH] mm/swap: fix off-by-one in swap cache replace sanity check
+
+Patch series "mm/huge_memory: clean up and decouple the anon and file
+split helpers", v5.
+
+The folio split path handles anon, page cache and swap cache folios in one
+routine.  That mixing is what makes the swap cache split restrictions hard
+to lift and to review.  We now support uniform split to order-0 only, and
+no mappingless swap cache folios.  And it has left a fair number of dead
+or redundant checks behind.
+
+This series prepares for lifting those restrictions by cleaning up the
+code first: split the routine into an anon and a file helper, and keep all
+swap cache handling in the anon helper.  The file helper never sees a swap
+cache folio, folio_check_splittable() rejects them up front.
+
+Apart from two bug fixes (patch 1 and 2) and a slight adjustment of anon
+splitting (patch 12), this is a pure cleanup.
+
+Testing:
+
+The in-tree split_huge_page_test selftest (uniform, non-uniform and
+in-folio-offset splits of anon and pagecache folios) passes 62/62 over 600
+runs on the patched kernel.
+
+ftrace function_graph tracing filtered on __folio_split() was used to
+compare per-call durations between the base and the patched kernel on the
+same x86-64 box (interleaved runs across alternating reboots.  135 split
+calls per run, 600 test runs):
+
+Before: 68.52 us, stddev: 1.58
+After:  67.38 us, stddev: 1.33
+
+The patched kernel is slightly faster.  The stack usage and object size
+change as the config and compiler change, but in general the stack usage
+is reduced and object size is basically unchanged.
+
+
+This patch (of 17):
+
+The DEBUG_VM sanity check in __swap_cache_replace_folio() iterates the old
+folio's range with "while (ci_off++ < ci_end)", so the loop body runs on
+the already-incremented offset: the first entry is skipped and one entry
+past the range is read.  For a folio split that entry belongs to the first
+after-split folio and was just repointed by the replacement loop above, so
+the check would warn spuriously whenever sub-folio orders differ from the
+head folio's.
+
+Currently we don't support non-uniform swapcache split, but this still
+needs a fix to clean it up and prepare for non-uniform swap cache split.
+
+Use the same do-while pattern as the replacement loop.
+
+Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-0-39878b37dfb0@tencent.com
+Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-1-39878b37dfb0@tencent.com
+Fixes: 8578e0c00dcf ("mm, swap: use the swap table for the swap cache and switch API")
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+---
+ mm/swap_state.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/swap_state.c b/mm/swap_state.c
+index 625c185a1ca4d..cef44aadee615 100644
+--- a/mm/swap_state.c
++++ b/mm/swap_state.c
+@@ -396,8 +396,9 @@ void __swap_cache_replace_folio(struct swap_cluster_info *ci,
+ 	    folio_order(old) != folio_order(new)) {
+ 		ci_off = swp_cluster_offset(old->swap);
+ 		ci_end = ci_off + folio_nr_pages(old);
+-		while (ci_off++ < ci_end)
++		do {
+ 			WARN_ON_ONCE(swp_tb_to_folio(__swap_table_get(ci, ci_off)) != old);
++		} while (++ci_off < ci_end);
+ 	}
+ }
+ 
+-- 
+2.47.3
+

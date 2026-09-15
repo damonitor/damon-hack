@@ -1,0 +1,59 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:32 +0100
+Subject: [PATCH] selinux: reject writable opens of policy file, drop mmap
+ shared/write check
+
+The policy file has no write method and is exposed read-only (S_IRUGO in
+selinux_files[]), yet sel_open_policy() performs no open mode check, so a
+CAP_DAC_OVERRIDE caller can open it O_RDWR.  Reject FMODE_WRITE at open,
+as kernfs does.
+
+The file can then never be mapped with FMODE_WRITE, so do_mmap() always
+clears VM_MAYWRITE and VM_SHARED for MAP_SHARED mappings and the VM_SHARED
+check in sel_mmap_policy() cannot be reached.  Remove it.
+
+This also stops sel_mmap_policy() clearing VM_MAYWRITE on a mapping that
+is neither a PFN map nor a mixed map, ahead of the core enforcing that
+only such mappings may do so.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-12-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Stephen Smalley <stephen.smalley.work@gmail.com>
+Reviewed-by: Jann Horn <jannh@google.com>
+---
+ security/selinux/selinuxfs.c | 11 +++--------
+ 1 file changed, 3 insertions(+), 8 deletions(-)
+
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index c7d91476971cb..545a6f89f9e76 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -340,6 +340,9 @@ static int sel_open_policy(struct inode *inode, struct file *filp)
+ 	struct policy_load_memory *plm = NULL;
+ 	int rc;
+ 
++	if (filp->f_mode & FMODE_WRITE)
++		return -EACCES;
++
+ 	rc = avc_has_perm(current_sid(), SECINITSID_SECURITY,
+ 			  SECCLASS_SECURITY, SECURITY__READ_POLICY, NULL);
+ 	if (rc)
+@@ -424,14 +427,6 @@ static const struct vm_operations_struct sel_mmap_policy_ops = {
+ 
+ static int sel_mmap_policy(struct file *filp, struct vm_area_struct *vma)
+ {
+-	if (vma->vm_flags & VM_SHARED) {
+-		/* do not allow mprotect to make mapping writable */
+-		vm_flags_clear(vma, VM_MAYWRITE);
+-
+-		if (vma->vm_flags & VM_WRITE)
+-			return -EACCES;
+-	}
+-
+ 	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+ 	vma->vm_ops = &sel_mmap_policy_ops;
+ 
+-- 
+2.47.3
+

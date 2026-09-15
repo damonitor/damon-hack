@@ -7,71 +7,63 @@
     - maintainer, nobody: 2 -> 2 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 81 -> 94 commits
-  - series: 14 (79) -> 16 (91)
+- mm-unstable: 94 -> 94 commits (no change)
+  - series: 16 (91) -> 16 (91) (no change)
     - no role, maintainer: 21 -> 21 commits (no change)
-    - maintainer, nobody: 48 -> 61 commits
+    - maintainer, nobody: 61 -> 61 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-  - changed commits
-    - series "mm/damon: introduce pgidle_set probe filter type". (5)
-      - ac7e143235c0 "mm/damon/api: introduce DAMON_FILTER_TYPE_PGIDLE_SET (0/5)"
+- mm-new: 0 -> 14 commits
+  - series: 0 (0) -> 2 (14)
+    - no role, maintainer: 0 -> 6 commits
+    - maintainer, nobody: 0 -> 7 commits
+    - maintainer, no role : 0 -> 1 commits
+  - new commits
+    - series "mm/damon: move damos filter range arguments validation to core". (8)
+      - 2f88c8440a2b "mm/damon/sysfs-schemes: read sysfs_filter->addr_range only once (0/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260910142234.171562-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260910142234.171562-2-sj@kernel.org
-      - 8f0cd5e1b4f8 "mm/damon/paddr: support DAMON_FILTER_TYPE_PGIDLE_SET (1/5)"
+        - Link: https://lore.kernel.org/20260914142327.92510-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260914142327.92510-2-sj@kernel.org
+      - 47e5c17567c1 "mm/damon/sysfs-schemes: read sysfs_filter->sz_range only once (1/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260910142234.171562-3-sj@kernel.org
-      - 6a00e5447c45 "mm/damon/vaddr: support DAMON_FILTER_TYPE_PGIDLE_SET (2/5)"
+        - Link: https://lore.kernel.org/20260914142327.92510-3-sj@kernel.org
+      - 009349acf67c "mm/damon/core: return an error from damos_commit_filter_arg() (2/8)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20260914142327.92510-4-sj@kernel.org
+      - 7e6b24d33ae0 "mm/damon/core: disallow max < min damos filter range arguments commit (3/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260910142234.171562-4-sj@kernel.org
-      - fd9cf5ad9edb "mm/damon/sysfs: support DAMON_FILTER_TYPE_PGIDLE_SET (3/5)"
+        - Link: https://lore.kernel.org/20260914142327.92510-5-sj@kernel.org
+      - b533d7a336cf "mm/damon/sysfs-schemes: drop centralized filter range arg validations (4/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260910142234.171562-5-sj@kernel.org
-      - 6f0346e352d1 "Docs/mm/damon/design: update for pgidle_set probe filter (4/5)"
+        - Link: https://lore.kernel.org/20260914142327.92510-6-sj@kernel.org
+      - ce9c04870065 "mm/damon/sysfs-schemes: use switch-case in add_scheme_filters() (5/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260910142234.171562-6-sj@kernel.org
-    - series "mm/damon: introduce probe_hits_wsum DAMOS core filter", v2. (7)
-      - 6a822374cfcd "mm/damon/api: introduce DAMOS_FILTER_TYPE_PROBE_HITS_WSUM (0/7)"
+        - Link: https://lore.kernel.org/20260914142327.92510-7-sj@kernel.org
+      - 51090bc229b6 "mm/damon/core-kunit: extend damos_commit_filter_for() for wrong input (6/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260911135510.96914-2-sj@kernel.org
-      - b7fee0cd63a9 "mm/damon/api: clarify DAMOS_FILTER_TYPE_PROBE_HITS_WSUM behavior (1/7)"
+        - Link: https://lore.kernel.org/20260914142327.92510-8-sj@kernel.org
+      - fc9efcff4058 "mm/damon/core-kunit: test invalid damos filter commits (7/8)"
         - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911142522.98013-1-sj@kernel.org
-      - 3dabc621c0cf "mm/damon/core: extend probe_hits_wsum() for moving sum based calculation (2/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-3-sj@kernel.org
-      - 3214f2c5a0a7 "mm/damon/core: support probe_hits_wsum damos core filter (3/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-4-sj@kernel.org
-      - 93172e634a85 "mm/damon/sysfs-schemes: rename sysfs_filter->sz_range to range_{min,max} (4/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-5-sj@kernel.org
-      - 4e840f3a63b9 "mm/damon/sysfs-schemes: support probe_hits_wsum damos core filter (5/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-6-sj@kernel.org
-      - 41a43d5b9573 "Docs/mm/damon/design: update for probe_hits_wsum DAMOS core filter (6/7)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260911135510.96914-7-sj@kernel.org
-    - 73552638be09 "Docs/admin-guide/mm/damon/usage: update for probe_hits_wsum DAMOS filter"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260911135510.96914-8-sj@kernel.org
-- mm-new: 13 -> 0 commits
-  - series: 2 (12) -> 0 (0)
-    - maintainer, nobody: 13 -> 0 commits
+        - Link: https://lore.kernel.org/20260914142327.92510-9-sj@kernel.org
+    - series "mm/damon: misc improvements in tests and documents". (6)
+      - 732ae61e78ae "selftests/damon: stop kdamond on error exits of no-op commit test (0/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260914141952.91465-2-sj@kernel.org
+      - 72ad9df7ba12 "selftests/damon: ignore test-generated damon_dump_output (1/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-3-sj@kernel.org
+      - 04b8f66422a6 "selftests/damon: add script dir to sys.path for PYTHONSAFEPATH compatibility (2/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-4-sj@kernel.org
+      - 9122132af527 "mm/damon/tests/core-kunit: improve nr_samples_per_aggr test isolation (3/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-5-sj@kernel.org
+      - 44f7188dcdff "Docs/mm/damon/design: clarify when qt_exceeds increases (4/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-6-sj@kernel.org
+      - 056803fa68fb "Docs/mm/damon/design: fix typos in temporal auto-tuning algorithm section (5/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260914141952.91465-7-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

@@ -1,0 +1,69 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:52 +0100
+Subject: [PATCH] mm/uffd: use predicates for userfaultfd checks
+
+Rather than directly checking VMA flags, use the newly introduced
+vma_is_kernel_owned() and vma_is_persistent() helpers in userfaultfd when
+assessing VMA suitability for userfaultfd and UFFDIO_MOVE.
+
+Update vma_move_compatible() so it's expressed in terms of VMA
+characteristics rather than arbitrary flags.
+
+Additionally, update the use of the deprecated VMA flag API when checking
+VMA_SHADOW_STACK_BIT.
+
+A VMA_IO_BIT check is no longer required but that is fine as a hard
+invariant has been established that only kernel-owned mappings may set
+VMA_IO_BIT so the check is now redundant.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-32-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/userfaultfd.c | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 949017e606086..ddf0a4a3d3997 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1754,10 +1754,18 @@ static inline bool move_splits_huge_pmd(unsigned long dst_addr,
+ }
+ #endif
+ 
+-static inline bool vma_move_compatible(struct vm_area_struct *vma)
++static inline bool vma_move_compatible(const struct vm_area_struct *vma)
+ {
+-	return !(vma->vm_flags & (VM_PFNMAP | VM_IO |  VM_HUGETLB |
+-				  VM_MIXEDMAP | VM_SHADOW_STACK));
++	/* uffd is generally incompatible with kernel-owned mappings. */
++	if (vma_is_kernel_owned(vma))
++		return false;
++	/* The shadow stack should not be written to by userspace. */
++	if (vma_test_single_mask(vma, VMA_SHADOW_STACK))
++		return false;
++	/* hugetlb mappings cannot be safely moved. */
++	if (vma_is_hugetlb(vma))
++		return false;
++	return true;
+ }
+ 
+ static int validate_move_areas(struct userfaultfd_ctx *ctx,
+@@ -2146,10 +2154,11 @@ static bool vma_can_userfault(struct vm_area_struct *vma, vm_flags_t vm_flags,
+ {
+ 	const struct vm_uffd_ops *ops = vma_uffd_ops(vma);
+ 
+-	if (vma->vm_flags & (VM_DROPPABLE | VM_SHADOW_STACK))
++	/* Non-persistent memory is inherently not controllable by userspace. */
++	if (!vma_is_persistent(vma))
+ 		return false;
+-
+-	if (!vma_is_hugetlb(vma) && (vma->vm_flags & VM_SPECIAL))
++	/* The shadow stack should not be written to by userspace. */
++	if (vma_test_single_mask(vma, VMA_SHADOW_STACK))
+ 		return false;
+ 
+ 	vm_flags &= __VM_UFFD_FLAGS;
+-- 
+2.47.3
+

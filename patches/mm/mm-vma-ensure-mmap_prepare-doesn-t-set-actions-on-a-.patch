@@ -1,0 +1,47 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Mon, 14 Sep 2026 15:57:25 +0100
+Subject: [PATCH] mm/vma: ensure mmap_prepare doesn't set actions on a
+ mergeable vma
+
+When a user requests an mmap_action be performed in mmap_prepare, this
+involves populating the VMA range with data.
+
+However, if the VMA is mergeable, it might then mistakenly be merged with
+another VMA without having populated the range.
+
+Every mmap action currently available sets VMA flags such that the VMA
+cannot be merged.
+
+However, to ensure that no future mmap action falls foul of this, assert
+that this is the case upon mmap_prepare validation.
+
+Link: https://lore.kernel.org/20260914-b4-mmap-prepare-vma-flag-sanify-v2-5-7d9781ed5361@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vma.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index 626a18c08a269..2648fb0e19959 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2809,6 +2809,15 @@ static int mmap_validate(unsigned long prev_start,
+ int mmap_prepare_validate(const struct vm_area_desc *prev_desc,
+ 			  const struct vm_area_desc *desc)
+ {
++	/*
++	 * It is not valid to execute mmap actions for VMAs which can be merged,
++	 * as any such merge would leave portions of the mapping incorrectly
++	 * unmapped.
++	 */
++	if (vma_flags_can_merge(&desc->vma_flags) &&
++	    WARN_ON_ONCE(desc->action.type != MMAP_NOTHING))
++		return -EINVAL;
++
+ 	return mmap_validate(prev_desc->start, desc->start,
+ 			     &prev_desc->vma_flags, &desc->vma_flags);
+ }
+-- 
+2.47.3
+
