@@ -1,0 +1,61 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Tue, 15 Sep 2026 18:15:56 +0800
+Subject: [PATCH] mm/mglru: restore accidentally removed seq < max_seq check
+
+Since commit 798c0330c2ca ("mm/mglru: rework aging feedback"), the
+following sanity check was accidentally removed:
+
+       if (seq < max_seq)
+               return 0;
+
+That means we can perform aging for any value less than or equal to
+max_gen_nr.
+
+This has been inconsistent with
+Documentation/admin-guide/mm/multigen_lru.rst, which states:
+
+ Users can write the following command to ``lru_gen`` to create a new
+ generation ``max_gen_nr+1``:
+
+     ``+ memcg_id node_id max_gen_nr [can_swap [force_scan]]``
+
+The correct semantics are that writing a value smaller than max_gen_nr
+should return 0, since the requested generation already exists.
+
+Link: https://lore.kernel.org/20260915101556.50467-1-baohua@kernel.org
+Fixes: 798c0330c2ca ("mm/mglru: rework aging feedback")
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chuanhua Han <hanchuanhua802@gmail.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Yu Zhao <yuzhao@google.com>
+---
+ mm/vmscan.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index c1abdf779acf3..fde28d0a647da 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5837,6 +5837,9 @@ static int run_aging(struct lruvec *lruvec, unsigned long seq,
+ {
+ 	DEFINE_MAX_SEQ(lruvec);
+ 
++	if (seq < max_seq)
++		return 0;
++
+ 	if (seq > max_seq)
+ 		return -EINVAL;
+ 
+-- 
+2.47.3
+

@@ -12,58 +12,40 @@
     - no role, maintainer: 21 -> 21 commits (no change)
     - maintainer, nobody: 61 -> 61 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-- mm-new: 0 -> 14 commits
-  - series: 0 (0) -> 2 (14)
-    - no role, maintainer: 0 -> 6 commits
-    - maintainer, nobody: 0 -> 7 commits
-    - maintainer, no role : 0 -> 1 commits
+- mm-new: 14 -> 23 commits
+  - series: 2 (14) -> 3 (22)
+    - no role, maintainer: 6 -> 6 commits (no change)
+    - maintainer, nobody: 7 -> 16 commits
+    - maintainer, no role : 1 -> 1 commits (no change)
   - new commits
-    - series "mm/damon: move damos filter range arguments validation to core". (8)
-      - 2f88c8440a2b "mm/damon/sysfs-schemes: read sysfs_filter->addr_range only once (0/8)"
+    - series "mm/damon: introduce hugepage_size probe filter". (8)
+      - a19c3766753e "mm/damon/api: introduce DAMON_FILTER_TYPE_HUGEPAGE_SIZE (0/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260914142327.92510-2-sj@kernel.org
-      - 47e5c17567c1 "mm/damon/sysfs-schemes: read sysfs_filter->sz_range only once (1/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260915143359.91472-2-sj@kernel.org
+      - 43fdd11cfa15 "mm/damon/core: commit hugepage_size type damon filter (1/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-3-sj@kernel.org
-      - 009349acf67c "mm/damon/core: return an error from damos_commit_filter_arg() (2/8)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20260914142327.92510-4-sj@kernel.org
-      - 7e6b24d33ae0 "mm/damon/core: disallow max < min damos filter range arguments commit (3/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-3-sj@kernel.org
+      - 71b3acb816b8 "mm/damon/ops-common: support hugepage_size damon filter matching (2/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-5-sj@kernel.org
-      - b533d7a336cf "mm/damon/sysfs-schemes: drop centralized filter range arg validations (4/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-4-sj@kernel.org
+      - eed405080a87 "mm/damon/sysfs: add min,max files under probe filter directory (3/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-6-sj@kernel.org
-      - ce9c04870065 "mm/damon/sysfs-schemes: use switch-case in add_scheme_filters() (5/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-5-sj@kernel.org
+      - 84849bbed44b "mm/damon/sysfs: support hugepage_size probe filter (4/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-7-sj@kernel.org
-      - 51090bc229b6 "mm/damon/core-kunit: extend damos_commit_filter_for() for wrong input (6/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-6-sj@kernel.org
+      - 992657281e20 "Docs/mm/damon/design: update for hugepage_size probe filter (5/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-8-sj@kernel.org
-      - fc9efcff4058 "mm/damon/core-kunit: test invalid damos filter commits (7/8)"
+        - Link: https://lore.kernel.org/20260915143359.91472-7-sj@kernel.org
+      - 3a0921f53062 "Docs/admin-guide/mm/damon/usage: update for hugepage_size (6/8)"
         - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260914142327.92510-9-sj@kernel.org
-    - series "mm/damon: misc improvements in tests and documents". (6)
-      - 732ae61e78ae "selftests/damon: stop kdamond on error exits of no-op commit test (0/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260914141952.91465-2-sj@kernel.org
-      - 72ad9df7ba12 "selftests/damon: ignore test-generated damon_dump_output (1/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-3-sj@kernel.org
-      - 04b8f66422a6 "selftests/damon: add script dir to sys.path for PYTHONSAFEPATH compatibility (2/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-4-sj@kernel.org
-      - 9122132af527 "mm/damon/tests/core-kunit: improve nr_samples_per_aggr test isolation (3/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-5-sj@kernel.org
-      - 44f7188dcdff "Docs/mm/damon/design: clarify when qt_exceeds increases (4/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-6-sj@kernel.org
-      - 056803fa68fb "Docs/mm/damon/design: fix typos in temporal auto-tuning algorithm section (5/6)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20260914141952.91465-7-sj@kernel.org
+        - Link: https://lore.kernel.org/20260915143359.91472-8-sj@kernel.org
+      - 81c69fbb4128 "docs-admin-guide-mm-damon-usage-update-for-hugepage_size-fix (7/8)"
+        - Authored by a maintainer, reviewed by nobody
+    - 0a39a8da1ed2 "Docs/ABI/damon: update for hugepage_size probe filter"
+      - Authored by a maintainer, reviewed by nobody
+      - Link: https://lore.kernel.org/20260915143359.91472-9-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
