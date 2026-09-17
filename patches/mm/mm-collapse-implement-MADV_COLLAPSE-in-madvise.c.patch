@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Thu, 10 Sep 2026 13:02:32 +0100
+Date: Wed, 16 Sep 2026 10:31:39 +0100
 Subject: [PATCH] mm/collapse: implement MADV_COLLAPSE in madvise.c
 
 MADV_COLLAPSE is a madvise operation, but its implementation sat in
@@ -19,7 +19,7 @@ collapse changes.
 The !CONFIG_TRANSPARENT_HUGEPAGE stub moves in with it.
 
 Assisted-by: LLM
-Link: https://lore.kernel.org/20260910120238.2529819-13-kirill@shutemov.name
+Link: https://lore.kernel.org/20260916093145.4022188-13-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
@@ -35,9 +35,9 @@ Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Zi Yan <ziy@nvidia.com>
 ---
  include/linux/huge_mm.h |   9 ---
- mm/khugepaged.c         | 157 +------------------------------------
+ mm/khugepaged.c         | 158 +------------------------------------
  mm/madvise.c            | 169 +++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 169 insertions(+), 166 deletions(-)
+ 3 files changed, 169 insertions(+), 167 deletions(-)
 
 diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
 index c745f7ad22987..8ca0fa3be2acb 100644
@@ -67,7 +67,7 @@ index c745f7ad22987..8ca0fa3be2acb 100644
  					 unsigned long start,
  					 unsigned long end,
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index af1302cace7ee..e41be3e41067c 100644
+index 0e4e2088db573..a3a9e4d93b461 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -969,21 +969,6 @@ static void collapse_policy_khugepaged(struct collapse_policy *p)
@@ -92,18 +92,19 @@ index af1302cace7ee..e41be3e41067c 100644
  #ifdef CONFIG_NUMA
  static int collapse_find_target_node(struct collapse_control *cc)
  {
-@@ -2795,8 +2780,8 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
- 	return result;
- }
- 
+@@ -2815,9 +2800,8 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
+  * and with it the VMA and anything derived under it.  The run revalidates for
+  * itself rather than trusting what the scan saw.
+  */
 -enum scan_result collapse_run_pmd(struct mm_struct *mm,
--		unsigned long addr, struct collapse_control *cc)
+-		unsigned long addr, enum scan_result result,
+-		struct collapse_control *cc)
 +enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
-+		struct collapse_control *cc)
++		enum scan_result result, struct collapse_control *cc)
  {
  	struct file *file = cc->scan_file;
  	bool triggered_wb = false;
-@@ -3172,141 +3157,3 @@ bool current_is_khugepaged(void)
+@@ -3191,141 +3175,3 @@ bool current_is_khugepaged(void)
  {
  	return kthread_func(current) == khugepaged;
  }
@@ -197,8 +198,8 @@ index af1302cace7ee..e41be3e41067c 100644
 -		}
 -
 -		result = collapse_scan_pmd(vma, addr, cc, orders);
--		/* Nothing to collapse here, and the lock is still ours */
--		if (result != SCAN_SUCCEED)
+-		/* Nothing to do here, and the lock is still ours */
+-		if (result != SCAN_SUCCEED && result != SCAN_PTE_MAPPED_HUGEPAGE)
 -			goto tally;
 -
 -		/* The collapse takes its own locks, so give this up */
@@ -206,7 +207,7 @@ index af1302cace7ee..e41be3e41067c 100644
 -		*lock_dropped = true;
 -		vma = NULL;
 -
--		result = collapse_run_pmd(mm, addr, cc);
+-		result = collapse_run_pmd(mm, addr, result, cc);
 -tally:
 -		switch (result) {
 -		case SCAN_SUCCEED:
@@ -246,7 +247,7 @@ index af1302cace7ee..e41be3e41067c 100644
 -			: madvise_collapse_errno(last_fail);
 -}
 diff --git a/mm/madvise.c b/mm/madvise.c
-index 963337f93a7a1..f75a9d1399803 100644
+index 963337f93a7a1..33bcd390ce436 100644
 --- a/mm/madvise.c
 +++ b/mm/madvise.c
 @@ -38,6 +38,7 @@
@@ -368,8 +369,8 @@ index 963337f93a7a1..f75a9d1399803 100644
 +		}
 +
 +		result = collapse_scan_pmd(vma, addr, cc, orders);
-+		/* Nothing to collapse here, and the lock is still ours */
-+		if (result != SCAN_SUCCEED)
++		/* Nothing to do here, and the lock is still ours */
++		if (result != SCAN_SUCCEED && result != SCAN_PTE_MAPPED_HUGEPAGE)
 +			goto tally;
 +
 +		/* The collapse takes its own locks, so give this up */
@@ -377,7 +378,7 @@ index 963337f93a7a1..f75a9d1399803 100644
 +		mark_mmap_lock_dropped(madv_behavior);
 +		vma = NULL;
 +
-+		result = collapse_run_pmd(mm, addr, cc);
++		result = collapse_run_pmd(mm, addr, result, cc);
 +tally:
 +		switch (result) {
 +		case SCAN_SUCCEED:

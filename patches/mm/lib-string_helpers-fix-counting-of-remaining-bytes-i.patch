@@ -1,0 +1,71 @@
+From: Jonas Rebmann <jre@pengutronix.de>
+Date: Wed, 16 Sep 2026 19:38:10 +0200
+Subject: [PATCH] lib/string_helpers: fix counting of remaining bytes in
+ string_unescape()
+
+All of the available sequences expand to exactly one byte, the size check
+in the loop condition is sufficient for the case of an escaped character
+too.
+
+Otherwise, an escape sequence that should be unescaped to the last
+character before terminating with null in the destination buffer will be
+output as backslash instead of the escaped character.
+
+The only exception is when encountering a backslash that turns out to not
+start a valid escape sequence and both the backslash and the character
+following are handled in one iteration.  Move the check there.
+
+Add a kunit regression-test that unescapes a character to right in front
+of the null terminator of the destination buffer.
+
+Link: https://lore.kernel.org/20260916-string_unescape-v1-5-7f8bd986fa33@pengutronix.de
+Fixes: 16c7fa05829e ("lib/string_helpers: introduce generic string_unescape")
+Signed-off-by: Jonas Rebmann <jre@pengutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Andy Shevchenko <andy@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Sascha Hauer <kernel@pengutronix.de>
+---
+ lib/string_helpers.c             | 5 +++--
+ lib/tests/string_helpers_kunit.c | 2 ++
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/lib/string_helpers.c b/lib/string_helpers.c
+index cb41ef9d8c5bb..4a621f884bde3 100644
+--- a/lib/string_helpers.c
++++ b/lib/string_helpers.c
+@@ -329,7 +329,7 @@ int string_unescape(char *src, char *dst, size_t size, unsigned int flags)
+ 		size = SIZE_MAX;
+ 
+ 	while (*src && --size) {
+-		if (src[0] == '\\' && src[1] != '\0' && size > 1) {
++		if (src[0] == '\\' && src[1] != '\0') {
+ 			src++;
+ 
+ 			if (flags & UNESCAPE_SPACE &&
+@@ -349,7 +349,8 @@ int string_unescape(char *src, char *dst, size_t size, unsigned int flags)
+ 				continue;
+ 
+ 			*out++ = '\\';
+-			size--;
++			if (!--size)
++				break;
+ 		}
+ 		*out++ = *src++;
+ 	}
+diff --git a/lib/tests/string_helpers_kunit.c b/lib/tests/string_helpers_kunit.c
+index 2e02c680cbb21..10763a01be83c 100644
+--- a/lib/tests/string_helpers_kunit.c
++++ b/lib/tests/string_helpers_kunit.c
+@@ -626,6 +626,8 @@ static void test_unescape(struct kunit *test)
+ 
+ 	test_string_unescape_one(test, "short buffer", UNESCAPE_HEX, "\\x41\\x41B", 4, "AAB", 3);
+ 	test_string_unescape_one(test, "unrecognized escape at end", UNESCAPE_HEX, "B\\qX", 4, "B\\q", 3);
++
++	test_string_unescape_one(test, "end of buffer", UNESCAPE_HEX, "B\\x41", 3, "BA", 2);
+ }
+ 
+ static void test_escape(struct kunit *test)
+-- 
+2.47.3
+

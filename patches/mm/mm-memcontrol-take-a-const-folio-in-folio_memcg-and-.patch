@@ -1,0 +1,300 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 15 Sep 2026 19:20:05 -0400
+Subject: [PATCH] mm: memcontrol: take a const folio in folio_memcg() and
+ friends
+
+Patch series "mm: memcontrol: constify the read side of the read side of
+the memcg API", v3.
+
+The memcg accessors, lruvec helpers, and stat readers only read from the
+memcg, folio, or lruvec they are given, but take non-const pointers.
+Constify them, along with the page_counter readers and the swap I/O blkg
+helpers along the way.
+
+
+This patch (of 11):
+
+The folio_memcg() family only reads from the folio, and everything it
+calls already takes a const folio.  Constify it, along with the page
+wrappers built on top of it and get_obj_cgroup_from_folio(), which only
+reads the folio's objcg.
+
+Link: https://lore.kernel.org/20260915-folio_memcg-const-v3-0-c239a6010b58@columbia.edu
+Link: https://lore.kernel.org/20260915-folio_memcg-const-v3-1-c239a6010b58@columbia.edu
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+---
+ include/linux/memcontrol.h | 50 +++++++++++++++++++-------------------
+ mm/memcontrol.c            |  8 +++---
+ 2 files changed, 29 insertions(+), 29 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 46bf724cae7af..5a5ca6814782a 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -410,7 +410,7 @@ static inline struct mem_cgroup *obj_cgroup_memcg(struct obj_cgroup *objcg)
+  * or NULL. This function assumes that the folio is known to have a
+  * proper object cgroup pointer.
+  */
+-static inline struct obj_cgroup *folio_objcg(struct folio *folio)
++static inline struct obj_cgroup *folio_objcg(const struct folio *folio)
+ {
+ 	unsigned long memcg_data = folio->memcg_data;
+ 
+@@ -448,7 +448,7 @@ static inline struct obj_cgroup *folio_objcg(struct folio *folio)
+  * Note: The caller should hold an rcu read lock or cgroup_mutex to protect
+  * memcg associated with a folio from being released.
+  */
+-static inline struct mem_cgroup *folio_memcg(struct folio *folio)
++static inline struct mem_cgroup *folio_memcg(const struct folio *folio)
+ {
+ 	struct obj_cgroup *objcg = folio_objcg(folio);
+ 
+@@ -461,7 +461,7 @@ static inline struct mem_cgroup *folio_memcg(struct folio *folio)
+  *
+  * Returns true if folio is charged to a memory cgroup, otherwise returns false.
+  */
+-static inline bool folio_memcg_charged(struct folio *folio)
++static inline bool folio_memcg_charged(const struct folio *folio)
+ {
+ 	return folio->memcg_data != 0;
+ }
+@@ -481,7 +481,7 @@ static inline bool folio_memcg_charged(struct folio *folio)
+  * A caller should hold an rcu read lock to protect memcg associated with a
+  * page from being released.
+  */
+-static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
++static inline struct mem_cgroup *folio_memcg_check(const struct folio *folio)
+ {
+ 	/*
+ 	 * Because folio->memcg_data might be changed asynchronously
+@@ -498,11 +498,11 @@ static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
+ 	return obj_cgroup_memcg(objcg);
+ }
+ 
+-static inline struct mem_cgroup *page_memcg_check(struct page *page)
++static inline struct mem_cgroup *page_memcg_check(const struct page *page)
+ {
+ 	if (PageTail(page))
+ 		return NULL;
+-	return folio_memcg_check((struct folio *)page);
++	return folio_memcg_check((const struct folio *)page);
+ }
+ 
+ static inline struct mem_cgroup *get_mem_cgroup_from_objcg(struct obj_cgroup *objcg)
+@@ -527,14 +527,14 @@ static inline struct mem_cgroup *get_mem_cgroup_from_objcg(struct obj_cgroup *ob
+  * that the folio has an associated memory cgroup. It's not safe to call
+  * this function against some types of folios, e.g. slab folios.
+  */
+-static inline bool folio_memcg_kmem(struct folio *folio)
++static inline bool folio_memcg_kmem(const struct folio *folio)
+ {
+ 	VM_BUG_ON_PGFLAGS(PageTail(&folio->page), &folio->page);
+ 	VM_BUG_ON_FOLIO(folio->memcg_data & MEMCG_DATA_OBJEXTS, folio);
+ 	return folio->memcg_data & MEMCG_DATA_KMEM;
+ }
+ 
+-static inline bool PageMemcgKmem(struct page *page)
++static inline bool PageMemcgKmem(const struct page *page)
+ {
+ 	return folio_memcg_kmem(page_folio(page));
+ }
+@@ -777,7 +777,7 @@ struct mem_cgroup *get_mem_cgroup_from_mm(struct mm_struct *mm);
+ 
+ struct mem_cgroup *get_mem_cgroup_from_current(void);
+ 
+-struct mem_cgroup *get_mem_cgroup_from_folio(struct folio *folio);
++struct mem_cgroup *get_mem_cgroup_from_folio(const struct folio *folio);
+ 
+ struct lruvec *folio_lruvec_lock(struct folio *folio);
+ struct lruvec *folio_lruvec_lock_irq(struct folio *folio);
+@@ -905,8 +905,8 @@ static inline bool mm_match_cgroup(struct mm_struct *mm,
+ 	return match;
+ }
+ 
+-struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio);
+-ino_t page_cgroup_ino(struct page *page);
++struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(const struct folio *folio);
++ino_t page_cgroup_ino(const struct page *page);
+ 
+ static inline bool mem_cgroup_online(struct mem_cgroup *memcg)
+ {
+@@ -956,7 +956,7 @@ void mem_cgroup_print_oom_group(struct mem_cgroup *memcg);
+ void mod_memcg_state(struct mem_cgroup *memcg,
+ 		     enum memcg_stat_item idx, int val);
+ 
+-static inline void mod_memcg_page_state(struct page *page,
++static inline void mod_memcg_page_state(const struct page *page,
+ 					enum memcg_stat_item idx, int val)
+ {
+ 	struct mem_cgroup *memcg;
+@@ -990,7 +990,7 @@ void mod_lruvec_kmem_state(void *p, enum node_stat_item idx, int val);
+ void count_memcg_events(struct mem_cgroup *memcg, enum vm_event_item idx,
+ 			unsigned long count);
+ 
+-static inline void count_memcg_folio_events(struct folio *folio,
++static inline void count_memcg_folio_events(const struct folio *folio,
+ 		enum vm_event_item idx, unsigned long nr)
+ {
+ 	struct mem_cgroup *memcg;
+@@ -1084,22 +1084,22 @@ static inline struct mem_cgroup *obj_cgroup_memcg(struct obj_cgroup *objcg)
+ 
+ #define root_mem_cgroup		(NULL)
+ 
+-static inline struct mem_cgroup *folio_memcg(struct folio *folio)
++static inline struct mem_cgroup *folio_memcg(const struct folio *folio)
+ {
+ 	return NULL;
+ }
+ 
+-static inline bool folio_memcg_charged(struct folio *folio)
++static inline bool folio_memcg_charged(const struct folio *folio)
+ {
+ 	return false;
+ }
+ 
+-static inline struct mem_cgroup *folio_memcg_check(struct folio *folio)
++static inline struct mem_cgroup *folio_memcg_check(const struct folio *folio)
+ {
+ 	return NULL;
+ }
+ 
+-static inline struct mem_cgroup *page_memcg_check(struct page *page)
++static inline struct mem_cgroup *page_memcg_check(const struct page *page)
+ {
+ 	return NULL;
+ }
+@@ -1109,12 +1109,12 @@ static inline struct mem_cgroup *get_mem_cgroup_from_objcg(struct obj_cgroup *ob
+ 	return NULL;
+ }
+ 
+-static inline bool folio_memcg_kmem(struct folio *folio)
++static inline bool folio_memcg_kmem(const struct folio *folio)
+ {
+ 	return false;
+ }
+ 
+-static inline bool PageMemcgKmem(struct page *page)
++static inline bool PageMemcgKmem(const struct page *page)
+ {
+ 	return false;
+ }
+@@ -1248,7 +1248,7 @@ static inline struct mem_cgroup *get_mem_cgroup_from_current(void)
+ 	return NULL;
+ }
+ 
+-static inline struct mem_cgroup *get_mem_cgroup_from_folio(struct folio *folio)
++static inline struct mem_cgroup *get_mem_cgroup_from_folio(const struct folio *folio)
+ {
+ 	return NULL;
+ }
+@@ -1406,7 +1406,7 @@ static inline void mod_memcg_state(struct mem_cgroup *memcg,
+ {
+ }
+ 
+-static inline void mod_memcg_page_state(struct page *page,
++static inline void mod_memcg_page_state(const struct page *page,
+ 					enum memcg_stat_item idx, int val)
+ {
+ }
+@@ -1471,7 +1471,7 @@ static inline void count_memcg_events(struct mem_cgroup *memcg,
+ {
+ }
+ 
+-static inline void count_memcg_folio_events(struct folio *folio,
++static inline void count_memcg_folio_events(const struct folio *folio,
+ 		enum vm_event_item idx, unsigned long nr)
+ {
+ }
+@@ -1767,7 +1767,7 @@ void __memcg_kmem_uncharge_page(struct page *page, int order);
+  * needs to be used outside of the local scope.
+  */
+ struct obj_cgroup *current_obj_cgroup(void);
+-struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio);
++struct obj_cgroup *get_obj_cgroup_from_folio(const struct folio *folio);
+ 
+ static inline struct obj_cgroup *get_obj_cgroup_from_current(void)
+ {
+@@ -1870,7 +1870,7 @@ static inline void __memcg_kmem_uncharge_page(struct page *page, int order)
+ {
+ }
+ 
+-static inline struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
++static inline struct obj_cgroup *get_obj_cgroup_from_folio(const struct folio *folio)
+ {
+ 	return NULL;
+ }
+@@ -1901,7 +1901,7 @@ static inline void count_objcg_events(struct obj_cgroup *objcg,
+ {
+ }
+ 
+-static inline ino_t page_cgroup_ino(struct page *page)
++static inline ino_t page_cgroup_ino(const struct page *page)
+ {
+ 	return 0;
+ }
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 791e536efaebe..72c0e9358cfce 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -348,7 +348,7 @@ EXPORT_SYMBOL(memcg_bpf_enabled_key);
+  * If memcg is bound to a traditional hierarchy, the css of root_mem_cgroup
+  * is returned.
+  */
+-struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio)
++struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(const struct folio *folio)
+ {
+ 	struct mem_cgroup *memcg;
+ 
+@@ -373,7 +373,7 @@ struct cgroup_subsys_state *get_mem_cgroup_css_from_folio(struct folio *folio)
+  * after page_cgroup_ino() returns, so it only should be used by callers that
+  * do not care (such as procfs interfaces).
+  */
+-ino_t page_cgroup_ino(struct page *page)
++ino_t page_cgroup_ino(const struct page *page)
+ {
+ 	struct mem_cgroup *memcg;
+ 	unsigned long ino = 0;
+@@ -1256,7 +1256,7 @@ struct mem_cgroup *get_mem_cgroup_from_current(void)
+  *
+  * See folio_memcg() for folio->objcg/memcg binding rules.
+  */
+-struct mem_cgroup *get_mem_cgroup_from_folio(struct folio *folio)
++struct mem_cgroup *get_mem_cgroup_from_folio(const struct folio *folio)
+ {
+ 	struct mem_cgroup *memcg;
+ 
+@@ -3154,7 +3154,7 @@ __always_inline struct obj_cgroup *current_obj_cgroup(void)
+ 	return rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+ }
+ 
+-struct obj_cgroup *get_obj_cgroup_from_folio(struct folio *folio)
++struct obj_cgroup *get_obj_cgroup_from_folio(const struct folio *folio)
+ {
+ 	struct obj_cgroup *objcg;
+ 
+-- 
+2.47.3
+

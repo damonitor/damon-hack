@@ -1,0 +1,76 @@
+From: Usama Arif <usama.arif@linux.dev>
+Date: Wed, 16 Sep 2026 05:51:22 -0700
+Subject: [PATCH] mm: filemap: move lruvec accounting outside the xarray lock
+
+__filemap_add_folio() inserts a folio and updates mapping->nrpages while
+holding mapping->i_pages.xa_lock with interrupts disabled.  The XArray
+insertion and nrpages update require the lock, but the lruvec statistic
+updates do not.  With CONFIG_MEMCG, those calls also update per-CPU memcg
+and lruvec counters and notify cgroup rstat, extending the critical
+section.
+
+Move the lruvec accounting after a successful XArray insertion and after
+xas_unlock_irq().  The page-cache references pin the folio, while the
+folio lock keeps folio->mapping stable and prevents removal until
+accounting is complete.  This moves one lruvec update for ordinary folios
+and a second for PMD-mappable folios out of the serialized section.
+
+In a 30-second system-wide perf lock contention -ab capture on a
+production host, the hottest caller-stack record attributed to
+__filemap_add_folio() had 20,867 contentions and 557.930 ms total wait.
+That was 14% of the 3.998 seconds of aggregate lock wait in the capture.
+Moving lruvec accuting outside of critical section should help optimize
+it.
+
+Link: https://lore.kernel.org/20260916125122.2696271-1-usama.arif@linux.dev
+Signed-off-by: Usama Arif <usama.arif@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+---
+ mm/filemap.c | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 00fd89cf6f550..4720bbfc1a663 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -918,14 +918,6 @@ noinline int __filemap_add_folio(struct address_space *mapping,
+ 
+ 		mapping->nrpages += nr;
+ 
+-		/* hugetlb pages do not participate in page cache accounting */
+-		if (!huge) {
+-			lruvec_stat_mod_folio(folio, NR_FILE_PAGES, nr);
+-			if (folio_test_pmd_mappable(folio))
+-				lruvec_stat_mod_folio(folio,
+-						NR_FILE_THPS, nr);
+-		}
+-
+ unlock:
+ 		xas_unlock_irq(&xas);
+ 
+@@ -942,6 +934,13 @@ noinline int __filemap_add_folio(struct address_space *mapping,
+ 	if (xas_error(&xas))
+ 		goto error;
+ 
++	/* hugetlb pages do not participate in page cache accounting */
++	if (!huge) {
++		lruvec_stat_mod_folio(folio, NR_FILE_PAGES, nr);
++		if (folio_test_pmd_mappable(folio))
++			lruvec_stat_mod_folio(folio, NR_FILE_THPS, nr);
++	}
++
+ 	trace_mm_filemap_add_to_page_cache(folio);
+ 	return 0;
+ error:
+-- 
+2.47.3
+

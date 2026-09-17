@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Thu, 10 Sep 2026 13:02:31 +0100
+Date: Wed, 16 Sep 2026 10:31:38 +0100
 Subject: [PATCH] mm/collapse: declare the collapse interface in collapse.h
 
 A collapse takes four calls:
@@ -15,7 +15,8 @@ collapse has given the mmap_lock up.  No other file can ask for a collapse
 without them.
 
 Declare them in collapse.h, with a comment stating the order they are
-called in and who holds the lock over each step.
+called in and who holds the lock over each step.  Each function says what
+it needs and what it does where it is defined.
 
 hugepage_vma_revalidate() becomes collapse_vma_revalidate(): it is part of
 what a collapse offers now, not a helper of the daemon.
@@ -25,7 +26,7 @@ Preparation for implementing MADV_COLLAPSE in madvise.c.
 No functional change.
 
 Assisted-by: LLM
-Link: https://lore.kernel.org/20260910120238.2529819-12-kirill@shutemov.name
+Link: https://lore.kernel.org/20260916093145.4022188-12-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
@@ -40,16 +41,16 @@ Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Zi Yan <ziy@nvidia.com>
 ---
- mm/collapse.h   | 44 ++++++++++++++++++++++++++++++++++++++++++++
- mm/khugepaged.c | 18 +++++++++---------
- 2 files changed, 53 insertions(+), 9 deletions(-)
+ mm/collapse.h   | 47 ++++++++++++++++++++++++++++++++++++++++++
+ mm/khugepaged.c | 55 +++++++++++++++++++++++++++++++++++++------------
+ 2 files changed, 89 insertions(+), 13 deletions(-)
 
 diff --git a/mm/collapse.h b/mm/collapse.h
-index 346859a2184f1..1ebbbf63fb256 100644
+index 9764011bad864..e529699652623 100644
 --- a/mm/collapse.h
 +++ b/mm/collapse.h
-@@ -106,4 +106,48 @@ struct collapse_control {
- 	bool scan_retract_only;
+@@ -104,4 +104,51 @@ struct collapse_control {
+ 	pgoff_t scan_pgoff;
  };
  
 +/* Which orders a VMA may collapse to, zero when it may not collapse at all */
@@ -60,18 +61,21 @@ index 346859a2184f1..1ebbbf63fb256 100644
 + * A caller states what it allows in cc->policy and then hands over one PTE
 + * table's worth of a VMA at a time:
 + *
-+ *     collapse_control_init(cc)         once, before the first table
-+ *     collapse_scan_pmd(vma, addr, ...) per table
-+ *     collapse_run_pmd(mm, addr, cc)    when a scan found work
-+ *     collapse_control_release(cc)      once, when done with the control
++ *     collapse_control_init(cc)              once, before the first table
++ *     collapse_scan_pmd(vma, addr, ...)      per table
++ *     collapse_run_pmd(mm, addr, result, cc) when a scan found work
++ *     collapse_control_release(cc)           once, when done with the control
 + *
 + * The caller holds mmap_lock for reading over the scan and passes an address
-+ * within @vma, aligned to the PTE table the scan is to judge.
++ * within @vma, aligned to the PTE table to scan.
 + *
 + * The scan returns with that lock still held.  It only reads, and almost every
 + * table it is offered has nothing to collapse, so a caller walks a whole VMA
 + * under the one lock it took to get there.  SCAN_SUCCEED means there is
-+ * something to collapse; anything else is why there is not.
++ * something to collapse.  SCAN_PTE_MAPPED_HUGEPAGE means the page cache
++ * already holds the PMD folio and only the PTE table is left to retract.
++ * Both are work for the run, which is handed what the scan returned; anything
++ * else is why there is nothing to do.
 + *
 + * The run is called without the lock and returns without it, taking what it
 + * needs in between: what it does -- allocate, isolate, copy, flush -- is slow
@@ -90,7 +94,7 @@ index 346859a2184f1..1ebbbf63fb256 100644
 +		unsigned long addr, struct collapse_control *cc,
 +		unsigned long orders);
 +enum scan_result collapse_run_pmd(struct mm_struct *mm, unsigned long addr,
-+		struct collapse_control *cc);
++		enum scan_result result, struct collapse_control *cc);
 +enum scan_result collapse_vma_revalidate(struct mm_struct *mm,
 +		unsigned long address, bool expect_anon,
 +		struct vm_area_struct **vmap, struct collapse_control *cc,
@@ -98,7 +102,7 @@ index 346859a2184f1..1ebbbf63fb256 100644
 +
  #endif	/* __MM_COLLAPSE_H */
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 6d2bebb403251..af1302cace7ee 100644
+index a77dd19070cb4..0e4e2088db573 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -498,7 +498,7 @@ void __khugepaged_enter(struct mm_struct *mm)
@@ -110,16 +114,25 @@ index 6d2bebb403251..af1302cace7ee 100644
  		vm_flags_t vm_flags, enum tva_type tva_flags)
  {
  	unsigned long orders;
-@@ -1016,7 +1016,7 @@ static int collapse_find_target_node(struct collapse_control *cc)
-  * Returns enum scan_result value.
-  */
+@@ -1011,12 +1011,12 @@ static int collapse_find_target_node(struct collapse_control *cc)
+ #endif
  
+ /*
+- * If mmap_lock temporarily dropped, revalidate vma
+- * after taking the mmap_lock again.
+- * Returns enum scan_result value.
++ * Find the VMA at @address again once mmap_lock has been given up and taken
++ * back, and check it still allows a collapse of @order there.  The VMA has to
++ * span the whole PMD whatever @order is; with @expect_anon it also has to be
++ * anonymous and have an anon_vma.  *@vmap is the VMA found, if any.
+  */
+-
 -static enum scan_result hugepage_vma_revalidate(struct mm_struct *mm, unsigned long address,
 +enum scan_result collapse_vma_revalidate(struct mm_struct *mm, unsigned long address,
  		bool expect_anon, struct vm_area_struct **vmap,
  		struct collapse_control *cc, unsigned int order)
  {
-@@ -1264,7 +1264,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1264,7 +1264,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm,
  	}
  
  	mmap_read_lock(mm);
@@ -128,7 +141,7 @@ index 6d2bebb403251..af1302cace7ee 100644
  					 &vma, cc, order);
  	if (result != SCAN_SUCCEED) {
  		mmap_read_unlock(mm);
-@@ -1299,7 +1299,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1299,7 +1299,7 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm,
  	 * mmap_lock.
  	 */
  	mmap_write_lock(mm);
@@ -137,41 +150,69 @@ index 6d2bebb403251..af1302cace7ee 100644
  					 &vma, cc, order);
  	if (result != SCAN_SUCCEED)
  		goto out_up_write;
-@@ -2736,13 +2736,13 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
+@@ -2734,7 +2734,8 @@ static enum scan_result collapse_scan_file(struct mm_struct *mm,
  	return result;
  }
  
 -static void collapse_control_init(struct collapse_control *cc)
++/* Set up a control before its first scan; cc->policy is the caller's to fill */
 +void collapse_control_init(struct collapse_control *cc)
  {
  	cc->progress = 0;
  	cc->scan_file = NULL;
- }
- 
--static void collapse_control_release(struct collapse_control *cc)
-+void collapse_control_release(struct collapse_control *cc)
- {
- 	/* A scan that took a file reference should have been run */
- 	if (WARN_ON_ONCE(cc->scan_file)) {
-@@ -2751,7 +2751,7 @@ static void collapse_control_release(struct collapse_control *cc)
+@@ -2749,12 +2750,30 @@ static void collapse_put_scan_file(struct collapse_control *cc)
  	}
  }
  
+-static void collapse_control_release(struct collapse_control *cc)
++/*
++ * Done with a control.  A scan that found something has to have been run by
++ * then: the file side takes a reference on the file while it still has the
++ * VMA to take it from, and the run is what gives it back.
++ */
++void collapse_control_release(struct collapse_control *cc)
+ {
+ 	collapse_put_scan_file(cc);
+ }
+ 
 -static enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
++/*
++ * Scan the PTE table of @vma at @addr for a collapse candidate.  @addr is
++ * aligned to the table; @orders is what the caller allows there.
++ *
++ * Called with mmap_lock held for reading and returns with it still held.  It
++ * only reads, and almost every table it is offered has nothing to collapse,
++ * so a caller walks a whole VMA under the one lock it took to get there.
++ *
++ * SCAN_SUCCEED means there is something to collapse.  SCAN_PTE_MAPPED_HUGEPAGE
++ * means the page cache already holds the PMD folio and only the PTE table is
++ * left to retract.  Both are work for collapse_run_pmd(), which is handed
++ * what the scan returned; anything else is why there is nothing to do.
++ */
 +enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
  		unsigned long addr, struct collapse_control *cc,
  		unsigned long orders)
  {
-@@ -2795,7 +2795,7 @@ static enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
+@@ -2786,7 +2805,17 @@ static enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
  	return result;
  }
  
 -static enum scan_result collapse_run_pmd(struct mm_struct *mm,
++/*
++ * Collapse the table a scan found work in.  @result is what the scan
++ * returned.
++ *
++ * Called without mmap_lock and returns without it, taking what it needs in
++ * between: what it does -- allocate, isolate, copy, flush -- is slow enough
++ * that a writer would wait behind it.  The caller gives the lock up first,
++ * and with it the VMA and anything derived under it.  The run revalidates for
++ * itself rather than trusting what the scan saw.
++ */
 +enum scan_result collapse_run_pmd(struct mm_struct *mm,
- 		unsigned long addr, struct collapse_control *cc)
+ 		unsigned long addr, enum scan_result result,
+ 		struct collapse_control *cc)
  {
- 	struct file *file = cc->scan_file;
-@@ -3249,7 +3249,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3239,7 +3268,7 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  		if (!vma) {
  			cond_resched();
  			mmap_read_lock(mm);

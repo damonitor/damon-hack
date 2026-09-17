@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Thu, 10 Sep 2026 13:02:29 +0100
+Date: Wed, 16 Sep 2026 10:31:36 +0100
 Subject: [PATCH] mm/collapse: open-code collapse_single_pmd() in its two
  callers
 
@@ -12,9 +12,10 @@ lock on some paths and not others, and reported which by way of a bool its
 callers had to carry along and then act on.
 
 Open-code it in the two callers.  Each scans under the lock it already
-holds and, on SCAN_SUCCEED, gives the lock up before running the collapse.
-khugepaged's lock_dropped and madvise_collapse()'s mmap_unlocked both go:
-the code dropping the lock is now the code that wanted to know.
+holds and, when the scan found work, gives the lock up before running the
+collapse.  khugepaged's lock_dropped and madvise_collapse()'s
+mmap_unlocked both go: the code dropping the lock is now the code that
+wanted to know.
 
 khugepaged's walk carries on to the next table while the scan keeps
 refusing, and ends once a collapse has taken the lock from under it.
@@ -26,7 +27,7 @@ The lock is given up and taken again at the same points as before.  No
 functional change.
 
 Assisted-by: LLM
-Link: https://lore.kernel.org/20260910120238.2529819-10-kirill@shutemov.name
+Link: https://lore.kernel.org/20260916093145.4022188-10-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
@@ -41,14 +42,14 @@ Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 ---
- mm/khugepaged.c | 102 +++++++++++++++++++++++-------------------------
- 1 file changed, 49 insertions(+), 53 deletions(-)
+ mm/khugepaged.c | 103 +++++++++++++++++++++++-------------------------
+ 1 file changed, 50 insertions(+), 53 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 1f7c21381b781..a9dbf671153d0 100644
+index d02d7a0d1ba6b..6e87723a781fe 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -2850,28 +2850,6 @@ static enum scan_result collapse_run_pmd(struct mm_struct *mm,
+@@ -2839,28 +2839,6 @@ static enum scan_result collapse_run_pmd(struct mm_struct *mm,
  	return result;
  }
  
@@ -64,20 +65,20 @@ index 1f7c21381b781..a9dbf671153d0 100644
 -	enum scan_result result;
 -
 -	result = collapse_scan_pmd(vma, addr, cc);
--	if (result != SCAN_SUCCEED)
+-	if (result != SCAN_SUCCEED && result != SCAN_PTE_MAPPED_HUGEPAGE)
 -		return result;
 -
 -	/* The collapse takes its own locks, so give this up */
 -	mmap_read_unlock(mm);
 -	*lock_dropped = true;
 -
--	return collapse_run_pmd(mm, addr, cc);
+-	return collapse_run_pmd(mm, addr, result, cc);
 -}
 -
  static void collapse_scan_mm_slot(unsigned int progress_max,
  		enum scan_result *result, struct collapse_control *cc)
  	__releases(&khugepaged_mm_lock)
-@@ -2934,7 +2912,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+@@ -2923,7 +2901,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  		VM_BUG_ON(khugepaged_scan.address & ~HPAGE_PMD_MASK);
  
  		while (khugepaged_scan.address < hend) {
@@ -86,7 +87,7 @@ index 1f7c21381b781..a9dbf671153d0 100644
  
  			cond_resched();
  			if (unlikely(collapse_test_exit_or_disable(mm)))
-@@ -2944,23 +2922,29 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+@@ -2933,23 +2911,30 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  				  khugepaged_scan.address + HPAGE_PMD_SIZE >
  				  hend);
  
@@ -110,8 +111,9 @@ index 1f7c21381b781..a9dbf671153d0 100644
 -				goto breakouterloop;
 +
 +			*result = collapse_scan_pmd(vma, addr, cc);
-+			/* Nothing to collapse here, and the lock is still ours */
-+			if (*result != SCAN_SUCCEED) {
++			/* Nothing to do here, and the lock is still ours */
++			if (*result != SCAN_SUCCEED &&
++			    *result != SCAN_PTE_MAPPED_HUGEPAGE) {
 +				if (cc->progress >= progress_max)
 +					goto breakouterloop;
 +				continue;
@@ -124,14 +126,14 @@ index 1f7c21381b781..a9dbf671153d0 100644
 +			 * whatever the collapse leaves them.
 +			 */
 +			mmap_read_unlock(mm);
-+			*result = collapse_run_pmd(mm, addr, cc);
++			*result = collapse_run_pmd(mm, addr, *result, cc);
 +			if (*result == SCAN_SUCCEED)
 +				khugepaged_pages_collapsed++;
 +			goto breakouterloop_mmap_lock;
  		}
  	}
  breakouterloop:
-@@ -3229,7 +3213,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3218,7 +3203,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  	unsigned long hstart, hend, addr;
  	enum scan_result last_fail = SCAN_FAIL;
  	int thps = 0;
@@ -139,7 +141,7 @@ index 1f7c21381b781..a9dbf671153d0 100644
  
  	BUG_ON(vma->vm_start > start);
  	BUG_ON(vma->vm_end < end);
-@@ -3252,25 +3235,40 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3241,25 +3225,40 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  	lru_add_drain_all();
  
  	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
@@ -174,8 +176,8 @@ index 1f7c21381b781..a9dbf671153d0 100644
  
 -		result = collapse_single_pmd(addr, vma, &mmap_unlocked, cc);
 +		result = collapse_scan_pmd(vma, addr, cc);
-+		/* Nothing to collapse here, and the lock is still ours */
-+		if (result != SCAN_SUCCEED)
++		/* Nothing to do here, and the lock is still ours */
++		if (result != SCAN_SUCCEED && result != SCAN_PTE_MAPPED_HUGEPAGE)
 +			goto tally;
  
 +		/* The collapse takes its own locks, so give this up */
@@ -183,12 +185,12 @@ index 1f7c21381b781..a9dbf671153d0 100644
 +		*lock_dropped = true;
 +		vma = NULL;
 +
-+		result = collapse_run_pmd(mm, addr, cc);
++		result = collapse_run_pmd(mm, addr, result, cc);
 +tally:
  		switch (result) {
  		case SCAN_SUCCEED:
  		case SCAN_PMD_MAPPED:
-@@ -3292,17 +3290,15 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3281,17 +3280,15 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  		default:
  			last_fail = result;
  			/* Other error, exit */

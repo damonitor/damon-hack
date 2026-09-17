@@ -1,0 +1,124 @@
+From: Alexandre Ghiti <alex@ghiti.fr>
+Date: Fri, 11 Sep 2026 14:13:30 +0200
+Subject: [PATCH] mm: zswap: drop cold writeback folios via swap dropbehind
+
+zswap writeback decompresses an entry into a fresh swap cache folio and
+writes it back.  The folio is cold by construction, yet it is left on the
+LRU for reclaim to find and free later, wasting a reclaim scan and keeping
+cold memory resident longer than necessary.
+
+Allocate the folio off the LRU and mark it PG_dropbehind so the swap
+dropbehind path frees it from the swap cache once writeback completes.
+
+__swap_cache_alloc_folio() evaluates a refault on the new folio, and
+workingset_refault() sets PG_active when it looks recent.  Until now
+folio_add_lru() consumed that flag and __page_cache_release() cleared it
+once the folio left the LRU.  This folio never reaches the LRU, so nothing
+would clear PG_active and the folio would be freed with a
+PAGE_FLAGS_CHECK_AT_FREE flag set, tripping bad_page() under
+CONFIG_DEBUG_VM.  Clear it after allocation.
+
+That is a workaround: the refault should not be evaluated on a writeback
+buffer at all.  A fix for that is on the mailing list [1].
+
+Link: https://lore.kernel.org/20260911121341.178028-4-alex@ghiti.fr
+Link: https://lore.kernel.org/linux-mm/20260911092012.92399-1-alex@ghiti.fr/ [1]
+Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Johannes Weiner <hannes@cmpxchg.org>
+Suggested-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Tal Zussman <tz2294@columbia.edu>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Yuanchu Xie <yuanchu@google.com>
+---
+ mm/zswap.c | 33 +++++++++++++++++++++++----------
+ 1 file changed, 23 insertions(+), 10 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 799aa27cc1397..eb34944914104 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -1032,7 +1032,8 @@ static int zswap_writeback_entry(struct zswap_entry *entry,
+ 	 */
+ 	if (IS_ERR(folio))
+ 		return PTR_ERR(folio);
+-	folio_add_lru(folio);
++
++	folio_clear_active(folio);
+ 
+ 	/*
+ 	 * folio is locked, and the swapcache is now secured against
+@@ -1046,12 +1047,12 @@ static int zswap_writeback_entry(struct zswap_entry *entry,
+ 	tree = swap_zswap_tree(swpentry);
+ 	if (entry != xa_load(tree, offset)) {
+ 		ret = -ENOMEM;
+-		goto out;
++		goto err;
+ 	}
+ 
+ 	if (!zswap_decompress(entry, folio)) {
+ 		ret = -EIO;
+-		goto out;
++		goto err;
+ 	}
+ 
+ 	xa_erase(tree, offset);
+@@ -1065,18 +1066,30 @@ static int zswap_writeback_entry(struct zswap_entry *entry,
+ 	/* folio is up to date */
+ 	folio_mark_uptodate(folio);
+ 
+-	/* move it to the tail of the inactive list after end_writeback */
+-	folio_set_reclaim(folio);
++	folio_set_dropbehind(folio);
++
++	/*
++	 * Drop our reference before starting writeback so the swap cache holds
++	 * the only one: the drop in folio_end_writeback() needs that for
++	 * remove_mapping_set_shadow() to succeed, otherwise the folio is
++	 * handed back to reclaim instead.
++	 *
++	 * Nothing can free the folio in the meantime: we hold the folio lock
++	 * until writeback starts, PG_writeback then blocks swap cache removal,
++	 * and folio_end_writeback() takes its own reference before clearing
++	 * PG_writeback and donates it to the drop.
++	 */
++	folio_put(folio);
+ 
+ 	/* start writeback */
+ 	__swap_writeout(&ctx, folio);
+ 	swap_write_submit(&ctx);
+ 
+-out:
+-	if (ret) {
+-		swap_cache_del_folio(folio);
+-		folio_unlock(folio);
+-	}
++	return 0;
++
++err:
++	swap_cache_del_folio(folio);
++	folio_unlock(folio);
+ 	folio_put(folio);
+ 	return ret;
+ }
+-- 
+2.47.3
+

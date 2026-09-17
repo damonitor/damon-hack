@@ -3,6 +3,40 @@ Date: Mon, 14 Sep 2026 11:49:40 +0800
 Subject: [PATCH] ocfs2: fix chunk number of the first chunk in a local quota
  file
 
+Mounting a crafted OCFS2 image can corrupt kernel memory.  When the
+local quota file header of such an image claims zero chunks, the first
+quota entry allocated during the mount gets a chunk number taken from a
+kernel pointer, and releasing that entry clears a bit far outside the
+chunk bitmap.
+
+The write will corrupt the data stored at that address, and the
+corruption may lead to a system crash or damage unrelated data.
+Mounting requires CAP_SYS_ADMIN, so it takes an untrusted image, such
+as removable media or a loop mount of a file from elsewhere.
+
+Since the chunk number comes from a kernel pointer, the address of the
+bit that gets cleared differs from boot to boot, and the issue has been
+reported under several titles:
+
+- BUG: unable to handle kernel paging request in ocfs2_local_release_dquot
+- KASAN: use-after-free Write in ocfs2_local_release_dquot
+- KASAN: slab-out-of-bounds Write in ocfs2_local_release_dquot
+- KASAN: slab-use-after-free Write in ocfs2_local_release_dquot
+- KFENCE: use-after-free write in ocfs2_local_release_dquot
+
+Note that none of these is a use-after-free in the quota code: the
+chunk and its buffer head are alive.  The bit that gets cleared lies
+far outside the bitmap.  KASAN and KFENCE name each report based on the
+object occupying that address, which explains why the same issue is
+reported under so many different titles.  In the report I sent, the
+address fell in a free page, which KASAN labels use-after-free.
+
+There are known reproducers.  Both a syzkaller and a C reproducer are
+available from the Google Drive link [1] in my report thread.  The
+issue was found by our modified syzkaller, not a theoretical thing
+found by an LLM.  I have not seen it outside fuzzing, so it is not
+affecting me in the real world.
+
 The local quota file in OCFS2 is divided into chunks, and each chunk
 begins with a header block holding a bitmap of the quota entries that
 chunk has handed out.  Chunks are numbered from zero, and that number is
@@ -39,6 +73,7 @@ Compute the chunk number before putting the chunk on the list, and use 0
 when the list is empty.
 
 Link: https://lore.kernel.org/20260914034940.4070970-1-r772577952@gmail.com
+Link: https://drive.google.com/drive/folders/1-LzPTgOALEc3eOjmgM6oOfRKkYXJ-bnO?usp=drive_link [1]
 Fixes: 9e33d69f553a ("ocfs2: Implementation of local and global quota file handling")
 Signed-off-by: Jiaming Zhang <r772577952@gmail.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
