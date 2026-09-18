@@ -1,0 +1,74 @@
+From: Lance Yang <lance.yang@linux.dev>
+Date: Thu, 17 Sep 2026 13:40:15 +0800
+Subject: [PATCH] mm/huge_memory: simplify pgtable deposit detection
+
+Whether a PMD has a deposited PTE page table only depends on whether the
+architecture requires deposits or the VMA is anonymous.
+
+Implement this rule directly in vma_has_deposited_pgtable(), avoiding
+mistaking a non-anonymous raw PFN PMD for one with a deposit and
+attempting to withdraw a page table that was never deposited.
+
+Link: https://lore.kernel.org/20260917054015.23553-1-lance.yang@linux.dev
+Signed-off-by: Lance Yang <lance.yang@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+---
+ mm/huge_memory.c | 22 +++++-----------------
+ 1 file changed, 5 insertions(+), 17 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 1e5d68acf62a5..edb948e758cf4 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2514,25 +2514,13 @@ static struct folio *normal_or_softleaf_folio_pmd(struct vm_area_struct *vma,
+ 	return pmd_to_softleaf_folio(pmdval);
+ }
+ 
+-static bool has_deposited_pgtable(struct vm_area_struct *vma, pmd_t pmdval,
+-		struct folio *folio)
++static bool vma_has_deposited_pgtable(struct vm_area_struct *vma)
+ {
+-	/* Some architectures require unconditional depositing. */
+-	if (arch_needs_pgtable_deposit())
+-		return true;
+-
+-	/*
+-	 * Huge zero always deposited except for DAX which handles itself, see
+-	 * set_huge_zero_folio().
+-	 */
+-	if (is_huge_zero_pmd(pmdval))
+-		return !vma_is_dax(vma);
+-
+ 	/*
+-	 * Otherwise, only anonymous folios are deposited, see
+-	 * __do_huge_pmd_anonymous_page().
++	 * PMDs in anonymous VMAs always have a deposited page table. PMDs in
++	 * other VMAs only have one when required by the architecture.
+ 	 */
+-	return folio && folio_test_anon(folio);
++	return arch_needs_pgtable_deposit() || vma_is_anonymous(vma);
+ }
+ 
+ /**
+@@ -2572,7 +2560,7 @@ bool zap_huge_pmd(struct mmu_gather *tlb, struct vm_area_struct *vma,
+ 
+ 	is_present = pmd_present(orig_pmd);
+ 	folio = normal_or_softleaf_folio_pmd(vma, addr, orig_pmd, is_present);
+-	has_deposit = has_deposited_pgtable(vma, orig_pmd, folio);
++	has_deposit = vma_has_deposited_pgtable(vma);
+ 	if (folio)
+ 		zap_huge_pmd_folio(mm, vma, orig_pmd, folio, is_present);
+ 	if (has_deposit)
+-- 
+2.47.3
+

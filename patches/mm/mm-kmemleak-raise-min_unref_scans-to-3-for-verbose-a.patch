@@ -1,0 +1,63 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Thu, 17 Sep 2026 06:47:37 -0700
+Subject: [PATCH] mm: kmemleak: raise min_unref_scans to 3 for verbose
+ auto-scan
+
+CONFIG_DEBUG_KMEMLEAK_VERBOSE sends every report to the console, so a
+transient false positive there is broadcast to whatever collects the
+kernel log rather than sitting in the debugfs file until someone looks.
+That asymmetry justifies being more conservative than the general case.
+
+Require one more consecutive unreferenced scan before reporting.  The only
+cost is that a genuine leak is reported one scan interval later (600s by
+default); the value stays writable at run time through the module
+parameter.
+
+Kernels without CONFIG_DEBUG_KMEMLEAK_VERBOSE keep reporting on the first
+unreferenced scan.
+
+I've been running constant upstream kernel with
+CONFIG_DEBUG_KMEMLEAK_VERBOSE set, and I am still seeing some rare false
+positive, that goes away with min_unref_scans=3, so, making it the default
+based on my heuristic.
+
+Link: https://lore.kernel.org/20260917-b4-kmemleak-doc-v1-3-84fde6d1f749@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+---
+ Documentation/dev-tools/kmemleak.rst | 2 +-
+ mm/kmemleak.c                        | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/dev-tools/kmemleak.rst b/Documentation/dev-tools/kmemleak.rst
+index b5fe7e671d0f8..c0d3293723425 100644
+--- a/Documentation/dev-tools/kmemleak.rst
++++ b/Documentation/dev-tools/kmemleak.rst
+@@ -206,7 +206,7 @@ the minimum age of an object to be reported as a memory leak.
+ 
+ The ``min_unref_scans`` module parameter requires an object to be seen
+ unreferenced in that many consecutive scans before it is reported. It
+-defaults to 2 when CONFIG_DEBUG_KMEMLEAK_VERBOSE is enabled, where the
++defaults to 3 when CONFIG_DEBUG_KMEMLEAK_VERBOSE is enabled, where the
+ periodic scan thread confirms a leak on its own, and to 1 otherwise. A
+ value of 1 preserves the historical behaviour; higher values filter the
+ transient false positives described above, at the cost of delaying genuine
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index 8fa409a4f9fb2..5d0daea93c471 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -238,7 +238,7 @@ static struct task_struct *scan_thread;
+ static unsigned long jiffies_min_age;
+ /* consecutive scans an object must stay unreferenced before reporting */
+ static unsigned int min_unref_scans =
+-	IS_ENABLED(CONFIG_DEBUG_KMEMLEAK_VERBOSE) ? 2 : 1;
++	IS_ENABLED(CONFIG_DEBUG_KMEMLEAK_VERBOSE) ? 3 : 1;
+ module_param(min_unref_scans, uint, 0644);
+ static unsigned long jiffies_last_scan;
+ /* delay between automatic memory scannings */
+-- 
+2.47.3
+

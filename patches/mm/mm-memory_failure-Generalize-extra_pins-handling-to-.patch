@@ -1,0 +1,79 @@
+From: Lisa Wang <wyihan@google.com>
+Date: Thu, 17 Sep 2026 20:43:50 +0000
+Subject: [PATCH] mm: memory_failure: Generalize extra_pins handling to all
+ MF_DELAYED cases
+
+Generalize extra_pins handling to all MF_DELAYED cases not only
+shmem_mapping.
+
+If MF_DELAYED is returned, the filemap continues to hold refcounts on the
+folio.  Hence, take that into account when checking for extra refcounts.
+
+As clarified in an earlier patch, a return value of MF_DELAYED implies
+that the page still has elevated refcounts.  Hence, set extra_pins to true
+if the return value is MF_DELAYED.  This is aligned with the
+implementation in me_swapcache_dirty(), where, if a folio is still in the
+swap cache, ret is set to MF_DELAYED and extra_pins is set to true.
+
+Link: https://lore.kernel.org/20260917-memory-failure-mf-delayed-fix-v6-4-4b00856b5364@google.com
+Signed-off-by: Lisa Wang <wyihan@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Reviewed-by: Ackerley Tng <ackerleytng@google.com>
+Cc: Andi Kleen <andi@firstfloor.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Fuad Tabba <tabba@google.com>
+Cc: Hidehiro Kawai <hidehiro.kawai.ez@hitachi.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Isaku Yamahata <isaku.yamahata@intel.com>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Rik van Riel <riel@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Xiaoyao Li <xiaoyao.li@intel.com>
+Cc: Yu Zhang <yu.c.zhang@linux.intel.com>
+---
+ mm/memory-failure.c | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 83ab0fce22a61..d237f556b3a09 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -1039,18 +1039,14 @@ static int me_pagecache_clean(struct page_state *ps, struct page *p)
+ 		goto out;
+ 	}
+ 
+-	/*
+-	 * The shmem page is kept in page cache instead of truncating
+-	 * so is expected to have an extra refcount after error-handling.
+-	 */
+-	extra_pins = shmem_mapping(mapping);
+-
+ 	/*
+ 	 * Truncation is a bit tricky. Enable it per file system for now.
+ 	 *
+ 	 * Open: to take i_rwsem or not for this? Right now we don't.
+ 	 */
+ 	ret = truncate_error_folio(folio, page_to_pfn(p), mapping);
++
++	extra_pins = ret == MF_DELAYED;
+ 	if (has_extra_refcount(ps, p, extra_pins))
+ 		ret = MF_FAILED;
+ 
+-- 
+2.47.3
+

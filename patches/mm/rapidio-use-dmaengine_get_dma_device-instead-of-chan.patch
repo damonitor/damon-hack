@@ -1,0 +1,54 @@
+From: Frank Li <Frank.Li@nxp.com>
+Date: Thu, 17 Sep 2026 16:50:12 -0400
+Subject: [PATCH] rapidio: use dmaengine_get_dma_device() instead of
+ chan->device->dev
+
+Replace direct dma_chan::device::dev access with the proper
+dmaengine_get_dma_device() for consumer API.
+
+chan->device->dev is not always the device used for DMA mapping.  Some DMA
+engines support per-channel IOMMU mappings, so different channels may use
+different DMA devices.  dmaengine_get_dma_device() returns the correct
+device for each channel.
+
+This also prepares for making the DMA engine provider data structures
+private.  DMA consumers should not access DMA engine internals directly.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260917205016.1293317-1-Frank.Li@oss.nxp.com
+Signed-off-by: Frank Li <Frank.Li@nxp.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alexandre Bounine <alex.bou9@gmail.com>
+Cc: Dan Carpenter <error27@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Matt Porter <mporter@kernel.crashing.org>
+Cc: Vinod Koul <vkoul@kernel.org>
+---
+ drivers/rapidio/devices/rio_mport_cdev.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/rapidio/devices/rio_mport_cdev.c b/drivers/rapidio/devices/rio_mport_cdev.c
+index 47ba34b4afb29..40d2953a9a7f9 100644
+--- a/drivers/rapidio/devices/rio_mport_cdev.c
++++ b/drivers/rapidio/devices/rio_mport_cdev.c
+@@ -555,7 +555,7 @@ static void dma_req_free(struct kref *ref)
+ 			refcount);
+ 	struct mport_cdev_priv *priv = req->priv;
+ 
+-	dma_unmap_sg(req->dmach->device->dev,
++	dma_unmap_sg(dmaengine_get_dma_device(req->dmach),
+ 		     req->sgt.sgl, req->sgt.nents, req->dir);
+ 	sg_free_table(&req->sgt);
+ 	if (req->page_list) {
+@@ -916,7 +916,7 @@ rio_dma_transfer(struct file *filp, u32 transfer_mode,
+ 				xfer->offset, xfer->length);
+ 	}
+ 
+-	nents = dma_map_sg(chan->device->dev,
++	nents = dma_map_sg(dmaengine_get_dma_device(chan),
+ 			   req->sgt.sgl, req->sgt.nents, dir);
+ 	if (nents == 0) {
+ 		rmcd_error("Failed to map SG list");
+-- 
+2.47.3
+

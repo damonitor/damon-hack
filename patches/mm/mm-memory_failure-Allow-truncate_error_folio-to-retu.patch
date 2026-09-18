@@ -1,0 +1,79 @@
+From: Lisa Wang <wyihan@google.com>
+Date: Thu, 17 Sep 2026 20:43:48 +0000
+Subject: [PATCH] mm: memory_failure: Allow truncate_error_folio to return
+ MF_DELAYED
+
+The .error_remove_folio a_ops is used by different filesystems to handle
+folio truncation upon discovery of a memory failure in the memory
+associated with the given folio.
+
+Currently, MF_DELAYED is treated as an error, causing "Failed to punch
+page" to be written to the console.  MF_DELAYED is then relayed to the
+caller of truncate_error_folio() as MF_FAILED.  This further causes
+memory_failure() to return -EBUSY, which then always causes a SIGBUS.
+
+This is also implies that regardless of whether the thread's memory
+corruption kill policy is PR_MCE_KILL_EARLY or PR_MCE_KILL_LATE, a memory
+failure with MF_DELAYED will always cause a SIGBUS.
+
+Update truncate_error_folio() to return MF_DELAYED to the caller if the
+.error_remove_folio() callback reports MF_DELAYED.
+
+Link: https://lore.kernel.org/20260917-memory-failure-mf-delayed-fix-v6-2-4b00856b5364@google.com
+Fixes: 6a46079cf57a ("HWPOISON: The high level memory error handler in the VM v7")
+Fixes: a7800aa80ea4 ("KVM: Add KVM_CREATE_GUEST_MEMFD ioctl() for guest-specific backing memory")
+Signed-off-by: Lisa Wang <wyihan@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Reviewed-by: Ackerley Tng <ackerleytng@google.com>
+Cc: Andi Kleen <andi@firstfloor.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Fuad Tabba <tabba@google.com>
+Cc: Hidehiro Kawai <hidehiro.kawai.ez@hitachi.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Isaku Yamahata <isaku.yamahata@intel.com>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Michael Roth <michael.roth@amd.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Paolo Bonzini <pbonzini@redhat.com>
+Cc: Rik van Riel <riel@redhat.com>
+Cc: Sean Christopherson <seanjc@google.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vishal Annapurve <vannapurve@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Xiaoyao Li <xiaoyao.li@intel.com>
+Cc: Yu Zhang <yu.c.zhang@linux.intel.com>
+---
+ mm/memory-failure.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 057cb9537db29..83ab0fce22a61 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -939,10 +939,12 @@ static int truncate_error_folio(struct folio *folio, unsigned long pfn,
+ 	if (mapping->a_ops->error_remove_folio) {
+ 		int err = mapping->a_ops->error_remove_folio(mapping, folio);
+ 
+-		if (err != 0)
++		if (err == MF_DELAYED)
++			ret = err;
++		else if (err != 0)
+ 			pr_info("%#lx: Failed to punch page: %d\n", pfn, err);
+ 		else if (!filemap_release_folio(folio, GFP_NOIO))
+-			pr_info("%#lx: failed to release buffers\n", pfn);
++			pr_info("%#lx: Failed to release buffers\n", pfn);
+ 		else
+ 			ret = MF_RECOVERED;
+ 	} else {
+-- 
+2.47.3
+
