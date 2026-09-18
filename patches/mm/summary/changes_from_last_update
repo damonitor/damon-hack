@@ -1,10 +1,35 @@
 - baseline: v7.3-rc1-475-g0d9ff90a5422c -> v7.3-rc1-475-g0d9ff90a5422c (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
+- mm-hotfixes-stable: 0 -> 5 commits
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 6 -> 6 commits (no change)
+    - no role, maintainer: 0 -> 3 commits
+    - maintainer, nobody: 0 -> 2 commits
+  - changed commits
+    - 5d798912fbde "mm/damon/ops-common: use a page-aligned address in damon_ptep_mkold()"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260904002829.116381-1-sj@kernel.org
+    - 7698832695e8 "mm/damon/core: allow esz to be set to zero"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260908135413.97570-1-sj@kernel.org
+    - 1f24518264e3 "mm/damon/vaddr: avoid hw-driven pte updates during damon_hugetlb_mkold()"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260907170358.100168-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260830160545.98969-1-sj@kernel.org [1]
+    - 3b88d80791d4 "mm/damon/core: fix unconditionally skip last region"
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260908134739.96919-1-sj@kernel.org
+    - d87c5fca88cc "mm/damon/core: reset invalid quota->charge_target_from"
+      - Authored by a maintainer, reviewed by nobody
+      - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+      - Link: https://lore.kernel.org/20260910142846.172957-1-sj@kernel.org
+      - Link: https://lore.kernel.org/20260830064708.40CA61F000E9@smtp.kernel.org [1]
+- mm-hotfixes-unstable: 6 -> 1 commits
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 3 -> 3 commits (no change)
-    - maintainer, nobody: 2 -> 2 commits (no change)
+    - no role, maintainer: 3 -> 0 commits
+    - maintainer, nobody: 2 -> 0 commits
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
@@ -13,46 +38,11 @@
     - no role, maintainer: 27 -> 27 commits (no change)
     - maintainer, nobody: 78 -> 78 commits (no change)
     - maintainer, no role : 13 -> 13 commits (no change)
-- mm-new: 0 -> 10 commits
-  - series: 0 (0) -> 1 (10)
-    - maintainer, nobody: 0 -> 6 commits
-    - maintainer, no role : 0 -> 3 commits
-    - maintainer, reviewer: 0 -> 1 commits
-  - new commits
-    - series "mm/damon: improve readability, clarity and test coverage". (10)
-      - 6dc96651a725 "mm/damon/api: remove NR_DAMOS_FILTER_TYPES (0/10)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20260917142210.90829-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260917142210.90829-2-sj@kernel.org
-      - f5642535439c "mm/damon/core: use abs_diff() in damon_feed_loop_next_input() (1/10)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20260917142210.90829-3-sj@kernel.org
-      - e2d99c1eec0a "mm/damon/core: use mult_frac() in damon_feed_loop_next_input() (2/10)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20260917142210.90829-4-sj@kernel.org
-      - 09b822ffb122 "mm/damon/core: set damon_ctx->walk_control_obsolete in damon_new_ctx() (3/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-5-sj@kernel.org
-        - Link: https://lore.kernel.org/20260915011614.102342-1-sj@kernel.org [1]
-      - e867f451380e "mm/damon/core: document damon_call()/damon_start() race hang issue (4/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-6-sj@kernel.org
-      - 4283e4e18fc6 "mm/damon/paddr: remove pa parameter from damon_pa_filter_pass() (5/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-7-sj@kernel.org
-      - 309f4b1b9e43 "mm/damon/tests/core-kunit: test eligible_mem_bp commitment (6/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-8-sj@kernel.org
-        - Link: https://lore.kkernel.org/20260827045035.94611-1-sj@kernel.org [1]
-      - 5400c5dd7b2f "mm/damon/tests/core-kunit: add probe_hits_wsum damos filter commit test (7/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-9-sj@kernel.org
-      - d1cea704a50d "selftests/damon/sysfs_memcg_path_leak: fail only for real DAMON leak (8/10)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20260917142210.90829-10-sj@kernel.org
-      - 31831d5fb415 "Docs/mm/damon/design: clarify bp is basis point (9/10)"
-        - Authored by a maintainer, reviewed by a reviewer
-        - Link: https://lore.kernel.org/20260917142210.90829-11-sj@kernel.org
+- mm-new: 10 -> 10 commits (no change)
+  - series: 1 (10) -> 1 (10) (no change)
+    - maintainer, nobody: 6 -> 6 commits (no change)
+    - maintainer, no role : 3 -> 3 commits (no change)
+    - maintainer, reviewer: 1 -> 1 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
