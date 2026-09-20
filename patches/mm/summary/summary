@@ -1,4 +1,4 @@
-- baseline: v7.3-rc1-475-g0d9ff90a5422c
+- baseline: v7.3-rc1-475-g0d9ff90a5422
 - mm-hotfixes-stable: 5 total, 0 (0) series, 5 non-series commits
   - author/reviewer role stat
     - no role, maintainer: 3 commits
