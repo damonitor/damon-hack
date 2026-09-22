@@ -1,0 +1,110 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 21 Sep 2026 21:58:53 +0200
+Subject: [PATCH] mm/sparse: move mem_section init to sparse_extreme_init()
+
+Patch series "mm/sparse: remove SECTION_MARKED_PRESENT and further
+cleanups", v2.
+
+SECTION_MARKED_PRESENT is really only needed during boot, where we can
+instead just rely on SECTION_IS_EARLY_BIT by setting that flag earlier.
+
+Some preparations for doing that conversion and some cleanups in the same
+(sparse) area.
+
+
+This patch (of 13):
+
+Let's just avoid another pair of ifdef inside a function.  While at it,
+switch to INTERNODE_CACHE_BYTES by just defining a fallback in cache.h as
+well, given that the x86 variant already provides one.
+
+Link: https://lore.kernel.org/20260921-b4-sparsemem_cleanups-v2-0-54d81d65e125@kernel.org
+Link: https://lore.kernel.org/20260921-b4-sparsemem_cleanups-v2-1-54d81d65e125@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jan Kiszka <jan.kiszka@siemens.com>
+Cc: Kieran Bingham <kbingham@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Danilo Krummrich <dakr@kernel.org>
+---
+ include/linux/cache.h |  1 +
+ mm/sparse.c           | 19 ++++++++++++-------
+ 2 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/cache.h b/include/linux/cache.h
+index e69768f50d53..b6e857b985bc 100644
+--- a/include/linux/cache.h
++++ b/include/linux/cache.h
+@@ -89,6 +89,7 @@
+  */
+ #ifndef INTERNODE_CACHE_SHIFT
+ #define INTERNODE_CACHE_SHIFT L1_CACHE_SHIFT
++#define INTERNODE_CACHE_BYTES (1 << INTERNODE_CACHE_SHIFT)
+ #endif
+ 
+ #if !defined(____cacheline_internodealigned_in_smp)
+diff --git a/mm/sparse.c b/mm/sparse.c
+index b75921c622ed..8cd2b06b231a 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -103,11 +103,22 @@ int __meminit sparse_index_init(unsigned long section_nr, int nid)
+ 
+ 	return 0;
+ }
++
++static void __init sparse_extreme_init(void)
++{
++	const unsigned long size = sizeof(struct mem_section *) * NR_SECTION_ROOTS;
++
++	mem_section = memblock_alloc_or_panic(size, INTERNODE_CACHE_BYTES);
++}
+ #else /* !SPARSEMEM_EXTREME */
+ int __meminit sparse_index_init(unsigned long section_nr, int nid)
+ {
+ 	return 0;
+ }
++
++static void __init sparse_extreme_init(void)
++{
++}
+ #endif
+ 
+ /*
+@@ -196,13 +207,7 @@ void __init sparse_sections_init(void)
+ 	unsigned long start, end;
+ 	int i, nid;
+ 
+-#ifdef CONFIG_SPARSEMEM_EXTREME
+-	unsigned long size, align;
+-
+-	size = sizeof(struct mem_section *) * NR_SECTION_ROOTS;
+-	align = 1 << (INTERNODE_CACHE_SHIFT);
+-	mem_section = memblock_alloc_or_panic(size, align);
+-#endif
++	sparse_extreme_init();
+ 
+ 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, &nid)
+ 		memory_present(nid, start, end);
+-- 
+2.47.3
+

@@ -1,0 +1,254 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 21 Sep 2026 21:59:02 +0200
+Subject: [PATCH] mm/sparse: remove SECTION_MARKED_PRESENT
+
+All present section iterators run before memory hotplug added any further
+memory sections, Therefore, we can simply use the SECTION_IS_EARLY flag by
+setting that flag earlier in sparse_sections_init().
+
+Get rid of SECTION_MARKED_PRESENT entirely and rename
+for_each_present_section_nr() to for_each_early_section_nr().
+
+Take care of the .clang-format for_each_present_section_nr() handling.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260921-b4-sparsemem_cleanups-v2-10-54d81d65e125@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Jan Kiszka <jan.kiszka@siemens.com>
+Cc: Kieran Bingham <kbingham@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Danilo Krummrich <dakr@kernel.org>
+---
+ .clang-format          |  2 +-
+ drivers/base/memory.c  |  2 +-
+ include/linux/mmzone.h | 27 ++++++++++-----------------
+ mm/sparse-vmemmap.c    |  1 -
+ mm/sparse.c            | 17 ++++++++---------
+ mm/sparse.h            |  6 ------
+ 6 files changed, 20 insertions(+), 35 deletions(-)
+
+diff --git a/.clang-format b/.clang-format
+index 5ef5743b77c9..395292ab2ac6 100644
+--- a/.clang-format
++++ b/.clang-format
+@@ -282,6 +282,7 @@ ForEachMacros:
+   - 'for_each_dpcm_fe'
+   - 'for_each_drhd_unit'
+   - 'for_each_dss_dev'
++  - 'for_each_early_section_nr'
+   - 'for_each_efi_memory_desc'
+   - 'for_each_efi_memory_desc_in_map'
+   - 'for_each_element'
+@@ -403,7 +404,6 @@ ForEachMacros:
+   - 'for_each_possible_cpu_wrap'
+   - 'for_each_present_blessed_reg'
+   - 'for_each_present_cpu'
+-  - 'for_each_present_section_nr'
+   - 'for_each_prime_number'
+   - 'for_each_prime_number_from'
+   - 'for_each_probe_cache_entry'
+diff --git a/drivers/base/memory.c b/drivers/base/memory.c
+index 5eead3346f1e..b0338de2f1d8 100644
+--- a/drivers/base/memory.c
++++ b/drivers/base/memory.c
+@@ -972,7 +972,7 @@ void __init memory_dev_init(void)
+ 	 * block so that it can be covered.
+ 	 */
+ 	block_id = ULONG_MAX;
+-	for_each_present_section_nr(0, nr) {
++	for_each_early_section_nr(0, nr) {
+ 		if (block_id != ULONG_MAX && memory_block_id(nr) == block_id)
+ 			continue;
+ 
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index b6d67d4efb64..65e2e0249b04 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -2085,7 +2085,6 @@ static inline struct mem_section *__nr_to_section(unsigned long nr)
+  * accommodate SECTION_MAP_LAST_BIT. We use BUILD_BUG_ON() to ensure this.
+  */
+ enum {
+-	SECTION_MARKED_PRESENT_BIT,
+ 	SECTION_HAS_MEM_MAP_BIT,
+ 	SECTION_IS_ONLINE_BIT,
+ 	SECTION_IS_EARLY_BIT,
+@@ -2095,7 +2094,6 @@ enum {
+ 	SECTION_MAP_LAST_BIT,
+ };
+ 
+-#define SECTION_MARKED_PRESENT		BIT(SECTION_MARKED_PRESENT_BIT)
+ #define SECTION_HAS_MEM_MAP		BIT(SECTION_HAS_MEM_MAP_BIT)
+ #define SECTION_IS_ONLINE		BIT(SECTION_IS_ONLINE_BIT)
+ #define SECTION_IS_EARLY		BIT(SECTION_IS_EARLY_BIT)
+@@ -2112,16 +2110,6 @@ static inline struct page *__section_mem_map_addr(struct mem_section *section)
+ 	return (struct page *)map;
+ }
+ 
+-static inline int present_section(const struct mem_section *section)
+-{
+-	return (section && (section->section_mem_map & SECTION_MARKED_PRESENT));
+-}
+-
+-static inline int present_section_nr(unsigned long nr)
+-{
+-	return present_section(__nr_to_section(nr));
+-}
+-
+ static inline int valid_section(const struct mem_section *section)
+ {
+ 	return (section && (section->section_mem_map & SECTION_HAS_MEM_MAP));
+@@ -2137,6 +2125,11 @@ static inline int valid_section_nr(unsigned long nr)
+ 	return valid_section(__nr_to_section(nr));
+ }
+ 
++static inline int early_section_nr(unsigned long nr)
++{
++	return early_section(__nr_to_section(nr));
++}
++
+ static inline int online_section(const struct mem_section *section)
+ {
+ 	return (section && (section->section_mem_map & SECTION_IS_ONLINE));
+@@ -2326,20 +2319,20 @@ static inline unsigned long next_valid_pfn(unsigned long pfn, unsigned long end_
+ 
+ #endif
+ 
+-static inline unsigned long next_present_section_nr(unsigned long section_nr)
++static inline unsigned long next_early_section_nr(unsigned long section_nr)
+ {
+ 	while (++section_nr <= __highest_used_section_nr) {
+-		if (present_section_nr(section_nr))
++		if (early_section_nr(section_nr))
+ 			return section_nr;
+ 	}
+ 
+ 	return -1;
+ }
+ 
+-#define for_each_present_section_nr(start, section_nr)		\
+-	for (section_nr = next_present_section_nr(start - 1);	\
++#define for_each_early_section_nr(start, section_nr)		\
++	for (section_nr = next_early_section_nr(start - 1);	\
+ 	     section_nr != -1;					\
+-	     section_nr = next_present_section_nr(section_nr))
++	     section_nr = next_early_section_nr(section_nr))
+ 
+ /*
+  * These are _only_ used during initialisation, therefore they
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index e89efb67e8e6..f0db433e0f10 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -864,7 +864,6 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
+ 	if (!section_vmemmap_optimizable(ms))
+ 		page_init_poison(memmap, sizeof(struct page) * nr_pages);
+ 
+-	__section_mark_present(ms, section_nr);
+ 	__highest_used_section_nr = max(section_nr, __highest_used_section_nr);
+ 
+ 	/* Align memmap to section boundary in the subsection case */
+diff --git a/mm/sparse.c b/mm/sparse.c
+index a0f50ca5acf5..5d2d9f95d402 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -170,13 +170,14 @@ static void __init mminit_validate_memmodel_limits(unsigned long *start_pfn,
+  */
+ unsigned long __highest_used_section_nr;
+ 
+-static inline unsigned long first_present_section_nr(void)
++static inline unsigned long first_early_section_nr(void)
+ {
+-	return next_present_section_nr(-1);
++	return next_early_section_nr(-1);
+ }
+ 
+ void __init sparse_sections_init(void)
+ {
++	const unsigned long flags = SECTION_IS_EARLY | SECTION_IS_ONLINE;
+ 	unsigned long pfn, start_pfn, end_pfn, section_nr;
+ 	int i, nid;
+ 
+@@ -196,9 +197,7 @@ void __init sparse_sections_init(void)
+ 				continue;
+ 
+ 			set_section_nid(section_nr, nid);
+-			ms->section_mem_map = sparse_encode_early_nid(nid) |
+-							SECTION_IS_ONLINE;
+-			__section_mark_present(ms, section_nr);
++			ms->section_mem_map = sparse_encode_early_nid(nid) | flags;
+ 		}
+ 	}
+ 	__highest_used_section_nr = section_nr;
+@@ -230,7 +229,7 @@ static void __init sparse_metadata_init_nid(int nid,
+ 	if (!usage)
+ 		panic("Failed to allocate usemap for node %d\n", nid);
+ 
+-	for_each_present_section_nr(start_section_nr, section_nr) {
++	for_each_early_section_nr(start_section_nr, section_nr) {
+ 		const unsigned long pfn = section_nr_to_pfn(section_nr);
+ 		struct page *mem_map;
+ 
+@@ -244,18 +243,18 @@ static void __init sparse_metadata_init_nid(int nid,
+ 			      section_nr);
+ 		memmap_boot_pages_add(section_nr_vmemmap_pages(pfn, PAGES_PER_SECTION));
+ 		sparse_init_one_section(__nr_to_section(section_nr), section_nr,
+-					mem_map, usage, SECTION_IS_EARLY);
++					mem_map, usage, 0);
+ 		usage = (void *)usage + mem_section_usage_size();
+ 	}
+ }
+ 
+ static void __init sparse_metadata_init(void)
+ {
+-	unsigned long start_section_nr = first_present_section_nr();
++	unsigned long start_section_nr = first_early_section_nr();
+ 	int nid_begin = sparse_early_nid(__nr_to_section(start_section_nr));
+ 	unsigned long section_nr, nr_sections = 1;
+ 
+-	for_each_present_section_nr(start_section_nr + 1, section_nr) {
++	for_each_early_section_nr(start_section_nr + 1, section_nr) {
+ 		const int nid = sparse_early_nid(__nr_to_section(section_nr));
+ 
+ 		if (nid == nid_begin) {
+diff --git a/mm/sparse.h b/mm/sparse.h
+index c396d5c05cfc..19664d702af8 100644
+--- a/mm/sparse.h
++++ b/mm/sparse.h
+@@ -42,12 +42,6 @@ static inline void sparse_init_one_section(struct mem_section *ms,
+ 	ms->usage = usage;
+ }
+ 
+-static inline void __section_mark_present(struct mem_section *ms,
+-		unsigned long section_nr)
+-{
+-	ms->section_mem_map |= SECTION_MARKED_PRESENT;
+-}
+-
+ static inline size_t mem_section_usage_size(void)
+ {
+ 	return struct_size_t(struct mem_section_usage, pageblock_flags,
+-- 
+2.47.3
+

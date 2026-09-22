@@ -1,0 +1,83 @@
+From: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Date: Sun, 20 Sep 2026 22:28:09 -0400
+Subject: [PATCH] md: use folio_alloc_buffers()
+
+Remove the last user of alloc_page_buffers().  Use folio_alloc_buffers()
+instead, since alloc_page_buffers() is a wrap over it.  Although the pages
+used in md-bitmap are not folios, as they are not mapped into userspace
+nor enter the page cache, but they still have buffer heads attached.
+Cleaning up the code to not use buffer heads is future work.
+
+[ziy@nvidia.com: reword commit message]
+Link: https://lore.kernel.org/20260920-remove-pg_private-v5-13-bb68b6a21869@nvidia.com
+Signed-off-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+---
+ drivers/md/md-bitmap.c      | 5 +++--
+ fs/buffer.c                 | 8 --------
+ include/linux/buffer_head.h | 1 -
+ 3 files changed, 3 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/md/md-bitmap.c b/drivers/md/md-bitmap.c
+index b8325cb09a37..5f1637f974c1 100644
+--- a/drivers/md/md-bitmap.c
++++ b/drivers/md/md-bitmap.c
+@@ -560,6 +560,7 @@ static int read_file_page(struct file *file, unsigned long index,
+ {
+ 	int ret = 0;
+ 	struct inode *inode = file_inode(file);
++	struct folio *folio = page_folio(page);
+ 	struct buffer_head *bh;
+ 	sector_t block, blk_cur;
+ 	unsigned long blocksize = i_blocksize(inode);
+@@ -567,12 +568,12 @@ static int read_file_page(struct file *file, unsigned long index,
+ 	pr_debug("read bitmap file (%dB @ %llu)\n", (int)PAGE_SIZE,
+ 		 (unsigned long long)index << PAGE_SHIFT);
+ 
+-	bh = alloc_page_buffers(page, blocksize);
++	bh = folio_alloc_buffers(folio, blocksize, GFP_NOFS | __GFP_ACCOUNT);
+ 	if (!bh) {
+ 		ret = -ENOMEM;
+ 		goto out;
+ 	}
+-	attach_page_private(page, bh);
++	folio_attach_private(folio, bh);
+ 	blk_cur = index << (PAGE_SHIFT - inode->i_blkbits);
+ 	while (bh) {
+ 		block = blk_cur;
+diff --git a/fs/buffer.c b/fs/buffer.c
+index ed966fa73b1b..020af5dbe2d0 100644
+--- a/fs/buffer.c
++++ b/fs/buffer.c
+@@ -773,14 +773,6 @@ struct buffer_head *folio_alloc_buffers(struct folio *folio, unsigned long size,
+ }
+ EXPORT_SYMBOL_GPL(folio_alloc_buffers);
+ 
+-struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size)
+-{
+-	gfp_t gfp = GFP_NOFS | __GFP_ACCOUNT;
+-
+-	return folio_alloc_buffers(page_folio(page), size, gfp);
+-}
+-EXPORT_SYMBOL_GPL(alloc_page_buffers);
+-
+ static inline void link_dev_buffers(struct folio *folio,
+ 		struct buffer_head *head)
+ {
+diff --git a/include/linux/buffer_head.h b/include/linux/buffer_head.h
+index fd2c7115c054..6ce2db05c60f 100644
+--- a/include/linux/buffer_head.h
++++ b/include/linux/buffer_head.h
+@@ -197,7 +197,6 @@ void folio_set_bh(struct buffer_head *bh, struct folio *folio,
+ 		  unsigned long offset);
+ struct buffer_head *folio_alloc_buffers(struct folio *folio, unsigned long size,
+ 					gfp_t gfp);
+-struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size);
+ struct buffer_head *create_empty_buffers(struct folio *folio,
+ 		unsigned long blocksize, unsigned long b_state);
+ void end_buffer_read_sync(struct buffer_head *bh, int uptodate);
+-- 
+2.47.3
+

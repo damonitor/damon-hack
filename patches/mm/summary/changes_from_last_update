@@ -8,16 +8,98 @@
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 118 -> 118 commits (no change)
-  - series: 19 (113) -> 19 (113) (no change)
+- mm-unstable: 118 -> 128 commits
+  - series: 19 (113) -> 20 (123)
     - no role, maintainer: 27 -> 27 commits (no change)
-    - maintainer, nobody: 78 -> 78 commits (no change)
-    - maintainer, no role : 13 -> 13 commits (no change)
-- mm-new: 10 -> 10 commits (no change)
-  - series: 1 (10) -> 1 (10) (no change)
-    - maintainer, nobody: 6 -> 6 commits (no change)
-    - maintainer, no role : 3 -> 3 commits (no change)
-    - maintainer, reviewer: 1 -> 1 commits (no change)
+    - maintainer, nobody: 78 -> 84 commits
+    - maintainer, no role : 13 -> 16 commits
+    - maintainer, reviewer: 0 -> 1 commits
+  - changed commits
+    - series "mm/damon: misc cleanups". (7)
+      - 8249888308bc "mm/damon/core: remove declaration of __damon_commit_ctx() (0/7)"
+        - Authored by no role player, reviewed by a maintainer
+        - dropped "Cc: Zenghui Yu <zenghui.yu@linux.dev>"
+        - Link: https://lore.kernel.org/20260831142611.77572-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260831142611.77572-2-sj@kernel.org
+    - series "mm/damon: cleanup code, add test cases, and update guidances in docs". (12)
+      - d7d2b143a48c "mm/damon/tests/core-kunit: test overlapping ranges for set_regions() (8/12)"
+        - Authored by a maintainer, reviewed by no role player
+        - dropped "Cc: Kunwu Chan <kunwu.chan@gmail.com>"
+        - Link: https://lore.kernel.org/20260902054747.99370-9-sj@kernel.org
+    - series "mm/damon: improve readability, clarity and test coverage". (10)
+      - 683b442bf83b "mm/damon/api: remove NR_DAMOS_FILTER_TYPES (0/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260917142210.90829-2-sj@kernel.org
+      - 2f82e0db3544 "mm/damon/core: use abs_diff() in damon_feed_loop_next_input() (1/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-3-sj@kernel.org
+      - 4fb4baa1f407 "mm/damon/core: use mult_frac() in damon_feed_loop_next_input() (2/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-4-sj@kernel.org
+      - 896622eeb920 "mm/damon/core: set damon_ctx->walk_control_obsolete in damon_new_ctx() (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260915011614.102342-1-sj@kernel.org [1]
+      - 7f4fb56c7a8b "mm/damon/core: document damon_call()/damon_start() race hang issue (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-6-sj@kernel.org
+      - b58efb2b951c "mm/damon/paddr: remove pa parameter from damon_pa_filter_pass() (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-7-sj@kernel.org
+      - 7e5685ed3aa1 "mm/damon/tests/core-kunit: test eligible_mem_bp commitment (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-8-sj@kernel.org
+        - Link: https://lore.kkernel.org/20260827045035.94611-1-sj@kernel.org [1]
+      - 2427f1b31beb "mm/damon/tests/core-kunit: add probe_hits_wsum damos filter commit test (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-9-sj@kernel.org
+      - ab550b41c45a "selftests/damon/sysfs_memcg_path_leak: fail only for real DAMON leak (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-10-sj@kernel.org
+      - ecfb4a732ab0 "Docs/mm/damon/design: clarify bp is basis point (9/10)"
+        - Authored by a maintainer, reviewed by a reviewer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20260917142210.90829-11-sj@kernel.org
+- mm-new: 10 -> 6 commits
+  - series: 1 (10) -> 2 (6)
+    - no role, maintainer: 0 -> 6 commits
+    - maintainer, nobody: 6 -> 0 commits
+    - maintainer, no role : 3 -> 0 commits
+    - maintainer, reviewer: 1 -> 0 commits
+  - new commits
+    - series "mm/damon/core: fix the size charged for a filter-trimmed region", v2. (2)
+      - e379cead5335 "mm/damon/core: charge only the part of a region the filter left (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921152443.80132-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260921152443.80132-2-sj@kernel.org
+      - 31693f98ef4b "mm/damon/tests/core-kunit: test the size charged for a filter-trimmed region (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921152443.80132-3-sj@kernel.org
+    - series "mm/damon: improvements in efficiency, error handling, documents". (4)
+      - 2fc8dc9f5c50 "mm/damon/core: skip quota score setup when the quota is full (0/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921151547.78472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260921151547.78472-2-sj@kernel.org
+      - ed27af1aa11a "mm/damon/sysfs: propagate damon_call() error in turn_damon_on (1/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921151547.78472-3-sj@kernel.org
+      - f33f5df66dd3 "mm/damon: fix typos in comments (2/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921151547.78472-4-sj@kernel.org
+      - 6f9e75c1b837 "mm/damon: document that a zero sample_interval is accepted (3/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260921151547.78472-5-sj@kernel.org
+        - Link: https://lore.kernel.org/all/20260722094304.3132750-1-dayou5941@163.com/ [1]
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

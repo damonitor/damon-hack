@@ -1,18 +1,22 @@
 From: Alexandre Ghiti <alex@ghiti.fr>
-Date: Fri, 11 Sep 2026 14:13:29 +0200
+Date: Mon, 21 Sep 2026 17:13:03 +0200
 Subject: [PATCH] mm: swap: drop dropbehind swap cache folios on writeback
  completion
 
 A PG_dropbehind folio is dropped from its cache once writeback completes
 rather than left for reclaim to find later; this is implemented for file
-folios in folio_end_dropbehind().  Extend it to swap cache folios.
+folios in folio_end_dropbehind(). Extend it to swap cache folios.
 
-The drop takes the folio and swap cluster locks and may sleep, so it
-cannot run in interrupt context.  Set BIO_COMPLETE_IN_TASK on the write,
-as the file dropbehind paths do, and drop the folio directly from
-folio_end_writeback().
+The drop blocks on the folio lock, so it cannot run in interrupt
+context. Set BIO_COMPLETE_IN_TASK on the write, as the file dropbehind
+paths do, and drop the folio directly from folio_end_writeback().
 
-Link: https://lore.kernel.org/20260911121341.178028-3-alex@ghiti.fr
+It has to block rather than trylock: the folio is off the LRU, so
+skipping it would leave it in the swap cache with nothing able to
+reclaim it, and it cannot be put back while another thread holds its
+lock.
+
+Link: https://lore.kernel.org/20260921151306.625134-3-alex@ghiti.fr
 Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Suggested-by: Yosry Ahmed <yosry@kernel.org>
@@ -25,19 +29,21 @@ Cc: Al Viro <viro@zeniv.linux.org.uk>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Chengming Zhou <chengming.zhou@linux.dev>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Christian Brauner <brauner@kernel.org>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: Chis Li <chrisl@kernel.org>
+Cc: Christian Brauner (Amutable) <brauner@kernel.org>
+Cc: "David Hildenbrand (arm)" <david@kernel.org>
 Cc: Jan Kara <jack@suse.cz>
 Cc: Kairui Song <kasong@tencent.com>
 Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Matthew Wilcox <willy@infradead.org>
 Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Tal Zussman <tz2294@columbia.edu>
 Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Wei Xu <weixugc@google.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 ---
  include/linux/swap.h |  6 ++++++

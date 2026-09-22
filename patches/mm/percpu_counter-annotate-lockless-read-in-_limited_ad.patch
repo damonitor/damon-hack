@@ -1,0 +1,75 @@
+From: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Date: Mon, 21 Sep 2026 23:55:04 +0200
+Subject: [PATCH] percpu_counter: annotate lockless read in _limited_add()
+
+syzbot reports a data race on fbc->count between the lockless read in the
+fast path of __percpu_counter_limited_add() and the locked update in
+percpu_counter_add_batch(), reached via shmem's used_blocks counter: the
+alloc path reads it through percpu_counter_limited_add() while the free
+path updates it through percpu_counter_sub().
+
+Annotate the read rather than change the logic: the lockless read is
+deliberate, only the annotation is missing.  It is an approximation, not a
+conservative bound.  A concurrent flush moves value between fbc->count and
+a per-cpu counter, and other CPUs' locked slow paths add to fbc->count
+too, so a stale low value can let the fast path proceed where the slow
+path would refuse.  The error is bounded by the per-cpu slack (unknown =
+batch * num_online_cpus()).  This is existing behavior, no functional
+change intended.
+
+Read it with data_race(READ_ONCE(fbc->count)): data_race() tells KCSAN the
+race is intended (READ_ONCE() alone still triggers the report, because
+KCSAN reports against watchpoints set up by plain accesses), while
+READ_ONCE() stops the compiler from refetching the value, as in
+percpu_counter_read_positive().  The lock-protected accesses stay plain,
+so future buggy lockless writes are still caught.
+
+Link: https://lore.kernel.org/20260921215508.141641-1-azpijr@gmail.com
+Signed-off-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: syzbot+a3c71b9db9c11c270f59@syzkaller.appspotmail.com
+Closes: https://syzkaller.appspot.com/bug?extid=a3c71b9db9c11c270f59
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+---
+ lib/percpu_counter.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/lib/percpu_counter.c b/lib/percpu_counter.c
+index 2891f94a11c6..87b261b87b0b 100644
+--- a/lib/percpu_counter.c
++++ b/lib/percpu_counter.c
+@@ -328,6 +328,7 @@ bool __percpu_counter_limited_add(struct percpu_counter *fbc,
+ 				  s64 limit, s64 amount, s32 batch)
+ {
+ 	s64 count;
++	s64 gcount;
+ 	s64 unknown;
+ 	unsigned long flags;
+ 	bool good = false;
+@@ -338,11 +339,16 @@ bool __percpu_counter_limited_add(struct percpu_counter *fbc,
+ 	local_irq_save(flags);
+ 	unknown = batch * num_online_cpus();
+ 	count = __this_cpu_read(*fbc->counters);
++	/*
++	 * Lockless on purpose: gcount may be stale, so this is only an
++	 * approximation, bounded by the per-cpu slack ("unknown").
++	 */
++	gcount = data_race(READ_ONCE(fbc->count));
+ 
+ 	/* Skip taking the lock when safe */
+ 	if (abs(count + amount) <= batch &&
+-	    ((amount > 0 && fbc->count + unknown <= limit) ||
+-	     (amount < 0 && fbc->count - unknown >= limit))) {
++	    ((amount > 0 && gcount + unknown <= limit) ||
++	     (amount < 0 && gcount - unknown >= limit))) {
+ 		this_cpu_add(*fbc->counters, amount);
+ 		local_irq_restore(flags);
+ 		return true;
+-- 
+2.47.3
+

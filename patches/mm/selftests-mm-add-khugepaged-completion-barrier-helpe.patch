@@ -1,0 +1,156 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Sat, 19 Sep 2026 01:24:40 +0100
+Subject: [PATCH] selftests/mm: add khugepaged completion barrier helper
+
+A khugepaged test has to tell "not collapsed" from "not scanned yet", and
+nothing in the selftests can.  wait_for_scan() in khugepaged.c comes
+closest: it polls full_scans until the counter has advanced by two, since
+the pass in progress may already have passed the test's mm.  But it only
+returns in time if scan_sleep_millisecs happens to be short, and it is
+private to that one test.
+
+Add khugepaged_full_pass() to hugepage_settings, built on the same
+advance-by-two wait but driven through sysfs: a store to
+scan_sleep_millisecs wakes the daemon, so the barrier completes whatever
+the scan cadence.  A store made while the daemon is scanning rather than
+sleeping is lost, so the helper keeps storing until the pass lands.
+
+One wake completes one pass only if pages_to_scan covers every mm on the
+list, so callers need it large.
+
+Settings pushes must not start passes of their own.  A store to either
+sleep knob wakes the daemon, so thp_write_settings() now writes a
+khugepaged knob only when its value changes.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260919002451.496763-11-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: "David Hildenbrand (arm)" <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickens <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: kernel-team@meta.com
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan (Samsung OSG) <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: "Vlastimil Babka (SUSE)" <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+---
+ tools/lib/mm/hugepage_settings.c | 60 +++++++++++++++++++++++++++-----
+ tools/lib/mm/hugepage_settings.h |  2 ++
+ 2 files changed, 53 insertions(+), 9 deletions(-)
+
+diff --git a/tools/lib/mm/hugepage_settings.c b/tools/lib/mm/hugepage_settings.c
+index 656442c8d395..77918677a9cd 100644
+--- a/tools/lib/mm/hugepage_settings.c
++++ b/tools/lib/mm/hugepage_settings.c
+@@ -217,6 +217,13 @@ void thp_read_settings(struct thp_settings *settings)
+ 	}
+ }
+ 
++/* A store to either sleep knob wakes khugepaged, so write only on change */
++static void thp_update_num(const char *name, unsigned long num)
++{
++	if (thp_read_num(name) != num)
++		thp_write_num(name, num);
++}
++
+ void thp_write_settings(struct thp_settings *settings)
+ {
+ 	struct khugepaged_settings *khugepaged = &settings->khugepaged;
+@@ -232,15 +239,15 @@ void thp_write_settings(struct thp_settings *settings)
+ 			shmem_enabled_strings[settings->shmem_enabled]);
+ 	thp_write_num("use_zero_page", settings->use_zero_page);
+ 
+-	thp_write_num("khugepaged/defrag", khugepaged->defrag);
+-	thp_write_num("khugepaged/alloc_sleep_millisecs",
+-			khugepaged->alloc_sleep_millisecs);
+-	thp_write_num("khugepaged/scan_sleep_millisecs",
+-			khugepaged->scan_sleep_millisecs);
+-	thp_write_num("khugepaged/max_ptes_none", khugepaged->max_ptes_none);
+-	thp_write_num("khugepaged/max_ptes_swap", khugepaged->max_ptes_swap);
+-	thp_write_num("khugepaged/max_ptes_shared", khugepaged->max_ptes_shared);
+-	thp_write_num("khugepaged/pages_to_scan", khugepaged->pages_to_scan);
++	thp_update_num("khugepaged/defrag", khugepaged->defrag);
++	thp_update_num("khugepaged/alloc_sleep_millisecs",
++		       khugepaged->alloc_sleep_millisecs);
++	thp_update_num("khugepaged/scan_sleep_millisecs",
++		       khugepaged->scan_sleep_millisecs);
++	thp_update_num("khugepaged/max_ptes_none", khugepaged->max_ptes_none);
++	thp_update_num("khugepaged/max_ptes_swap", khugepaged->max_ptes_swap);
++	thp_update_num("khugepaged/max_ptes_shared", khugepaged->max_ptes_shared);
++	thp_update_num("khugepaged/pages_to_scan", khugepaged->pages_to_scan);
+ 
+ 	if (dev_queue_read_ahead_path[0]) {
+ 		int ret = write_num(dev_queue_read_ahead_path,
+@@ -271,6 +278,41 @@ void thp_write_settings(struct thp_settings *settings)
+ 	}
+ }
+ 
++/*
++ * Wait for a full khugepaged scan pass that started after this call: the
++ * pass in progress may already have passed this mm, so full_scans has to
++ * advance twice.
++ *
++ * A store to scan_sleep_millisecs wakes the daemon, but one made while it
++ * is scanning rather than sleeping is lost, so keep storing until the pass
++ * lands.
++ *
++ * One wake is one pass only if pages_to_scan covers every mm on the list.
++ */
++bool khugepaged_full_pass(unsigned int timeout_s)
++{
++	unsigned long deadline_ms = timeout_s * 1000UL;
++	unsigned long elapsed_ms = 0, poll_ms = 10;
++	unsigned long sleep_ms;
++	int pass;
++
++	sleep_ms = thp_read_num("khugepaged/scan_sleep_millisecs");
++	for (pass = 0; pass < 2; pass++) {
++		unsigned long target =
++			thp_read_num("khugepaged/full_scans") + 1;
++
++		while (thp_read_num("khugepaged/full_scans") < target) {
++			if (elapsed_ms >= deadline_ms)
++				return false;
++			thp_write_num("khugepaged/scan_sleep_millisecs",
++				      sleep_ms);
++			usleep(poll_ms * 1000);
++			elapsed_ms += poll_ms;
++		}
++	}
++	return true;
++}
++
+ struct thp_settings *thp_current_settings(void)
+ {
+ 	if (!settings_index) {
+diff --git a/tools/lib/mm/hugepage_settings.h b/tools/lib/mm/hugepage_settings.h
+index 94d9fc747f49..8f4581099b7a 100644
+--- a/tools/lib/mm/hugepage_settings.h
++++ b/tools/lib/mm/hugepage_settings.h
+@@ -83,6 +83,8 @@ static inline void thp_save_settings(void)
+ 	hugepage_save_settings(/* thp = */ true, /* hugetlb = */ false);
+ }
+ 
++bool khugepaged_full_pass(unsigned int timeout_s);
++
+ void thp_set_read_ahead_path(char *path);
+ unsigned long thp_supported_orders(void);
+ unsigned long thp_shmem_supported_orders(void);
+-- 
+2.47.3
+

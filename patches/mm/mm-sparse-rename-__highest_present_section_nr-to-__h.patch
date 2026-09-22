@@ -1,0 +1,128 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 21 Sep 2026 21:58:58 +0200
+Subject: [PATCH] mm/sparse: rename __highest_present_section_nr to
+ __highest_used_section_nr
+
+In preparation for getting rid of SECTION_MARKED_PRESENT, rename
+__highest_present_section_nr and clarify the comment.
+
+Link: https://lore.kernel.org/20260921-b4-sparsemem_cleanups-v2-6-54d81d65e125@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Jan Kiszka <jan.kiszka@siemens.com>
+Cc: Kieran Bingham <kbingham@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Danilo Krummrich <dakr@kernel.org>
+---
+ include/linux/mmzone.h |  6 +++---
+ mm/compaction.c        |  2 +-
+ mm/sparse.c            | 12 ++++--------
+ mm/sparse.h            |  4 ++--
+ 4 files changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index e112052f64fe..42bdbb2f30cf 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -2181,7 +2181,7 @@ static inline struct mem_section *__pfn_to_section(unsigned long pfn)
+ 	return __nr_to_section(pfn_to_section_nr(pfn));
+ }
+ 
+-extern unsigned long __highest_present_section_nr;
++extern unsigned long __highest_used_section_nr;
+ 
+ static inline int subsection_map_index(unsigned long pfn)
+ {
+@@ -2280,7 +2280,7 @@ static inline unsigned long first_valid_pfn(unsigned long pfn, unsigned long end
+ 
+ 	rcu_read_lock_sched();
+ 
+-	while (nr <= __highest_present_section_nr && pfn < end_pfn) {
++	while (nr <= __highest_used_section_nr && pfn < end_pfn) {
+ 		struct mem_section *ms = __pfn_to_section(pfn);
+ 
+ 		if (valid_section(ms) &&
+@@ -2335,7 +2335,7 @@ static inline int pfn_in_present_section(unsigned long pfn)
+ 
+ static inline unsigned long next_present_section_nr(unsigned long section_nr)
+ {
+-	while (++section_nr <= __highest_present_section_nr) {
++	while (++section_nr <= __highest_used_section_nr) {
+ 		if (present_section_nr(section_nr))
+ 			return section_nr;
+ 	}
+diff --git a/mm/compaction.c b/mm/compaction.c
+index 4994e200bbec..f1b2060eb201 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -216,7 +216,7 @@ static unsigned long skip_offline_sections(unsigned long start_pfn)
+ 	if (online_section_nr(start_nr))
+ 		return 0;
+ 
+-	while (++start_nr <= __highest_present_section_nr) {
++	while (++start_nr <= __highest_used_section_nr) {
+ 		if (online_section_nr(start_nr))
+ 			return section_nr_to_pfn(start_nr);
+ 	}
+diff --git a/mm/sparse.c b/mm/sparse.c
+index 3c19d4755909..bb89017254f4 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -164,15 +164,11 @@ static void __init mminit_validate_memmodel_limits(unsigned long *start_pfn,
+ }
+ 
+ /*
+- * There are a number of times that we loop over NR_MEM_SECTIONS,
+- * looking for section_present() on each.  But, when we have very
+- * large physical address spaces, NR_MEM_SECTIONS can also be
+- * very large which makes the loops quite long.
+- *
+- * Keeping track of this gives us an easy way to break out of
+- * those loops early.
++ * Looping over all possible memory sections is expensive, especially if
++ * NR_MEM_SECTIONS is large but only a fraction is actually used. Keep track of
++ * the highest section number we ever used.
+  */
+-unsigned long __highest_present_section_nr;
++unsigned long __highest_used_section_nr;
+ 
+ static inline unsigned long first_present_section_nr(void)
+ {
+diff --git a/mm/sparse.h b/mm/sparse.h
+index 4ee507c34b98..242b7bab0013 100644
+--- a/mm/sparse.h
++++ b/mm/sparse.h
+@@ -44,8 +44,8 @@ static inline void sparse_init_one_section(struct mem_section *ms,
+ static inline void __section_mark_present(struct mem_section *ms,
+ 		unsigned long section_nr)
+ {
+-	if (section_nr > __highest_present_section_nr)
+-		__highest_present_section_nr = section_nr;
++	if (section_nr > __highest_used_section_nr)
++		__highest_used_section_nr = section_nr;
+ 
+ 	ms->section_mem_map |= SECTION_MARKED_PRESENT;
+ }
+-- 
+2.47.3
+

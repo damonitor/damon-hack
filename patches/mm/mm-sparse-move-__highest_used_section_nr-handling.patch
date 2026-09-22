@@ -1,0 +1,115 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 21 Sep 2026 21:59:00 +0200
+Subject: [PATCH] mm/sparse: move __highest_used_section_nr handling
+
+In preparation for removing __section_mark_present(), let's move
+__highest_used_section_nr handling into its callers.  Verify in
+sparse_init_one_section() that it was properly updated.
+
+In sparse_sections_init() we can just set it to the last processed
+section_nr.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20260921-b4-sparsemem_cleanups-v2-8-54d81d65e125@kernel.org
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Jan Kiszka <jan.kiszka@siemens.com>
+Cc: Kieran Bingham <kbingham@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Danilo Krummrich <dakr@kernel.org>
+---
+ mm/sparse-vmemmap.c | 1 +
+ mm/sparse.c         | 5 +++--
+ mm/sparse.h         | 4 +---
+ 3 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 96506f594924..e89efb67e8e6 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -865,6 +865,7 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
+ 		page_init_poison(memmap, sizeof(struct page) * nr_pages);
+ 
+ 	__section_mark_present(ms, section_nr);
++	__highest_used_section_nr = max(section_nr, __highest_used_section_nr);
+ 
+ 	/* Align memmap to section boundary in the subsection case */
+ 	if (section_nr_to_pfn(section_nr) != start_pfn)
+diff --git a/mm/sparse.c b/mm/sparse.c
+index bb89017254f4..a0f50ca5acf5 100644
+--- a/mm/sparse.c
++++ b/mm/sparse.c
+@@ -177,7 +177,7 @@ static inline unsigned long first_present_section_nr(void)
+ 
+ void __init sparse_sections_init(void)
+ {
+-	unsigned long pfn, start_pfn, end_pfn;
++	unsigned long pfn, start_pfn, end_pfn, section_nr;
+ 	int i, nid;
+ 
+ 	sparse_extreme_init();
+@@ -187,9 +187,9 @@ void __init sparse_sections_init(void)
+ 		mminit_validate_memmodel_limits(&start_pfn, &end_pfn);
+ 
+ 		for (pfn = start_pfn; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
+-			unsigned long section_nr = pfn_to_section_nr(pfn);
+ 			struct mem_section *ms;
+ 
++			section_nr = pfn_to_section_nr(pfn);
+ 			sparse_index_init(section_nr, nid);
+ 			ms = __nr_to_section(section_nr);
+ 			if (ms->section_mem_map)
+@@ -201,6 +201,7 @@ void __init sparse_sections_init(void)
+ 			__section_mark_present(ms, section_nr);
+ 		}
+ 	}
++	__highest_used_section_nr = section_nr;
+ }
+ #ifndef CONFIG_SPARSEMEM_VMEMMAP
+ struct page __init *__populate_section_memmap(unsigned long pfn,
+diff --git a/mm/sparse.h b/mm/sparse.h
+index 242b7bab0013..c396d5c05cfc 100644
+--- a/mm/sparse.h
++++ b/mm/sparse.h
+@@ -26,6 +26,7 @@ static inline void sparse_init_one_section(struct mem_section *ms,
+ 	unsigned long coded_mem_map;
+ 
+ 	BUILD_BUG_ON(SECTION_MAP_LAST_BIT > PFN_SECTION_SHIFT);
++	VM_WARN_ON_ONCE(section_nr > __highest_used_section_nr);
+ 
+ 	/*
+ 	 * We encode the start PFN of the section into the mem_map such that
+@@ -44,9 +45,6 @@ static inline void sparse_init_one_section(struct mem_section *ms,
+ static inline void __section_mark_present(struct mem_section *ms,
+ 		unsigned long section_nr)
+ {
+-	if (section_nr > __highest_used_section_nr)
+-		__highest_used_section_nr = section_nr;
+-
+ 	ms->section_mem_map |= SECTION_MARKED_PRESENT;
+ }
+ 
+-- 
+2.47.3
+

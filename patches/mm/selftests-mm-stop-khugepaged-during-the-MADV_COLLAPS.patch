@@ -1,0 +1,75 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Sat, 19 Sep 2026 01:24:36 +0100
+Subject: [PATCH] selftests/mm: stop khugepaged during the MADV_COLLAPSE cases
+
+__madvise_collapse() turns THP off before each MADV_COLLAPSE, both to keep
+khugepaged out of the range and to prove MADV_COLLAPSE ignores the
+setting.  It clears the global controls only, which is no longer enough.
+A per-order control overrides them, and -s, which makes the cases fault in
+folios of one order, leaves that order's control at "always".  khugepaged
+then collapses the very range the case is working on, and the case fails
+on a collapse that was interfered with rather than refused.
+
+Clear the per-order controls too.  MADV_COLLAPSE does not consult them:
+anon never did, and shmem stopped with "mm: shmem: ignore sysfs configs
+for shmem forced collapse".
+
+Link: https://lore.kernel.org/20260919002451.496763-7-kirill@shutemov.name
+Fixes: b7f16963efe7 ("mm/khugepaged: run khugepaged for all orders")
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Assisted-by: LLM
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: "David Hildenbrand (arm)" <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickens <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: kernel-team@meta.com
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan (Samsung OSG) <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: "Vlastimil Babka (SUSE)" <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+---
+ tools/testing/selftests/mm/khugepaged.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index 13a2a47ab110..e013eebc7136 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -538,8 +538,8 @@ static bool is_anon(struct mem_ops *ops)
+ static void __madvise_collapse(const char *msg, char *p, int nr_hpages,
+ 			       struct mem_ops *ops, bool expect)
+ {
+-	int ret;
+ 	struct thp_settings settings = *thp_current_settings();
++	int ret, i;
+ 
+ 	ksft_print_msg("%s...", msg);
+ 
+@@ -555,6 +555,10 @@ static void __madvise_collapse(const char *msg, char *p, int nr_hpages,
+ 	 */
+ 	settings.thp_enabled = THP_NEVER;
+ 	settings.shmem_enabled = SHMEM_NEVER;
++	for (i = 0; i < NR_ORDERS; i++) {
++		settings.hugepages[i].enabled = THP_NEVER;
++		settings.shmem_hugepages[i].enabled = SHMEM_NEVER;
++	}
+ 	thp_push_settings(&settings);
+ 
+ 	/* Clear VM_NOHUGEPAGE */
+-- 
+2.47.3
+

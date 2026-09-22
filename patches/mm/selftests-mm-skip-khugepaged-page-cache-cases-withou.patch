@@ -1,0 +1,103 @@
+From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
+Date: Sat, 19 Sep 2026 01:24:34 +0100
+Subject: [PATCH] selftests/mm: skip khugepaged page cache cases without a PMD
+ folio
+
+The page cache caps folio order at MAX_PAGECACHE_ORDER, which is below the
+PMD order on arm64 with 64K pages, where a PMD is 512M.  A PMD-sized page
+cache folio is impossible there, so the kernel refuses these collapses:
+MADV_COLLAPSE answers -EINVAL and khugepaged passes over the range.  Four
+shmem cases ask for a PMD-sized folio anyway, fail, and the run bails out
+in the middle.
+
+Skip the shmem and file mem types where the cap is below the PMD order.
+
+The cap is not shmem-specific: it applies to every file folio.  Add
+thp_file_supported_orders() to read the orders the page cache allows.
+
+Anonymous collapse is unaffected: its orders are not capped this way.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260919002451.496763-5-kirill@shutemov.name
+Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Tested-by: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: "David Hildenbrand (arm)" <david@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Hugh Dickens <hughd@google.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: kernel-team@meta.com
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Shuah Khan (Samsung OSG) <shuah@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: "Vlastimil Babka (SUSE)" <vbabka@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+---
+ tools/lib/mm/hugepage_settings.h        |  9 +++++++++
+ tools/testing/selftests/mm/khugepaged.c | 19 +++++++++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/tools/lib/mm/hugepage_settings.h b/tools/lib/mm/hugepage_settings.h
+index 548e9d288d1d..94d9fc747f49 100644
+--- a/tools/lib/mm/hugepage_settings.h
++++ b/tools/lib/mm/hugepage_settings.h
+@@ -87,6 +87,15 @@ void thp_set_read_ahead_path(char *path);
+ unsigned long thp_supported_orders(void);
+ unsigned long thp_shmem_supported_orders(void);
+ 
++/*
++ * The per-order shmem_enabled attribute is created for the orders the page
++ * cache can hold, not just for shmem, so it answers for regular files too.
++ */
++static inline unsigned long thp_file_supported_orders(void)
++{
++	return thp_shmem_supported_orders();
++}
++
+ bool thp_available(void);
+ bool thp_is_enabled(void);
+ 
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index 189cc4fee18f..5318f3cfc0d0 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -1358,6 +1358,25 @@ int main(int argc, char **argv)
+ 
+ 	setbuf(stdout, NULL);
+ 
++	/*
++	 * Without a PMD-order page cache folio the kernel refuses these
++	 * collapses, so there is nothing to test.
++	 */
++	if (!(thp_file_supported_orders() & (1UL << hpage_pmd_order))) {
++		if (shmem_ops) {
++			ksft_print_msg("no PMD-order page cache folio: skipping shmem\n");
++			shmem_ops = NULL;
++		}
++		if (read_only_file_ops) {
++			ksft_print_msg("no PMD-order page cache folio: skipping file\n");
++			read_only_file_ops = NULL;
++			read_write_file_read_ops = NULL;
++			read_write_file_write_ops = NULL;
++		}
++		if (!anon_ops && !shmem_ops && !read_only_file_ops)
++			ksft_exit_skip("No mem_type left to run\n");
++	}
++
+ 	default_settings.khugepaged.max_ptes_none = hpage_pmd_nr - 1;
+ 	default_settings.khugepaged.max_ptes_swap = hpage_pmd_nr / 8;
+ 	default_settings.khugepaged.max_ptes_shared = hpage_pmd_nr / 2;
+-- 
+2.47.3
+

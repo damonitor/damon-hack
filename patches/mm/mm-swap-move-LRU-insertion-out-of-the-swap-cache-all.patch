@@ -1,29 +1,37 @@
 From: Alexandre Ghiti <alex@ghiti.fr>
-Date: Fri, 11 Sep 2026 14:13:28 +0200
+Date: Mon, 21 Sep 2026 17:13:02 +0200
 Subject: [PATCH] mm: swap: move LRU insertion out of the swap cache allocator
 
-Patch series "mm: zswap: free cold writeback folios promptly", v5.
+Patch series "mm: zswap: free cold writeback folios promptly", v6.
 
 When zswap writes an entry back, it allocates an order-0 swap cache folio,
-decompresses into it, and issues the write.  The folio is cold by
+decompresses into it, and issues the write. The folio is cold by
 construction, yet today it is left on the LRU for page reclaim to find and
-free later.  That wastes a reclaim scan and keeps cold memory resident
+free later. That wastes a reclaim scan and keeps cold memory resident
 longer than necessary.
 
 Rather than implement this in zswap, extend the existing dropbehind
-mechanism to swap cache folios and have zswap opt into it (Yosry).  A
+mechanism to swap cache folios and have zswap opt into it (Yosry). A
 PG_dropbehind folio is already dropped from its cache once writeback
 completes instead of being left for reclaim; for a swap cache folio that
 "drop" is removing it from the swap cache.
+
+  Patch 1 - move LRU insertion out of the swap cache allocator into its
+            callers, so zswap writeback can allocate off the LRU.
+
+  Patch 2 - drop dropbehind swap cache folios on writeback completion.
+
+  Patch 3 - zswap allocates its writeback folio off the LRU and marks it
+            dropbehind, opting into the mechanism above.
 
 
 This patch (of 3):
 
 This is a preparatory patch.
 
-__swap_cache_alloc_folio() adds the new folio to the LRU itself, which
-leaves its callers no way to act on the folio before it becomes visible to
-reclaim.  Two users need exactly that:
+swap_cache_alloc_folio() adds the new folio to the LRU itself, which
+leaves its callers no way to act on the folio before it becomes visible
+to reclaim.  Two users need exactly that:
 
  - moving the refault evaluation out of the swap cache folio allocation
    requires it to happen before folio_add_lru(): that consumes PG_active
@@ -35,15 +43,16 @@ reclaim.  Two users need exactly that:
    entirely, as the per-CPU LRU batch would hold a reference on it and
    keep remove_mapping() from freeing it once writeback completes.
 
-Defer the LRU insertion to the callers of __swap_cache_alloc_folio(): each
-of them adds the folio right after the allocation, so there is no
-functional change intended.
+Defer the LRU insertion to the callers and rename the helper to
+__swap_cache_alloc_folio(): each caller adds the folio right after the
+allocation, so there is no functional change intended.
 
-Link: https://lore.kernel.org/20260911121341.178028-1-alex@ghiti.fr
-Link: https://lore.kernel.org/20260911121341.178028-2-alex@ghiti.fr
+Link: https://lore.kernel.org/20260921151306.625134-1-alex@ghiti.fr
+Link: https://lore.kernel.org/20260921151306.625134-2-alex@ghiti.fr
 Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Suggested-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Kairui Song <kasong@tencent.com>
 Reviewed-by: Nhat Pham <nphamcs@gmail.com>
 Reviewed-by: Kunwu Chan <kunwu.chan@gmail.com>
 Acked-by: Usama Arif <usama.arif@linux.dev>
@@ -52,20 +61,22 @@ Cc: Al Viro <viro@zeniv.linux.org.uk>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Chengming Zhou <chengming.zhou@linux.dev>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Christian Brauner <brauner@kernel.org>
-Cc: David Hildenbrand <david@kernel.org>
+Cc: Chis Li <chrisl@kernel.org> (Google)
+Cc: Christian Brauner (Amutable) <brauner@kernel.org>
+Cc: "David Hildenbrand (arm)" <david@kernel.org>
 Cc: Jan Kara <jack@suse.cz>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Matthew Wilcox <willy@infradead.org>
 Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Tal Zussman <tz2294@columbia.edu>
 Cc: Wei Xu <weixugc@google.com>
-Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
 ---
  mm/swap.h       |  6 +++---
  mm/swap_state.c | 20 ++++++++++++--------

@@ -1,0 +1,69 @@
+From: Lance Yang <lance.yang@linux.dev>
+Date: Mon, 21 Sep 2026 13:42:25 +0800
+Subject: [PATCH] mm: disallow raw PFN mappings of huge/shared zeropage
+
+Handling the huge/shared zeropage correctly in vmf_insert_pfn_pmd() and
+vmf_insert_pfn_prot() is more involved.  We would need to check whether
+the VMA allows it and keep the mapping read-only, similar to the checks in
+vm_mixed_ok().
+
+No in-tree user needs that support, so reject these mappings with
+VM_FAULT_SIGBUS rather than complicate the code for now.
+
+Link: https://lore.kernel.org/20260921054225.28537-1-lance.yang@linux.dev
+Link: https://lore.kernel.org/all/20260917121010.60966-1-lance.yang@linux.dev/
+Signed-off-by: Lance Yang <lance.yang@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Liam Howlett <liam@infradead.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: "Mike Rapoport (IBM)" <rppt@kernel.org>
+Cc: Nico Pache (Red Hat) <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: "Vlastimil Babka (SUSE)" <vbabka@kernel.org>
+---
+ mm/huge_memory.c | 3 +++
+ mm/memory.c      | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 3fb9504dff7a..493b29cabee5 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1723,6 +1723,9 @@ vm_fault_t vmf_insert_pfn_pmd(struct vm_fault *vmf, unsigned long pfn,
+ 						(VM_PFNMAP|VM_MIXEDMAP));
+ 	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
+ 
++	if (unlikely(is_huge_zero_pfn(pfn)))
++		return VM_FAULT_SIGBUS;
++
+ 	pfnmap_setup_cachemode_pfn(pfn, &pgprot);
+ 
+ 	return insert_pmd(vma, addr, vmf->pmd, fop, pgprot, write);
+diff --git a/mm/memory.c b/mm/memory.c
+index 6349ef676549..79fa57a381ce 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -2956,6 +2956,9 @@ vm_fault_t vmf_insert_pfn_prot(struct vm_area_struct *vma, unsigned long addr,
+ 	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
+ 	BUG_ON((vma->vm_flags & VM_MIXEDMAP) && pfn_valid(pfn));
+ 
++	if (unlikely(is_zero_pfn(pfn)))
++		return VM_FAULT_SIGBUS;
++
+ 	if (addr < vma->vm_start || addr >= vma->vm_end)
+ 		return VM_FAULT_SIGBUS;
+ 
+-- 
+2.47.3
+

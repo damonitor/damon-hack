@@ -1,0 +1,53 @@
+From: "Matthew Wilcox (Oracle)" <willy@infradead.org>
+Date: Sun, 20 Sep 2026 22:28:11 -0400
+Subject: [PATCH] md: remove the last use of page_buffers()
+
+Convert the page to a folio and use folio_buffers() instead.  This does
+introduce one extra call to compound_head(), but will simplify a later
+conversion of md-bitmap to use folios instead of pages.
+
+Link: https://lore.kernel.org/20260920-remove-pg_private-v5-15-bb68b6a21869@nvidia.com
+Signed-off-by: Matthew Wilcox (Oracle) <willy@infradead.org>
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+---
+ drivers/md/md-bitmap.c      | 3 ++-
+ include/linux/buffer_head.h | 7 +------
+ 2 files changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/md/md-bitmap.c b/drivers/md/md-bitmap.c
+index 02a126968ad4..8adf6ddca3d6 100644
+--- a/drivers/md/md-bitmap.c
++++ b/drivers/md/md-bitmap.c
+@@ -516,7 +516,8 @@ static void end_bitmap_write(struct bio *bio)
+ 
+ static void write_file_page(struct bitmap *bitmap, struct page *page, int wait)
+ {
+-	struct buffer_head *bh = page_buffers(page);
++	struct folio *folio = page_folio(page);
++	struct buffer_head *bh = folio_buffers(folio);
+ 
+ 	while (bh && bh->b_blocknr) {
+ 		atomic_inc(&bitmap->pending_writes);
+diff --git a/include/linux/buffer_head.h b/include/linux/buffer_head.h
+index 6ce2db05c60f..4b0b7188472b 100644
+--- a/include/linux/buffer_head.h
++++ b/include/linux/buffer_head.h
+@@ -175,12 +175,7 @@ static inline unsigned long bh_offset(const struct buffer_head *bh)
+ 	return (unsigned long)(bh)->b_data & (page_size(bh->b_page) - 1);
+ }
+ 
+-/* If we *know* page->private refers to buffer_heads */
+-#define page_buffers(page)					\
+-	({							\
+-		BUG_ON(!PagePrivate(page));			\
+-		((struct buffer_head *)page_private(page));	\
+-	})
++/* If we *know* folio->private refers to buffer_heads */
+ #define folio_buffers(folio)		folio_get_private(folio)
+ 
+ void buffer_check_dirty_writeback(struct folio *folio,
+-- 
+2.47.3
+
