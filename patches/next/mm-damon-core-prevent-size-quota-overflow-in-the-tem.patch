@@ -1,0 +1,56 @@
+From: Donggeun Yoo <donggeunyoo.kernel@gmail.com>
+Date: Wed, 23 Sep 2026 09:25:58 +0900
+Subject: [PATCH] mm/damon/core: prevent size quota overflow in the temporal
+ goal tuner
+
+damos_goal_tune_esz_bp_temporal() converts the scheme's size quota
+into basis points with "quota->esz_bp = quota->sz * 10000", both
+unsigned long, and damos_set_effective_quota() divides the result
+back by 10000.  quotas/bytes is unbounded; bytes_store() hands it to
+kstrtoul() as is.
+
+On 32-bit the product wraps for any size quota above ULONG_MAX /
+10000, that is 429496 bytes.  A wrapped product below 10000 divides
+to a zero effective quota: 429497 gives 0.  damos_quota_is_full() is
+then true on the first test of every charge window.  Other wrapped
+values are wrong without being zero: 500000 gives 70503.
+
+Triggering this needs a scheme with a quota goal, the temporal goal
+tuner, and a size quota above ULONG_MAX / 10000 -- 429496 bytes on
+32-bit, 1844674407370955 on 64-bit.  The scheme then makes no
+progress for as long as the goal is unachieved, which is easy to
+notice, and writing a smaller size quota restores it.  Nothing is
+corrupted and nothing leaks.  This is unlikely to be hit on a tested
+setup.
+
+addr_unit does not cover this.  It only scales the numbers a paddr
+context writes to quotas/bytes, so a large enough scaled value wraps
+just the same, and vaddr and fvaddr contexts take raw byte values.
+
+Bound the multiply.
+
+Fixes: af738a6a00c1 ("mm/damon/core: introduce DAMOS_QUOTA_GOAL_TUNER_TEMPORAL")
+Cc: <stable@vger.kernel.org> # 7.1.x
+Signed-off-by: Donggeun Yoo <donggeunyoo.kernel@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 29326b397702..a551b77fbc89 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3540,7 +3540,7 @@ static void damos_goal_tune_esz_bp_temporal(struct damon_ctx *c,
+ 
+ 	if (score >= 10000)
+ 		quota->esz_bp = 0;
+-	else if (quota->sz)
++	else if (quota->sz && quota->sz <= ULONG_MAX / 10000)
+ 		quota->esz_bp = quota->sz * 10000;
+ 	else
+ 		quota->esz_bp = ULONG_MAX;
+-- 
+2.47.3
+
