@@ -11,8 +11,8 @@ retrieval.
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
  include/linux/damon.h |  2 ++
- mm/damon/core.c       | 21 +++++++++++++++++++++
- 2 files changed, 23 insertions(+)
+ mm/damon/core.c       | 26 +++++++++++++++++++++++++-
+ 2 files changed, 27 insertions(+), 1 deletion(-)
 
 diff --git a/include/linux/damon.h b/include/linux/damon.h
 index 6a29dc2ac8db..42234839ce29 100644
@@ -35,7 +35,7 @@ index 6a29dc2ac8db..42234839ce29 100644
  	unsigned long current_value;
  	/* metric-dependent fields */
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 566960659e4a..756c5d18090d 100644
+index 566960659e4a..836cf0d0de6f 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -1224,6 +1224,7 @@ static int damos_commit_quota_goal(
@@ -46,7 +46,27 @@ index 566960659e4a..756c5d18090d 100644
  	dst->target_value = src->target_value;
  	if (dst->metric == DAMOS_QUOTA_USER_INPUT)
  		dst->current_value = src->current_value;
-@@ -3255,6 +3256,26 @@ static void damos_set_quota_goal_current_value(struct damon_ctx *c,
+@@ -2960,10 +2961,18 @@ static void damos_set_psi_current_val(u64 now_psi_total,
+ 		struct damos_quota_goal *goal, struct damos *s)
+ {
+ 	u64 last_psi_total = goal->last_psi_total;
++	unsigned long val;
+ 
+ 	goal->last_psi_total = now_psi_total;
+ 	if (last_psi_total != U64_MAX) {
+-		goal->current_value = now_psi_total - last_psi_total;
++		val = now_psi_total - last_psi_total;
++		if (goal->complement) {
++			if (val < s->quota.reset_interval * 1000)
++				val = s->quota.reset_interval * 1000 - val;
++			else
++				val = 0;
++		}
++		goal->current_value = val;
+ 		return;
+ 	}
+ 	/* uninitialized last_psi_total; make no effect this round */
+@@ -3255,6 +3264,21 @@ static void damos_set_quota_goal_current_value(struct damon_ctx *c,
  	default:
  		break;
  	}
@@ -58,14 +78,9 @@ index 566960659e4a..756c5d18090d 100644
 +	/* for user_input, users set complemented value on their own */
 +	if (goal->metric == DAMOS_QUOTA_USER_INPUT)
 +		return;
-+	if (goal->metric == DAMOS_QUOTA_SOME_MEM_PSI_US) {
-+		if (goal->current_value < s->quota.reset_interval * 1000)
-+			goal->current_value = s->quota.reset_interval * 1000 -
-+				goal->current_value;
-+		else
-+			goal->current_value = 0;
++	/* damos_set_psi_current_val() handles complement flag itself */
++	if (goal->metric == DAMOS_QUOTA_SOME_MEM_PSI_US)
 +		return;
-+	}
 +	if (goal->current_value < 10000)
 +		goal->current_value = 10000 - goal->current_value;
 +	else
