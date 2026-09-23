@@ -1,0 +1,141 @@
+From: Li Zhe <lizhe.67@bytedance.com>
+Date: Tue, 22 Sep 2026 17:07:49 +0800
+Subject: [PATCH] mm/hugetlb: fix overbroad MMU notifiers for unshared PMDs
+
+Hugetlb currently expands MMU notifier ranges to PUD boundaries whenever
+PMD sharing is possible.  That is only needed when huge_pmd_unshare()
+actually detaches a shared PMD page table, because clearing the PUD
+invalidates the whole PUD-sized virtual address range.
+
+For hugetlbfs hole punch, and similarly for other hugetlb unmap paths, a
+shared mapping can pass the "PMD sharing is possible" range test in
+adjust_range_if_pmd_sharing_possible() even when the hugetlbfs file has
+never actually had any shared PMD page tables.  KVM then receives a 1G
+invalidation for a 2M operation and zaps unrelated secondary mappings, so
+the guest has to fault them back in.
+
+Avoid this by remembering, per hugetlbfs inode, whether PMD sharing was
+ever established for the file.  Set the flag when huge_pmd_share()
+successfully populates a shared PMD table.  For the hugetlb unmap paths,
+skip the conservative PUD-sized notifier expansion while the file has
+never seen PMD sharing.
+
+The state is intentionally sticky and file-wide.  Once PMD sharing has
+ever happened for the file, the unmap paths keep the existing conservative
+expansion.  This avoids the no-sharing case without adding a page-table
+walk to every unmap.
+
+On a Redis-in-VM workload that punches cold 2M hugetlb pages, this patch
+improves P99 QPS stability while punching pages, reducing the QPS
+degradation ratio from 7.09% to 1.45%.
+
+Link: https://lore.kernel.org/20260922090749.24905-1-lizhe.67@bytedance.com
+Signed-off-by: Li Zhe <lizhe.67@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: aiqi.i7 <aiqi.i7@bytedance.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+---
+ fs/hugetlbfs/inode.c    |  3 +++
+ include/linux/hugetlb.h | 24 ++++++++++++++++++++++++
+ mm/hugetlb.c            | 11 ++++++++---
+ 3 files changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/fs/hugetlbfs/inode.c b/fs/hugetlbfs/inode.c
+index f643855d2acc..0bd140105f21 100644
+--- a/fs/hugetlbfs/inode.c
++++ b/fs/hugetlbfs/inode.c
+@@ -920,6 +920,9 @@ static struct inode *hugetlbfs_get_inode(struct super_block *sb,
+ 		simple_inode_init_ts(inode);
+ 		info->resv_map = resv_map;
+ 		info->seals = F_SEAL_SEAL;
++#ifdef CONFIG_HUGETLB_PMD_PAGE_TABLE_SHARING
++		info->pmd_sharing_seen = false;
++#endif
+ 		switch (mode & S_IFMT) {
+ 		default:
+ 			init_special_inode(inode, mode, dev);
+diff --git a/include/linux/hugetlb.h b/include/linux/hugetlb.h
+index 24727ece20fe..bfe1d212d777 100644
+--- a/include/linux/hugetlb.h
++++ b/include/linux/hugetlb.h
+@@ -507,6 +507,9 @@ struct hugetlbfs_inode_info {
+ 	struct inode vfs_inode;
+ 	struct resv_map *resv_map;
+ 	unsigned int seals;
++#ifdef CONFIG_HUGETLB_PMD_PAGE_TABLE_SHARING
++	bool pmd_sharing_seen;
++#endif
+ };
+ 
+ static inline struct hugetlbfs_inode_info *HUGETLBFS_I(struct inode *inode)
+@@ -514,6 +517,27 @@ static inline struct hugetlbfs_inode_info *HUGETLBFS_I(struct inode *inode)
+ 	return container_of(inode, struct hugetlbfs_inode_info, vfs_inode);
+ }
+ 
++#ifdef CONFIG_HUGETLB_PMD_PAGE_TABLE_SHARING
++static inline void hugetlbfs_set_pmd_sharing_seen(struct inode *inode)
++{
++	HUGETLBFS_I(inode)->pmd_sharing_seen = true;
++}
++
++static inline bool hugetlbfs_pmd_sharing_seen(struct inode *inode)
++{
++	return HUGETLBFS_I(inode)->pmd_sharing_seen;
++}
++#else
++static inline void hugetlbfs_set_pmd_sharing_seen(struct inode *inode)
++{
++}
++
++static inline bool hugetlbfs_pmd_sharing_seen(struct inode *inode)
++{
++	return false;
++}
++#endif
++
+ extern const struct vm_operations_struct hugetlb_vm_ops;
+ struct file *hugetlb_file_setup(const char *name, size_t size, vma_flags_t acct,
+ 				int creat_flags, int page_size_log);
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 37f8272f0f2a..d33cf5d8b2c2 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5438,10 +5438,12 @@ void __hugetlb_zap_begin(struct vm_area_struct *vma,
+ 	if (!vma->vm_file)	/* hugetlbfs_file_mmap error */
+ 		return;
+ 
+-	adjust_range_if_pmd_sharing_possible(vma, start, end);
+ 	hugetlb_vma_lock_write(vma);
+-	if (vma->vm_file)
++	if (vma->vm_file) {
+ 		i_mmap_lock_write(vma->vm_file->f_mapping);
++		if (hugetlbfs_pmd_sharing_seen(file_inode(vma->vm_file)))
++			adjust_range_if_pmd_sharing_possible(vma, start, end);
++	}
+ }
+ 
+ void __hugetlb_zap_end(struct vm_area_struct *vma,
+@@ -5480,7 +5482,9 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
+ 
+ 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
+ 				start, end);
+-	adjust_range_if_pmd_sharing_possible(vma, &range.start, &range.end);
++	if (hugetlbfs_pmd_sharing_seen(file_inode(vma->vm_file)))
++		adjust_range_if_pmd_sharing_possible(vma, &range.start,
++						     &range.end);
+ 	mmu_notifier_invalidate_range_start(&range);
+ 	tlb_gather_mmu(&tlb, vma->vm_mm);
+ 
+@@ -7083,6 +7087,7 @@ pte_t *huge_pmd_share(struct mm_struct *mm, struct vm_area_struct *vma,
+ 	if (pud_none(*pud)) {
+ 		pud_populate(mm, pud,
+ 				(pmd_t *)((unsigned long)spte & PAGE_MASK));
++		hugetlbfs_set_pmd_sharing_seen(mapping->host);
+ 		mm_inc_nr_pmds(mm);
+ 	} else {
+ 		ptdesc_pmd_pts_dec(virt_to_ptdesc(spte));
+-- 
+2.47.3
+

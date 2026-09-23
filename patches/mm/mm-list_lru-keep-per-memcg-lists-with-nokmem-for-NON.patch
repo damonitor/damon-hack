@@ -1,0 +1,66 @@
+From: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Date: Thu, 10 Sep 2026 16:07:20 +0800
+Subject: [PATCH] mm: list_lru: keep per-memcg lists with nokmem for
+ NONSLAB-backed lrus
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With cgroup.memory=nokmem, __list_lru_init() collapses every list_lru into
+per-node lists.  That is fine for slab objects, which are not charged per
+memcg without kmem accounting.  But a lru backed by a SHRINKER_NONSLAB
+shrinker, e.g.  the THP deferred split queue or the zswap entries, holds
+user memory, which is charged regardless of nokmem.  Collapsing such an
+lru loses the per-memcg view of its objects.  Reclaim can no longer target
+just the cgroup under pressure.
+
+Keep such lrus memcg aware under nokmem when their backing shrinker is
+registered SHRINKER_NONSLAB.
+
+This leaves the savings of nokmem intact: slab-backed lrus (e.g.  the
+superblock dentry/inode lrus) still fall back to the per-node lists, and
+the per-memcg lists are allocated only when a memcg actually holds such
+objects.
+
+Link: https://lore.kernel.org/20260910080722.3961351-3-qinyuntan@linux.alibaba.com
+Fixes: fafaeceb89a5 ("mm: switch deferred split shrinker to list_lru")
+Signed-off-by: Qinyun Tan <qinyuntan@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Xunlei Pang <xlpang@linux.alibaba.com>
+---
+ mm/list_lru.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index 5c134bf51b5b..7dbb6125cb1d 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -677,7 +677,9 @@ int __list_lru_init(struct list_lru *lru, bool memcg_aware, struct shrinker *shr
+ 	else
+ 		lru->shrinker_id = -1;
+ 
+-	if (mem_cgroup_disabled() || mem_cgroup_kmem_disabled())
++	if (mem_cgroup_disabled() ||
++	    (mem_cgroup_kmem_disabled() &&
++	     (!shrinker || !(shrinker->flags & SHRINKER_NONSLAB))))
+ 		memcg_aware = false;
+ #endif
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,59 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Tue, 22 Sep 2026 17:42:52 +0800
+Subject: [PATCH] ocfs2: restore -ERANGE check in
+ ocfs2_xattr_tree_list_index_block()
+
+ocfs2_xattr_list_entry() returns -ERANGE when the buffer handed in by the
+caller is too small to hold the whole xattr name list.  That is the normal
+listxattr(2) protocol, userspace simply retries with a larger buffer, so
+it is not an ocfs2 error and must not be logged as one.
+
+Commit a46fa684fcb700 ("ocfs2: Don't printk the error when listing too
+many xattrs.") already knew this and silenced two sites, quoting
+
+  (27738,0):ocfs2_iterate_xattr_buckets:3158 ERROR: status = -34
+  (27738,0):ocfs2_xattr_tree_list_index_block:3264 ERROR: status = -34
+
+The refactoring in commit 47bca4950bc40f ("ocfs2: Abstract ocfs2 xattr
+tree extend rec iteration process.") then rewrote
+ocfs2_xattr_tree_list_index_block() around the new
+ocfs2_iterate_xattr_index_block() helper and dropped that guard, so the
+second message has been emitted ever since:
+
+  ocfs2_xattr_tree_list_index_block:4513 ERROR: status = -34
+
+The exemption in ocfs2_iterate_xattr_buckets() survived because that
+function was left alone, and the new helper does check for -ERANGE itself,
+which is why only the outermost caller still logs it.
+
+Restore the missing check.  Only the log line changes: -ERANGE is still
+returned to the VFS untouched, so listxattr(2) behaves exactly as before.
+
+Link: https://lore.kernel.org/20260922094252.971631-1-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Junxiao Bi <junxiao.bi@oracle.com>
+---
+ fs/ocfs2/xattr.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/xattr.c b/fs/ocfs2/xattr.c
+index 9292cf26e276..9f620f6c6005 100644
+--- a/fs/ocfs2/xattr.c
++++ b/fs/ocfs2/xattr.c
+@@ -4502,7 +4502,8 @@ static int ocfs2_xattr_tree_list_index_block(struct inode *inode,
+ 	ret = ocfs2_iterate_xattr_index_block(inode, blk_bh,
+ 					      ocfs2_list_xattr_tree_rec, &xl);
+ 	if (ret) {
+-		mlog_errno(ret);
++		if (ret != -ERANGE)
++			mlog_errno(ret);
+ 		goto out;
+ 	}
+ 
+-- 
+2.47.3
+
