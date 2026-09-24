@@ -1,5 +1,5 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Tue, 15 Sep 2026 01:14:53 +0800
+Date: Wed, 23 Sep 2026 23:32:43 +0200
 Subject: [PATCH] mm/huge_memory: move anon_vma handling into the anon split
  helper
 
@@ -41,39 +41,44 @@ __folio_split() unlocks the after-split sub-folios, where previously it
 was held across that loop; that window is harmless as the sub-folios stay
 folio-locked and referenced until it.
 
-Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-12-39878b37dfb0@tencent.com
+Link: https://lore.kernel.org/20260923-swap-thp-cleanup-v6-12-ba1b4ba72c6f@tencent.com
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Barry Song <baohua@kernel.org>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Kiryl Shutsemau (Meta) <kas@kernel.org>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Nhat Pham <nphamcs@gmail.com>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Shivam Kalra <shivamkalra98@zohomail.in>
+Cc: Kairui Song <ryncsn@gmail.com>
 ---
- mm/huge_memory.c | 58 ++++++++++++++++++++++++++----------------------
- 1 file changed, 31 insertions(+), 27 deletions(-)
+ mm/huge_memory.c | 57 +++++++++++++++++++++++++-----------------------
+ 1 file changed, 30 insertions(+), 27 deletions(-)
 
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 09ae76ae1c95..319624717667 100644
+index 6457192747aa..ec955488d280 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
-@@ -4028,16 +4028,38 @@ static int __folio_freeze_split_anon(struct folio *folio,
+@@ -4032,16 +4032,37 @@ static int __folio_freeze_split_anon(struct folio *folio,
  	struct swap_cluster_info *ci = NULL;
- 	int old_order = folio_order(folio);
+ 	const int old_order = folio_order(folio);
  	struct folio *new_folio, *next;
 +	struct anon_vma *anon_vma = NULL;
  	enum ttu_flags ttu_flags = 0;
@@ -97,8 +102,7 @@ index 09ae76ae1c95..319624717667 100644
 +	 * the reference nor the lock. Anything else needs a reference
 +	 * first and folio_ref_freeze() below catches it.
 +	 *
-+	 * Note a swapped-out THP counts as unmapped here as swap PTEs do
-+	 * not contribute mapcount, and they are splittable.
++	 * Note that entirely swapped-out THPs are unmapped but can be split.
 +	 */
  	if (folio_mapped(folio)) {
 -		need_remap = true;
@@ -113,7 +117,7 @@ index 09ae76ae1c95..319624717667 100644
  	}
  
  	local_irq_disable();
-@@ -4095,11 +4117,16 @@ static int __folio_freeze_split_anon(struct folio *folio,
+@@ -4099,11 +4120,16 @@ static int __folio_freeze_split_anon(struct folio *folio,
  		swap_cluster_unlock(ci);
  out_no_split:
  	local_irq_enable();
@@ -131,7 +135,7 @@ index 09ae76ae1c95..319624717667 100644
  
  	return ret;
  }
-@@ -4294,7 +4321,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4294,7 +4320,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  	struct folio *end_folio = folio_next(folio);
  	bool is_anon = folio_test_anon(folio);
  	struct mem_cgroup *memcg, *old_memcg;
@@ -139,7 +143,7 @@ index 09ae76ae1c95..319624717667 100644
  	int old_order = folio_order(folio);
  	struct folio *new_folio, *next;
  	int ret;
-@@ -4325,23 +4351,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4325,23 +4350,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  	memcg = get_mem_cgroup_from_folio(folio);
  	old_memcg = set_active_memcg(memcg);
  
@@ -163,7 +167,7 @@ index 09ae76ae1c95..319624717667 100644
  	if (is_anon)
  		ret = __folio_freeze_split_anon(folio, new_order, split_at,
  						true, list, split_type);
-@@ -4368,11 +4377,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4368,11 +4376,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  		free_folio_and_swap_cache(new_folio);
  	}
  

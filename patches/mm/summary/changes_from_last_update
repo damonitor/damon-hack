@@ -1,70 +1,19 @@
-- baseline: v7.3-rc1-475-g0d9ff90a5422 -> v7.3-rc4-70-gfe2ec83746e5
-- mm-hotfixes-stable: 5 -> 0 commits
+- baseline: v7.3-rc4-70-gfe2ec83746e5 -> v7.3-rc4-70-gfe2ec83746e5 (no change)
+- mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-    - no role, maintainer: 3 -> 0 commits
-    - maintainer, nobody: 2 -> 0 commits
-  - dropped commits
-    - f166586f74dd "mm/damon/ops-common: use a page-aligned address in damon_ptep_mkold()"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260904002829.116381-1-sj@kernel.org
-    - 90179da203ba "mm/damon/core: allow esz to be set to zero"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260908135413.97570-1-sj@kernel.org
-    - 39c0ceedd545 "mm/damon/vaddr: avoid hw-driven pte updates during damon_hugetlb_mkold()"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260907170358.100168-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260830160545.98969-1-sj@kernel.org [1]
-    - b3723b596b54 "mm/damon/core: fix unconditionally skip last region"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20260908134739.96919-1-sj@kernel.org
-    - eb6494824978 "mm/damon/core: reset invalid quota->charge_target_from"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20260910142846.172957-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260830064708.40CA61F000E9@smtp.kernel.org [1]
 - mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 128 -> 134 commits
-  - series: 20 (123) -> 22 (129)
-    - no role, maintainer: 27 -> 33 commits
+- mm-unstable: 134 -> 134 commits (no change)
+  - series: 22 (129) -> 22 (129) (no change)
+    - no role, maintainer: 33 -> 33 commits (no change)
     - maintainer, nobody: 84 -> 84 commits (no change)
     - maintainer, no role : 16 -> 16 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
-  - changed commits
-    - series "mm/damon/core: fix the size charged for a filter-trimmed region", v2. (2)
-      - 3124e607d2bc "mm/damon/core: charge only the part of a region the filter left (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921152443.80132-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260921152443.80132-2-sj@kernel.org
-      - 66850bb36eb8 "mm/damon/tests/core-kunit: test the size charged for a filter-trimmed region (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921152443.80132-3-sj@kernel.org
-    - series "mm/damon: improvements in efficiency, error handling, documents". (4)
-      - 2b5146ff3155 "mm/damon/core: skip quota score setup when the quota is full (0/4)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921151547.78472-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260921151547.78472-2-sj@kernel.org
-      - 7828e221442a "mm/damon/sysfs: propagate damon_call() error in turn_damon_on (1/4)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921151547.78472-3-sj@kernel.org
-      - 370018505892 "mm/damon: fix typos in comments (2/4)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921151547.78472-4-sj@kernel.org
-      - b665d7476625 "mm/damon: document that a zero sample_interval is accepted (3/4)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260921151547.78472-5-sj@kernel.org
-        - Link: https://lore.kernel.org/all/20260722094304.3132750-1-dayou5941@163.com/ [1]
-- mm-new: 6 -> 0 commits
-  - series: 2 (6) -> 0 (0)
-    - no role, maintainer: 6 -> 0 commits
+- mm-new: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

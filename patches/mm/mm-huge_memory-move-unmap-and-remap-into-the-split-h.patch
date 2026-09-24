@@ -1,5 +1,5 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Tue, 15 Sep 2026 01:14:49 +0800
+Date: Wed, 23 Sep 2026 23:32:39 +0200
 Subject: [PATCH] mm/huge_memory: move unmap and remap into the split helpers
 
 To prepare for further cleanup, move the unmap/remap handling from
@@ -7,34 +7,39 @@ __folio_split() into the split helpers.  Only anon folios need to be
 remapped, so remap_page() is now only called for anon splits and the anon
 check in remap_page() is redundant and can be removed.
 
-Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-8-39878b37dfb0@tencent.com
+Link: https://lore.kernel.org/20260923-swap-thp-cleanup-v6-8-ba1b4ba72c6f@tencent.com
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
 Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Barry Song <baohua@kernel.org>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Nhat Pham <nphamcs@gmail.com>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Shivam Kalra <shivamkalra98@zohomail.in>
+Cc: Kairui Song <ryncsn@gmail.com>
 ---
- mm/huge_memory.c | 36 ++++++++++++++++++++++--------------
- 1 file changed, 22 insertions(+), 14 deletions(-)
+ mm/huge_memory.c | 32 ++++++++++++++++++--------------
+ 1 file changed, 18 insertions(+), 14 deletions(-)
 
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 625e7987ff40..8a3f7c08fdfd 100644
+index 8c621131ee06..8b041460d977 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
 @@ -3640,9 +3640,6 @@ static void remap_page(struct folio *folio, unsigned long nr, int flags)
@@ -51,7 +56,7 @@ index 625e7987ff40..8a3f7c08fdfd 100644
  {
  	struct folio *end_folio = folio_next(folio);
  	struct swap_cluster_info *ci = NULL;
-+	int old_order = folio_order(folio);
++	const int old_order = folio_order(folio);
  	struct folio *new_folio, *next;
 +	enum ttu_flags ttu_flags = 0;
  	struct lruvec *lruvec;
@@ -96,20 +101,15 @@ index 625e7987ff40..8a3f7c08fdfd 100644
  	xas_lock_irq(xas);
  
  	/*
-@@ -4189,8 +4202,11 @@ static int __folio_freeze_split_file(struct folio *folio,
+@@ -4189,7 +4202,6 @@ static int __folio_freeze_split_file(struct folio *folio,
  
  	if (do_lru)
  		lruvec_unlock(lruvec);
 -
  fail:
-+	/*
-+	 * If we want to use try_to_migrate() on file in unmap_folio,
-+	 * remember to add remap_page() and adapt it.
-+	 */
  	xas_unlock_irq(xas);
  	if (nr_shmem_dropped)
- 		shmem_uncharge(mapping->host, nr_shmem_dropped);
-@@ -4230,7 +4246,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4230,7 +4242,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  	struct anon_vma *anon_vma = NULL;
  	int old_order = folio_order(folio);
  	struct folio *new_folio, *next;
@@ -117,7 +117,7 @@ index 625e7987ff40..8a3f7c08fdfd 100644
  	int ret;
  
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
-@@ -4318,8 +4333,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4318,8 +4329,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  		goto out_unlock;
  	}
  
@@ -126,7 +126,7 @@ index 625e7987ff40..8a3f7c08fdfd 100644
  	if (is_anon)
  		ret = __folio_freeze_split_anon(folio, new_order, split_at,
  						true, list, split_type);
-@@ -4327,11 +4340,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4327,11 +4336,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  		ret = __folio_freeze_split_file(folio, new_order, split_at, &xas, mapping,
  						true, list, split_type);
  

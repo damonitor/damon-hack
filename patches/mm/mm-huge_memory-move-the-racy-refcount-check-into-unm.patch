@@ -1,12 +1,13 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Tue, 15 Sep 2026 01:14:51 +0800
+Date: Wed, 23 Sep 2026 23:32:41 +0200
 Subject: [PATCH] mm/huge_memory: move the racy refcount check into
  unmap_folio()
 
 The check only exists to avoid the expensive PMD-splitting unmap of a
-folio that cannot be split anyway.  Move it from __folio_split() into
-unmap_folio(), right before the PMD split, so both the anon and file split
-helpers get the early check without repeating it.
+folio that cannot be split anyway.  Move it from __folio_split() and
+folio_split_unmapped() into one check in unmap_folio(), right before the
+PMD split.  All split helpers get the same early check without repeating
+it.
 
 unmap_folio() now returns -EAGAIN if the check fails and the split helpers
 propagate the error.  folio_split_unmapped() drops its own copy of the
@@ -14,41 +15,51 @@ check: it works on already unmapped folios and the definitive
 folio_ref_freeze() in __folio_freeze_split_anon() still catches unexpected
 references.
 
-Link: https://lore.kernel.org/20260915-swap-thp-cleanup-v5-10-39878b37dfb0@tencent.com
+Link: https://lore.kernel.org/20260923-swap-thp-cleanup-v6-10-ba1b4ba72c6f@tencent.com
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Reviewed-by: Yeoreum Yun <yeoreum.yun@arm.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Barry Song <baohua@kernel.org>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Nhat Pham <nphamcs@gmail.com>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Shivam Kalra <shivamkalra98@zohomail.in>
+Cc: Kairui Song <ryncsn@gmail.com>
 ---
- mm/huge_memory.c | 29 +++++++++++++----------------
- 1 file changed, 13 insertions(+), 16 deletions(-)
+ mm/huge_memory.c | 34 ++++++++++++++++++----------------
+ 1 file changed, 18 insertions(+), 16 deletions(-)
 
 diff --git a/mm/huge_memory.c b/mm/huge_memory.c
-index 35d45e2a4079..476028142a1f 100644
+index 09de66b6b76e..ad92c2b554a0 100644
 --- a/mm/huge_memory.c
 +++ b/mm/huge_memory.c
-@@ -3538,13 +3538,17 @@ void vma_adjust_trans_huge(struct vm_area_struct *vma,
+@@ -3538,13 +3538,22 @@ void vma_adjust_trans_huge(struct vm_area_struct *vma,
  		split_huge_pmd_if_needed(next, end);
  }
  
 -static void unmap_folio(struct folio *folio)
++/*
++ * A return value of 0 does not mean that unmapping succeeded. It might
++ * still have failed, but remap_anon_folio() must be called afterwards,
++ * for anon folios.
++ */
 +static int unmap_folio(struct folio *folio)
  {
  	enum ttu_flags ttu_flags = TTU_RMAP_LOCKED | TTU_SYNC |
@@ -63,7 +74,7 @@ index 35d45e2a4079..476028142a1f 100644
  	if (folio_test_pmd_mappable(folio))
  		ttu_flags |= TTU_SPLIT_HUGE_PMD;
  
-@@ -3559,6 +3563,8 @@ static void unmap_folio(struct folio *folio)
+@@ -3558,6 +3567,8 @@ static void unmap_folio(struct folio *folio)
  		try_to_unmap(folio, ttu_flags | TTU_IGNORE_MLOCK);
  
  	try_to_unmap_flush();
@@ -72,7 +83,7 @@ index 35d45e2a4079..476028142a1f 100644
  }
  
  static bool __discard_anon_folio_pmd_locked(struct vm_area_struct *vma,
-@@ -4029,7 +4035,9 @@ static int __folio_freeze_split_anon(struct folio *folio,
+@@ -4028,7 +4039,9 @@ static int __folio_freeze_split_anon(struct folio *folio,
  
  	if (folio_mapped(folio)) {
  		need_remap = true;
@@ -83,7 +94,7 @@ index 35d45e2a4079..476028142a1f 100644
  	}
  
  	local_irq_disable();
-@@ -4123,7 +4131,9 @@ static int __folio_freeze_split_file(struct folio *folio,
+@@ -4122,7 +4135,9 @@ static int __folio_freeze_split_file(struct folio *folio,
  	if (shmem_mapping(mapping))
  		end = shmem_fallocend(mapping->host, end);
  
@@ -94,7 +105,7 @@ index 35d45e2a4079..476028142a1f 100644
  
  	xas_lock_irq(xas);
  
-@@ -4331,15 +4341,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4326,15 +4341,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  		i_mmap_lock_read(mapping);
  	}
  
@@ -110,7 +121,7 @@ index 35d45e2a4079..476028142a1f 100644
  	if (is_anon)
  		ret = __folio_freeze_split_anon(folio, new_order, split_at,
  						true, list, split_type);
-@@ -4378,7 +4379,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
+@@ -4373,7 +4379,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
  		free_folio_and_swap_cache(new_folio);
  	}
  
@@ -118,7 +129,7 @@ index 35d45e2a4079..476028142a1f 100644
  	if (anon_vma) {
  		anon_vma_unlock_write(anon_vma);
  		put_anon_vma(anon_vma);
-@@ -4426,9 +4426,6 @@ int folio_split_unmapped(struct folio *folio, unsigned int new_order)
+@@ -4421,9 +4426,6 @@ int folio_split_unmapped(struct folio *folio, unsigned int new_order)
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_large(folio), folio);
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_anon(folio), folio);
  
