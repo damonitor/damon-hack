@@ -1,0 +1,168 @@
+From: Karl Mehltretter <kmehltretter@gmail.com>
+Date: Thu, 24 Sep 2026 22:16:14 +0200
+Subject: [PATCH] mm/damon/tests/core-kunit: test preservation of quota state
+
+Check that damon_new_scheme() initializes the new scheme's quota without
+changing the quota passed as a parameter. Cover all eight fields
+initialized by damos_quota_init().
+
+Also check that damon_commit_ctx() preserves those fields in the
+destination scheme for both accepted and rejected parameter updates.
+Use an invalid min_region_sz for the rejected update and confirm that
+returning -EINVAL leaves the running quota state unchanged.
+
+Without the preceding fix, all eight fields are cleared in the
+constructor test and in both context update cases.
+
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Cc: Bijan Tabatabai <bijan311@gmail.com>
+Assisted-by: LLM
+Signed-off-by: Karl Mehltretter <kmehltretter@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 107 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 107 insertions(+)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index ce15e693bc0e..1a6bf48bea28 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -812,6 +812,48 @@ static void damos_test_new_filter(struct kunit *test)
+ 	damos_destroy_filter(filter);
+ }
+ 
++static void damos_test_new_scheme_keeps_src_quota(struct kunit *test)
++{
++	struct damos_access_pattern pattern = {};
++	struct damon_target target = {};
++	struct damos_quota quota = {
++		.sz = SZ_64K,
++		.esz = 123,
++		.esz_bp = 456,
++		.total_charged_sz = 789,
++		.total_charged_ns = 1011,
++		.charged_sz = 12,
++		.charged_from = 13,
++		.charge_target_from = &target,
++		.charge_addr_from = 14,
++	};
++	struct damos_watermarks wmarks = {};
++	struct damos *s;
++
++	s = damon_new_scheme(&pattern, DAMOS_STAT, 0, &quota, &wmarks,
++			NUMA_NO_NODE);
++	if (!s)
++		kunit_skip(test, "scheme alloc fail");
++	KUNIT_EXPECT_EQ(test, s->quota.sz, (unsigned long)SZ_64K);
++	KUNIT_EXPECT_EQ(test, s->quota.esz, 0ul);
++	KUNIT_EXPECT_EQ(test, s->quota.esz_bp, 0ul);
++	KUNIT_EXPECT_EQ(test, s->quota.total_charged_sz, 0ul);
++	KUNIT_EXPECT_EQ(test, s->quota.total_charged_ns, 0ul);
++	KUNIT_EXPECT_EQ(test, s->quota.charged_sz, 0ul);
++	KUNIT_EXPECT_EQ(test, s->quota.charged_from, 0ul);
++	KUNIT_EXPECT_PTR_EQ(test, s->quota.charge_target_from, NULL);
++	KUNIT_EXPECT_EQ(test, s->quota.charge_addr_from, 0ul);
++	KUNIT_EXPECT_EQ(test, quota.esz, 123ul);
++	KUNIT_EXPECT_EQ(test, quota.esz_bp, 456ul);
++	KUNIT_EXPECT_EQ(test, quota.total_charged_sz, 789ul);
++	KUNIT_EXPECT_EQ(test, quota.total_charged_ns, 1011ul);
++	KUNIT_EXPECT_EQ(test, quota.charged_sz, 12ul);
++	KUNIT_EXPECT_EQ(test, quota.charged_from, 13ul);
++	KUNIT_EXPECT_PTR_EQ(test, quota.charge_target_from, &target);
++	KUNIT_EXPECT_EQ(test, quota.charge_addr_from, 14ul);
++	damon_destroy_scheme(s);
++}
++
+ static void damos_test_commit_quota_goal_for(struct kunit *test,
+ 		struct damos_quota_goal *dst,
+ 		struct damos_quota_goal *src)
+@@ -1617,6 +1659,69 @@ static void damon_test_commit_ctx(struct kunit *test)
+ 	damon_destroy_ctx(dst);
+ }
+ 
++static void damon_test_commit_ctx_keeps_quota_for(struct kunit *test,
++		unsigned long min_region_sz, int expected_err)
++{
++	struct damos_access_pattern pattern = {};
++	struct damos_quota quota = {.sz = SZ_64K};
++	struct damos_watermarks wmarks = {};
++	struct damon_ctx *src, *dst;
++	struct damon_target *target;
++	struct damos *s;
++
++	dst = damon_new_ctx();
++	if (!dst)
++		kunit_skip(test, "dst alloc fail");
++	target = damon_new_target();
++	if (!target) {
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "target alloc fail");
++	}
++	damon_add_target(dst, target);
++	s = damon_new_scheme(&pattern, DAMOS_STAT, 0, &quota, &wmarks,
++			NUMA_NO_NODE);
++	if (!s) {
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "scheme alloc fail");
++	}
++	damon_add_scheme(dst, s);
++
++	/* Copy the parameters before populating dst's runtime quota state. */
++	src = damon_new_test_ctx(dst);
++	if (!src) {
++		damon_destroy_ctx(dst);
++		kunit_skip(test, "src alloc fail");
++	}
++	src->min_region_sz = min_region_sz;
++	s->quota.esz = 123;
++	s->quota.esz_bp = 456;
++	s->quota.total_charged_sz = 789;
++	s->quota.total_charged_ns = 1011;
++	s->quota.charged_sz = 12;
++	s->quota.charged_from = 13;
++	s->quota.charge_target_from = target;
++	s->quota.charge_addr_from = 14;
++
++	KUNIT_EXPECT_EQ(test, damon_commit_ctx(dst, src), expected_err);
++	KUNIT_EXPECT_EQ(test, s->quota.esz, 123ul);
++	KUNIT_EXPECT_EQ(test, s->quota.esz_bp, 456ul);
++	KUNIT_EXPECT_EQ(test, s->quota.total_charged_sz, 789ul);
++	KUNIT_EXPECT_EQ(test, s->quota.total_charged_ns, 1011ul);
++	KUNIT_EXPECT_EQ(test, s->quota.charged_sz, 12ul);
++	KUNIT_EXPECT_EQ(test, s->quota.charged_from, 13ul);
++	KUNIT_EXPECT_PTR_EQ(test, s->quota.charge_target_from, target);
++	KUNIT_EXPECT_EQ(test, s->quota.charge_addr_from, 14ul);
++	damon_destroy_ctx(src);
++	damon_destroy_ctx(dst);
++}
++
++static void damon_test_commit_ctx_keeps_quota(struct kunit *test)
++{
++	/* Only power of two min_region_sz is allowed. */
++	damon_test_commit_ctx_keeps_quota_for(test, 4096, 0);
++	damon_test_commit_ctx_keeps_quota_for(test, 4095, -EINVAL);
++}
++
+ static void damon_test_valid_probe_params(struct kunit *test)
+ {
+ 	struct damon_ctx *ctx;
+@@ -2351,6 +2456,7 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_mvsum),
+ 	KUNIT_CASE(damon_test_nr_accesses_mvsum),
+ 	KUNIT_CASE(damos_test_new_filter),
++	KUNIT_CASE(damos_test_new_scheme_keeps_src_quota),
+ 	KUNIT_CASE(damos_test_commit_quota_goal),
+ 	KUNIT_CASE(damos_test_set_psi_current_val),
+ 	KUNIT_CASE(damos_test_commit_quota_goals),
+@@ -2363,6 +2469,7 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_commit_filter),
+ 	KUNIT_CASE(damon_test_commit_probes),
+ 	KUNIT_CASE(damon_test_commit_ctx),
++	KUNIT_CASE(damon_test_commit_ctx_keeps_quota),
+ 	KUNIT_CASE(damon_test_valid_probe_params),
+ 	KUNIT_CASE(damos_test_filter_out),
+ 	KUNIT_CASE(damos_test_apply_scheme_filtered_sz),
+-- 
+2.47.3
+
