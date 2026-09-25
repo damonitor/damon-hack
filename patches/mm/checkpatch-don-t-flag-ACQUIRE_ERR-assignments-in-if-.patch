@@ -1,0 +1,63 @@
+From: Guixin Liu <kanie@linux.alibaba.com>
+Date: Thu, 24 Sep 2026 11:39:23 +0800
+Subject: [PATCH] checkpatch: don't flag ACQUIRE_ERR() assignments in if
+ conditions
+
+ACQUIRE_ERR() and its wrappers, PM_RUNTIME_ACQUIRE_ERR() and
+IIO_DEV_ACQUIRE_FAILED(), report whether a conditional cleanup.h guard was
+acquired, and drivers consume the result directly in an if condition:
+
+	if ((rc = ACQUIRE_ERR(mutex_intr, &lock)))
+		return rc;
+
+That combined form is the established style at the 49 in-tree call sites
+under drivers/cxl and drivers/pci/tsm.c, so ASSIGN_IN_IF fires there only
+as a false positive, and every patch touching those lines carries noise
+that reviewers have to wave off manually.
+
+Skip the check only when every assignment in the condition assigns the
+result of such a call, matched by the *_ACQUIRE_ERR() / *_ACQUIRE_FAILED()
+naming convention of its wrappers.  Plain assignments, mixed conditions
+and near-miss identifiers still get flagged.
+
+Assisted-by: LLM
+Link: https://lore.kernel.org/20260924033923.4140210-1-kanie@linux.alibaba.com
+Signed-off-by: Guixin Liu <kanie@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Alison Schofield <alison.schofield@intel.com>
+Acked-by: Joe Perches <joe@perches.com>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Jonathan Cameron <jic23@kernel.org>
+---
+ scripts/checkpatch.pl | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/scripts/checkpatch.pl b/scripts/checkpatch.pl
+index 3614cfe4dcbb..598e3ed743bd 100755
+--- a/scripts/checkpatch.pl
++++ b/scripts/checkpatch.pl
+@@ -5787,7 +5787,21 @@ sub process {
+ 			my ($s, $c) = ($stat, $cond);
+ 			my $fixed_assign_in_if = 0;
+ 
++			# ACQUIRE_ERR() and its wrappers, e.g. PM_RUNTIME_ACQUIRE_ERR()
++			# and IIO_DEV_ACQUIRE_FAILED(), are meant to be evaluated in an
++			# if condition, with the error assigned in the condition:
++			#	if ((rc = ACQUIRE_ERR(name, &lock)))
++			# Allow that only when every assignment in the condition assigns
++			# the result of such a call, so that a mixed condition keeps
++			# getting flagged:
++			#	if ((rc = regular_function()) || (ret = ACQUIRE_ERR(name, &lock)))
++			my $assign_in_if = 0;
+ 			if ($c =~ /\bif\s*\(.*[^<>!=]=[^=].*/s) {
++				my $has_assignment = $c =~ /\b$Lval\s*=\s*[^,)&|=]+/;
++				my $has_other_assignment = $c =~ /\b$Lval\s*=\s*(?!\s*\w*ACQUIRE_(?:ERR|FAILED)\s*\()[^,)&|=]+/;
++				$assign_in_if = !$has_assignment || $has_other_assignment;
++			}
++			if ($assign_in_if) {
+ 				if (ERROR("ASSIGN_IN_IF",
+ 					  "do not use assignment in if condition\n" . $herecurr) &&
+ 				    $fix && $perl_version_ok) {
+-- 
+2.47.3
+

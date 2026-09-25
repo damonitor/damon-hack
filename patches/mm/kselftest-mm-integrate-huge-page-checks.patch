@@ -1,0 +1,195 @@
+From: Yeoreum Yun <yeoreum.yun@arm.com>
+Date: Thu, 24 Sep 2026 20:11:18 +0100
+Subject: [PATCH] kselftest: mm: integrate huge page checks
+
+check_large_folios() only checks for large folios without distinguishing
+between anonymous and file-backed huge pages.
+
+To add huge page type checking, integrate the huge page checks into
+__check_huge():
+
+  1. If hpage_size == pmd_pagesize, check PAGE_IS_HUGE instead of using
+     check_large_folios(), since only the mapping type matters. This
+     identifies PMD-mapped huge pages.
+
+  2. Otherwise, use check_large_folios() to detect large folios. This
+     covers mTHP cases.
+
+  3. Check the folio flags according to the huge page type.
+
+Link: https://lore.kernel.org/20260924-fix_split-v8-3-cba7359d882a@arm.com
+Signed-off-by: Yeoreum Yun <yeoreum.yun@arm.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Suggested-by: Zi Yan <ziy@nvidia.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+---
+ tools/testing/selftests/mm/vm_util.c | 90 +++++++++++++++-------------
+ 1 file changed, 48 insertions(+), 42 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index 969d7202500c..7d23038af1df 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -351,13 +351,13 @@ char *__get_smap_entry(void *addr, const char *pattern, char *buf, size_t len)
+ 	return entry;
+ }
+ 
+-static bool check_large_folios(void *addr, size_t len, int nr_hpages,
++static bool check_large_folios(int pagemap_fd, int kpageflags_fd,
++		void *addr, size_t len, int nr_hpages,
+ 		uint64_t hpage_size)
+ {
+ 	int order = 0, pagesize = getpagesize();
+ 	unsigned int nr_pages = hpage_size / pagesize;
+ 	int orders[MAX_NR_ORDERS], status;
+-	int pagemap_fd, kpageflags_fd;
+ 	bool ret = false;
+ 
+ 	if (!nr_pages)
+@@ -368,15 +368,6 @@ static bool check_large_folios(void *addr, size_t len, int nr_hpages,
+ 		ksft_exit_fail_msg("invalid order\n");
+ 
+ 	memset(orders, 0, sizeof(int) * MAX_NR_ORDERS);
+-	pagemap_fd = open(PAGEMAP_PATH, O_RDONLY);
+-	if (pagemap_fd == -1)
+-		ksft_exit_fail_msg("read pagemap fail\n");
+-
+-	kpageflags_fd = open(KPAGEFLAGS_PATH, O_RDONLY);
+-	if (kpageflags_fd == -1) {
+-		close(pagemap_fd);
+-		ksft_exit_fail_msg("read kpageflags fail\n");
+-	}
+ 
+ 	status = gather_folio_orders(addr, len, pagemap_fd,
+ 			kpageflags_fd, orders, MAX_NR_ORDERS);
+@@ -387,8 +378,6 @@ static bool check_large_folios(void *addr, size_t len, int nr_hpages,
+ 		ret = true;
+ 
+ out:
+-	close(pagemap_fd);
+-	close(kpageflags_fd);
+ 	return ret;
+ }
+ 
+@@ -411,57 +400,74 @@ static bool check_huge_type(uint64_t categories, enum check_huge_type type)
+ 	return false;
+ }
+ 
+-static bool __check_pmd_huge(void *addr, size_t len, int nr_hpages,
+-		  uint64_t hpage_size, enum check_huge_type type)
++static bool __check_huge(void *addr, size_t len, int nr_hpages,
++		uint64_t hpage_size, enum check_huge_type type)
+ {
+-	int pagemap_fd;
++	bool ret = false;
++	int pagemap_fd, kpageflags_fd;
+ 	int nr_pmd_mappings = 0;
++	uint64_t pmd_pagesize, scan_mapping_size;
+ 	uint64_t categories;
++	unsigned long pfn;
++	bool check_pmd_mapping, allow_nonpresent;
+ 	char *start = addr;
+ 	char *end = start + len;
+ 
++	pmd_pagesize = read_pmd_pagesize();
++	if (!pmd_pagesize)
++		ksft_exit_fail_msg("reading PMD pagesize failed\n");
++
++	check_pmd_mapping = hpage_size == pmd_pagesize;
++	scan_mapping_size = (nr_hpages > 0) ? hpage_size : psize();
++	/* Some mTHP tests check a partially populated PMD-sized range. */
++	allow_nonpresent = (uint64_t)nr_hpages * hpage_size < len;
++
+ 	pagemap_fd = open(PAGEMAP_PATH, O_RDONLY);
+ 	if (pagemap_fd < 0)
+ 		ksft_exit_fail_msg("open pagemap fail\n");
+ 
+-	for (; start < end; start += hpage_size) {
++	kpageflags_fd = open(KPAGEFLAGS_PATH, O_RDONLY);
++	if (kpageflags_fd < 0)
++		ksft_exit_fail_msg("open kpageflags fail\n");
++
++	if (!check_pmd_mapping &&
++	    !check_large_folios(pagemap_fd, kpageflags_fd,
++				addr, len, nr_hpages, hpage_size))
++		goto out;
++
++	for (; start < end; start += scan_mapping_size) {
+ 		categories = pagemap_scan_get_categories(pagemap_fd, start);
+-		if (!(categories & PAGE_IS_HUGE))
+-			continue;
+-		if (check_huge_type(categories, type))
++		pfn = pagemap_get_pfn(pagemap_fd, start);
++		if (pfn == -1UL) {
++			if (!allow_nonpresent)
++				goto out;
++			else
++				continue;
++		}
++		if (check_pmd_mapping && (categories & PAGE_IS_HUGE))
+ 			nr_pmd_mappings++;
++		if (!check_huge_type(categories, type))
++			goto out;
+ 	}
+-	close(pagemap_fd);
+ 
+-	return nr_hpages == nr_pmd_mappings;
++	if (check_pmd_mapping && (nr_pmd_mappings != nr_hpages))
++		goto out;
++	ret = true;
++
++out:
++	close(pagemap_fd);
++	close(kpageflags_fd);
++	return ret;
+ }
+ 
+ bool check_huge_anon(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+ {
+-	uint64_t pmd_pagesize = read_pmd_pagesize();
+-
+-	if (!pmd_pagesize)
+-		ksft_exit_fail_msg("reading PMD pagesize failed\n");
+-
+-	if (hpage_size == pmd_pagesize)
+-		return __check_pmd_huge(addr, len, nr_hpages, hpage_size,
+-					CHECK_HUGE_ANON);
+-
+-	return check_large_folios(addr, len, nr_hpages, hpage_size);
++	return __check_huge(addr, len, nr_hpages, hpage_size, CHECK_HUGE_ANON);
+ }
+ 
+ bool check_huge_file(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+ {
+-	uint64_t pmd_pagesize = read_pmd_pagesize();
+-
+-	if (!pmd_pagesize)
+-		ksft_exit_fail_msg("reading PMD pagesize failed\n");
+-
+-	if (hpage_size == pmd_pagesize)
+-		return __check_pmd_huge(addr, len, nr_hpages, hpage_size,
+-					CHECK_HUGE_FILE);
+-
+-	return check_large_folios(addr, len, nr_hpages, hpage_size);
++	return __check_huge(addr, len, nr_hpages, hpage_size, CHECK_HUGE_FILE);
+ }
+ 
+ bool check_huge_shmem(void *addr, size_t len, int nr_hpages, uint64_t hpage_size)
+-- 
+2.47.3
+
