@@ -1,0 +1,73 @@
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Fri, 25 Sep 2026 15:02:46 +0200
+Subject: [PATCH] damon: reduce stack usage further
+
+In a previous patch, I had annotated kdamond_tune_intervals() as
+noinline_for_stack in order to not exceed the stack frame warning
+limit. Unfortunately, my current linux-next randconfig builds show
+a similar problem again with clang-21:
+
+mm/damon/core.c:3953:12: error: stack frame size (1288) exceeds limit (1280) in 'kdamond_fn' [-Werror,-Wframe-larger-than]
+ 3953 | static int kdamond_fn(void *data)
+
+Do the same thing with kdamond_apply_schemes(), kdamond_merge_regions(),
+and kdamond_split_regions(), which also have individually large stacks.
+This should work to keep the deepest total stack depth down much more
+as well as avoid the warning.
+
+I also tried to reduce the complexity of kdamond_fn() itself by splitting
+out the while() loop into a separate function. While this arguably led
+to slightly more readable code, it had no effect on the total stack
+usage and just made the new function the largest stack user and had
+a nonzero risk of me getting the conversion wrong.
+
+Link: https://lore.kernel.org/20260925130254.4022227-1-arnd@kernel.org
+Fixes: 5a00cae64de1 ("mm/damon/core: reduce kernel stack usage")
+Cc: Nick Desaulniers <ndesaulniers@google.com>
+Cc: Bill Wendling <morbo@google.com>
+Cc: Justin Stitt <justinstitt@google.com>
+Cc: Ravi Jonnalagadda <ravis.opensrc@gmail.com>
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index b970beaef38e..de16fae5764c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3690,7 +3690,7 @@ static void damos_trace_stat(struct damon_ctx *c, struct damos *s)
+ 	trace_call__damos_stat_after_apply_interval(cidx, sidx, &s->stat);
+ }
+ 
+-static void kdamond_apply_schemes(struct damon_ctx *c)
++static noinline_for_stack void kdamond_apply_schemes(struct damon_ctx *c)
+ {
+ 	struct damon_target *t;
+ 	struct damos *s;
+@@ -3846,8 +3846,9 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+  * while DAMON is running.  For such a case, repeat merging until the limit is
+  * met while increasing @threshold up to possible maximum level.
+  */
+-static void kdamond_merge_regions(struct damon_ctx *c, unsigned int threshold,
+-				  unsigned long sz_limit)
++static noinline_for_stack void kdamond_merge_regions(struct damon_ctx *c,
++						     unsigned int threshold,
++						     unsigned long sz_limit)
+ {
+ 	struct damon_target *t;
+ 	unsigned int nr_regions;
+@@ -3991,7 +3992,7 @@ static void damon_split_some_regions(struct damon_ctx *ctx,
+  * split was unnecessarily made, later 'kdamond_merge_regions()' will revert
+  * it.
+  */
+-static void kdamond_split_regions(struct damon_ctx *ctx)
++static noinline_for_stack void kdamond_split_regions(struct damon_ctx *ctx)
+ {
+ 	struct damon_target *t;
+ 	unsigned long nr_regions = 0;
+-- 
+2.47.3
+
