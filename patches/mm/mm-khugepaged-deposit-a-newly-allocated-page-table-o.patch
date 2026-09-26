@@ -1,9 +1,9 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 22 Sep 2026 16:35:32 +0100
+Date: Fri, 25 Sep 2026 21:09:36 +0100
 Subject: [PATCH] mm/khugepaged: deposit a newly allocated page table on
  collapse
 
-Patch series "mm: make userland page table freeing RCU-safe", v4.
+Patch series "mm: make userland page table freeing RCU-safe", v5.
 
 The majority of architectures in the kernel defer page table freeing until
 an RCU grace period has elapsed, this series converts all remaining
@@ -75,8 +75,9 @@ m68k-motorola required the biggest change - since RCU page table freeing
 uses call_rcu(), this means page table freeing can arise from softirq
 context.
 
-This was fixed with an IRQ-safe spin lock used in both get_pointer_table()
-and free_pointer_table().
+This was fixed with a BH-disabling spin lock used in both
+get_pointer_table() and free_pointer_table() (softirq being the only
+asynchronous context in which the lock is taken).
 
 As part of this change, the logic for allocation of a new pointer table
 was separated out into add_pointer_table() to make the locking more
@@ -162,23 +163,19 @@ deposit logic which deposit a fresh page table.
 Additionally, this was the only place in the kernel that displaced a page
 table like this, so eliminating it also helps consistency.
 
-An edge case for deposit exists for powerpc and its hash-based MMU - it
-stores hash slot data in deposited page tables and zeroes them on
-withdraw, so a zeroed deposited page table works correctly for it.
-
 Since khugepaged runs as a kernel thread, do a little dance in
-alloc_deposit_pte() to correctly charge the allocation.
+alloc_deposit_pte_table() to correctly charge the allocation.
 
 This is already done for the folio allocation via alloc_charge_folio() but
 no such wrapper exists for a page table allocation.
 
-Link: https://lore.kernel.org/20260922-rcu-pagetable-freeing-v4-0-fe1ad1f1e303@kernel.org
-Link: https://lore.kernel.org/20260922-rcu-pagetable-freeing-v4-1-fe1ad1f1e303@kernel.org
+Link: https://lore.kernel.org/20260925-rcu-pagetable-freeing-v5-0-31e91065fea4@kernel.org
+Link: https://lore.kernel.org/20260925-rcu-pagetable-freeing-v5-1-31e91065fea4@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Reviewed-by: Lance Yang <lance.yang@linux.dev>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Cc: Zi Yan <ziy@nvidia.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Nico Pache <nico.pache@linux.dev>
@@ -253,18 +250,18 @@ Cc: Randy Dunlap <rdunlap@infradead.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 ---
- mm/khugepaged.c | 32 ++++++++++++++++++++++++++++++--
- 1 file changed, 30 insertions(+), 2 deletions(-)
+ mm/khugepaged.c | 34 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index 792166950bba..249f1fabf280 100644
+index 792166950bba..85ea095906fb 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
 @@ -1278,6 +1278,23 @@ static enum scan_result alloc_charge_folio(struct folio **foliop, struct mm_stru
  	return SCAN_SUCCEED;
  }
  
-+static pgtable_t alloc_deposit_pte(struct mm_struct *mm)
++static pgtable_t alloc_deposit_pte_table(struct mm_struct *mm)
 +{
 +	/*
 +	 * khugepaged is run from a kernel thread, so need to manually set the
@@ -293,20 +290,22 @@ index 792166950bba..249f1fabf280 100644
  	struct folio *folio;
  	spinlock_t *pmd_ptl, *pte_ptl;
  	enum scan_result result = SCAN_FAIL;
-@@ -1310,6 +1327,12 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1310,6 +1327,14 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  		goto out_nolock;
  	}
  
 +	if (is_pmd_order(order)) {
-+		pgtable = alloc_deposit_pte(mm);
-+		if (!pgtable)
++		pgtable = alloc_deposit_pte_table(mm);
++		if (!pgtable) {
++			result = SCAN_ALLOC_HUGE_PAGE_FAIL;
 +			goto out_nolock;
++		}
 +	}
 +
  	mmap_read_lock(mm);
  	result = hugepage_vma_revalidate(mm, pmd_addr, /*expect_anon=*/ true,
  					 &vma, cc, order);
-@@ -1433,8 +1456,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1433,8 +1458,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  	spin_lock(pmd_ptl);
  	VM_WARN_ON_ONCE(!pmd_none(*pmd));
  	if (is_pmd_order(order)) {
@@ -316,7 +315,7 @@ index 792166950bba..249f1fabf280 100644
  		map_anon_folio_pmd_nopf(folio, pmd, vma, pmd_addr);
  	} else {
  		/*
-@@ -1453,6 +1476,9 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1453,6 +1478,9 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  	}
  	spin_unlock(pmd_ptl);
  
@@ -326,7 +325,7 @@ index 792166950bba..249f1fabf280 100644
  	folio = NULL;
  
  	result = SCAN_SUCCEED;
-@@ -1463,6 +1489,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
+@@ -1463,6 +1491,8 @@ static enum scan_result collapse_huge_page(struct mm_struct *mm, unsigned long s
  		anon_vma_unlock_write(vma->anon_vma);
  	mmap_write_unlock(mm);
  out_nolock:

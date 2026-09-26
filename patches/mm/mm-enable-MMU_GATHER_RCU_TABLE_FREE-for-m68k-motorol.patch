@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 22 Sep 2026 16:35:40 +0100
+Date: Fri, 25 Sep 2026 21:09:44 +0100
 Subject: [PATCH] mm: enable MMU_GATHER_RCU_TABLE_FREE for m68k-motorola
 
 sun3 and coldfire are already supported, however motorola requires a
@@ -23,9 +23,12 @@ The page table freeing is performed via call_rcu(), so
 free_pointer_table() now will be invoked from softirq context, and as such
 may be re-entrant.
 
-Introduce an irq save/restore spinlock to handle this, and hold it over
-the time a given ptable entry is being referenced in both
-get_pointer_table() and free_pointer_table().
+Introduce a spinlock to handle this and hold it over the time a given
+ptable entry is being referenced in both get_pointer_table() and
+free_pointer_table().
+
+As softirq is the only asynchronous context in which the lock is taken, it
+suffices to disable bottom halves while holding it.
 
 In order to make things a little easier in this respect, separate out the
 logic for adding a new ptable entry into add_pointer_table() and only hold
@@ -46,7 +49,7 @@ CONFIG_MMU_GATHER_RCU_TABLE_FREE.
 This forms part of an overall effort to switch every architecture to this
 mode.
 
-Link: https://lore.kernel.org/20260922-rcu-pagetable-freeing-v4-9-fe1ad1f1e303@kernel.org
+Link: https://lore.kernel.org/20260925-rcu-pagetable-freeing-v5-9-31e91065fea4@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
@@ -129,8 +132,8 @@ Cc: Qi Zheng <qi.zheng@linux.dev>
 ---
  arch/m68k/Kconfig                        |   3 +-
  arch/m68k/include/asm/motorola_pgalloc.h |   9 +-
- arch/m68k/mm/motorola.c                  | 121 +++++++++++++++--------
- 3 files changed, 86 insertions(+), 47 deletions(-)
+ arch/m68k/mm/motorola.c                  | 119 +++++++++++++++--------
+ 3 files changed, 84 insertions(+), 47 deletions(-)
 
 diff --git a/arch/m68k/Kconfig b/arch/m68k/Kconfig
 index 6b8ec67c86fd..fa5d39549da9 100644
@@ -189,7 +192,7 @@ index 1091fb0affbe..dcde40e8b5c6 100644
  
  
 diff --git a/arch/m68k/mm/motorola.c b/arch/m68k/mm/motorola.c
-index b30aa69a73a6..ffc80483440b 100644
+index b30aa69a73a6..f3efa0d13963 100644
 --- a/arch/m68k/mm/motorola.c
 +++ b/arch/m68k/mm/motorola.c
 @@ -20,6 +20,7 @@
@@ -209,7 +212,7 @@ index b30aa69a73a6..ffc80483440b 100644
  #define PD_PTABLE(ptdesc) ((ptable_desc *)&(virt_to_ptdesc((void *)(ptdesc))->pt_list))
  #define PD_PTDESC(ptable) (list_entry(ptable, struct ptdesc, pt_list))
  #define PD_MARKBITS(dp) (*(unsigned int *)&PD_PTDESC(dp)->pt_index)
-@@ -139,52 +142,66 @@ void __init init_pointer_table(void *table, int type)
+@@ -139,52 +142,65 @@ void __init init_pointer_table(void *table, int type)
  	return;
  }
  
@@ -289,7 +292,7 @@ index b30aa69a73a6..ffc80483440b 100644
  
 -		mmu_page_ctor(pt_addr);
 +	PD_MARKBITS(new) = ptable_mask(type) - 1;
-+	scoped_guard(spinlock_irqsave, &ptable_lock)
++	scoped_guard(spinlock_bh, &ptable_lock)
 +		list_add(new, &ptable_list[type]);
  
 -		new = PD_PTABLE(pt_addr);
@@ -302,58 +305,56 @@ index b30aa69a73a6..ffc80483440b 100644
 +{
 +	unsigned int tmp, off;
 +	unsigned long mask;
-+	unsigned long flags;
 +	ptable_desc *dp;
 +	void *ret;
  
 -		return (pmd_t *)pt_addr;
-+	spin_lock_irqsave(&ptable_lock, flags);
++	spin_lock_bh(&ptable_lock);
 +	dp = ptable_list[type].next;
 +	mask = list_empty(&ptable_list[type]) ? 0 : PD_MARKBITS(dp);
 +
 +	if (mask == 0) {
-+		spin_unlock_irqrestore(&ptable_lock, flags);
++		spin_unlock_bh(&ptable_lock);
 +		return add_pointer_table(mm, type);
  	}
  
  	for (tmp = 1, off = 0; (mask & tmp) == 0; tmp <<= 1, off += ptable_size(type))
-@@ -194,7 +211,10 @@ void *get_pointer_table(struct mm_struct *mm, int type)
+@@ -194,7 +210,10 @@ void *get_pointer_table(struct mm_struct *mm, int type)
  		/* move to end of list */
  		list_move_tail(dp, &ptable_list[type]);
  	}
 -	return ptdesc_address(PD_PTDESC(dp)) + off;
 +
 +	ret = ptdesc_address(PD_PTDESC(dp)) + off;
-+	spin_unlock_irqrestore(&ptable_lock, flags);
++	spin_unlock_bh(&ptable_lock);
 +	return ret;
  }
  
  int free_pointer_table(void *table, int type)
-@@ -203,6 +223,9 @@ int free_pointer_table(void *table, int type)
- 	unsigned long ptable = (unsigned long)table;
+@@ -204,6 +223,8 @@ int free_pointer_table(void *table, int type)
  	unsigned long pt_addr = ptable & PAGE_MASK;
  	unsigned int mask = 1U << ((ptable - pt_addr)/ptable_size(type));
-+	unsigned long flags;
-+
-+	spin_lock_irqsave(&ptable_lock, flags);
  
++	spin_lock_bh(&ptable_lock);
++
  	dp = PD_PTABLE(pt_addr);
  	if (PD_MARKBITS (dp) & mask)
-@@ -213,6 +236,8 @@ int free_pointer_table(void *table, int type)
+ 		panic ("table already free!");
+@@ -213,6 +234,8 @@ int free_pointer_table(void *table, int type)
  	if (PD_MARKBITS(dp) == ptable_mask(type)) {
  		/* all tables in ptdesc are free, free ptdesc */
  		list_del(dp);
-+		spin_unlock_irqrestore(&ptable_lock, flags);
++		spin_unlock_bh(&ptable_lock);
 +
  		mmu_page_dtor((void *)pt_addr);
  		pagetable_dtor_free(virt_to_ptdesc((void *)pt_addr));
  		return 1;
-@@ -223,9 +248,21 @@ int free_pointer_table(void *table, int type)
+@@ -223,9 +246,21 @@ int free_pointer_table(void *table, int type)
  		 */
  		list_move(dp, &ptable_list[type]);
  	}
 +
-+	spin_unlock_irqrestore(&ptable_lock, flags);
++	spin_unlock_bh(&ptable_lock);
  	return 0;
  }
  

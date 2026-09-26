@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 22 Sep 2026 16:35:43 +0100
+Date: Fri, 25 Sep 2026 21:09:47 +0100
 Subject: [PATCH] mm: change the contract for free_pgtables(), update docs
 
 Now that page tables are freed after an RCU grace period, it is safe for
@@ -13,7 +13,7 @@ Update the pte_offset_map_lock()'s comment block to reflect this.
 
 Similarly update the process addresses documentation.
 
-Link: https://lore.kernel.org/20260922-rcu-pagetable-freeing-v4-12-fe1ad1f1e303@kernel.org
+Link: https://lore.kernel.org/20260925-rcu-pagetable-freeing-v5-12-31e91065fea4@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
@@ -93,15 +93,15 @@ Cc: Randy Dunlap <rdunlap@infradead.org>
 Cc: Hugh Dickins <hughd@google.com>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 ---
- Documentation/mm/process_addrs.rst |  6 ++++++
+ Documentation/mm/process_addrs.rst | 11 +++++++++++
  mm/pgtable-generic.c               | 15 +++++++++++----
- 2 files changed, 17 insertions(+), 4 deletions(-)
+ 2 files changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/Documentation/mm/process_addrs.rst b/Documentation/mm/process_addrs.rst
-index a7296f251799..b1f4f44d75eb 100644
+index a7296f251799..78231995e490 100644
 --- a/Documentation/mm/process_addrs.rst
 +++ b/Documentation/mm/process_addrs.rst
-@@ -537,6 +537,12 @@ We establish basic locking rules when interacting with page tables:
+@@ -537,6 +537,17 @@ We establish basic locking rules when interacting with page tables:
  * When changing a page table entry the page table lock for that page table
    **must** be held, except if you can safely assume nobody can access the page
    tables concurrently (such as on invocation of :c:func:`!free_pgtables`).
@@ -109,13 +109,18 @@ index a7296f251799..b1f4f44d75eb 100644
 +  after an RCU grace period has elapsed. However, any entry found must be
 +  revalidated after the page table lock is taken (such as the
 +  :c:func:`!pmd_same` recheck performed by :c:func:`!pte_offset_map_lock`)
-+  before it is acted upon. Changing an entry requires the page table
-+  lock and one of the locks that excludes teardown (mmap or VMA lock).
++  before it is acted upon. Changing an entry requires the page table lock
++  and one of the locks that excludes teardown (any one of the mmap, VMA or
++  rmap locks).
++* When traversing page tables under RCU alone it is important to take care
++  when operating upon leaf entries - if the value is operated upon (for
++  instance getting the folio associated with a PTE) an appropriate lock must
++  be taken to prevent concurrent modification.
  * Reads from and writes to page table entries must be *appropriately*
    atomic. See the section on atomicity below for details.
  * Populating previously empty entries requires that the mmap or VMA locks are
 diff --git a/mm/pgtable-generic.c b/mm/pgtable-generic.c
-index 224c444cf45d..f3754cefb19e 100644
+index b45e891d1193..26643d76bfb0 100644
 --- a/mm/pgtable-generic.c
 +++ b/mm/pgtable-generic.c
 @@ -397,10 +397,17 @@ pte_t *pte_offset_map_rw_nolock(struct mm_struct *mm, pmd_t *pmd,
