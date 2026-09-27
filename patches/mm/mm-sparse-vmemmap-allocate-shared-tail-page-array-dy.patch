@@ -1,0 +1,152 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Sun, 27 Sep 2026 10:54:31 +0800
+Subject: [PATCH] mm/sparse-vmemmap: allocate shared tail page array
+ dynamically
+
+Commit 622026e87c40 ("mm/hugetlb: remove fake head pages") added the
+per-zone vmemmap_tails array. Its size depends on MAX_FOLIO_ORDER, which
+had been moved to mmzone.h in preparation for the array.
+
+PUD_ORDER is defined by linux/pgtable.h, which cannot be included from
+mmzone.h without creating an include cycle. It was therefore open-coded
+as PUD_SHIFT - PAGE_SHIFT.
+
+This removed the dependency on PUD_ORDER, but not the underlying
+dependency on architecture page-table definitions. PUD_SHIFT is
+generally provided by architecture page-table headers, which are not
+guaranteed to have been included when mmzone.h is parsed.
+
+The dependency remained hidden because vmemmap_tails was originally
+guarded by CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP. Under that condition,
+MAX_FOLIO_ORDER resolves to either MAX_PAGE_ORDER or the fixed HugeTLB
+limit, rather than the PUD_SHIFT-based definition.
+
+Device DAX, however, does not require CONFIG_HUGETLB_PAGE. When it is
+converted to use section-based vmemmap optimization, MAX_FOLIO_ORDER can
+resolve to PUD_SHIFT - PAGE_SHIFT while it is being used to size
+vmemmap_tails. This would make struct zone depend on architecture
+page-table definitions being available when mmzone.h is parsed.
+
+Replace the embedded array with a pointer and allocate it on first use.
+This moves the order-count evaluation into sparse-vmemmap.c, after the
+architecture page-table definitions are available, and removes the
+dependency from mmzone.h.
+
+Removing the compile-time array also removes the original reason for
+keeping MAX_FOLIO_ORDER and the vmemmap optimization sizing definitions
+in mmzone.h. Follow-up cleanups can place each definition in the header
+owned by its respective subsystem.
+
+Link: https://lore.kernel.org/20260927025441.741633-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+---
+ include/linux/mmzone.h |  7 +------
+ mm/sparse-vmemmap.c    | 35 +++++++++++++++++++++++++++++++----
+ 2 files changed, 32 insertions(+), 10 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index acd94cecc0d3..68807ff7f946 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -113,11 +113,6 @@
+ 	(VMEMMAP_OPTIMIZATION_PAGES * PAGE_SIZE / sizeof(struct page))
+ #define VMEMMAP_OPTIMIZATION_MIN_ORDER		(ilog2(VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES) + 1)
+ 
+-#define __VMEMMAP_OPTIMIZATION_NR_ORDERS	\
+-	(MAX_FOLIO_ORDER - VMEMMAP_OPTIMIZATION_MIN_ORDER + 1)
+-#define VMEMMAP_OPTIMIZATION_NR_ORDERS		\
+-	(__VMEMMAP_OPTIMIZATION_NR_ORDERS > 0 ? __VMEMMAP_OPTIMIZATION_NR_ORDERS : 0)
+-
+ enum migratetype {
+ 	MIGRATE_UNMOVABLE,
+ 	MIGRATE_MOVABLE,
+@@ -1156,7 +1151,7 @@ struct zone {
+ 	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
+ 	atomic_long_t		vm_numa_event[NR_VM_NUMA_EVENT_ITEMS];
+ #ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+-	struct page *vmemmap_tails[VMEMMAP_OPTIMIZATION_NR_ORDERS];
++	struct page **vmemmap_tails;
+ #endif
+ } ____cacheline_internodealigned_in_smp;
+ 
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 9b00085122b2..46d9a25b3275 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -170,16 +170,43 @@ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
+ }
+ 
+ #ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
++#define VMEMMAP_OPTIMIZATION_NR_ORDERS	(MAX_FOLIO_ORDER - VMEMMAP_OPTIMIZATION_MIN_ORDER + 1)
++
++static __ref struct page **vmemmap_tails_alloc(struct zone *zone)
++{
++	struct page **pages;
++	const size_t size = array_size(VMEMMAP_OPTIMIZATION_NR_ORDERS, sizeof(*pages));
++
++	pages = slab_is_available() ? kzalloc_objs(*pages, VMEMMAP_OPTIMIZATION_NR_ORDERS) :
++		memblock_alloc(size, __alignof__(*pages));
++	if (!pages)
++		return NULL;
++
++	if (cmpxchg(&zone->vmemmap_tails, NULL, pages) != NULL) {
++		if (slab_is_available())
++			kfree(pages);
++		else
++			memblock_free(pages, size);
++		pages = READ_ONCE(zone->vmemmap_tails);
++	}
++
++	return pages;
++}
++
+ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zone)
+ {
+ 	void *addr;
+-	struct page *page;
++	struct page *page, **pages;
+ 	const unsigned int idx = order - VMEMMAP_OPTIMIZATION_MIN_ORDER;
+ 
+ 	if (WARN_ON_ONCE(idx >= VMEMMAP_OPTIMIZATION_NR_ORDERS))
+ 		return NULL;
+ 
+-	page = READ_ONCE(zone->vmemmap_tails[idx]);
++	pages = READ_ONCE(zone->vmemmap_tails) ? : vmemmap_tails_alloc(zone);
++	if (!pages)
++		return NULL;
++
++	page = READ_ONCE(pages[idx]);
+ 	if (likely(page))
+ 		return page;
+ 
+@@ -194,12 +221,12 @@ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zon
+ 	}
+ 
+ 	page = virt_to_page(addr);
+-	if (cmpxchg(&zone->vmemmap_tails[idx], NULL, page) != NULL) {
++	if (cmpxchg(&pages[idx], NULL, page) != NULL) {
+ 		if (slab_is_available())
+ 			__free_page(page);
+ 		else
+ 			memblock_free(addr, PAGE_SIZE);
+-		page = READ_ONCE(zone->vmemmap_tails[idx]);
++		page = READ_ONCE(pages[idx]);
+ 	}
+ 
+ 	return page;
+-- 
+2.47.3
+

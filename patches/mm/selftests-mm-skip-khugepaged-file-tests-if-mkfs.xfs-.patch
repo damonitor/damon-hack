@@ -1,5 +1,5 @@
 From: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
-Date: Fri, 11 Sep 2026 14:45:17 +0200
+Date: Sat, 12 Sep 2026 22:29:03 +0200
 Subject: [PATCH] selftests/mm: skip khugepaged file tests if mkfs.xfs is
  unavailable
 
@@ -10,40 +10,52 @@ SPLIT_HUGE_PAGE_TEST_XFS_PATH is assigned from mktemp -d and stays set.
 The test then runs against plain tmpfs and six subtests fail.
 
 The script already has a skip path for this test, but it never runs
-because the path variable is always set.  Check that mkfs.xfs exists
-before attempting the XFS setup.
+because the path variable is always set.  Assign
+SPLIT_HUGE_PAGE_TEST_XFS_PATH only once mkfs.xfs and mount have both
+succeeded, and remove the image and directory otherwise.
 
-Link: https://lore.kernel.org/20260911124517.63714-1-jaeyeon.lee.dev@gmail.com
+Link: https://lore.kernel.org/20260912202903.16157-1-jaeyeon.lee.dev@gmail.com
 Signed-off-by: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Suggested-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Assisted-by: LLM
-Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Shuah Khan <shuah@kernel.org>
-Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
 ---
- tools/testing/selftests/mm/run_vmtests.sh | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
+ tools/testing/selftests/mm/run_vmtests.sh | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
-index 9bbef9410ccc..0935dbef4884 100755
+index 9bbef9410ccc..2e5e7975ff4d 100755
 --- a/tools/testing/selftests/mm/run_vmtests.sh
 +++ b/tools/testing/selftests/mm/run_vmtests.sh
-@@ -433,7 +433,8 @@ CATEGORY="thp" run_test ./khugepaged -c 4 mthp_khugepaged:anon
- # Try to create XFS if not provided
- if [ -z "${SPLIT_HUGE_PAGE_TEST_XFS_PATH}" ]; then
+@@ -435,11 +435,15 @@ if [ -z "${SPLIT_HUGE_PAGE_TEST_XFS_PATH}" ]; then
      if test_selected "thp"; then
--	if grep xfs /proc/filesystems &>/dev/null; then
-+	if grep xfs /proc/filesystems &>/dev/null &&
-+	   command -v mkfs.xfs &>/dev/null; then
+ 	if grep xfs /proc/filesystems &>/dev/null; then
  	    XFS_IMG=$(mktemp /tmp/xfs_img_XXXXXX)
- 	    SPLIT_HUGE_PAGE_TEST_XFS_PATH=$(mktemp -d /tmp/xfs_dir_XXXXXX)
+-	    SPLIT_HUGE_PAGE_TEST_XFS_PATH=$(mktemp -d /tmp/xfs_dir_XXXXXX)
++	    XFS_DIR=$(mktemp -d /tmp/xfs_dir_XXXXXX)
  	    truncate -s 314572800 ${XFS_IMG}
+-	    mkfs.xfs -q ${XFS_IMG}
+-	    mount -o loop ${XFS_IMG} ${SPLIT_HUGE_PAGE_TEST_XFS_PATH}
+-	    MOUNTED_XFS=1
++	    if mkfs.xfs -q ${XFS_IMG} && mount -t xfs -o loop ${XFS_IMG} ${XFS_DIR}; then
++	        SPLIT_HUGE_PAGE_TEST_XFS_PATH=${XFS_DIR}
++	        MOUNTED_XFS=1
++	    else
++	        rmdir ${XFS_DIR}
++	        rm -f ${XFS_IMG}
++	    fi
+ 	fi
+     fi
+ fi
 -- 
 2.47.3
 

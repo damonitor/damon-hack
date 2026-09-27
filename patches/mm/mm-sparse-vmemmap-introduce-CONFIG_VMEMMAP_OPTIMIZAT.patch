@@ -1,85 +1,42 @@
-From: Muchun Song <songmuchun@bytedance.com>
-Date: Wed, 16 Sep 2026 14:43:31 +0800
+From: Muchun Song <muchun.song@linux.dev>
+Date: Sun, 27 Sep 2026 10:54:32 +0800
 Subject: [PATCH] mm/sparse-vmemmap: introduce CONFIG_VMEMMAP_OPTIMIZATION
 
-Patch series "mm: Switch device DAX to section-based vmemmap
-optimization", v4.
+The section-based vmemmap optimization infrastructure is guarded by
+CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP, but it can also be used by
+ZONE_DEVICE users that set dev_pagemap::vmemmap_shift. Introduce
+CONFIG_VMEMMAP_OPTIMIZATION as a common config for the shared
+infrastructure.
 
-This series is split out from the earlier, larger series "mm: Generalize
-HVO for HugeTLB and device DAX" [1].  While the parent series generalizes
-vmemmap optimization across HugeTLB and device DAX, this subset addresses
-a single, self-contained step: switching device DAX to the section-based
-sparse-vmemmap optimization infrastructure introduced for HugeTLB.
+Select the new option from HUGETLB_PAGE_OPTIMIZE_VMEMMAP and from
+ZONE_DEVICE when the architecture opts in to DAX vmemmap optimization,
+and use it to guard the generic sparse-vmemmap state and helpers.
 
-After the HugeTLB conversion, optimized vmemmap state is described by the
-memory section and the sparse-vmemmap population path can allocate or
-reuse shared tail vmemmap pages based on that metadata.  Device DAX still
-uses the older DAX-specific population model, including a separate tail
-vmemmap page reservation and architecture-specific logic to locate or
-populate reusable tail pages.
-
-This series makes device DAX use the same section-based model.  Device DAX
-records the compound page order from pgmap->vmemmap_shift in section
-metadata before vmemmap population, uses the common per-zone shared tail
-vmemmap page, and drops the extra reserved tail page.  The powerpc radix
-path is updated to use the same shared tail-page helper, so the generic
-and powerpc DAX paths follow the same reservation model.
-
-The first patches prepare the shared infrastructure by introducing a
-generic CONFIG_VMEMMAP_OPTIMIZATION symbol, factoring out shared tail-page
-allocation, and keeping the special shared-tail struct page initialization
-local to sparse-vmemmap.
-
-The middle patches move device DAX onto that infrastructure by recording
-the device DAX compound page order in memory-section metadata, using that
-metadata to back generic device DAX mappings with the common per-zone
-shared tail page, exposing the shared helpers so the powerpc radix path
-can use the same model, and dropping the extra DAX-only tail page
-reservation and the now-unused section accounting arguments.
-
-The final patch updates the documentation for the new DAX layout.
-
-This is intended to be the third smaller step toward the broader HVO
-generalization. The wider HVO consolidation between HugeTLB and device
-DAX is left for follow-up series.
-
-
-This patch (of 11):
-
-The section-based vmemmap optimization infrastructure is still guarded by
-CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP, but it also can be used by device
-DAX.  Introduce CONFIG_VMEMMAP_OPTIMIZATION as a common config for the
-shared infrastructure.
-
-Select the new option from HUGETLB_PAGE_OPTIMIZE_VMEMMAP and from DEV_DAX
-when the architecture opts in to DAX vmemmap optimization, and use it to
-guard the generic sparse-vmemmap state and helpers.
-
-Link: https://lore.kernel.org/20260916064341.1825793-1-songmuchun@bytedance.com
-Link: https://lore.kernel.org/20260916064341.1825793-2-songmuchun@bytedance.com
-Link: https://lore.kernel.org/all/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
-Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Link: https://lore.kernel.org/20260927025441.741633-4-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
-Cc: Jonathan Corbet <corbet@lwn.net>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Nicholas Piggin <npiggin@gmail.com>
-Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Christophe Leroy <chleroy@kernel.org>
 Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
 ---
  arch/x86/entry/vdso/vdso32/fake_32bit_build.h |  2 +-
- drivers/dax/Kconfig                           |  2 ++
  fs/Kconfig                                    |  1 +
  include/linux/mm.h                            |  3 +++
- include/linux/mmzone.h                        | 13 +++++++------
+ include/linux/mmzone.h                        | 10 +++++-----
  include/linux/page-flags.h                    |  5 ++---
- mm/Kconfig                                    |  4 ++++
- mm/sparse.h                                   |  4 ++--
- 8 files changed, 22 insertions(+), 12 deletions(-)
+ mm/Kconfig                                    |  5 +++++
+ mm/sparse-vmemmap.c                           |  2 +-
+ mm/sparse.h                                   |  6 +++---
+ 8 files changed, 21 insertions(+), 13 deletions(-)
 
 diff --git a/arch/x86/entry/vdso/vdso32/fake_32bit_build.h b/arch/x86/entry/vdso/vdso32/fake_32bit_build.h
 index bc3e549795c3..72a92cb9b53d 100644
@@ -94,19 +51,6 @@ index bc3e549795c3..72a92cb9b53d 100644
  #undef CONFIG_NR_CPUS
  #undef CONFIG_PARAVIRT_XXL
  
-diff --git a/drivers/dax/Kconfig b/drivers/dax/Kconfig
-index 602f9a0839a9..f50c6b32d826 100644
---- a/drivers/dax/Kconfig
-+++ b/drivers/dax/Kconfig
-@@ -8,6 +8,8 @@ if DAX
- config DEV_DAX
- 	tristate "Device DAX: direct access mapping device"
- 	depends on TRANSPARENT_HUGEPAGE
-+	depends on ZONE_DEVICE
-+	select VMEMMAP_OPTIMIZATION if ARCH_WANT_OPTIMIZE_DAX_VMEMMAP
- 	help
- 	  Support raw access to differentiated (persistence, bandwidth,
- 	  latency...) memory via an mmap(2) capable character
 diff --git a/fs/Kconfig b/fs/Kconfig
 index d1c210c6508f..1454b7fe9641 100644
 --- a/fs/Kconfig
@@ -134,7 +78,7 @@ index c49ef99b4413..070ce27e9cd3 100644
  		return false;
  
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
-index acd94cecc0d3..56403841e887 100644
+index 68807ff7f946..ee9cbaaa63f4 100644
 --- a/include/linux/mmzone.h
 +++ b/include/linux/mmzone.h
 @@ -102,9 +102,9 @@
@@ -150,26 +94,16 @@ index acd94cecc0d3..56403841e887 100644
  	 MAX_FOLIO_NR_PAGES * sizeof(struct page) : 0)
  
  /* The number of retained vmemmap pages with HVO enabled. */
-@@ -116,7 +116,8 @@
- #define __VMEMMAP_OPTIMIZATION_NR_ORDERS	\
- 	(MAX_FOLIO_ORDER - VMEMMAP_OPTIMIZATION_MIN_ORDER + 1)
- #define VMEMMAP_OPTIMIZATION_NR_ORDERS		\
--	(__VMEMMAP_OPTIMIZATION_NR_ORDERS > 0 ? __VMEMMAP_OPTIMIZATION_NR_ORDERS : 0)
-+	((__VMEMMAP_OPTIMIZATION_NR_ORDERS > 0 &&	\
-+	  IS_ENABLED(CONFIG_VMEMMAP_OPTIMIZATION)) ? __VMEMMAP_OPTIMIZATION_NR_ORDERS : 0)
- 
- enum migratetype {
- 	MIGRATE_UNMOVABLE,
-@@ -1155,7 +1156,7 @@ struct zone {
+@@ -1150,7 +1150,7 @@ struct zone {
  	/* Zone statistics */
  	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
  	atomic_long_t		vm_numa_event[NR_VM_NUMA_EVENT_ITEMS];
 -#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 +#ifdef CONFIG_VMEMMAP_OPTIMIZATION
- 	struct page *vmemmap_tails[VMEMMAP_OPTIMIZATION_NR_ORDERS];
+ 	struct page **vmemmap_tails;
  #endif
  } ____cacheline_internodealigned_in_smp;
-@@ -2019,7 +2020,7 @@ struct mem_section {
+@@ -2014,7 +2014,7 @@ struct mem_section {
  	unsigned long section_mem_map;
  
  	struct mem_section_usage *usage;
@@ -200,7 +134,7 @@ index 86dd0470da11..7080a6a1a79e 100644
  
  	return is_power_of_2(sizeof(struct page));
 diff --git a/mm/Kconfig b/mm/Kconfig
-index bc7befafb47b..0fa2eb76e4f2 100644
+index bc7befafb47b..30170a936f1f 100644
 --- a/mm/Kconfig
 +++ b/mm/Kconfig
 @@ -461,6 +461,10 @@ config SPARSEMEM_VMEMMAP
@@ -214,8 +148,29 @@ index bc7befafb47b..0fa2eb76e4f2 100644
  #
  # Select this config option from the architecture Kconfig, if it is preferred
  # to enable the feature of HugeTLB/dev_dax vmemmap optimization.
+@@ -1220,6 +1224,7 @@ config ZONE_DMA32
+ config ZONE_DEVICE
+ 	bool "Device memory (pmem, HMM, etc...) hotplug support"
+ 	depends on MEMORY_HOTREMOVE
++	select VMEMMAP_OPTIMIZATION if ARCH_WANT_OPTIMIZE_DAX_VMEMMAP
+ 	select XARRAY_MULTI
+ 
+ 	help
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 46d9a25b3275..38c36399f53e 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -169,7 +169,7 @@ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
+ 	return p;
+ }
+ 
+-#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
++#ifdef CONFIG_VMEMMAP_OPTIMIZATION
+ #define VMEMMAP_OPTIMIZATION_NR_ORDERS	(MAX_FOLIO_ORDER - VMEMMAP_OPTIMIZATION_MIN_ORDER + 1)
+ 
+ static __ref struct page **vmemmap_tails_alloc(struct zone *zone)
 diff --git a/mm/sparse.h b/mm/sparse.h
-index d3a71ef4fad0..d8c08a388e4e 100644
+index 6e7aaeaa5594..326ad43bb5c3 100644
 --- a/mm/sparse.h
 +++ b/mm/sparse.h
 @@ -10,7 +10,7 @@
@@ -236,6 +191,15 @@ index d3a71ef4fad0..d8c08a388e4e 100644
  		return false;
  
  	if (!is_power_of_2(sizeof(struct page)))
+@@ -142,7 +142,7 @@ static inline void sparse_sections_init(void) {}
+  * mm/sparse-vmemmap.c
+  */
+ #ifdef CONFIG_SPARSEMEM_VMEMMAP
+-#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
++#ifdef CONFIG_VMEMMAP_OPTIMIZATION
+ struct page *vmemmap_shared_tail_page(unsigned int order, struct zone *zone);
+ #endif
+ void sparse_init_subsection_map(void);
 -- 
 2.47.3
 

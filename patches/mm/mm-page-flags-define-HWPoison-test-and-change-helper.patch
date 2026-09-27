@@ -3,20 +3,6 @@ Date: Thu, 3 Sep 2026 13:35:34 +0800
 Subject: [PATCH] mm/page-flags: define HWPoison test-and-change helpers
  unconditionally
 
-Patch series "Make HWPoison helpers config-independent".
-
-Make the HWPoison page flag's test-and-set and test-and-clear accessors
-available regardless of CONFIG_MEMORY_FAILURE.  When memory failure
-handling is disabled, the accessors return false, matching the absence of
-HWPoison state and providing a consistent interface across configurations.
-
-Use the config-independent interface in the pmem driver to remove its
-private test_and_clear_pmem_poison() wrapper and the associated header
-dependency.  No functional change is intended.
-
-
-This patch (of 2):
-
 Page flag helpers for configuration-dependent flags provide false or no-op
 variants so that their users can be independent of the configuration.
 
@@ -31,14 +17,18 @@ failure handling is disabled.  Both accessors return false, which is
 consistent with HWPoison state being unavailable, and makes the accessor
 interface consistent across configurations.
 
+Also remove now-unneeded test_and_clear_pmem_poison() from nvdimm/pmem.
+
 Link: https://lore.kernel.org/20260903053535.17611-1-kaitao.cheng@linux.dev
 Link: https://lore.kernel.org/20260903053535.17611-2-kaitao.cheng@linux.dev
+Link: https://lore.kernel.org/20260903053535.17611-3-kaitao.cheng@linux.dev
 Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Muchun Song <muchun.song@linux.dev>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Oscar Salvador <osalvador@suse.de>
 Cc: Alison Schofield <alison.schofield@intel.com>
 Cc: Dave Jiang <dave.jiang@intel.com>
-Cc: David Hildenbrand <david@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Michal Hocko <mhocko@suse.com>
@@ -48,9 +38,52 @@ Cc: Vishal Verma <vishal.l.verma@intel.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Ira Weiny <iweiny@kernel.org>
 ---
- include/linux/page-flags.h | 1 +
- 1 file changed, 1 insertion(+)
+ drivers/nvdimm/pmem.c      |  2 +-
+ drivers/nvdimm/pmem.h      | 12 ------------
+ include/linux/page-flags.h |  1 +
+ 3 files changed, 2 insertions(+), 13 deletions(-)
 
+diff --git a/drivers/nvdimm/pmem.c b/drivers/nvdimm/pmem.c
+index 30a51c365ce8..5fb86595e8bd 100644
+--- a/drivers/nvdimm/pmem.c
++++ b/drivers/nvdimm/pmem.c
+@@ -80,7 +80,7 @@ static void pmem_mkpage_present(struct pmem_device *pmem, phys_addr_t offset,
+ 		 * here since we're in the driver I/O path and
+ 		 * outstanding I/O requests pin the dev_pagemap.
+ 		 */
+-		if (test_and_clear_pmem_poison(page))
++		if (TestClearPageHWPoison(page))
+ 			clear_mce_nospec(pfn);
+ 	}
+ }
+diff --git a/drivers/nvdimm/pmem.h b/drivers/nvdimm/pmem.h
+index a48509f90196..76870505dd79 100644
+--- a/drivers/nvdimm/pmem.h
++++ b/drivers/nvdimm/pmem.h
+@@ -1,7 +1,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 */
+ #ifndef __NVDIMM_PMEM_H__
+ #define __NVDIMM_PMEM_H__
+-#include <linux/page-flags.h>
+ #include <linux/badblocks.h>
+ #include <linux/memremap.h>
+ #include <linux/types.h>
+@@ -31,15 +30,4 @@ long __pmem_direct_access(struct pmem_device *pmem, pgoff_t pgoff,
+ 		long nr_pages, enum dax_access_mode mode, void **kaddr,
+ 		unsigned long *pfn);
+ 
+-#ifdef CONFIG_MEMORY_FAILURE
+-static inline bool test_and_clear_pmem_poison(struct page *page)
+-{
+-	return TestClearPageHWPoison(page);
+-}
+-#else
+-static inline bool test_and_clear_pmem_poison(struct page *page)
+-{
+-	return false;
+-}
+-#endif
+ #endif /* __NVDIMM_PMEM_H__ */
 diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
 index ae2ebaed6d4d..3dc79c0c5adf 100644
 --- a/include/linux/page-flags.h

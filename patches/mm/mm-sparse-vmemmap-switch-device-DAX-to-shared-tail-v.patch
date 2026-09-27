@@ -1,37 +1,39 @@
-From: Muchun Song <songmuchun@bytedance.com>
-Date: Wed, 16 Sep 2026 14:43:36 +0800
+From: Muchun Song <muchun.song@linux.dev>
+Date: Sun, 27 Sep 2026 10:54:36 +0800
 Subject: [PATCH] mm/sparse-vmemmap: switch device DAX to shared tail vmemmap
  pages
 
 HugeTLB vmemmap optimization now uses per-zone shared tail vmemmap pages.
 Device DAX has not been switched to that mechanism yet.
 
-Switch device DAX to vmemmap_shared_tail_page() as well.  This aligns DAX
+Switch device DAX to vmemmap_shared_tail_page() as well. This aligns DAX
 with HugeTLB by using the common per-zone shared tail vmemmap page.
 
 The optimization is enabled only for DEV-DAX through pgmap->vmemmap_shift,
 which supplies the compound page order recorded in section metadata before
-vmemmap population.  Unlike FS-DAX, DEV-DAX does not modify tail struct
+vmemmap population. Unlike FS-DAX, DEV-DAX does not modify tail struct
 pages, so sharing them is safe.
 
 Since the shared tail page can now back ZONE_DEVICE vmemmap mappings,
-initialize its entries with PG_reserved for device zones.  Also skip
+initialize its entries with PG_reserved for device zones. Also skip
 poisoning vmemmap-optimizable sections while their struct pages may be
 shared.
 
-Link: https://lore.kernel.org/20260916064341.1825793-7-songmuchun@bytedance.com
-Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Link: https://lore.kernel.org/20260927025441.741633-8-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
-Cc: David Hildenbrand (Arm) <david@kernel.org>
-Cc: Jonathan Corbet <corbet@lwn.net>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michael Ellerman <mpe@ellerman.id.au>
-Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Nicholas Piggin <npiggin@gmail.com>
-Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Christophe Leroy <chleroy@kernel.org>
 Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
 ---
  include/linux/mmzone.h | 10 +++++++++
  mm/memory_hotplug.c    |  6 ++++--
@@ -39,10 +41,10 @@ Cc: Randy Dunlap <rdunlap@infradead.org>
  3 files changed, 29 insertions(+), 34 deletions(-)
 
 diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
-index 97147c764658..ebbda6f31139 100644
+index ee9cbaaa63f4..cd68c1904c91 100644
 --- a/include/linux/mmzone.h
 +++ b/include/linux/mmzone.h
-@@ -2149,11 +2149,21 @@ static inline int online_device_section(const struct mem_section *section)
+@@ -2143,11 +2143,21 @@ static inline int online_device_section(const struct mem_section *section)
  
  	return section && ((section->section_mem_map & flags) == flags);
  }
@@ -89,10 +91,10 @@ index b428da66d279..d7a59167bec4 100644
  
  	/*
 diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
-index 02da1321197d..7b5b9ceec697 100644
+index ca2470e96a74..2bc78aa053a1 100644
 --- a/mm/sparse-vmemmap.c
 +++ b/mm/sparse-vmemmap.c
-@@ -193,6 +193,8 @@ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zon
+@@ -221,6 +221,8 @@ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zon
  		set_page_node(page, zone_to_nid(zone));
  		set_page_zone(page, zone_idx(zone));
  		prep_compound_tail(page, NULL, order);
@@ -101,7 +103,7 @@ index 02da1321197d..7b5b9ceec697 100644
  	}
  
  	page = virt_to_page(addr);
-@@ -490,23 +492,6 @@ static bool __meminit reuse_compound_section(unsigned long start_pfn,
+@@ -525,23 +527,6 @@ static bool __meminit reuse_compound_section(unsigned long start_pfn,
  	return !IS_ALIGNED(offset, nr_pages) && nr_pages > PAGES_PER_SUBSECTION;
  }
  
@@ -125,7 +127,7 @@ index 02da1321197d..7b5b9ceec697 100644
  static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  						     unsigned long start,
  						     unsigned long end, int node,
-@@ -516,21 +501,18 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+@@ -551,21 +536,18 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  	pte_t *pte;
  	int rc;
  	unsigned long flags = VMEMMAP_POPULATE_DAX;
@@ -155,7 +157,7 @@ index 02da1321197d..7b5b9ceec697 100644
  	for (addr = start; addr < end; addr += size) {
  		unsigned long next, last = addr + size;
  
-@@ -546,12 +528,12 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+@@ -581,12 +563,12 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  			return -ENOMEM;
  
  		/*
@@ -170,7 +172,7 @@ index 02da1321197d..7b5b9ceec697 100644
  		if (rc)
  			return -ENOMEM;
  	}
-@@ -883,13 +865,14 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
+@@ -918,13 +900,14 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
  	if (IS_ERR(memmap))
  		return PTR_ERR(memmap);
  

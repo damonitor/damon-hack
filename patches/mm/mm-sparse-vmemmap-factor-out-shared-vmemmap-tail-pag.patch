@@ -1,62 +1,98 @@
-From: Muchun Song <songmuchun@bytedance.com>
-Date: Wed, 16 Sep 2026 14:43:32 +0800
+From: Muchun Song <muchun.song@linux.dev>
+Date: Sun, 27 Sep 2026 10:54:30 +0800
 Subject: [PATCH] mm/sparse-vmemmap: factor out shared vmemmap tail page
  allocation
+
+Patch series "mm: Switch device DAX to section-based vmemmap
+optimization", v5.
+
+This series is split out from the earlier, larger series "mm: Generalize
+HVO for HugeTLB and device DAX" [1].  While the parent series generalizes
+vmemmap optimization across HugeTLB and device DAX, this subset addresses
+a single, self-contained step: switching device DAX to the section-based
+sparse-vmemmap optimization infrastructure introduced for HugeTLB.
+
+After the HugeTLB conversion, optimized vmemmap state is described by the
+memory section and the sparse-vmemmap population path can allocate or
+reuse shared tail vmemmap pages based on that metadata.  Device DAX still
+uses the older DAX-specific population model, including a separate tail
+vmemmap page reservation and architecture-specific logic to locate or
+populate reusable tail pages.
+
+This series makes device DAX use the same section-based model.  Device DAX
+records the compound page order from pgmap->vmemmap_shift in section
+metadata before vmemmap population, uses the common per-zone shared tail
+vmemmap page, and drops the extra reserved tail page.  The powerpc radix
+path is updated to use the same shared tail-page helper, so the generic
+and powerpc DAX paths follow the same reservation model.
+
+The first patches prepare the shared infrastructure by factoring out
+shared tail-page allocation, allocating the per-zone shared tail-page
+array dynamically, and introducing a generic CONFIG_VMEMMAP_OPTIMIZATION
+symbol.
+
+The middle patches move device DAX onto that infrastructure by recording
+the device DAX compound page order in memory-section metadata, using that
+metadata to back generic device DAX mappings with the common per-zone
+shared tail page, exposing the shared helpers so the powerpc radix path
+can use the same model, and dropping the extra DAX-only tail page
+reservation and the now-unused section accounting arguments.
+
+The final patch updates the documentation for the new DAX layout.
+
+This is intended to be the third smaller step toward the broader HVO
+generalization.  The wider HVO consolidation between HugeTLB and device
+DAX is left for follow-up series.
+
+
+This patch (of 12):
 
 HugeTLB and sparse-vmemmap each have their own helper to allocate the
 shared vmemmap tail page used by vmemmap optimization.
 
-Factor that logic into a common vmemmap_shared_tail_page() helper.  It
-allocates the page through vmemmap_alloc_block(), and uses cmpxchg() to
-install the per-zone shared page.
+Factor that logic into a common vmemmap_shared_tail_page() helper. It
+allocates the page through vmemmap_alloc_block(), initializes the tail
+struct pages, and uses cmpxchg() to install the per-zone shared page.
 
-Expose zone->vmemmap_tails under CONFIG_SPARSEMEM_VMEMMAP to match the
-shared helper's build condition.  This avoids a
-!CONFIG_VMEMMAP_OPTIMIZATION stub; when optimization is disabled, the
-array has no entries and the compiler folds away the unused paths, so no
-storage or runtime overhead is added.
+This removes duplicate allocation logic while handling both early boot
+and runtime allocation through the same helper.
 
-This removes duplicate allocation logic while still handling both the
-early boot and runtime paths through the same helper.
-
-Link: https://lore.kernel.org/20260916064341.1825793-3-songmuchun@bytedance.com
-Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Link: https://lore.kernel.org/20260927025441.741633-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260927025441.741633-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/all/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Cc: David Hildenbrand (Arm) <david@kernel.org>
-Cc: Jonathan Corbet <corbet@lwn.net>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Nicholas Piggin <npiggin@gmail.com>
-Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Christophe Leroy <chleroy@kernel.org>
 Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
 ---
- include/linux/mmzone.h |  2 +-
- mm/hugetlb_vmemmap.c   | 28 +---------------
- mm/sparse-vmemmap.c    | 74 +++++++++++++++++-------------------------
- mm/sparse.h            |  1 +
- 4 files changed, 33 insertions(+), 72 deletions(-)
+ mm/hugetlb_vmemmap.c | 29 +-----------------
+ mm/sparse-vmemmap.c  | 70 ++++++++++++++++++++------------------------
+ mm/sparse.h          |  3 ++
+ 3 files changed, 36 insertions(+), 66 deletions(-)
 
-diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
-index 56403841e887..97147c764658 100644
---- a/include/linux/mmzone.h
-+++ b/include/linux/mmzone.h
-@@ -1156,7 +1156,7 @@ struct zone {
- 	/* Zone statistics */
- 	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
- 	atomic_long_t		vm_numa_event[NR_VM_NUMA_EVENT_ITEMS];
--#ifdef CONFIG_VMEMMAP_OPTIMIZATION
-+#ifdef CONFIG_SPARSEMEM_VMEMMAP
- 	struct page *vmemmap_tails[VMEMMAP_OPTIMIZATION_NR_ORDERS];
- #endif
- } ____cacheline_internodealigned_in_smp;
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index f977d0a7e002..5ddf06b83c96 100644
+index f977d0a7e002..76765c97ff68 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
-@@ -493,32 +493,6 @@ static bool vmemmap_should_optimize_folio(const struct hstate *h, struct folio *
+@@ -19,7 +19,6 @@
+ #include <asm/tlbflush.h>
+ #include "hugetlb_vmemmap.h"
+ #include "sparse.h"
+-#include "internal.h"
+ 
+ /**
+  * struct vmemmap_remap_walk - walk vmemmap page table
+@@ -493,32 +492,6 @@ static bool vmemmap_should_optimize_folio(const struct hstate *h, struct folio *
  	return true;
  }
  
@@ -89,7 +125,7 @@ index f977d0a7e002..5ddf06b83c96 100644
  static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
  					    struct folio *folio,
  					    struct list_head *vmemmap_pages,
-@@ -535,7 +509,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+@@ -535,7 +508,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
  		return ret;
  
  	nid = folio_nid(folio);
@@ -99,7 +135,7 @@ index f977d0a7e002..5ddf06b83c96 100644
  		return -ENOMEM;
  
 diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
-index f22d815d7af0..7388a5b5cce3 100644
+index f22d815d7af0..9b00085122b2 100644
 --- a/mm/sparse-vmemmap.c
 +++ b/mm/sparse-vmemmap.c
 @@ -42,27 +42,13 @@
@@ -142,11 +178,10 @@ index f22d815d7af0..7388a5b5cce3 100644
  }
  
  static void * __meminit altmap_alloc_block_buf(unsigned long size,
-@@ -184,39 +169,40 @@ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
- 	return p;
+@@ -185,34 +170,43 @@ static void * __meminit vmemmap_alloc_block_zero(unsigned long size, int node)
  }
  
--#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
+ #ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 -static __meminit struct page *vmemmap_get_tail(unsigned int order, struct zone *zone)
 +struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zone)
  {
@@ -160,7 +195,7 @@ index f22d815d7af0..7388a5b5cce3 100644
 -	if (WARN_ON_ONCE(order < VMEMMAP_OPTIMIZATION_MIN_ORDER))
 -		return NULL;
 -	if (WARN_ON_ONCE(order > MAX_FOLIO_ORDER))
-+	if (WARN_ON_ONCE(idx >= ARRAY_SIZE(zone->vmemmap_tails)))
++	if (WARN_ON_ONCE(idx >= VMEMMAP_OPTIMIZATION_NR_ORDERS))
  		return NULL;
  
 -	idx = order - VMEMMAP_OPTIMIZATION_MIN_ORDER;
@@ -188,11 +223,6 @@ index f22d815d7af0..7388a5b5cce3 100644
 +	}
  
 -	return tail;
--}
--#else
--static inline struct page *vmemmap_get_tail(unsigned int order, struct zone *zone)
--{
--	return NULL;
 +	page = virt_to_page(addr);
 +	if (cmpxchg(&zone->vmemmap_tails[idx], NULL, page) != NULL) {
 +		if (slab_is_available())
@@ -204,11 +234,14 @@ index f22d815d7af0..7388a5b5cce3 100644
 +
 +	return page;
  }
--#endif
- 
- static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
- 					 struct vmem_altmap *altmap)
-@@ -229,7 +215,7 @@ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
+ #else
+-static inline struct page *vmemmap_get_tail(unsigned int order, struct zone *zone)
++static inline struct page *vmemmap_shared_tail_page(unsigned int order,
++						    struct zone *zone)
+ {
+ 	return NULL;
+ }
+@@ -229,7 +223,7 @@ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
  		return vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
  
  	zone = pfn_to_zone(pfn, node);
@@ -218,14 +251,16 @@ index f22d815d7af0..7388a5b5cce3 100644
  		return NULL;
  
 diff --git a/mm/sparse.h b/mm/sparse.h
-index d8c08a388e4e..8f6ef0b50b4f 100644
+index d3a71ef4fad0..6e7aaeaa5594 100644
 --- a/mm/sparse.h
 +++ b/mm/sparse.h
-@@ -142,6 +142,7 @@ static inline void sparse_sections_init(void) {}
+@@ -142,6 +142,9 @@ static inline void sparse_sections_init(void) {}
   * mm/sparse-vmemmap.c
   */
  #ifdef CONFIG_SPARSEMEM_VMEMMAP
++#ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
 +struct page *vmemmap_shared_tail_page(unsigned int order, struct zone *zone);
++#endif
  void sparse_init_subsection_map(void);
  int section_nr_vmemmap_pages(unsigned long pfn, unsigned long nr_pages,
  		struct vmem_altmap *altmap, struct dev_pagemap *pgmap);
