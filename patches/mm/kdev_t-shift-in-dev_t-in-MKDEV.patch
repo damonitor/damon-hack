@@ -1,0 +1,44 @@
+From: Matthias Goergens <matthias.goergens@gmail.com>
+Date: Mon, 28 Sep 2026 06:49:58 +0800
+Subject: [PATCH] kdev_t: shift in dev_t in MKDEV()
+
+MKDEV(ma, mi) evaluates ((ma) << MINORBITS) in whatever type the caller
+passes, usually int.  For majors >= 2048 (legal: majors go up to 4095) the
+result exceeds INT_MAX, which C11 leaves undefined for a signed left
+shift; shifting a negative ma is undefined regardless of the major's
+value.  In practice, on the compilers and two's complement targets the
+kernel supports, both cases wrap to the intended bit pattern; this patch
+makes the macro well defined regardless by casting the major to dev_t
+before shifting.  For major and minor numbers in range, the device number
+it produces is unchanged.
+
+isofs feeds the Rock Ridge 'PN' entry's dev_high and dev_low into MKDEV()
+while holding them in int variables (fs/isofs/rock.c), so a crafted image
+can drive this exact shift.  Fixing the macro covers every caller instead
+of just that one.
+
+Link: https://lore.kernel.org/20260927224958.508964-1-matthias.goergens@gmail.com
+Signed-off-by: Matthias Goergens <matthias.goergens@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Jan Kara <jack@suse.cz>
+---
+ include/linux/kdev_t.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/linux/kdev_t.h b/include/linux/kdev_t.h
+index 4856706fbfeb..2dbbd47f1e68 100644
+--- a/include/linux/kdev_t.h
++++ b/include/linux/kdev_t.h
+@@ -9,7 +9,7 @@
+ 
+ #define MAJOR(dev)	((unsigned int) ((dev) >> MINORBITS))
+ #define MINOR(dev)	((unsigned int) ((dev) & MINORMASK))
+-#define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
++#define MKDEV(ma, mi)	(((dev_t)(ma) << MINORBITS) | (mi))
+ 
+ #define print_dev_t(buffer, dev)					\
+ 	sprintf((buffer), "%u:%u\n", MAJOR(dev), MINOR(dev))
+-- 
+2.47.3
+

@@ -6,22 +6,16 @@ If hugetlb_add_to_page_cache() in memfd_alloc_folio() fails with -EEXIST,
 a concurrent fault has already instantiated the folio in the page cache,
 and the reservation now belongs to that folio.  Calling
 hugetlb_unreserve_pages() in that case incorrectly removes the region
-backing the cached folio.  A later truncate or inode eviction then passes
-a negative (chg - freed) into hugepage_subpool_put_pages(), corrupting
-subpool and resv_huge_pages accounting.
+backing the cached folio and releases one reservation more than it should,
+leaving that folio in the page cache with no region recording it.
 
-Over time, these corrupted counters would leak huge page reservations.
-Applications using hugetlb memfds would eventually find themselves unable
-to allocate huge pages, receiving unexpected ENOMEM errors even though
-system memory and pool capacities appeared free and healthy.
-
-The corrupted accounting caused hugepage_subpool_put_pages() to receive a
-negative value during a later file truncation or inode eviction.
-
-While this typically manifests as kernel logs (WARN traces or badness
-flags regarding subpool page counts), it could cause misbehaved resource
-tracking that impacts subsequent system operations, unmounts, or process
-teardowns interacting with that hugetlb file descriptor.
+That leaves resv_huge_pages one page short until that folio is removed
+from the page cache, so available_huge_pages() reports a page that is not
+actually free and the pool can grant one reservation more than it can
+back.  Applications using hugetlb memfds can then fail to allocate or
+fault in a page they already reserved.  They see -ENOMEM or -ENOSPC from
+the allocation or fault path even though the reservation and
+HugePages_Free still look healthy.
 
 So hold the hugetlb fault mutex from hugetlb_reserve_pages() until the
 error-path unreserve completes to make the reserve, allocate and
@@ -32,6 +26,7 @@ mutex was taken, it has already added the region for that index, so
 hugetlb_reserve_pages() returns 0 and the error path leaves the region in
 place.
 
+Link: https://lore.kernel.org/20260927094757.31665-1-hongfu.li@linux.dev
 Link: https://lore.kernel.org/20260903030134.7407-1-hongfu.li@linux.dev
 Fixes: 717cf9357325 ("mm/memfd: reserve hugetlb folios before allocation")
 Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>

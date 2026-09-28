@@ -1,5 +1,5 @@
 From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
-Date: Fri, 25 Sep 2026 12:53:46 +0300
+Date: Sat, 26 Sep 2026 12:29:29 +0300
 Subject: [PATCH] arch, mm: promote DEBUG_WX to CHECK_WX
 
 Verification that the kernel does not have writable + executable mappings
@@ -11,6 +11,8 @@ defconfigs of most architectures that have ARCH_HAS_DEBUG_WX.
 Rename relevant generic configuration options to use CHECK_WX and move
 their definitions from mm/Kconfig.debug to mm/Kconfig.
 
+Rename *debug_checkwx() funcitons and macros to *pgtable_checkwx().
+
 For arm that does not widely enable it, only rename its variants of the
 config options.
 
@@ -20,15 +22,14 @@ implementations of ptdump, the core functionality takes most of the added
 size.  It cannot be moved to .init.text because the verification has to
 happen after init sections are freed.
 
-With this, make generic CHECK_WX default to STRICT_KERNEL_RWX while still
-leaving users targeting small kernels the possibility to opt-out.
+With this, make generic CHECK_WX default to STRICT_KERNEL_RWX while
+still leaving users targeting small kernels the possibility to opt-out.
 
-Link: https://lore.kernel.org/20260925-direct-map-verify-wx-v1-1-7fd2f7d6d23b@kernel.org
+Link: https://lore.kernel.org/20260926-direct-map-verify-wx-v2-1-efcd64a6b74a@kernel.org
 Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Suggested-by: Dave Hansen <dave.hansen@linux.intel.com>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
-Acked-by: Heiko Carstens <hca@linux.ibm.com> # s390
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
 Cc: Alexandre Ghiti <alex@ghiti.fr>
@@ -36,10 +37,11 @@ Cc: Borislav Petkov <bp@alien8.de>
 Cc: Catalin Marinas <catalin.marinas@arm.com>
 Cc: Christophe Leroy <chleroy@kernel.org>
 Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: David Hildenbrand <david@kernel.org>
 Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
 Cc: Ingo Molnar <mingo@redhat.com>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Mark Rutland <mark.rutland@arm.com>
 Cc: Michael Ellerman <mpe@ellerman.id.au>
@@ -62,7 +64,8 @@ Cc: Will Deacon <will@kernel.org>
  arch/arm/configs/aspeed_g4_defconfig |  2 +-
  arch/arm/configs/aspeed_g5_defconfig |  2 +-
  arch/arm/configs/shmobile_defconfig  |  2 +-
- arch/arm/include/asm/ptdump.h        |  2 +-
+ arch/arm/include/asm/ptdump.h        |  6 ++--
+ arch/arm/mm/init.c                   |  2 +-
  arch/arm64/Kconfig                   |  2 +-
  arch/powerpc/Kconfig                 |  2 +-
  arch/powerpc/configs/ppc64_defconfig |  2 +-
@@ -74,12 +77,14 @@ Cc: Will Deacon <will@kernel.org>
  arch/s390/mm/dump_pagetables.c       |  2 +-
  arch/x86/Kconfig                     |  2 +-
  arch/x86/configs/x86_64_defconfig    |  2 +-
- arch/x86/include/asm/pgtable.h       |  2 +-
- include/linux/ptdump.h               |  2 +-
+ arch/x86/include/asm/pgtable.h       |  6 ++--
+ arch/x86/mm/pti.c                    |  2 +-
+ include/linux/ptdump.h               |  4 +--
+ init/main.c                          |  2 +-
  kernel/configs/debug.config          |  2 +-
  mm/Kconfig                           | 41 ++++++++++++++++++++++++++++
  mm/Kconfig.debug                     | 39 --------------------------
- 21 files changed, 60 insertions(+), 58 deletions(-)
+ 24 files changed, 68 insertions(+), 66 deletions(-)
 
 diff --git a/arch/arm/Kconfig.debug b/arch/arm/Kconfig.debug
 index 366f162e147d..abcf14f10276 100644
@@ -131,18 +136,36 @@ index 6f9696e9fe17..cc22e22b989e 100644
 -CONFIG_ARM_DEBUG_WX=y
 +CONFIG_ARM_CHECK_WX=y
 diff --git a/arch/arm/include/asm/ptdump.h b/arch/arm/include/asm/ptdump.h
-index 46a4575146ee..5039cb75fb53 100644
+index 46a4575146ee..3c5245220ecf 100644
 --- a/arch/arm/include/asm/ptdump.h
 +++ b/arch/arm/include/asm/ptdump.h
-@@ -32,7 +32,7 @@ void ptdump_check_wx(void);
+@@ -32,10 +32,10 @@ void ptdump_check_wx(void);
  
  #endif /* CONFIG_ARM_PTDUMP_CORE */
  
 -#ifdef CONFIG_ARM_DEBUG_WX
+-#define arm_debug_checkwx() ptdump_check_wx()
 +#ifdef CONFIG_ARM_CHECK_WX
- #define arm_debug_checkwx() ptdump_check_wx()
++#define arm_pgtable_checkwx() ptdump_check_wx()
  #else
- #define arm_debug_checkwx() do { } while (0)
+-#define arm_debug_checkwx() do { } while (0)
++#define arm_pgtable_checkwx() do { } while (0)
+ #endif
+ 
+ #endif /* __ASM_PTDUMP_H */
+diff --git a/arch/arm/mm/init.c b/arch/arm/mm/init.c
+index 0cc1bf04686d..c515faf22eeb 100644
+--- a/arch/arm/mm/init.c
++++ b/arch/arm/mm/init.c
+@@ -403,7 +403,7 @@ static int __mark_rodata_ro(void *unused)
+ void mark_rodata_ro(void)
+ {
+ 	stop_machine(__mark_rodata_ro, NULL, NULL);
+-	arm_debug_checkwx();
++	arm_pgtable_checkwx();
+ }
+ 
+ #else
 diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
 index b6c2dd8b2612..b51d23a62c92 100644
 --- a/arch/arm64/Kconfig
@@ -287,31 +310,63 @@ index 269f7d808be4..e6896aeb77d8 100644
  CONFIG_SCHEDSTATS=y
  CONFIG_BLK_DEV_IO_TRACE=y
 diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
-index d551120a7c88..16f4e8ddda65 100644
+index d551120a7c88..ef0252a09c28 100644
 --- a/arch/x86/include/asm/pgtable.h
 +++ b/arch/x86/include/asm/pgtable.h
-@@ -41,7 +41,7 @@ void ptdump_walk_user_pgd_level_checkwx(void);
+@@ -41,10 +41,10 @@ void ptdump_walk_user_pgd_level_checkwx(void);
  #define pgprot_encrypted(prot)	__pgprot(cc_mkenc(pgprot_val(prot)))
  #define pgprot_decrypted(prot)	__pgprot(cc_mkdec(pgprot_val(prot)))
  
 -#ifdef CONFIG_DEBUG_WX
+-#define debug_checkwx_user()	ptdump_walk_user_pgd_level_checkwx()
 +#ifdef CONFIG_CHECK_WX
- #define debug_checkwx_user()	ptdump_walk_user_pgd_level_checkwx()
++#define pgtable_checkwx_user()	ptdump_walk_user_pgd_level_checkwx()
  #else
- #define debug_checkwx_user()	do { } while (0)
+-#define debug_checkwx_user()	do { } while (0)
++#define pgtable_checkwx_user()	do { } while (0)
+ #endif
+ 
+ extern spinlock_t pgd_lock;
+diff --git a/arch/x86/mm/pti.c b/arch/x86/mm/pti.c
+index 598f553cc871..31055ee6f1de 100644
+--- a/arch/x86/mm/pti.c
++++ b/arch/x86/mm/pti.c
+@@ -688,5 +688,5 @@ void pti_finalize(void)
+ 	pti_clone_entry_text(true);
+ 	pti_clone_kernel_text();
+ 
+-	debug_checkwx_user();
++	pgtable_checkwx_user();
+ }
 diff --git a/include/linux/ptdump.h b/include/linux/ptdump.h
-index 240bd3bff18d..acc51a85652c 100644
+index 240bd3bff18d..af18d1459b2f 100644
 --- a/include/linux/ptdump.h
 +++ b/include/linux/ptdump.h
-@@ -33,7 +33,7 @@ bool ptdump_check_wx(void);
+@@ -31,9 +31,9 @@ bool ptdump_walk_pgd_level_core(struct seq_file *m,
+ void ptdump_walk_pgd(struct ptdump_state *st, struct mm_struct *mm, pgd_t *pgd);
+ bool ptdump_check_wx(void);
  
- static inline void debug_checkwx(void)
+-static inline void debug_checkwx(void)
++static inline void pgtable_checkwx(void)
  {
 -	if (IS_ENABLED(CONFIG_DEBUG_WX))
 +	if (IS_ENABLED(CONFIG_CHECK_WX))
  		ptdump_check_wx();
  }
  
+diff --git a/init/main.c b/init/main.c
+index 31f2bf54976a..a87a3d52f3e2 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1535,7 +1535,7 @@ static void mark_readonly(void)
+ 		flush_module_init_free_work();
+ 		jump_label_init_ro();
+ 		mark_rodata_ro();
+-		debug_checkwx();
++		pgtable_checkwx();
+ 		rodata_test();
+ 	} else if (IS_ENABLED(CONFIG_STRICT_KERNEL_RWX)) {
+ 		pr_info("Kernel memory protection disabled.\n");
 diff --git a/kernel/configs/debug.config b/kernel/configs/debug.config
 index 307c97ac5fa9..ac878669c193 100644
 --- a/kernel/configs/debug.config
