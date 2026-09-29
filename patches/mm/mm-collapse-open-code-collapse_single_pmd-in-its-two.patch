@@ -1,55 +1,67 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Wed, 16 Sep 2026 10:31:36 +0100
+Date: Mon, 28 Sep 2026 11:06:24 +0100
 Subject: [PATCH] mm/collapse: open-code collapse_single_pmd() in its two
  callers
 
-collapse_scan_pmd() and collapse_run_pmd() each have a clear locking
-contract.  The scan is called with mmap_lock held for reading and returns
-with it still held.  The collapse is called without it.
+A scan and a collapse want different things from mmap_lock.  The scan
+reads one PTE table under the lock the caller holds, refuses most of the
+time, and the caller moves on to the next table without letting go.  The
+collapse allocates, may sleep in writeback and takes the lock for write
+itself, so the lock it is handed is of no use to it.
 
 collapse_single_pmd() kept that boundary inside itself.  It dropped the
-lock on some paths and not others, and reported which by way of a bool its
-callers had to carry along and then act on.
+lock on some paths and not others, and reported which by way of a bool
+its callers had to carry along and then act on.  Both callers already
+act on a drop, khugepaged by ending its walk and madvise_collapse() by
+looking its VMA up again.  The code that has to know is not the code
+that does it.
 
 Open-code it in the two callers.  Each scans under the lock it already
-holds and, when the scan found work, gives the lock up before running the
-collapse.  khugepaged's lock_dropped and madvise_collapse()'s
-mmap_unlocked both go: the code dropping the lock is now the code that
-wanted to know.
+holds and, when the scan found work, gives the lock up before running
+the collapse.  The scan then has one rule, called locked and returning
+locked, and the run another, called unlocked.  Nothing is left to
+report, so khugepaged's lock_dropped and madvise_collapse()'s
+mmap_unlocked both go.  The engine never touches a lock it did not
+take, and how a caller locks its scan is the caller's business alone.
 
 khugepaged's walk carries on to the next table while the scan keeps
 refusing, and ends once a collapse has taken the lock from under it.
-madvise_collapse() re-finds its VMA after a collapse, which it did before,
-and now uses a NULL vma to say that it has to.  It still reports the drop
-to its own caller, from the line that does it.
+madvise_collapse() re-finds its VMA after a collapse, which it did
+before, and now uses a NULL vma to say that it has to.  It still reports
+the drop to its own caller, from the line that does it.
+
+Preparation for moving madvise_collapse() out of khugepaged.c: what it
+needs from the engine is then two calls with one lock rule each.
 
 The lock is given up and taken again at the same points as before.  No
 functional change.
 
-Link: https://lore.kernel.org/20260916093145.4022188-10-kirill@shutemov.name
+Link: https://lore.kernel.org/20260928100630.21870-11-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Assisted-by: LLM
-Cc: Barry Song <baohua@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Jann Horn <jannh@google.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
 ---
  mm/khugepaged.c | 103 +++++++++++++++++++++++-------------------------
  1 file changed, 50 insertions(+), 53 deletions(-)
 
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index e0a1dc1ffa15..fc1959fb8f27 100644
+index 87bbba6ce59a..1b35778335be 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -2869,28 +2869,6 @@ static enum scan_result collapse_run_pmd(struct mm_struct *mm,
+@@ -2856,28 +2856,6 @@ static enum scan_result collapse_run_pmd(struct mm_struct *mm,
  	return result;
  }
  
@@ -78,7 +90,7 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
  static void collapse_scan_mm_slot(unsigned int progress_max,
  		enum scan_result *result, struct collapse_control *cc)
  	__releases(&khugepaged_mm_lock)
-@@ -2953,7 +2931,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+@@ -2940,7 +2918,7 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  		VM_BUG_ON(khugepaged_scan.address & ~HPAGE_PMD_MASK);
  
  		while (khugepaged_scan.address < hend) {
@@ -87,7 +99,7 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
  
  			cond_resched();
  			if (unlikely(collapse_test_exit_or_disable(mm)))
-@@ -2963,23 +2941,30 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
+@@ -2950,23 +2928,30 @@ static void collapse_scan_mm_slot(unsigned int progress_max,
  				  khugepaged_scan.address + HPAGE_PMD_SIZE >
  				  hend);
  
@@ -133,7 +145,7 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
  		}
  	}
  breakouterloop:
-@@ -3248,7 +3233,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3232,7 +3217,6 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  	unsigned long hstart, hend, addr;
  	enum scan_result last_fail = SCAN_FAIL;
  	int thps = 0;
@@ -141,7 +153,7 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
  
  	BUG_ON(vma->vm_start > start);
  	BUG_ON(vma->vm_end < end);
-@@ -3271,25 +3255,40 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3255,25 +3239,40 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  	lru_add_drain_all();
  
  	for (addr = hstart; addr < hend; addr += HPAGE_PMD_SIZE) {
@@ -190,7 +202,7 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
  		switch (result) {
  		case SCAN_SUCCEED:
  		case SCAN_PMD_MAPPED:
-@@ -3311,17 +3310,15 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
+@@ -3295,17 +3294,15 @@ int madvise_collapse(struct vm_area_struct *vma, unsigned long start,
  		default:
  			last_fail = result;
  			/* Other error, exit */
@@ -210,8 +222,8 @@ index e0a1dc1ffa15..fc1959fb8f27 100644
 -out_nolock:
 +out_locked:
  	mmap_assert_locked(mm);
- 	collapse_control_release(cc);
  	kfree(cc);
+ 
 -- 
 2.47.3
 

@@ -1,9 +1,9 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Wed, 16 Sep 2026 10:31:28 +0100
+Date: Mon, 28 Sep 2026 11:06:15 +0100
 Subject: [PATCH] mm/khugepaged: drop redundant mm_struct pin in
  madvise_collapse()
 
-Patch series "mm/collapse: separate a collapse from its callers", v3.
+Patch series "mm/collapse: separate a collapse from its callers", v4.
 
 There is no line between the collapse engine and the callers that ask for
 a collapse.  khugepaged.c holds both, and they reach into each other.
@@ -23,24 +23,23 @@ a collapse.  khugepaged.c holds both, and they reach into each other.
 
 So: draw the line.  State what a caller allows in a policy, split the call
 in two with the lock as the boundary, and move the syscall to madvise.c.
-What the engine offers is then four calls, with the lock state written
+What the engine offers is then three calls, with the lock state written
 down against each, and a policy the caller fills for itself:
 
     collapse_control_init(cc)         once, before the first table
     collapse_policy_*(&cc->policy)    what this caller allows
     collapse_scan_pmd(vma, addr, ...) per table, under mmap_lock
-    collapse_run_pmd(mm, addr, cc)    when a scan found work, no mmap_lock
-    collapse_control_release(cc)      once, when done
+    collapse_run_pmd(mm, addr, ...)   when a scan found work, no mmap_lock
 
 The engine stays in khugepaged.c for now; what changes is that it has an
 interface, and that neither half has to ask about the other.  madvise.c
 gains the operation it should have had all along.
 
 
-This patch (of 12):
+This patch (of 13):
 
-madvise_collapse() holds an mmgrab() reference across its work.  It is
-redundant.  Every caller already holds mm_users:
+madvise_collapse() holds an mmgrab() reference across its work. It is
+redundant. Every caller already holds mm_users:
 
  - madvise(2) works on current->mm, which lives as long as the task is in
    the syscall;
@@ -51,22 +50,24 @@ redundant.  Every caller already holds mm_users:
 
 Drop the mmgrab()/mmdrop() pair.
 
-Link: https://lore.kernel.org/20260916093145.4022188-1-kirill@shutemov.name
-Link: https://lore.kernel.org/20260916093145.4022188-2-kirill@shutemov.name
+Link: https://lore.kernel.org/20260928100630.21870-1-kirill@shutemov.name
+Link: https://lore.kernel.org/20260928100630.21870-2-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
 Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Assisted-by: LLM
-Cc: Barry Song <baohua@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Jann Horn <jannh@google.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
 ---
  mm/khugepaged.c | 2 --
  1 file changed, 2 deletions(-)

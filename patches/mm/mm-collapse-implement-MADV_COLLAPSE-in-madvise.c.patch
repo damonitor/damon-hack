@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Wed, 16 Sep 2026 10:31:39 +0100
+Date: Mon, 28 Sep 2026 11:06:27 +0100
 Subject: [PATCH] mm/collapse: implement MADV_COLLAPSE in madvise.c
 
 MADV_COLLAPSE is a madvise operation, but its implementation sat in
@@ -18,26 +18,28 @@ collapse changes.
 
 The !CONFIG_TRANSPARENT_HUGEPAGE stub moves in with it.
 
-Link: https://lore.kernel.org/20260916093145.4022188-13-kirill@shutemov.name
+Link: https://lore.kernel.org/20260928100630.21870-14-kirill@shutemov.name
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Assisted-by: LLM
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: Barry Song <baohua@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Jann Horn <jannh@google.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
 ---
  include/linux/huge_mm.h |   9 ---
- mm/khugepaged.c         | 158 +------------------------------------
- mm/madvise.c            | 169 +++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 169 insertions(+), 167 deletions(-)
+ mm/khugepaged.c         | 159 +------------------------------------
+ mm/madvise.c            | 170 +++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 170 insertions(+), 168 deletions(-)
 
 diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
 index c745f7ad2298..8ca0fa3be2ac 100644
@@ -67,24 +69,26 @@ index c745f7ad2298..8ca0fa3be2ac 100644
  					 unsigned long start,
  					 unsigned long end,
 diff --git a/mm/khugepaged.c b/mm/khugepaged.c
-index ac5942c950cb..2815b44f2b3f 100644
+index 86b591ec2c49..8a5c7f38096e 100644
 --- a/mm/khugepaged.c
 +++ b/mm/khugepaged.c
-@@ -969,21 +969,6 @@ static void collapse_policy_khugepaged(struct collapse_policy *p)
+@@ -972,23 +972,6 @@ static void collapse_policy_khugepaged(struct collapse_policy *p)
  	p->tva_type = TVA_KHUGEPAGED;
  }
  
 -/* MADV_COLLAPSE was asked for explicitly, so it is not held to those */
--static void collapse_policy_forced(struct collapse_policy *p)
+-static void collapse_policy_madvise(struct collapse_policy *p)
 -{
--	p->max_ptes_none = HPAGE_PMD_NR;
--	p->max_ptes_swap = HPAGE_PMD_NR;
--	p->max_ptes_shared = HPAGE_PMD_NR;
--	p->strict_sub_pmd = false;
--	p->skip_lazyfree = false;
--	p->require_referenced = false;
--	p->install_pmd = true;
--	p->writeback_dirty = true;
+-	p->pmd.max_ptes_none = HPAGE_PMD_NR;
+-	p->pmd.max_ptes_swap = HPAGE_PMD_NR;
+-	p->pmd.max_ptes_shared = HPAGE_PMD_NR;
+-	/* Never read: MADV_COLLAPSE collapses to PMD order only */
+-	p->sub_pmd = p->pmd;
+-
+-	p->anon_skip_lazyfree = false;
+-	p->anon_require_referenced = false;
+-	p->file_install_pmd = true;
+-	p->file_writeback_dirty = true;
 -	p->gfp = GFP_TRANSHUGE;
 -	p->tva_type = TVA_FORCED_COLLAPSE;
 -}
@@ -92,9 +96,9 @@ index ac5942c950cb..2815b44f2b3f 100644
  #ifdef CONFIG_NUMA
  static int collapse_find_target_node(struct collapse_control *cc)
  {
-@@ -2845,9 +2830,8 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
-  * and with it the VMA and anything derived under it.  The run revalidates for
-  * itself rather than trusting what the scan saw.
+@@ -2857,9 +2840,8 @@ enum scan_result collapse_scan_pmd(struct vm_area_struct *vma,
+  *
+  * Return: what the collapse made of the table.
   */
 -enum scan_result collapse_run_pmd(struct mm_struct *mm,
 -		unsigned long addr, enum scan_result result,
@@ -104,7 +108,7 @@ index ac5942c950cb..2815b44f2b3f 100644
  {
  	struct file *file = cc->scan_file;
  	bool triggered_wb = false;
-@@ -3221,141 +3205,3 @@ bool current_is_khugepaged(void)
+@@ -3230,140 +3212,3 @@ bool current_is_khugepaged(void)
  {
  	return kthread_func(current) == khugepaged;
  }
@@ -168,7 +172,7 @@ index ac5942c950cb..2815b44f2b3f 100644
 -	if (!cc)
 -		return -ENOMEM;
 -	collapse_control_init(cc);
--	collapse_policy_forced(&cc->policy);
+-	collapse_policy_madvise(&cc->policy);
 -
 -	lru_add_drain_all();
 -
@@ -194,7 +198,7 @@ index ac5942c950cb..2815b44f2b3f 100644
 -			vma = found;
 -			hend = min(hend, vma->vm_end & HPAGE_PMD_MASK);
 -			orders = collapse_possible_orders(vma, vma->vm_flags,
--							  cc->policy.tva_type);
+-							  TVA_FORCED_COLLAPSE);
 -		}
 -
 -		result = collapse_scan_pmd(vma, addr, cc, orders);
@@ -240,14 +244,13 @@ index ac5942c950cb..2815b44f2b3f 100644
 -		mmap_read_lock(mm);
 -out_locked:
 -	mmap_assert_locked(mm);
--	collapse_control_release(cc);
 -	kfree(cc);
 -
 -	return thps == ((hend - hstart) >> HPAGE_PMD_SHIFT) ? 0
 -			: madvise_collapse_errno(last_fail);
 -}
 diff --git a/mm/madvise.c b/mm/madvise.c
-index 963337f93a7a..33bcd390ce43 100644
+index 963337f93a7a..acb5215e2f07 100644
 --- a/mm/madvise.c
 +++ b/mm/madvise.c
 @@ -38,6 +38,7 @@
@@ -258,23 +261,25 @@ index 963337f93a7a..33bcd390ce43 100644
  
  #define __MADV_SET_ANON_VMA_NAME (-1)
  
-@@ -906,6 +907,171 @@ bool madvise_dontneed_free_valid_vma(struct madvise_behavior *madv_behavior)
+@@ -906,6 +907,172 @@ bool madvise_dontneed_free_valid_vma(struct madvise_behavior *madv_behavior)
  	return true;
  }
  
 +#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 +
 +/* MADV_COLLAPSE was asked for explicitly, so it is not held to those */
-+static void collapse_policy_forced(struct collapse_policy *p)
++static void collapse_policy_madvise(struct collapse_policy *p)
 +{
-+	p->max_ptes_none = HPAGE_PMD_NR;
-+	p->max_ptes_swap = HPAGE_PMD_NR;
-+	p->max_ptes_shared = HPAGE_PMD_NR;
-+	p->strict_sub_pmd = false;
-+	p->skip_lazyfree = false;
-+	p->require_referenced = false;
-+	p->install_pmd = true;
-+	p->writeback_dirty = true;
++	p->pmd.max_ptes_none = HPAGE_PMD_NR;
++	p->pmd.max_ptes_swap = HPAGE_PMD_NR;
++	p->pmd.max_ptes_shared = HPAGE_PMD_NR;
++	/* Never read: MADV_COLLAPSE collapses to PMD order only */
++	p->sub_pmd = p->pmd;
++
++	p->anon_skip_lazyfree = false;
++	p->anon_require_referenced = false;
++	p->file_install_pmd = true;
++	p->file_writeback_dirty = true;
 +	p->gfp = GFP_TRANSHUGE;
 +	p->tva_type = TVA_FORCED_COLLAPSE;
 +}
@@ -339,7 +344,7 @@ index 963337f93a7a..33bcd390ce43 100644
 +	if (!cc)
 +		return -ENOMEM;
 +	collapse_control_init(cc);
-+	collapse_policy_forced(&cc->policy);
++	collapse_policy_madvise(&cc->policy);
 +
 +	lru_add_drain_all();
 +
@@ -365,7 +370,7 @@ index 963337f93a7a..33bcd390ce43 100644
 +			vma = found;
 +			hend = min(hend, vma->vm_end & HPAGE_PMD_MASK);
 +			orders = collapse_possible_orders(vma, vma->vm_flags,
-+							  cc->policy.tva_type);
++							  TVA_FORCED_COLLAPSE);
 +		}
 +
 +		result = collapse_scan_pmd(vma, addr, cc, orders);
@@ -411,7 +416,6 @@ index 963337f93a7a..33bcd390ce43 100644
 +		mmap_read_lock(mm);
 +out_locked:
 +	mmap_assert_locked(mm);
-+	collapse_control_release(cc);
 +	kfree(cc);
 +
 +	return thps == ((hend - hstart) >> HPAGE_PMD_SHIFT) ? 0
@@ -430,7 +434,7 @@ index 963337f93a7a..33bcd390ce43 100644
  static long madvise_dontneed_free(struct madvise_behavior *madv_behavior)
  {
  	struct mm_struct *mm = madv_behavior->mm;
-@@ -1373,8 +1539,7 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
+@@ -1373,8 +1540,7 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
  	case MADV_DONTNEED_LOCKED:
  		return madvise_dontneed_free(madv_behavior);
  	case MADV_COLLAPSE:

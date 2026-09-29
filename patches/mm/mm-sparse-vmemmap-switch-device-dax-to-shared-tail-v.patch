@@ -1,0 +1,63 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Mon, 28 Sep 2026 12:41:48 +0800
+Subject: [PATCH] 
+ mm-sparse-vmemmap-switch-device-dax-to-shared-tail-vmemmap-pages-fix
+
+Each PTE mapping the shared device DAX tail page takes a page reference.
+A sufficiently large range could therefore cycle the reference count back
+to zero if population were allowed to continue after it became
+non-positive.
+
+Use try_get_page() so further mappings fail once the reference count is no
+longer positive. The section population error path tears down mappings
+created for the failed section, while the warning makes this currently
+impractical limit visible.
+
+Link: https://lore.kernel.org/20260928044148.3300333-1-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+---
+ mm/sparse-vmemmap.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 2bc78aa053a1..1874cdad2d05 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -286,14 +286,18 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 			/*
+ 			 * When a PTE/PMD entry is freed from the init_mm
+ 			 * there's a free_pages() call to this page allocated
+-			 * above. Thus this get_page() is paired with the
++			 * above. Thus this try_get_page() is paired with the
+ 			 * put_page_testzero() on the freeing path.
+ 			 * This can only called by certain ZONE_DEVICE path,
+ 			 * and through vmemmap_populate_compound_pages() when
+ 			 * slab is available.
++			 *
++			 * Use try_get_page() to prevent the shared page refcount
++			 * from overflowing.
+ 			 */
+-			if (flags & VMEMMAP_POPULATE_DAX)
+-				get_page(pfn_to_page(ptpfn));
++			if ((flags & VMEMMAP_POPULATE_DAX) &&
++			    !try_get_page(pfn_to_page(ptpfn)))
++				return NULL;
+ 		}
+ 		entry = pfn_pte(ptpfn, PAGE_KERNEL);
+ 		set_pte_at(&init_mm, addr, pte, entry);
+-- 
+2.47.3
+

@@ -12,8 +12,38 @@
     - maintainer, nobody: 84 -> 84 commits (no change)
     - maintainer, no role : 16 -> 16 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
-- mm-new: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
+- mm-new: 0 -> 7 commits
+  - series: 0 (0) -> 3 (7)
+    - no role, maintainer: 0 -> 7 commits
+  - new commits
+    - series "mm/damon/core: preserve quota state when constructing schemes", v3. (2)
+      - 449a1662cfb3 "mm/damon/core: preserve the quota passed to damon_new_scheme() (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928085835.7675-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260928085835.7675-2-sj@kernel.org
+        - Link: https://lore.kernel.org/r/20260702212143.0CB6D1F00A3D@smtp.kernel.org/ [1]
+      - 33238682f258 "mm/damon/tests/core-kunit: test preservation of quota state (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928085835.7675-3-sj@kernel.org
+    - series "mm/damon: fix the temporal goal tuner's size quota conversion", v5. (2)
+      - 9db95d760d97 "mm/damon/core: prevent size quota overflow in the temporal goal tuner (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928084816.5575-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260928084816.5575-2-sj@kernel.org
+      - ff2aeb4306eb "mm/damon/tests/core-kunit: test the temporal tuner's size quota conversion (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928084816.5575-3-sj@kernel.org
+    - series "mm/damon/core: cleanup code, reduce stack usage, and add kunit". (3)
+      - 8f20c65e567e "mm/damon/api: remove unused NR_DAMOS_* enumerators (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928083959.4030-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260928083959.4030-2-sj@kernel.org
+      - 1fc3ffd66c52 "mm/damon/core: reduce stack usage further (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928083959.4030-3-sj@kernel.org
+      - d17344809b73 "mm/damon/tests/core-kunit: test PSI goal values with explicit samples (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20260928083959.4030-4-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

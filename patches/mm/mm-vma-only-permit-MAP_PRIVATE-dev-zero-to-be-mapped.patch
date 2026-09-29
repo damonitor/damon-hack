@@ -1,11 +1,11 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 8 Sep 2026 12:23:40 +0100
+Date: Sat, 26 Sep 2026 11:41:08 +0100
 Subject: [PATCH] mm/vma: only permit MAP_PRIVATE /dev/zero to be mapped
  anonymous
 
 In order to use mmap_prepare() with MAP_PRIVATE mappings of /dev/zero
-without the success_hook hack we explicitly permitted mmap_prepare
-handlers to set NULL vm_ops.
+without the success_hook hack we explicitly permitted mmap_prepare handlers
+to set NULL vm_ops.
 
 However this is dangerous and we really only want to allow this for
 MAP_PRIVATE-mapped /dev/zero.
@@ -17,8 +17,8 @@ Then, remove all ability for mmap_prepare or mmap hooks to set a VMA
 anonymous and update mmap_zero_prepare() to leave it to the core mmap code
 to do so.
 
-Note that this disallows nested MAP_PRIVATE-mappings of /dev/zero regions.
-Doing this would be broken in any case.
+Note that this disallows nested MAP_PRIVATE-mappings of /dev/zero
+regions. Doing this would be broken in any case.
 
 We therefore do not need to update the mmap_prepare() compatibility layer
 to reflect these changes, as the mmap hook check suffices to disallow this
@@ -32,17 +32,17 @@ The default for vma->vm_ops for all mmap_prepare-initialised mappings is
 vma_dummy_vm_ops, so map->vm_ops will be set to this and setting
 vma->vm_ops to this will render the VMA mistakenly non-anon.
 
-In general, we should never be setting user-defined fields for an
-anonymous VMA, so explicitly check for this to avoid doing so for the one
-case where a mapping can be both mmap_prepare and anonymous.
+In general, we should never be setting user-defined fields for an anonymous
+VMA, so explicitly check for this to avoid doing so for the one case where
+a mapping can be both mmap_prepare and anonymous.
 
 In the case of legacy ->mmap hooks some drivers may set vma->vm_ops NULL
-believing this is the equivalent of setting no VMA operations.  Therefore
+believing this is the equivalent of setting no VMA operations. Therefore
 update mmap_file() to correct this by setting dummy VMA operations if this
 occurs.
 
 An example of this is drm_gem_shmem_mmap() which deliberately clears
-vma->vm_ops before handing the VMA to dma-buf.  Cases such as this will be
+vma->vm_ops before handing the VMA to dma-buf. Cases such as this will be
 updated when they are converted to mmap_prepare.
 
 Also, in order to avoid a single commit bisection hazard, add a temporary
@@ -50,40 +50,40 @@ workaround to set the VMA anonymous only after vma->vm_file is assigned in
 __mmap_new_file_vma().
 
 This is because vma_set_range() calls vma_set_pgoff() and
-assert_sane_pgoff() in turn, prior to the vma->vm_file being assigned.  If
+assert_sane_pgoff() in turn, prior to the vma->vm_file being assigned. If
 we set the VMA anonymous early then this assert will fail.
 
 This is removed in the subsequent commit.
 
-Link: https://lore.kernel.org/20260908-map-private-dev-zero-v2-3-acc7b5625305@kernel.org
+Link: https://lore.kernel.org/20260926-map-private-dev-zero-v3-3-d4781e84ccfc@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-Cc: Hugh Dickins <hughd@google.com>
-Cc: Jan Kara <jack@suse.cz>
-Cc: Jann Horn <jannh@google.com>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Cc: Pedro Falcato <pfalcato@suse.de>
-Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
 ---
  mm/char-mem.c |  6 +-----
  mm/internal.h | 17 ++++++++++-------
- mm/vma.c      | 31 ++++++++++++++++++++++++-------
- 3 files changed, 35 insertions(+), 19 deletions(-)
+ mm/vma.c      | 33 +++++++++++++++++++++++++--------
+ 3 files changed, 36 insertions(+), 20 deletions(-)
 
 diff --git a/mm/char-mem.c b/mm/char-mem.c
-index e53e89e6ddd8..c0b5fb019223 100644
+index 87fb71a01191..e9f94d2b5133 100644
 --- a/mm/char-mem.c
 +++ b/mm/char-mem.c
 @@ -508,11 +508,7 @@ static int mmap_zero_prepare(struct vm_area_desc *desc)
- 	if (vma_desc_test(desc, VMA_SHARED_BIT))
+ 	if (vma_desc_test(desc, VMA_MAYSHARE_BIT))
  		return shmem_zero_setup_desc(desc);
  
 -	/*
@@ -126,7 +126,7 @@ index 5d474e5f7709..da14c56fb24e 100644
  	return err;
  }
 diff --git a/mm/vma.c b/mm/vma.c
-index f3f230cbd459..e6b0bd21b515 100644
+index f3f230cbd459..500728613f64 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
 @@ -2644,6 +2644,19 @@ static int __mmap_new_file_vma(struct mmap_state *map,
@@ -183,7 +183,7 @@ index f3f230cbd459..e6b0bd21b515 100644
  	if (err)
  		return err;
  
-+	/* Hooks cannot mark themselves anonymous. */
++	/* It's invalid for mmap_prepare hooks to clear vm_ops. */
 +	if (!desc->vm_ops)
 +		return -EINVAL;
 +
@@ -202,6 +202,15 @@ index f3f230cbd459..e6b0bd21b515 100644
  	vma->vm_private_data = map->vm_private_data;
  }
  
+@@ -2907,7 +2924,7 @@ static unsigned long __mmap_region(struct file *file, unsigned long addr,
+ 		allocated_new = true;
+ 	}
+ 
+-	if (have_mmap_prepare && allocated_new)
++	if (have_mmap_prepare && !map_is_anon(&map) && allocated_new)
+ 		set_vma_user_defined_fields(vma, &map);
+ 
+ 	__mmap_complete(&map, vma);
 -- 
 2.47.3
 

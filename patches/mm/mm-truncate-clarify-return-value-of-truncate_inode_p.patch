@@ -1,0 +1,90 @@
+From: Zhang Yi <yi.zhang@huawei.com>
+Date: Mon, 28 Sep 2026 20:08:33 +0800
+Subject: [PATCH] mm/truncate: clarify return value of
+ truncate_inode_partial_folio()
+
+With the earlier rework the callers no longer rely on the return value of
+truncate_inode_partial_folio() to decide whether to adjust the truncation
+range.  The pstart/pend out-parameters carry that information instead.
+The callers now only use the return value as a flag indicating whether the
+loop should be reset to pick up newly split sub-folios on the shmem path.
+
+Return true if at least one split succeeded, and false otherwise.  This
+clarifies the existing confusing return value semantics.
+
+Link: https://lore.kernel.org/20260928120833.3440834-5-yi.zhang@huaweicloud.com
+Signed-off-by: Zhang Yi <yi.zhang@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Reviewed-by: Brian Foster <bfoster@redhat.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Joanne Koong <joannelkoong@gmail.com>
+Cc: Darrick J. Wong <djwong@kernel.org>
+Cc: <yizhang089@gmail.com>
+Cc: Yang Erkun <yangerkun@huawei.com>
+Cc: Zhihao Cheng <chengzhihao1@huawei.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: <yukuai@fnnas.com>
+---
+ mm/truncate.c | 14 ++++++--------
+ 1 file changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/mm/truncate.c b/mm/truncate.c
+index 9eb108769149..5b1b13cf8ff0 100644
+--- a/mm/truncate.c
++++ b/mm/truncate.c
+@@ -216,8 +216,7 @@ static int folio_split_or_unmap(struct folio *folio, struct page *split_at,
+  * aligned inwards to min_order, i.e. the range of folios wholly within
+  * [lstart, lend] and so safe to discard.
+  *
+- * Returns false if splitting failed so the caller can avoid
+- * discarding the entire folio which is stubbornly unsplit.
++ * Return %true if at least one split succeeded, %false otherwise.
+  */
+ bool truncate_inode_partial_folio(struct folio *folio, loff_t lstart,
+ 				  loff_t lend, pgoff_t *pstart, pgoff_t *pend)
+@@ -247,7 +246,7 @@ bool truncate_inode_partial_folio(struct folio *folio, loff_t lstart,
+ 	folio_wait_writeback(folio);
+ 	if (length == size) {
+ 		truncate_inode_folio(folio->mapping, folio);
+-		return true;
++		return false;
+ 	}
+ 
+ 	/*
+@@ -264,7 +263,7 @@ bool truncate_inode_partial_folio(struct folio *folio, loff_t lstart,
+ 	min_order = mapping_min_folio_order(folio->mapping);
+ 	min_nrbytes = mapping_min_folio_nrbytes(folio->mapping);
+ 	if (folio_order(folio) == min_order)
+-		return true;
++		return false;
+ 
+ 	split_at = folio_page(folio, PAGE_ALIGN_DOWN(offset) / PAGE_SIZE);
+ 	if (!folio_split_or_unmap(folio, split_at, min_order)) {
+@@ -327,10 +326,9 @@ bool truncate_inode_partial_folio(struct folio *folio, loff_t lstart,
+ 			*pend = end;
+ 		return true;
+ 	}
+-	if (folio_test_dirty(folio))
+-		return false;
+-	truncate_inode_folio(folio->mapping, folio);
+-	return true;
++	if (!folio_test_dirty(folio))
++		truncate_inode_folio(folio->mapping, folio);
++	return false;
+ }
+ 
+ /*
+-- 
+2.47.3
+

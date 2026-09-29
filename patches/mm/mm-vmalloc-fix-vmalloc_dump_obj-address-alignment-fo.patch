@@ -1,0 +1,67 @@
+From: Ye Liu <liuye@kylinos.cn>
+Date: Mon, 28 Sep 2026 16:15:54 +0800
+Subject: [PATCH] mm/vmalloc: fix vmalloc_dump_obj address alignment for
+ last-page lookups
+
+Patch series "mm/vmalloc: fix vmalloc_dump_obj VA lookup", v4.
+
+vmalloc_dump_obj() has two bugs that cause it to miss vmalloc
+allocations.
+
+  1. PAGE_ALIGN() rounds up, pushing last-page addresses to va_end
+     and outside the VA lookup range.
+
+  2. The function searches only one vmap node, but allocations
+     larger than 64 KiB may span multiple vmap zones whose VA
+     is stored in a different node's rb-tree.
+
+Patch 1 fixes the alignment, patch 2 fixes the cross-zone search.
+
+
+This patch (of 2):
+
+vmalloc_dump_obj() uses PAGE_ALIGN() to normalize the input address before
+looking it up in the per-node busy tree.  PAGE_ALIGN() rounds up, which
+can push an address in the last page of a vmalloc allocation to va_end --
+outside the [va_start, va_end) range that __find_vmap_area() searches.
+This causes the lookup to miss the VA and return false, degrading
+diagnostic output in OOM dumps and KASAN reports to the less informative
+"vmalloc memory" fallback.
+
+The upward alignment can also change the addr_to_node() mapping when the
+page boundary crosses a vmap zone boundary, causing the search to hit the
+wrong node entirely.
+
+Use PAGE_ALIGN_DOWN() instead, which rounds down to the page containing
+the address.  This keeps the address within the VA range and preserves the
+correct node mapping.
+
+Link: https://lore.kernel.org/20260928-vmalloc_dump_obj-v4-0-6f288a431edc@linux.dev
+Link: https://lore.kernel.org/20260928-vmalloc_dump_obj-v4-1-6f288a431edc@linux.dev
+Signed-off-by: Ye Liu <liuye@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Alexandre Ghiti <alex@ghiti.fr>
+---
+ mm/vmalloc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 4e4cb8d785bd..f5da00821f3f 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -5281,7 +5281,7 @@ bool vmalloc_dump_obj(void *object)
+ 	unsigned long addr;
+ 	unsigned long nr_pages;
+ 
+-	addr = PAGE_ALIGN((unsigned long) object);
++	addr = PAGE_ALIGN_DOWN((unsigned long) object);
+ 	vn = addr_to_node(addr);
+ 
+ 	if (!spin_trylock(&vn->busy.lock))
+-- 
+2.47.3
+

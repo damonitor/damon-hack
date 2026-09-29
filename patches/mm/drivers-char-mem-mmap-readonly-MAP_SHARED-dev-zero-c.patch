@@ -1,0 +1,73 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 24 Sep 2026 15:48:24 +0100
+Subject: [PATCH] drivers/char/mem: mmap readonly MAP_SHARED-/dev/zero
+ correctly
+
+Rather surprisingly, opening /dev/zero read-only then mmap()'ing it
+MAP_SHARED gets you true anonymous memory (albeit in a VMA with non-NULL
+vma->vm_file).
+
+This is a by-product of MAP_PRIVATE-/dev/zero being how anonymous memory
+was mapped in Linux's distant past.
+
+It happens because mmap_zero_prepare() gates on VMA_SHARED_BIT and when
+mapping a read-only file MAP_SHARED, do_mmap() clears VMA_SHARED_BIT and
+VMA_MAYWRITE_BIT.
+
+The gating is incorrect - the (poorly named) VMA_MAYSHARE_BIT flag exists
+explicitly to tell you if something was originally mapped MAP_SHARED.
+
+So the fix is simple - gate on this instead.
+
+This isn't exactly a common use case, but it's unexpected behaviour which
+now causes an assert if CONFIG_DEBUG_VM is set.
+
+While this bug has existed since the dawn of time for linux (or at least
+since 2.6.12), it hasn't caused issues in the past, so while it's
+incorrect behaviour, it doesn't seem necessary to backport that far.
+
+The mapping is now accounted at mmap time and can fail with -ENOMEM under
+strict overcommit, and read faults allocate folios.  However this is
+normal behaviour for a read-only shmem mapping.
+
+Commit 93c0c8dc87f6 ("mm/rmap: use anon pgoff to track MAP_PRIVATE
+file-backed anon folios") is the first patch at which the debug assert
+fires, so target that instead.
+
+Link: https://lore.kernel.org/20260924-fix-dev-zero-readonly-shared-v1-1-153c2111e323@kernel.org
+Fixes: 93c0c8dc87f6 ("mm/rmap: use anon pgoff to track MAP_PRIVATE file-backed anon folios")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+c181d3198e98f8aef8b9@syzkaller.appspotmail.com>
+Closes: https://lore.kernel.org/linux-mm/6ab4ae75.80e1c6cc.1e8e5f.000d.GAE@google.com/
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+---
+ drivers/char/mem.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/char/mem.c b/drivers/char/mem.c
+index 63253d1de5d7..5b93c92c2cf1 100644
+--- a/drivers/char/mem.c
++++ b/drivers/char/mem.c
+@@ -503,7 +503,7 @@ static int mmap_zero_prepare(struct vm_area_desc *desc)
+ #ifndef CONFIG_MMU
+ 	return -ENOSYS;
+ #endif
+-	if (vma_desc_test(desc, VMA_SHARED_BIT))
++	if (vma_desc_test(desc, VMA_MAYSHARE_BIT))
+ 		return shmem_zero_setup_desc(desc);
+ 
+ 	/*
+-- 
+2.47.3
+

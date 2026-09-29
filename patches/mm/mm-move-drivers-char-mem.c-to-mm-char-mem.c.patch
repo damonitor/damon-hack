@@ -1,55 +1,14 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Tue, 8 Sep 2026 12:23:38 +0100
+Date: Sat, 26 Sep 2026 11:41:06 +0100
 Subject: [PATCH] mm: move drivers/char/mem.c to mm/char-mem.c
-
-Patch series "mm: make MAP_PRIVATE-/dev/zero mappings truly anonymous",
-v2.
-
-Historically anonymous memory was obtained in linux by MAP_PRIVATE-mapping
-/dev/zero.
-
-The canonical way of doing these now is mmap() specifying MAP_PRIVATE |
-MAP_ANON, but we must continue to support the legacy means of obtaining
-these mappings.
-
-As-is these mappings are an unusual edge-case - they satisfy
-vma_is_anonymous() but have non-NULL vma->vm_file, and their page offset
-is the offset into the /dev/zero file.
-
-Commit 93c0c8dc87f6 ("mm/rmap: use anon pgoff to track MAP_PRIVATE
-file-backed anon folios") causes all other anonymous folios to be tracked
-by their anon index (vma->vm_start >> PAGE_SHIFT at the point of first
-fault), leaving MAP_PRIVATE-/dev/zero as the outlier.
-
-This series remedies the situation by making MAP_PRIVATE-/dev/zero
-mappings truly anonymous with !vma->vm_file and correct anonymous page
-offset.
-
-It starts by bringing the memory character driver into mm/ - this file
-implements /dev/zero, /dev/mem among other things and is already (as
-clearly indicated by its name) within the remit of memory management.
-
-By doing this, the file_is_dev_zero() function can be provided, internal
-to mm, which allows for positive identification of these mappings.
-
-Using this, first prevent any other mappings from mapping memory
-anonymously, then make these mappings truly anonymous and eliminate all
-code in the kernel that previously had to account for these strange
-beasts.
-
-Finally, it adds userland VMA tests to assert the behaviour and selftests
-to assert expected merge behaviour.
-
-
-This patch (of 6):
 
 The memory character driver implements several mm-specific features and is
 always compiled into the kernel, so move it to mm/ where it belongs.
 
-Among other things the driver implements /dev/mem which provides raw
-access to physical memory, and /dev/zero which either allows mapping of a
-shmem region (if mapped with MAP_SHARED) or, uniquely, anonymous memory
-(if mapped MAP_PRIVATE).
+Among other things the driver implements /dev/mem which provides raw access
+to physical memory, and /dev/zero which either allows mapping of a shmem
+region (if mapped with MAP_SHARED) or, uniquely, anonymous memory (if
+mapped MAP_PRIVATE).
 
 This change lays the foundations to allow MAP_PRIVATE-/dev/zero to be
 mapped precisely the same as anonymous memory is mapped as currently it is
@@ -58,24 +17,23 @@ an edge case within mm.
 Also update a couple of comments that reference 'drivers/char/mem.c' to
 reference 'mm/char-mem.c'.
 
-Link: https://lore.kernel.org/20260908-map-private-dev-zero-v2-0-acc7b5625305@kernel.org
-Link: https://lore.kernel.org/20260908-map-private-dev-zero-v2-1-acc7b5625305@kernel.org
+Link: https://lore.kernel.org/20260926-map-private-dev-zero-v3-1-d4781e84ccfc@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-Cc: Hugh Dickins <hughd@google.com>
-Cc: Jan Kara <jack@suse.cz>
-Cc: Jann Horn <jannh@google.com>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
 Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
 ---
  MAINTAINERS                         | 4 ++--
  drivers/char/Makefile               | 2 +-
@@ -138,7 +96,7 @@ diff --git a/drivers/char/mem.c b/mm/char-mem.c
 similarity index 99%
 rename from drivers/char/mem.c
 rename to mm/char-mem.c
-index 63253d1de5d7..d2e575545044 100644
+index 5b93c92c2cf1..3cc48054a66e 100644
 --- a/drivers/char/mem.c
 +++ b/mm/char-mem.c
 @@ -1,6 +1,6 @@
