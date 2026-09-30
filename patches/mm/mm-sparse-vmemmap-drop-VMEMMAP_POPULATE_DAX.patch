@@ -1,0 +1,227 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Tue, 29 Sep 2026 13:32:26 +0800
+Subject: [PATCH] mm/sparse-vmemmap: drop VMEMMAP_POPULATE_DAX
+
+Patch series "mm: Unify device DAX and HugeTLB vmemmap population paths",
+v3.
+
+This series is split out from the earlier, larger series "mm: Generalize
+HVO for HugeTLB and device DAX" [1].  While the parent series generalizes
+vmemmap optimization across HugeTLB and device DAX, this subset addresses
+a single, self-contained step: unifying their vmemmap population paths.
+
+After the preceding Device DAX conversion, both HugeTLB and Device DAX
+describe optimized vmemmap mappings through memory-section metadata and
+use per-zone shared tail vmemmap pages.  The generic code, however, still
+carries a Device DAX-specific population flag and compound-page population
+path, along with arguments and helpers needed only by that path.
+
+This series first removes VMEMMAP_POPULATE_DAX and moves selection and
+reference handling for the shared tail page into the common vmemmap
+population path.  It then removes the generic Device DAX-specific
+compound-page population path and routes section vmemmap population
+through vmemmap_populate().  The powerpc radix path continues to use its
+architecture-specific compound-page population implementation for
+optimizable sections.
+
+The remaining patches remove the unused ptpfn argument, open-code
+vmemmap_populate_address() now that no caller needs its returned PTE, and
+add a warning for inconsistent zone initialization of shared tail vmemmap
+pages.
+
+This is the fourth smaller step toward the broader HVO generalization.
+After this series, HugeTLB and Device DAX use the same population model
+instead of parallel generic paths, while powerpc keeps its
+architecture-specific implementation.
+
+
+This patch (of 6):
+
+VMEMMAP_POPULATE_DAX currently distinguishes DAX vmemmap population in two
+places: it keeps allocations on the normal path and takes a reference when
+a backing page is supplied for reuse.
+
+After Device DAX switched to the common per-zone shared tail page, both
+conditions can be determined locally.  DAX supplies ptpfn for every shared
+tail mapping and requests an allocation only for compound head mappings,
+whose PFNs are not optimizable.  Therefore, vmemmap_optimizable_pfn()
+alone selects the correct allocation path.
+
+When ptpfn is supplied, the caller is reusing an existing backing page.
+Once the slab allocator is available, take a reference for each reused
+mapping to balance the release performed by vmemmap_free().  Although the
+buddy allocator is available before slab, no vmemmap population occurs in
+that interval.  Earlier mappings are backed by memblock/reserved memory
+and do not need page reference accounting.
+
+Remove VMEMMAP_POPULATE_DAX and the flags argument from the vmemmap
+population helpers.
+
+Link: https://lore.kernel.org/20260929053231.66085-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ mm/sparse-vmemmap.c | 36 +++++++++++++-----------------------
+ 1 file changed, 13 insertions(+), 23 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 111efc8024657..8219abc6c3e5c 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -32,12 +32,6 @@
+ #include <asm/dma.h>
+ #include <asm/tlbflush.h>
+ 
+-/*
+- * Flags for vmemmap_populate_range and friends.
+- */
+-/* Vmemmap population for ZONE_DEVICE compound pages */
+-#define VMEMMAP_POPULATE_DAX		0x0001
+-
+ #include "internal.h"
+ #include "mm_init.h"
+ #include "sparse.h"
+@@ -237,7 +231,7 @@ struct page __ref *vmemmap_shared_tail_page(unsigned int order, struct zone *zon
+ #endif
+ 
+ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
+-		struct vmem_altmap *altmap, unsigned long flags)
++		struct vmem_altmap *altmap)
+ {
+ 	struct zone *zone;
+ 	struct page *page;
+@@ -247,7 +241,7 @@ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
+ 	 * Device DAX still relies on vmemmap_populate_compound_pages() for
+ 	 * head/first-tail allocation and tail-page reuse.
+ 	 */
+-	if (!vmemmap_optimizable_pfn(pfn) || flags & VMEMMAP_POPULATE_DAX)
++	if (!vmemmap_optimizable_pfn(pfn))
+ 		return vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
+ 
+ 	zone = pfn_to_zone(pfn, node);
+@@ -259,8 +253,7 @@ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
+ }
+ 
+ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, int node,
+-				       struct vmem_altmap *altmap,
+-				       unsigned long ptpfn, unsigned long flags)
++		struct vmem_altmap *altmap, unsigned long ptpfn)
+ {
+ 	pte_t *pte = pte_offset_kernel(pmd, addr);
+ 	unsigned long pfn = page_to_pfn((struct page *)addr);
+@@ -269,7 +262,7 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 		pte_t entry;
+ 
+ 		if (ptpfn == (unsigned long)-1) {
+-			void *p = vmemmap_alloc_pte(pfn, node, altmap, flags);
++			void *p = vmemmap_alloc_pte(pfn, node, altmap);
+ 
+ 			if (!p)
+ 				return NULL;
+@@ -287,7 +280,7 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 			 * Use try_get_page() to prevent the shared page refcount
+ 			 * from overflowing.
+ 			 */
+-			if ((flags & VMEMMAP_POPULATE_DAX) &&
++			if (slab_is_available() &&
+ 			    !try_get_page(pfn_to_page(ptpfn)))
+ 				return NULL;
+ 		}
+@@ -351,8 +344,7 @@ static pgd_t * __meminit vmemmap_pgd_populate(unsigned long addr, int node)
+ 
+ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+ 					      struct vmem_altmap *altmap,
+-					      unsigned long ptpfn,
+-					      unsigned long flags)
++					      unsigned long ptpfn)
+ {
+ 	pgd_t *pgd;
+ 	p4d_t *p4d;
+@@ -372,7 +364,7 @@ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+ 	pmd = vmemmap_pmd_populate(pud, addr, node);
+ 	if (!pmd)
+ 		return NULL;
+-	pte = vmemmap_pte_populate(pmd, addr, node, altmap, ptpfn, flags);
++	pte = vmemmap_pte_populate(pmd, addr, node, altmap, ptpfn);
+ 	if (!pte)
+ 		return NULL;
+ 	vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+@@ -383,15 +375,14 @@ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+ static int __meminit vmemmap_populate_range(unsigned long start,
+ 					    unsigned long end, int node,
+ 					    struct vmem_altmap *altmap,
+-					    unsigned long ptpfn,
+-					    unsigned long flags)
++					    unsigned long ptpfn)
+ {
+ 	unsigned long addr = start;
+ 	pte_t *pte;
+ 
+ 	for (; addr < end; addr += PAGE_SIZE) {
+ 		pte = vmemmap_populate_address(addr, node, altmap,
+-					       ptpfn, flags);
++					       ptpfn);
+ 		if (!pte)
+ 			return -ENOMEM;
+ 	}
+@@ -402,7 +393,7 @@ static int __meminit vmemmap_populate_range(unsigned long start,
+ int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
+ 					 int node, struct vmem_altmap *altmap)
+ {
+-	return vmemmap_populate_range(start, end, node, altmap, -1, 0);
++	return vmemmap_populate_range(start, end, node, altmap, -1);
+ }
+ 
+ /*
+@@ -531,7 +522,6 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 	unsigned long size, addr;
+ 	pte_t *pte;
+ 	int rc;
+-	unsigned long flags = VMEMMAP_POPULATE_DAX;
+ 	struct page *page;
+ 	unsigned int order = pfn_to_section_compound_order(start_pfn);
+ 
+@@ -541,14 +531,14 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 
+ 	if (reuse_compound_section(start_pfn, pgmap))
+ 		return vmemmap_populate_range(start, end, node, NULL,
+-					      page_to_pfn(page), flags);
++					      page_to_pfn(page));
+ 
+ 	size = min(end - start, (1UL << order) * sizeof(struct page));
+ 	for (addr = start; addr < end; addr += size) {
+ 		unsigned long next, last = addr + size;
+ 
+ 		/* Populate the head page vmemmap page */
+-		pte = vmemmap_populate_address(addr, node, NULL, -1, flags);
++		pte = vmemmap_populate_address(addr, node, NULL, -1);
+ 		if (!pte)
+ 			return -ENOMEM;
+ 
+@@ -558,7 +548,7 @@ static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+ 		 */
+ 		next = addr + PAGE_SIZE;
+ 		rc = vmemmap_populate_range(next, last, node, NULL,
+-					    page_to_pfn(page), flags);
++					    page_to_pfn(page));
+ 		if (rc)
+ 			return -ENOMEM;
+ 	}
+-- 
+2.47.3
+

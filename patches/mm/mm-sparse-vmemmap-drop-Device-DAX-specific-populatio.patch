@@ -1,0 +1,157 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Tue, 29 Sep 2026 13:32:28 +0800
+Subject: [PATCH] mm/sparse-vmemmap: drop Device DAX-specific population path
+
+The common vmemmap path selects the shared page for optimized mappings
+itself, so Device DAX no longer needs vmemmap_populate_compound_pages() to
+find a shared tail page and pass its backing PFN through the generic
+population helpers.
+
+Remove the Device DAX-specific population path and let section memmap
+population always use vmemmap_populate().  The powerpc retains an
+architecture-specific compound-page implementation, so select it directly
+from radix__vmemmap_populate() for optimizable sections.
+
+Link: https://lore.kernel.org/20260929053231.66085-4-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ arch/powerpc/mm/book3s64/radix_pgtable.c |  3 +
+ mm/mm_init.c                             |  2 +-
+ mm/sparse-vmemmap.c                      | 71 +-----------------------
+ 3 files changed, 5 insertions(+), 71 deletions(-)
+
+diff --git a/arch/powerpc/mm/book3s64/radix_pgtable.c b/arch/powerpc/mm/book3s64/radix_pgtable.c
+index 9ca28e4a610a2..fd13fa91e5c09 100644
+--- a/arch/powerpc/mm/book3s64/radix_pgtable.c
++++ b/arch/powerpc/mm/book3s64/radix_pgtable.c
+@@ -1122,7 +1122,10 @@ int __meminit radix__vmemmap_populate(unsigned long start, unsigned long end, in
+ 	pud_t *pud;
+ 	pmd_t *pmd;
+ 	pte_t *pte;
++	unsigned long pfn = page_to_pfn((struct page *)start);
+ 
++	if (vmemmap_optimizable_order(pfn_to_section_compound_order(pfn)))
++		return vmemmap_populate_compound_pages(pfn, start, end, node, NULL);
+ 	/*
+ 	 * If altmap is present, Make sure we align the start vmemmap addr
+ 	 * to PAGE_SIZE so that we calculate the correct start_pfn in
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 56bb4567a4940..1650d6bc1211c 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -1046,7 +1046,7 @@ static void zone_device_page_init_from_template(struct page *page,
+  * initialize is a lot smaller that the total amount of struct pages being
+  * mapped. This is a paired / mild layering violation with explicit knowledge
+  * of how the sparse_vmemmap internals handle compound pages in the lack
+- * of an altmap. See vmemmap_populate_compound_pages().
++ * of an altmap.
+  */
+ static inline unsigned long compound_nr_pages(unsigned long pfn,
+ 					      struct dev_pagemap *pgmap)
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index ee4c113ca9387..dee95e5203760 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -499,71 +499,6 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+ 	return 0;
+ }
+ 
+-#ifndef vmemmap_populate_compound_pages
+-/*
+- * For compound pages bigger than section size (e.g. x86 1G compound
+- * pages with 2M subsection size) fill the rest of sections as tail
+- * pages.
+- *
+- * Note that memremap_pages() resets @nr_range value and will increment
+- * it after each range successful onlining. Thus the value or @nr_range
+- * at section memmap populate corresponds to the in-progress range
+- * being onlined here.
+- */
+-static bool __meminit reuse_compound_section(unsigned long start_pfn,
+-					     struct dev_pagemap *pgmap)
+-{
+-	unsigned long nr_pages = pgmap_vmemmap_nr(pgmap);
+-	unsigned long offset = start_pfn -
+-		PHYS_PFN(pgmap->ranges[pgmap->nr_range].start);
+-
+-	return !IS_ALIGNED(offset, nr_pages) && nr_pages > PAGES_PER_SUBSECTION;
+-}
+-
+-static int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+-						     unsigned long start,
+-						     unsigned long end, int node,
+-						     struct dev_pagemap *pgmap)
+-{
+-	unsigned long size, addr;
+-	pte_t *pte;
+-	int rc;
+-	struct page *page;
+-	unsigned int order = pfn_to_section_compound_order(start_pfn);
+-
+-	page = vmemmap_shared_tail_page(order, device_zone(node));
+-	if (!page)
+-		return -ENOMEM;
+-
+-	if (reuse_compound_section(start_pfn, pgmap))
+-		return vmemmap_populate_range(start, end, node, NULL,
+-					      page_to_pfn(page));
+-
+-	size = min(end - start, (1UL << order) * sizeof(struct page));
+-	for (addr = start; addr < end; addr += size) {
+-		unsigned long next, last = addr + size;
+-
+-		/* Populate the head page vmemmap page */
+-		pte = vmemmap_populate_address(addr, node, NULL, -1);
+-		if (!pte)
+-			return -ENOMEM;
+-
+-		/*
+-		 * Reuse the shared page for the rest of tail pages
+-		 * See layout diagram in Documentation/mm/vmemmap_dedup.rst
+-		 */
+-		next = addr + PAGE_SIZE;
+-		rc = vmemmap_populate_range(next, last, node, NULL,
+-					    page_to_pfn(page));
+-		if (rc)
+-			return -ENOMEM;
+-	}
+-
+-	return 0;
+-}
+-
+-#endif
+-
+ struct page * __meminit __populate_section_memmap(unsigned long pfn,
+ 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap,
+ 		struct dev_pagemap *pgmap)
+@@ -576,11 +511,7 @@ struct page * __meminit __populate_section_memmap(unsigned long pfn,
+ 		!IS_ALIGNED(nr_pages, PAGES_PER_SUBSECTION)))
+ 		return NULL;
+ 
+-	if (pgmap && section_vmemmap_optimizable(__pfn_to_section(pfn)))
+-		r = vmemmap_populate_compound_pages(pfn, start, end, nid, pgmap);
+-	else
+-		r = vmemmap_populate(start, end, nid, altmap);
+-
++	r = vmemmap_populate(start, end, nid, altmap);
+ 	if (r < 0)
+ 		return NULL;
+ 
+-- 
+2.47.3
+

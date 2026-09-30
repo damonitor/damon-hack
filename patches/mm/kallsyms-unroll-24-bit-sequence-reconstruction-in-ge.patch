@@ -1,0 +1,61 @@
+From: Jim Cromie <jim.cromie@gmail.com>
+Date: Tue, 29 Sep 2026 12:07:32 -0600
+Subject: [PATCH] kallsyms: unroll 24-bit sequence reconstruction in
+ get_symbol_seq()
+
+kallsyms_seqs_of_names[] stores 3-byte big-endian sequence indices that
+map alphabetical symbol positions to address-ordered symbol records.
+Currently, get_symbol_seq() reconstructs each 24-bit integer using a
+3-iteration for-loop that shifts and bitwise-ORs each byte sequentially.
+During binary search in kallsyms_lookup_names() and duplicate boundary
+scans, this loop introduces branch and loop overhead on the hot lookup
+path.
+
+Mark get_symbol_seq() as static inline and unroll the 3-byte extraction
+into direct byte shifts: (p[0] << 16) | (p[1] << 8) | p[2].  This
+eliminates loop induction variable maintenance and allows the compiler to
+generate direct loads and constant shifts.
+
+Link: https://lore.kernel.org/20260929-ksyms-tune-v7-3-be568ceef41e@gmail.com
+Signed-off-by: Jim Cromie <jim.cromie@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Zhen Lei <thunder.leizhen@huawei.com>
+Cc: Luis Chamberlain <mcgrof@kernel.org>
+Cc: Andrey Grodzovsky <andrey.grodzovsky@crowdstrike.com>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Masahiro Yamada <masahiroy@kernel.org>
+Cc: Jiri Olsa <olsajiri@gmail.com>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+---
+ kernel/kallsyms.c | 9 +++------
+ 1 file changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
+index 91ced7aa797eb..52e41879c24bd 100644
+--- a/kernel/kallsyms.c
++++ b/kernel/kallsyms.c
+@@ -185,14 +185,11 @@ unsigned long kallsyms_sym_address(int idx)
+ 	return (unsigned long)offset_to_ptr(kallsyms_offsets + idx);
+ }
+ 
+-static unsigned int get_symbol_seq(int index)
++static inline unsigned int get_symbol_seq(int index)
+ {
+-	unsigned int i, seq = 0;
++	const u8 *p = &kallsyms_seqs_of_names[3 * index];
+ 
+-	for (i = 0; i < 3; i++)
+-		seq = (seq << 8) | kallsyms_seqs_of_names[3 * index + i];
+-
+-	return seq;
++	return (p[0] << 16) | (p[1] << 8) | p[2];
+ }
+ 
+ static int kallsyms_lookup_names(const char *name,
+-- 
+2.47.3
+

@@ -1,0 +1,131 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Tue, 29 Sep 2026 13:32:27 +0800
+Subject: [PATCH] mm/sparse-vmemmap: support device DAX in common vmemmap path
+
+The common vmemmap population path cannot yet handle optimized Device DAX
+mappings on its own.  It uses pfn_to_zone() to find the shared tail page,
+but Device DAX populates its vmemmap at runtime before the ZONE_DEVICE
+span is initialized.
+
+Teach the common path to use device_zone() for runtime optimized vmemmap
+population while retaining pfn_to_zone() for early boot.  This allows the
+same path to support both early boot mappings and Device DAX.
+
+The backing PFN supplied by the Device DAX-specific population path is no
+longer used, allowing the redundant lookup and population code to be
+removed later.
+
+Link: https://lore.kernel.org/20260929053231.66085-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ mm/sparse-vmemmap.c | 64 +++++++++++++++++++++++++--------------------
+ 1 file changed, 35 insertions(+), 29 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 8219abc6c3e5c..ee4c113ca9387 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -237,18 +237,43 @@ static __meminit void *vmemmap_alloc_pte(unsigned long pfn, int node,
+ 	struct page *page;
+ 	const unsigned int order = pfn_to_section_compound_order(pfn);
+ 
+-	/*
+-	 * Device DAX still relies on vmemmap_populate_compound_pages() for
+-	 * head/first-tail allocation and tail-page reuse.
+-	 */
+ 	if (!vmemmap_optimizable_pfn(pfn))
+ 		return vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
+ 
+-	zone = pfn_to_zone(pfn, node);
++	/*
++	 * Before slab is available, vmemmap optimization is used for early
++	 * system RAM, whose zone can be determined from the PFN.
++	 *
++	 * Once slab is available, only ZONE_DEVICE memory reaches this
++	 * optimized population path. Its zone span has not been initialized
++	 * while its vmemmap is being populated, so pfn_to_zone() cannot be
++	 * used. Obtain ZONE_DEVICE directly from the node instead.
++	 */
++	zone = slab_is_available() ? device_zone(node) : pfn_to_zone(pfn, node);
+ 	page = vmemmap_shared_tail_page(order, zone);
+ 	if (!page)
+ 		return NULL;
+ 
++	/*
++	 * During early vmemmap population, the shared tail vmemmap backing
++	 * page is allocated from memblock before its struct page can safely
++	 * participate in page refcounting. Therefore, no reference can be
++	 * held for each shared PTE mapping, and the mappings must be unshared
++	 * before the vmemmap is depopulated.
++	 *
++	 * Once slab is available, the shared backing page is allocated from
++	 * the buddy allocator and can be refcounted. Hold one reference for
++	 * each shared PTE mapping. The architecture vmemmap teardown drops
++	 * the reference through __free_pages() when removing the mapping,
++	 * preventing the backing page from being freed while it is shared.
++	 *
++	 * The backing page may be shared by enough PTE mappings to exhaust
++	 * the positive range of its reference count. Stop populating the
++	 * vmemmap if another reference cannot be acquired.
++	 */
++	if (slab_is_available() && !try_get_page(page))
++		return NULL;
++
+ 	return page_address(page);
+ }
+ 
+@@ -260,31 +285,12 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 
+ 	if (pte_none(ptep_get(pte))) {
+ 		pte_t entry;
++		void *p = vmemmap_alloc_pte(pfn, node, altmap);
+ 
+-		if (ptpfn == (unsigned long)-1) {
+-			void *p = vmemmap_alloc_pte(pfn, node, altmap);
+-
+-			if (!p)
+-				return NULL;
+-			ptpfn = PHYS_PFN(__pa(p));
+-		} else {
+-			/*
+-			 * When a PTE/PMD entry is freed from the init_mm
+-			 * there's a free_pages() call to this page allocated
+-			 * above. Thus this try_get_page() is paired with the
+-			 * put_page_testzero() on the freeing path.
+-			 * This can only called by certain ZONE_DEVICE path,
+-			 * and through vmemmap_populate_compound_pages() when
+-			 * slab is available.
+-			 *
+-			 * Use try_get_page() to prevent the shared page refcount
+-			 * from overflowing.
+-			 */
+-			if (slab_is_available() &&
+-			    !try_get_page(pfn_to_page(ptpfn)))
+-				return NULL;
+-		}
+-		entry = pfn_pte(ptpfn, PAGE_KERNEL);
++		if (!p)
++			return NULL;
++
++		entry = pfn_pte(PHYS_PFN(__pa(p)), PAGE_KERNEL);
+ 		set_pte_at(&init_mm, addr, pte, entry);
+ 	} else if (WARN_ON_ONCE(vmemmap_optimizable_pfn(pfn)))
+ 		return NULL;
+-- 
+2.47.3
+

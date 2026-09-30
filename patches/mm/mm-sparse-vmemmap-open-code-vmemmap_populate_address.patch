@@ -1,0 +1,115 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Tue, 29 Sep 2026 13:32:30 +0800
+Subject: [PATCH] mm/sparse-vmemmap: open-code vmemmap_populate_address()
+
+vmemmap_populate_address() no longer has any callers that need the
+returned PTE.  Its only remaining user, vmemmap_populate_range(), only
+checks whether population succeeded.
+
+Open-code vmemmap_populate_address() directly in
+vmemmap_populate_basepages(), remove the now-redundant range helper, and
+return -ENOMEM directly on failure.
+
+Link: https://lore.kernel.org/20260929053231.66085-6-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ mm/sparse-vmemmap.c | 54 ++++++++++++++-------------------------------
+ 1 file changed, 17 insertions(+), 37 deletions(-)
+
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 5fd2df2b516fd..9a58323dd6284 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -348,8 +348,8 @@ static pgd_t * __meminit vmemmap_pgd_populate(unsigned long addr, int node)
+ 	return pgd;
+ }
+ 
+-static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+-						  struct vmem_altmap *altmap)
++int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
++					 int node, struct vmem_altmap *altmap)
+ {
+ 	pgd_t *pgd;
+ 	p4d_t *p4d;
+@@ -357,48 +357,28 @@ static pte_t * __meminit vmemmap_populate_address(unsigned long addr, int node,
+ 	pmd_t *pmd;
+ 	pte_t *pte;
+ 
+-	pgd = vmemmap_pgd_populate(addr, node);
+-	if (!pgd)
+-		return NULL;
+-	p4d = vmemmap_p4d_populate(pgd, addr, node);
+-	if (!p4d)
+-		return NULL;
+-	pud = vmemmap_pud_populate(p4d, addr, node);
+-	if (!pud)
+-		return NULL;
+-	pmd = vmemmap_pmd_populate(pud, addr, node);
+-	if (!pmd)
+-		return NULL;
+-	pte = vmemmap_pte_populate(pmd, addr, node, altmap);
+-	if (!pte)
+-		return NULL;
+-	vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+-
+-	return pte;
+-}
+-
+-static int __meminit vmemmap_populate_range(unsigned long start,
+-					    unsigned long end, int node,
+-					    struct vmem_altmap *altmap)
+-{
+-	unsigned long addr = start;
+-	pte_t *pte;
+-
+-	for (; addr < end; addr += PAGE_SIZE) {
+-		pte = vmemmap_populate_address(addr, node, altmap);
++	for (unsigned long addr = start; addr < end; addr += PAGE_SIZE) {
++		pgd = vmemmap_pgd_populate(addr, node);
++		if (!pgd)
++			return -ENOMEM;
++		p4d = vmemmap_p4d_populate(pgd, addr, node);
++		if (!p4d)
++			return -ENOMEM;
++		pud = vmemmap_pud_populate(p4d, addr, node);
++		if (!pud)
++			return -ENOMEM;
++		pmd = vmemmap_pmd_populate(pud, addr, node);
++		if (!pmd)
++			return -ENOMEM;
++		pte = vmemmap_pte_populate(pmd, addr, node, altmap);
+ 		if (!pte)
+ 			return -ENOMEM;
++		vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+ 	}
+ 
+ 	return 0;
+ }
+ 
+-int __meminit vmemmap_populate_basepages(unsigned long start, unsigned long end,
+-					 int node, struct vmem_altmap *altmap)
+-{
+-	return vmemmap_populate_range(start, end, node, altmap);
+-}
+-
+ /*
+  * Write protect the mirrored tail page structs for HVO. This will be
+  * called from the hugetlb code when gathering and initializing the
+-- 
+2.47.3
+
