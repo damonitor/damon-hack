@@ -1,10 +1,10 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Sun, 27 Sep 2026 10:54:30 +0800
+Date: Wed, 30 Sep 2026 22:06:16 +0800
 Subject: [PATCH] mm/sparse-vmemmap: factor out shared vmemmap tail page
  allocation
 
 Patch series "mm: Switch device DAX to section-based vmemmap
-optimization", v5.
+optimization", v6.
 
 This series is split out from the earlier, larger series "mm: Generalize
 HVO for HugeTLB and device DAX" [1].  While the parent series generalizes
@@ -50,21 +50,21 @@ This patch (of 12):
 HugeTLB and sparse-vmemmap each have their own helper to allocate the
 shared vmemmap tail page used by vmemmap optimization.
 
-Factor that logic into a common vmemmap_shared_tail_page() helper. It
+Factor that logic into a common vmemmap_shared_tail_page() helper.  It
 allocates the page through vmemmap_alloc_block(), initializes the tail
 struct pages, and uses cmpxchg() to install the per-zone shared page.
 
-This removes duplicate allocation logic while handling both early boot
-and runtime allocation through the same helper.
+This removes duplicate allocation logic while handling both early boot and
+runtime allocation through the same helper.
 
-Link: https://lore.kernel.org/20260927025441.741633-1-songmuchun@bytedance.com
-Link: https://lore.kernel.org/20260927025441.741633-2-songmuchun@bytedance.com
-Link: https://lore.kernel.org/all/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
+Link: https://lore.kernel.org/20260930140627.57431-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260930140627.57431-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
 Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Cc: David Hildenbrand <david@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
 Cc: Michael Ellerman <mpe@ellerman.id.au>
@@ -72,6 +72,8 @@ Cc: Jonathan Corbet <corbet@lwn.net>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Nicholas Piggin <npiggin@gmail.com>
 Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
 Cc: Randy Dunlap <rdunlap@infradead.org>
 Cc: Lance Yang <lance.yang@linux.dev>
 ---
@@ -135,7 +137,7 @@ index f977d0a7e0027..76765c97ff68b 100644
  		return -ENOMEM;
  
 diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
-index f22d815d7af04..9b00085122b23 100644
+index f22d815d7af04..9af349581fbd1 100644
 --- a/mm/sparse-vmemmap.c
 +++ b/mm/sparse-vmemmap.c
 @@ -42,27 +42,13 @@
@@ -188,9 +190,9 @@ index f22d815d7af04..9b00085122b23 100644
 -	struct page *p, *tail;
 -	unsigned int idx;
 -	int node = zone_to_nid(zone);
-+	void *addr;
-+	struct page *page;
 +	const unsigned int idx = order - VMEMMAP_OPTIMIZATION_MIN_ORDER;
++	struct page *page;
++	void *addr;
  
 -	if (WARN_ON_ONCE(order < VMEMMAP_OPTIMIZATION_MIN_ORDER))
 -		return NULL;
@@ -205,7 +207,7 @@ index f22d815d7af04..9b00085122b23 100644
 -	p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
 -	if (!p)
 +	page = READ_ONCE(zone->vmemmap_tails[idx]);
-+	if (likely(page))
++	if (page)
 +		return page;
 +
 +	addr = vmemmap_alloc_block(PAGE_SIZE, zone_to_nid(zone));

@@ -1,0 +1,60 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 30 Sep 2026 23:28:26 +0800
+Subject: [PATCH] fixup! powerpc/mm: switch device DAX to shared tail vmemmap
+ pages
+
+The PowerPC radix path takes one reference for every PTE that maps the
+shared tail page.  Unlike the generic path, get_page() lets the counter
+continue after it becomes non-positive and eventually cycle to zero.
+
+Use try_get_page() so vmemmap population fails before the shared page
+reference count can cycle, matching the generic implementation.
+
+Link: https://lore.kernel.org/20260930152826.76084-1-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+---
+ arch/powerpc/mm/book3s64/radix_pgtable.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/arch/powerpc/mm/book3s64/radix_pgtable.c b/arch/powerpc/mm/book3s64/radix_pgtable.c
+index ee068f24a79f0..0e778d17240c3 100644
+--- a/arch/powerpc/mm/book3s64/radix_pgtable.c
++++ b/arch/powerpc/mm/book3s64/radix_pgtable.c
+@@ -1042,13 +1042,17 @@ static pte_t * __meminit radix__vmemmap_pte_populate(pmd_t *pmdp, unsigned long
+ 			/*
+ 			 * When a PTE/PMD entry is freed from the init_mm
+ 			 * there's a free_pages() call to this page allocated
+-			 * above. Thus this get_page() is paired with the
++			 * above. Thus this try_get_page() is paired with the
+ 			 * put_page_testzero() on the freeing path.
+ 			 * This can only called by certain ZONE_DEVICE path,
+ 			 * and through vmemmap_populate_compound_pages() when
+ 			 * slab is available.
++			 *
++			 * Use try_get_page() to prevent the shared page refcount
++			 * from overflowing.
+ 			 */
+-			get_page(reuse);
++			if (!try_get_page(reuse))
++				return NULL;
+ 			p = page_to_virt(reuse);
+ 			pr_debug("Tail page reuse vmemmap mapping\n");
+ 		}
+-- 
+2.47.3
+

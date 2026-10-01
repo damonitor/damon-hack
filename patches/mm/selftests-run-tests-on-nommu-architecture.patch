@@ -1,0 +1,131 @@
+From: Hajime Tazaki <thehajime@gmail.com>
+Date: Wed, 30 Sep 2026 08:57:10 +0900
+Subject: [PATCH] selftests: run tests on nommu architecture
+
+Patch series "support kselftest on nommu platform", v4.
+
+This patchset adds an ability to execute kselftest on nommu platforms.
+
+Currently there are several issues if we wish to run kselftests on nommu
+targets:
+
+- it cannot compile/build test binaries because the current files mainly
+  assume to build with glibc,
+- some of the tests are not able to run on nommu targets as there are no
+  fork(2) syscall.
+
+The first issue can be avoided if we can build static PIE binaries (if
+targets support it), but in our case (build on ubuntu/glibc and run on
+alpine/musl-libc), it fails to invoke due to lack of the GNU ifunc
+mechanism.  Thus, we need to cross-compile with musl toolchain, which
+needs to be solved the first issue.
+
+The second issue is the lack of fork(2) syscall on those platforms.
+Especially the test harness helper (kselftest_harness.h) uses the syscall,
+which cannot be simply with vfork(2).  `timeout` command used in
+`runner.sh` never works for nommu platform as it uses fork(2).
+
+nommu component in the mm subsystem has several known issues and having
+test cases should help this situation, thus this patchset is very first
+step toward enriching test environment which has not been well tested for
+a while.  The test cases is implemented based on the document
+(Documentation/admin-guide/mm/nommu-mmap.rst).
+
+Initial shape for this patches is implemented as an opt-in TARGET, not
+built/invoked automatically if users don't specify this nommu target.
+
+
+This patch (of 2):
+
+Architectures lacking MMU don't support fork(2) syscall and only vfork(2)
+is available with limitations.  Thus, we cannot run kselftest on nommu
+architecture as is.
+
+This commit addresses this issue with the following changes:
+
+- on test run stage, avoid calling timeout command when NOMMU=1 variable
+  added to environmental variable, since timeout command uses fork
+  syscall which nommu platform doesn't support.
+- describe the difference of nommu tests in the document.
+
+So command line to build/execute tests for nommu should be like below:
+
+ $ make ARCH=um NOMMU=1 O=build kselftest-all TARGETS=nommu
+ $ make ARCH=um NOMMU=1 O=build kselftest-install TARGETS=nommu
+ $ NOMMU=1 ./build/kselftest/kselftest_install/run_kselftest.sh -p \
+   -c nommu
+
+Link: https://lore.kernel.org/20260929235711.2287931-1-thehajime@gmail.com
+Link: https://lore.kernel.org/20260929235711.2287931-2-thehajime@gmail.com
+Signed-off-by: Hajime Tazaki <thehajime@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Closes: https://sashiko.dev/#/patchset/20260813063401.1786548-1-thehajime%40gmail.com
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Andy Lutomirski <luto@amacapital.net>
+Cc: Will Drewry <wad@chromium.org>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Hangbin Liu <liuhangbin@gmail.com>
+Cc: "Ricardo B. Marliere" <rbm@suse.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Geert Uytterhoeven <geert@linux-m68k.org>
+Cc: Daniel Palmer <daniel@thingy.jp>
+---
+ Documentation/dev-tools/kselftest.rst       | 14 ++++++++++++++
+ tools/testing/selftests/kselftest/runner.sh |  6 +++++-
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/dev-tools/kselftest.rst b/Documentation/dev-tools/kselftest.rst
+index 64c0ec7428a27..c35b819947b7b 100644
+--- a/Documentation/dev-tools/kselftest.rst
++++ b/Documentation/dev-tools/kselftest.rst
+@@ -230,6 +230,20 @@ section::
+ 
+ .. _tar's auto-compress: https://www.gnu.org/software/tar/manual/html_node/gzip.html#auto_002dcompress
+ 
++Build and test on nommu target
++==============================
++
++If you (cross-)build kselftests for nommu targets, or run tests on nommu targets, use
++``NOMMU=1`` as a make variable/environment setting to tell build system to do the additional
++checks.  These nommu targets may differ in several ways, such as not supporting fork(2) or
++using musl or another libc.  Set this variable to apply the necessary build and test adjustments.
++
++::
++
++  $ make ARCH=um NOMMU=1 O=build kselftest-all TARGETS=nommu  # <= build-only
++  $ make ARCH=um NOMMU=1 O=build kselftest-install TARGETS=nommu
++  $ NOMMU=1 ./build/kselftest/kselftest_install/run_kselftest.sh -p -c nommu
++
+ Contributing new tests
+ ======================
+ 
+diff --git a/tools/testing/selftests/kselftest/runner.sh b/tools/testing/selftests/kselftest/runner.sh
+index 311811dc55a07..ee2c1f0403d9a 100644
+--- a/tools/testing/selftests/kselftest/runner.sh
++++ b/tools/testing/selftests/kselftest/runner.sh
+@@ -38,8 +38,12 @@ tap_prefix()
+ 
+ tap_timeout()
+ {
++	# nommu doesn't support timeout command (missing fork(2))
++	if [ "$NOMMU" = "1" ] ; then
++		echo "timeout isn't supported for NOMMU"
++		$1
+ 	# Make sure tests will time out if utility is available.
+-	if [ -x /usr/bin/timeout ] ; then
++	elif [ -x /usr/bin/timeout ] ; then
+ 		/usr/bin/timeout --foreground "$kselftest_timeout" \
+ 			/usr/bin/timeout "$kselftest_timeout" $1
+ 	else
+-- 
+2.47.3
+
