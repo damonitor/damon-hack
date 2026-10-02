@@ -1,41 +1,42 @@
 From: Yeoreum Yun <yeoreum.yun@arm.com>
-Date: Thu, 24 Sep 2026 20:11:17 +0100
+Date: Thu, 1 Oct 2026 22:17:52 +0100
 Subject: [PATCH] kselftest: mm: replace usage of /proc/self/smaps for
  __check_pmd_huge()
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Since glibc commit 321e1fc73f (“malloc: Enable 2MB THP by default on
-AArch64”), glibc may call madvise(MADV_HUGEPAGE) for sufficiently large
-allocations made by memalign().
+Since glibc commit 321e1fc73f (“malloc: Enable 2MB THP by default on AArch64”),
+glibc may call madvise(MADV_HUGEPAGE) for sufficiently large allocations
+made by memalign().
 
 The underlying VMA may start at a different address from the aligned
-address returned by memalign().  Furthermore, a subsequent
+address returned by memalign(). Furthermore, a subsequent
 madvise(MADV_HUGEPAGE) call does not split the VMA because the flag is
 already set.
 
 This causes split_huge_page_test to fail because the check_pmd_huge()
-helpers incorrectly require the address returned by memalign() to match
-the VMA start address reported in /proc/self/smaps.
+helpers incorrectly require the address returned by memalign() to
+match the VMA start address reported in /proc/self/smaps.
 
 Instead of relying on /proc/self/smaps, use /proc/self/pagemap and
-/proc/kpageflags to detect huge-page mappings checking PAGE_IS_HUGE and
-PAGE_IS_FILE according to type of huge page.
+/proc/kpageflags to detect huge-page mappings checking PAGE_IS_HUGE
+and PAGE_IS_FILE according to type of huge page.
 
-Since shmem pages are also file-backed, simply check whether the page is
-file-backed.
+Since shmem pages are also file-backed, simply check whether the page
+is file-backed.
 
-Link: https://lore.kernel.org/20260924-fix_split-v8-2-cba7359d882a@arm.com
+Link: https://lore.kernel.org/20261001-fix_split-v9-2-0f4ba8bbdbdf@arm.com
 Fixes: 642bc52aed9c ("selftests: vm: bring common functions to a new file")
 Signed-off-by: Yeoreum Yun <yeoreum.yun@arm.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Sarthak Sharma <sarthak.sharma@arm.com>
 Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Tested-by: Baolin Wang <baolin.wang@linux.alibaba.com>
-Acked-by: Zi Yan <ziy@nvidia.com>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Nico Pache <nico.pache@linux.dev>
 Cc: Ryan Roberts <ryan.roberts@arm.com>
@@ -54,7 +55,7 @@ Cc: Kevin Brodsky <kevin.brodsky@arm.com>
  1 file changed, 49 insertions(+), 29 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
-index a0ab78ceedb13..969d7202500cf 100644
+index a0ab78ceedb13..a3c3a2706c222 100644
 --- a/tools/testing/selftests/mm/vm_util.c
 +++ b/tools/testing/selftests/mm/vm_util.c
 @@ -351,24 +351,6 @@ char *__get_smap_entry(void *addr, const char *pattern, char *buf, size_t len)
@@ -123,7 +124,7 @@ index a0ab78ceedb13..969d7202500cf 100644
 +
 +	pagemap_fd = open(PAGEMAP_PATH, O_RDONLY);
 +	if (pagemap_fd < 0)
-+		ksft_exit_fail_msg("open pagemap fail\n");
++		ksft_exit_fail_perror("open pagemap");
 +
 +	for (; start < end; start += hpage_size) {
 +		categories = pagemap_scan_get_categories(pagemap_fd, start);

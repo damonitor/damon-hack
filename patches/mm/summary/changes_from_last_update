@@ -5,54 +5,14 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 142 -> 151 commits
-  - series: 25 (136) -> 26 (144)
+- mm-unstable: 151 -> 151 commits (no change)
+  - series: 26 (144) -> 26 (144) (no change)
     - no role, maintainer: 41 -> 41 commits (no change)
-    - maintainer, nobody: 84 -> 92 commits
-    - maintainer, no role : 16 -> 17 commits
+    - maintainer, nobody: 92 -> 92 commits (no change)
+    - maintainer, no role : 17 -> 17 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
-  - changed commits
-    - series "mm/damon: introduce damos quota goal target metric complement flag". (8)
-      - 4998efbea5f7 "mm/damon/core: introduce damos_quota_goal->complement (0/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20260929080113.41708-2-sj@kernel.org
-      - 7ff19b9e4547 "mm-damon-core-introduce-damos_quota_goal-complement-fix (1/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-      - dd5578e5ad82 "mm/damon/core: add complement argument to damos_new_quota_goal() (2/8)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-3-sj@kernel.org
-      - da228679f6d1 "mm/damon/sysfs-schemes: support quota goal complement flag (3/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-4-sj@kernel.org
-      - 781e2d7b4fcc "mm/damon/tests/core-kunit: test quota_goal->complement commit (4/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-5-sj@kernel.org
-      - 66d588f89c27 "selftests/damon/sysfs.sh: test quota goal complement flag file (5/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-6-sj@kernel.org
-      - 22a0b961fdd6 "Docs/mm/damon/design: document damos quota goal complement flag (6/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-7-sj@kernel.org
-      - 5c29d758d295 "Docs/admin-guide/mm/damon/usage: update for quota goal complement file (7/8)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20260929080113.41708-8-sj@kernel.org
-    - b2b4b29b76da "Docs/ABI/damon: update for quota goal metric complement sysfs file"
-      - Authored by a maintainer, reviewed by nobody
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20260929080113.41708-9-sj@kernel.org
-- mm-new: 9 -> 0 commits
-  - series: 1 (8) -> 0 (0)
-    - maintainer, nobody: 8 -> 0 commits
-    - maintainer, no role : 1 -> 0 commits
+- mm-new: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

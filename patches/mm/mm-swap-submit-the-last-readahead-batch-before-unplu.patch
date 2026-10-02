@@ -1,0 +1,57 @@
+From: Alexandre Ghiti <alex@ghiti.fr>
+Date: Thu, 1 Oct 2026 10:57:12 +0200
+Subject: [PATCH] mm/swap: submit the last readahead batch before unplugging
+
+Since block swap I/O is batched in struct swap_iocb, swap_add_folio() only
+appends a folio to the pending batch when its slot directly follows the
+previous one, and submits the pending batch otherwise.  Batches submitted
+inside the readahead loop go through the plug, where the block layer can
+still merge them, but the final batch is submitted after blk_finish_plug()
+and always becomes a separate request.
+
+So submit the final batch before finishing the plug.
+
+Link: https://lore.kernel.org/20261001085730.2029773-1-alex@ghiti.fr
+Fixes: dda8fb68b590 ("mm/swap: also use struct swap_iocb for block I/O")
+Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+---
+ mm/swap_state.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/swap_state.c b/mm/swap_state.c
+index 2475ba29126dc..ebef568cd62ee 100644
+--- a/mm/swap_state.c
++++ b/mm/swap_state.c
+@@ -906,8 +906,8 @@ struct folio *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
+ 			continue;
+ 		folio_put(folio);
+ 	}
+-	blk_finish_plug(&plug);
+ 	swap_read_submit(&ctx);
++	blk_finish_plug(&plug);
+ skip:
+ 	return swap_cache_read_folio_sync(entry, gfp_mask, mpol, ilx);
+ }
+@@ -1019,8 +1019,8 @@ static struct folio *swap_vma_readahead(swp_entry_t targ_entry, gfp_t gfp_mask,
+ 	}
+ 	if (pte)
+ 		pte_unmap(pte);
+-	blk_finish_plug(&plug);
+ 	swap_read_submit(&ctx);
++	blk_finish_plug(&plug);
+ skip:
+ 	/* The folio was likely read above, so no need for plugging here */
+ 	return swap_cache_read_folio_sync(targ_entry, gfp_mask, mpol, targ_ilx);
+-- 
+2.47.3
+
