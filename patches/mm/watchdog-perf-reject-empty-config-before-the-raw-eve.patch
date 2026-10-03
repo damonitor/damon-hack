@@ -1,0 +1,44 @@
+From: Bradley Morgan <brads@mainlining.org>
+Date: Fri, 2 Oct 2026 17:39:13 +0000
+Subject: [PATCH] watchdog/perf: reject empty config before the raw event parse
+
+Commit 6164be01f179 ("watchdog/perf: optimize bytes copied and remove
+manual NUL-termination") replaced strscpy(buf, str, sizeof(buf)) plus a
+manual buf[len] = 0 with strscpy(buf, str, len).  strscpy() writes nothing
+at all when the count is zero, so on a comma directly after the "r"
+prefix, nmi_watchdog=r,1 for example, len is 0, buf stays uninitialized,
+and kstrtoull() parses whatever stack garbage is there.
+
+The old code was safe here by accident, strscpy() filled the whole buffer
+before buf[len] = 0 overwrote the comma position, so a zero length just
+produced an empty string and a clean parse failure.
+
+Treat an empty config the same as an overlong one and return early.
+
+Link: https://lore.kernel.org/20261002175000.1-brads@mainlining.org
+Fixes: 6164be01f179 ("watchdog/perf: optimize bytes copied and remove manual NUL-termination")
+Signed-off-by: Bradley Morgan <brads@mainlining.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Thorsten Blum <blum@kernel.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Douglas Anderson <dianders@chromium.org>
+---
+ kernel/watchdog_perf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/watchdog_perf.c b/kernel/watchdog_perf.c
+index cf05775a96d33..cca0485ba28c2 100644
+--- a/kernel/watchdog_perf.c
++++ b/kernel/watchdog_perf.c
+@@ -301,7 +301,7 @@ void __init hardlockup_config_perf_event(const char *str)
+ 	} else {
+ 		unsigned int len = comma - str;
+ 
+-		if (len > sizeof(buf))
++		if (!len || len > sizeof(buf))
+ 			return;
+ 
+ 		strscpy(buf, str, len);
+-- 
+2.47.3
+
