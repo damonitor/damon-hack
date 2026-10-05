@@ -1,108 +1,25 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Thu, 17 Sep 2026 17:22:10 +0100
+Date: Sat, 3 Oct 2026 17:32:32 +0100
 Subject: [PATCH] mm/vma: fix mmap_prepare file handling, remove
  file_doesnt_need_get
-
-Patch series "mm: make VMA flag semantics explicit, eliminate VM_SPECIAL",
-v3.
-
-The VM_SPECIAL / VMA_SPECIAL_FLAGS mask conflates several unrelated
-properties:
-
-* Is this kernel-owned, whether MMIO, kernel-allocated pages, or ordinary
-  pages a driver maps itself?
-* Can it be expanded or merged?
-* Is this a 'weird' case like mlock where migration might race and we
-  'have' to set invalid flags to notify?
-* Is it another 'weird' case where we just want to stop GUP from touching
-  it?
-
-Driver writers have often been confused about this, and who can blame
-them?
-
-It also interacts badly with the eternal edgecase known as hugetlb - which
-sets VMA_DONTEXPAND_BIT but doesn't also want to be treated like a
-'special' flag.
-
-Another issue is that we cannot make sensible assumptions about flag use.
-It's not possible to assume VMA_IO_BIT means iommu because drivers abuse
-it and mlock abuses it.
-
-Special is also an overloaded term in mm.  VDSO and VVAR mappings are also
-called 'special' but they're special in a...  special way.
-
-Sometimes things are called special that are a subset of VMA_SPECIAL_FLAGS
-(VMA_PFNMAP_BIT and VMA_MIXEDMAP_BIT for instance when it comes to zapping
-or vm_normal_folio()).
-
-There's a specific kind of special for THP too, which considers PFN map,
-mixed map 'special' but DAX not.
-
-It's all rather a mess.
-
-This series brings some order to things by both limiting what drivers can
-do with VMA flags and switching to using predicates that describe
-behaviour, not arbitrary flags.
-
-It establishes the invariant that only kernel-owned mappings may set
-VMA_IO_BIT or clear VMA_MAYWRITE_BIT in an mmap hook, enforcing this by
-validating VMA state after every mmap and mmap_prepare hook.
-
-It updates usbmon and sg to mmap_prepare in order to do so, adding a new
-mmap action for mapping discontiguous kernel pages, and has hfi1 and the
-ALSA PCM status page map their pages eagerly instead.
-
-It also establishes the invariant that VMA_MIXEDMAP_BIT be set when
-mapping kernel memory, something that is usually the case but happens not
-to be for some users - specifically defio, cmt_speech, uprobes and the bpf
-arena, all of which are updated to do the right thing.
-
-It replaces VM_SPECIAL and arbitrary flag tests with predicates that say
-what is actually being tested:
-
-   vma_is_kernel_owned()   Does a driver or kernel code manage a VMA's
-                           life cycle?
-
-  vma_is_fixed_mapping()   Is the VMA not permitted to be expanded or
-                           merged?
-
-     vma_is_persistent()   Do bytes written to the VMA stay written, and
-                           bytes read stay the same unless userland changes
-                           them?
-
-         vma_can_merge()   Can the VMA be merged with a compatible
-                           neighbour?
-
-           vma_can_gup()   Can GUP obtain pages from the VMA, i.e. is it
-                           neither a PFN map nor memory-mapped I/O?
-
-Remaining raw VMA_IO_BIT, VMA_PFNMAP_BIT and VMA_MIXEDMAP_BIT tests
-scattered across mm are also converted to predicates where it makes sense
-to do so.
-
-And also the opportunity is taken to eliminate THP's vma_is_special_huge()
-which was an existing source of confusion.
-
-
-This patch (of 39):
 
 The map->file_doesnt_need_get flag is confusing and the existing
 implementation has holes.
 
-Drivers are permitted to change the owning file of a mapping.  If they do
+Drivers are permitted to change the owning file of a mapping. If they do
 so, they are required to take a reference on that file.
 
-The mmap() operation which ultimately invokes __mmap_region() is
-guaranteed to drop the refcount for the original file the mapping was made
-under, but this is not true for the replaced file.
+The mmap() operation which ultimately invokes __mmap_region() is guaranteed
+to drop the refcount for the original file the mapping was made under, but
+this is not true for the replaced file.
 
-This has been addressed so far by tracking map->file_doesnt_need_get,
-which is rather poorly named and unfortunately fails to correctly track
-whether or not an additional put were needed in a number of cases.
+This has been addressed so far by tracking map->file_doesnt_need_get, which
+is rather poorly named and unfortunately fails to correctly track whether
+or not an additional put were needed in a number of cases.
 
 Make life easier by removing this flag, and instead drop the reference for
 both mmap_prepare and the deprecated mmap callback in a new function
-put_map().
+map_put_vm_file().
 
 Track whether this needs to be done by aligning mmap_state with
 vm_area_desc and store the original file in the map->file field, keeping
@@ -110,15 +27,15 @@ the updated file in map->vm_file.
 
 In order to have the same behaviour for both types of hooks, only drop the
 reference __mmap_new_file_vma() itself took in its error path, deferring
-the replaced file's reference to put_map().
+the replaced file's reference to map_put_vm_file().
 
 To make this work correctly, map->vm_file has to be updated before any
 error handling, so update __mmap_new_file_vma() and call_mmap_prepare() to
 set this field first.
 
-Also when mmap_prepare() changes the file and is then merged, the
-reference count also must be decremented, so update the logic to call
-put_map() in this case too.
+Also when mmap_prepare() changes the file and is then merged, the reference
+count also must be decremented, so update the logic to call
+map_put_vm_file() in this case too.
 
 Also update __compat_vma_mmap() to manually perform this step for stacked
 file systems using the compatibility layer, and update
@@ -126,112 +43,119 @@ compat_set_vma_from_desc() to replace vma_set_file() with a correct
 refcount/file update.
 
 No in-tree driver is impacted by the incorrect implementation of this
-currently (no driver that does this is mergeable for one), so this does
-not need to be a fix.
+currently (no driver that does this is mergeable for one), so this does not
+need to be a fix.
 
-Link: https://lore.kernel.org/20260917-b4-mmap-prepare-vma-flag-sanify-v3-0-4583d8a23bca@kernel.org
-Link: https://lore.kernel.org/20260917-b4-mmap-prepare-vma-flag-sanify-v3-1-4583d8a23bca@kernel.org
+Link: https://lore.kernel.org/20261003-b4-mmap-prepare-vma-flag-sanify-v4-1-a1f052500fd7@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Cc: Albert Ou <aou@eecs.berkeley.edu>
-Cc: Alexander Gordeev <agordeev@linux.ibm.com>
-Cc: Alexei Starovoitov <ast@kernel.org>
-Cc: Alistair Popple <apopple@nvidia.com>
-Cc: Al Viro <viro@zeniv.linux.org.uk>
-Cc: Andreas Larsson <andreas@gaisler.com>
-Cc: Andrii Nakryiko <andrii@kernel.org>
-Cc: "Aneesh Kumar K.V" <aneesh.kumar@kernel.org>
-Cc: Anup Patel <anup@brainfault.org>
-Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
-Cc: Arnd Bergmann <arnd@arndb.de>
-Cc: Axel Rasmussen <axelrasmussen@google.com>
-Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
-Cc: Baoquan He <baoquan.he@linux.dev>
-Cc: Barry Song <baohua@kernel.org>
-Cc: "Borislav Petkov (AMD)" <bp@alien8.de>
-Cc: Byungchul Park <byungchul@sk.com>
-Cc: Catalin Marinas <catalin.marinas@arm.com>
-Cc: Chengming Zhou <chengming.zhou@linux.dev>
-Cc: Chris Li <chrisl@kernel.org>
-Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
-Cc: Christian Brauner <brauner@kernel.org>
-Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
-Cc: Dave Airlie <airlied@gmail.com>
-Cc: Dave Hansen <dave.hansen@linux.intel.com>
-Cc: David Hildenbrand <david@kernel.org>
-Cc: David S. Miller <davem@davemloft.net>
-Cc: Dennis Dalessandro <dennis.dalessandro@cornelisnetworks.com>
-Cc: Dev Jain <dev.jain@arm.com>
-Cc: Doug Gilbert <dgilbert@interlog.com>
-Cc: Eduard Zingerman <eddyz87@gmail.com>
-Cc: Emil Tsalapatis (Meta) <emil@etsalapatis.com>
-Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
-Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
-Cc: Gregory Price <gourry@gourry.net>
-Cc: Harry Yoo <harry@kernel.org>
-Cc: Heiko Carstens <hca@linux.ibm.com>
-Cc: Helge Deller <deller@gmx.de>
-Cc: "Huang, Ying" <ying.huang@linux.alibaba.com>
-Cc: Ingo Molnar <mingo@redhat.com>
-Cc: James Bottomley <james.bottomley@HansenPartnership.com>
-Cc: Jan Kara <jack@suse.cz>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Jann Horn <jannh@google.com>
-Cc: Janosch Frank <frankja@linux.ibm.com>
-Cc: Jaroslav Kysela <perex@perex.cz>
-Cc: Jason Gunthorpe <jgg@ziepe.ca>
-Cc: Jaya Kumar <jayalk@intworks.biz>
-Cc: Johannes Weiner <hannes@cmpxchg.org>
-Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
 Cc: Jonathan Corbet <corbet@lwn.net>
-Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Dennis Dalessandro <dennis.dalessandro@cornelisnetworks.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Jaroslav Kysela <perex@perex.cz>
+Cc: Takashi Iwai <tiwai@suse.com>
+Cc: Alexei Starovoitov <ast@kernel.org>
+Cc: Daniel Borkmann <daniel@iogearbox.net>
+Cc: Andrii Nakryiko <andrii@kernel.org>
+Cc: Eduard Zingerman <eddyz87@gmail.com>
+Cc: Kumar Kartikeya Dwivedi <memxor@gmail.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Doug Gilbert <dgilbert@interlog.com>
+Cc: James Bottomley <james.bottomley@hansenpartnership.com>
+Cc: Martin K. Petersen <mkp@kernel.org>
+Cc: Simona Vetter <simona@ffwll.ch>
+Cc: Helge Deller <deller@gmx.de>
+Cc: Sebastian Reichel <sre@kernel.org>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Namhyung Kim <namhyung@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Harry Yoo <harry@kernel.org>
 Cc: Juri Lelli <juri.lelli@redhat.com>
+Cc: Vincent Guittot <vincent.guittot@linaro.org>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: David Airlie <airlied@gmail.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Marc Zyngier <maz@kernel.org>
+Cc: Oliver Upton <oupton@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Anup Patel <anup@brainfault.org>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Janosch Frank <frankja@linux.ibm.com>
+Cc: Claudio Imbrenda <imbrenda@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Chris Li <chrisl@kernel.org>
 Cc: Kairui Song <kasong@tencent.com>
 Cc: Kemeng Shi <shikemeng@huaweicloud.com>
-Cc: Kiryl Shutsemau <kas@kernel.org>
-Cc: Kumar Kartikeya Dwivedi <memxor@gmail.com>
-Cc: Lance Yang <lance.yang@linux.dev>
-Cc: Leon Romanovsky <leon@kernel.org>
-Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
-Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
-Cc: Marc Rutland <mark.rutland@arm.com>
-Cc: Marc Zyngier <maz@kernel.org>
-Cc: "Masami Hiramatsu (Google)" <mhiramat@kernel.org>
-Cc: Matthew Brost <matthew.brost@intel.com>
-Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
-Cc: Maxime Ripard <mripard@kernel.org>
-Cc: Michal Hocko <mhocko@kernel.org>
-Cc: Michal Hocko <mhocko@suse.com>
-Cc: Mike Rapoport <rppt@kernel.org>
-Cc: Miklos Szeredi <miklos@szeredi.hu>
-Cc: Muchun Song <muchun.song@linux.dev>
-Cc: Namhyung kim <namhyung@kernel.org>
 Cc: Nhat Pham <nphamcs@gmail.com>
-Cc: Nicholas Piggin <npiggin@gmail.com>
-Cc: Oleg Nesterov <oleg@redhat.com>
-Cc: Oscar Salvador <osalvador@suse.de>
-Cc: Palmer Dabbelt <palmer@dabbelt.com>
-Cc: Paul Moore <paul@paul-moore.com>
-Cc: Pedro Falcato <pfalcato@suse.de>
-Cc: Peter Xu <peterx@redhat.com>
-Cc: Peter Zijlstra <peterz@infradead.org>
-Cc: Rakie Kim <rakie.kim@sk.com>
-Cc: Rik van Riel <riel@surriel.com>
-Cc: Ryan Roberts <ryan.roberts@arm.com>
-Cc: Sebastian Reichel <sre@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
-Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
-Cc: Suren Baghdasaryan <surenb@google.com>
-Cc: Takashi Iwai (SUSE) <tiwai@suse.de>
-Cc: Takashi Iwai <tiwai@suse.com>
-Cc: Thomas Zimemrmann <tzimmermann@suse.de>
-Cc: Vasily Gorbik <gor@linux.ibm.com>
-Cc: Vincent Guittot <vincent.guittot@linaro.org>
-Cc: Vlastimil Babka <vbabka@kernel.org>
-Cc: Wei Xu <weixugc@google.com>
-Cc: Will Deacon <will@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
-Cc: Zi Yan <ziy@nvidia.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Miklos Szeredi <miklos@szeredi.hu>
+Cc: Xu Xin <xu.xin@linux.dev>
 ---
  mm/internal.h |  1 +
  mm/util.c     |  5 +++-
@@ -240,7 +164,7 @@ Cc: Zi Yan <ziy@nvidia.com>
  4 files changed, 58 insertions(+), 35 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 05179c4b2090e..323fa1514b92a 100644
+index 05179c4b2090..323fa1514b92 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -7,6 +7,7 @@
@@ -252,7 +176,7 @@ index 05179c4b2090e..323fa1514b92a 100644
  #include <linux/khugepaged.h>
  #include <linux/mm.h>
 diff --git a/mm/util.c b/mm/util.c
-index bf0513d1d3d08..016932780925e 100644
+index bf0513d1d3d0..016932780925 100644
 --- a/mm/util.c
 +++ b/mm/util.c
 @@ -1228,8 +1228,11 @@ int __compat_vma_mmap(struct vm_area_desc *desc,
@@ -269,7 +193,7 @@ index bf0513d1d3d08..016932780925e 100644
  	compat_set_vma_from_desc(vma, desc);
  	/* Complete any specified mmap actions. */
 diff --git a/mm/vma.c b/mm/vma.c
-index f56317ee82471..9e35fe723a4d2 100644
+index f56317ee8247..82ced500e4e8 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
 @@ -24,7 +24,8 @@ struct mmap_state {
@@ -460,7 +384,7 @@ index f56317ee82471..9e35fe723a4d2 100644
  	return false;
  }
  
-+static void put_map(struct mmap_state *map)
++static void map_put_vm_file(struct mmap_state *map)
 +{
 +	/*
 +	 * An error occurred or the VMA was merged.
@@ -484,7 +408,7 @@ index f56317ee82471..9e35fe723a4d2 100644
 -	if (have_mmap_prepare && allocated_new) {
 +	if (!allocated_new) {
 +		/* Merged, so need to drop refcount. */
-+		put_map(&map);
++		map_put_vm_file(&map);
 +	} else if (have_mmap_prepare) {
  		error = mmap_action_complete(vma, &desc.action,
  					     /*is_compat=*/false);
@@ -500,12 +424,12 @@ index f56317ee82471..9e35fe723a4d2 100644
 -	 */
 -	if (map.file_doesnt_need_get)
 -		fput(map.file);
-+	put_map(&map);
++	map_put_vm_file(&map);
  	vms_abort_munmap_vmas(&map.vms, &map.mas_detach);
  	return error;
  }
 diff --git a/mm/vma.h b/mm/vma.h
-index f856d9ace3a6a..4665b40163fa6 100644
+index f856d9ace3a6..4665b40163fa 100644
 --- a/mm/vma.h
 +++ b/mm/vma.h
 @@ -394,8 +394,10 @@ static inline void compat_set_vma_from_desc(struct vm_area_struct *vma,

@@ -1,0 +1,65 @@
+From: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Date: Sun, 4 Oct 2026 22:54:58 +0200
+Subject: [PATCH] selftests/mm: hugetlb-read-hwpoison: add setup of HugeTLB
+ pages
+
+Every test is expected to reserve the HugeTLB pages it needs.
+hugetlb-read-hwpoison was not converted, so on a system without
+pre-reserved huge pages the MAP_POPULATE mmap() fails with ENOMEM and
+every test case is skipped.
+
+Reserve the pages with hugetlb_setup_default().  Each chunk size runs two
+HWPOISON tests and a poisoned huge page can't be reused, so reserve two
+pages per chunk size.  The pool size is restored on exit.  The poisoned
+pages remain allocated until reboot.
+
+With the patch, all 12 cases pass on a system with no huge pages
+reserved (tested on Fedora, x86_64, CONFIG_MEMORY_FAILURE=y).
+
+Link: https://lore.kernel.org/20261004205458.119608-1-jaeyeon.lee.dev@gmail.com
+Signed-off-by: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Reviewed-by: Sarthak Sharma <sarthak.sharma@arm.com>
+Assisted-by: LLM
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ tools/testing/selftests/mm/hugetlb-read-hwpoison.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/hugetlb-read-hwpoison.c b/tools/testing/selftests/mm/hugetlb-read-hwpoison.c
+index 70b24e3660c4..31748a24448f 100644
+--- a/tools/testing/selftests/mm/hugetlb-read-hwpoison.c
++++ b/tools/testing/selftests/mm/hugetlb-read-hwpoison.c
+@@ -13,6 +13,7 @@
+ #include <signal.h>
+ 
+ #include "kselftest.h"
++#include "vm_util.h"
+ 
+ #define MAX_WRITE_READ_CHUNK_SIZE (getpagesize() * 16)
+ #define MAX(a, b) (((a) > (b)) ? (a) : (b))
+@@ -281,6 +282,13 @@ int main(void)
+ 	size_t i;
+ 
+ 	ksft_print_header();
++
++	if (!hugetlb_available())
++		ksft_exit_skip("HugeTLB is not available\n");
++
++	if (!hugetlb_setup_default(ARRAY_SIZE(wr_chunk_sizes) * 2))
++		ksft_exit_skip("Not enough free huge pages\n");
++
+ 	ksft_set_plan(ARRAY_SIZE(wr_chunk_sizes) * 3);
+ 
+ 	signal(SIGBUS, sigbus_handler);
+-- 
+2.47.3
+
