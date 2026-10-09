@@ -11,6 +11,8 @@ can use the shared vmemmap page directly to simplify the code.
 This removes the powerpc-specific tail-page lookup and its fallback path
 and aligns the device DAX vmemmap optimization path with HugeTLB.
 
+[muchun.song@linux.dev: use try_get_page()]
+  Link: https://lore.kernel.org/20260930152826.76084-1-songmuchun@bytedance.com
 Link: https://lore.kernel.org/20260930140627.57431-10-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
@@ -29,13 +31,13 @@ Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
 Cc: Randy Dunlap <rdunlap@infradead.org>
 Cc: Lance Yang <lance.yang@linux.dev>
 ---
- arch/powerpc/mm/book3s64/radix_pgtable.c | 80 +++---------------------
+ arch/powerpc/mm/book3s64/radix_pgtable.c | 88 ++++--------------------
  include/linux/vmemmap-optimization.h     |  6 ++
  mm/sparse-vmemmap.c                      |  6 --
- 3 files changed, 15 insertions(+), 77 deletions(-)
+ 3 files changed, 21 insertions(+), 79 deletions(-)
 
 diff --git a/arch/powerpc/mm/book3s64/radix_pgtable.c b/arch/powerpc/mm/book3s64/radix_pgtable.c
-index cf692b2b5f7b..ee068f24a79f 100644
+index cf692b2b5f7b..0e778d17240c 100644
 --- a/arch/powerpc/mm/book3s64/radix_pgtable.c
 +++ b/arch/powerpc/mm/book3s64/radix_pgtable.c
 @@ -19,6 +19,7 @@
@@ -46,7 +48,27 @@ index cf692b2b5f7b..ee068f24a79f 100644
  
  #include <asm/pgalloc.h>
  #include <asm/mmu_context.h>
-@@ -1250,59 +1251,6 @@ static pte_t * __meminit radix__vmemmap_populate_address(unsigned long addr, int
+@@ -1041,13 +1042,17 @@ static pte_t * __meminit radix__vmemmap_pte_populate(pmd_t *pmdp, unsigned long
+ 			/*
+ 			 * When a PTE/PMD entry is freed from the init_mm
+ 			 * there's a free_pages() call to this page allocated
+-			 * above. Thus this get_page() is paired with the
++			 * above. Thus this try_get_page() is paired with the
+ 			 * put_page_testzero() on the freeing path.
+ 			 * This can only called by certain ZONE_DEVICE path,
+ 			 * and through vmemmap_populate_compound_pages() when
+ 			 * slab is available.
++			 *
++			 * Use try_get_page() to prevent the shared page refcount
++			 * from overflowing.
+ 			 */
+-			get_page(reuse);
++			if (!try_get_page(reuse))
++				return NULL;
+ 			p = page_to_virt(reuse);
+ 			pr_debug("Tail page reuse vmemmap mapping\n");
+ 		}
+@@ -1250,59 +1255,6 @@ static pte_t * __meminit radix__vmemmap_populate_address(unsigned long addr, int
  	return pte;
  }
  
@@ -106,7 +128,7 @@ index cf692b2b5f7b..ee068f24a79f 100644
  int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  					      unsigned long start,
  					      unsigned long end, int node,
-@@ -1320,6 +1268,12 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+@@ -1320,6 +1272,12 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  	pud_t *pud;
  	pmd_t *pmd;
  	pte_t *pte;
@@ -119,7 +141,7 @@ index cf692b2b5f7b..ee068f24a79f 100644
  
  	for (addr = start; addr < end; addr = next) {
  
-@@ -1349,10 +1303,9 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+@@ -1349,10 +1307,9 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  			next = addr + PAGE_SIZE;
  			continue;
  		} else {
@@ -131,7 +153,7 @@ index cf692b2b5f7b..ee068f24a79f 100644
  
  			/*
  			 * if the address is aligned to huge page size it is the
-@@ -1377,23 +1330,8 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
+@@ -1377,23 +1334,8 @@ int __meminit vmemmap_populate_compound_pages(unsigned long start_pfn,
  				next = addr + 2 * PAGE_SIZE;
  				continue;
  			}
