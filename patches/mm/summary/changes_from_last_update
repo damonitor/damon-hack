@@ -8,25 +8,12 @@
     - no role, maintainer: 18 -> 18 commits (no change)
     - maintainer, nobody: 31 -> 31 commits (no change)
     - maintainer, no role : 4 -> 4 commits (no change)
-- mm-unstable: 98 -> 101 commits
-  - series: 17 (92) -> 18 (95)
-    - no role, maintainer: 23 -> 26 commits
+- mm-unstable: 101 -> 101 commits (no change)
+  - series: 18 (95) -> 18 (95) (no change)
+    - no role, maintainer: 26 -> 26 commits (no change)
     - maintainer, nobody: 61 -> 61 commits (no change)
     - maintainer, no role : 13 -> 13 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
-  - new commits
-    - series "mm/damon: fix a minor bug, clean code, and add a test". (3)
-      - aa268acb9aa0 "mm/damon/ops-common: fix age_in_sec overflow on 32-bit (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261006065209.41507-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261006065209.41507-2-sj@kernel.org
-        - Link: https://lore.kernel.org/20260623011652.1354-1-sj@kernel.org [1]
-      - fd36605f91d1 "mm/damon: use damon_get_monitor_folio() for hugetlb entries (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261006065209.41507-3-sj@kernel.org
-      - 18793c04abe6 "mm/damon/tests/core-kunit: add test for unconditionally skipping the last region (2/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261006065209.41507-4-sj@kernel.org
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
