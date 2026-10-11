@@ -1,0 +1,53 @@
+From: Qi Zheng <qi.zheng@linux.dev>
+Date: Sun, 11 Oct 2026 12:59:56 +0800
+Subject: [PATCH] mm: shmem: assign a lock class to the unused huge shrinklist
+
+The unused huge shrinklist shares the default list_lru lock class with the
+dentry LRU.  Although they use distinct lock instances, lockdep conflates
+their dependencies and reports a circular locking dependency:
+
+	WARNING: possible circular locking dependency detected
+
+Give the unused huge shrinklist a dedicated lock class to fix this
+false-positive lockdep warning.
+
+Link: https://lore.kernel.org/20261011045956.30277-1-qi.zheng@linux.dev
+Fixes: b9b1861d4f7a ("mm: shmem: make unused huge shrinker memcg aware")
+Signed-off-by: Qi Zheng <qi.zheng@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: kernel test robot <yi1.lai@intel.com>
+Closes: https://lore.kernel.org/oe-lkp/202610091403.d1d8080b-lkp@intel.com
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+---
+ mm/shmem.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 72c8a61db76fd..fd0953d55fd64 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -5161,6 +5161,9 @@ static const struct dentry_operations shmem_ci_dentry_ops = {
+ 
+ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
+ {
++#ifdef CONFIG_TRANSPARENT_HUGEPAGE
++	static struct lock_class_key shmem_unused_huge_lock_key;
++#endif
+ 	struct shmem_options *ctx = fc->fs_private;
+ 	struct inode *inode;
+ 	struct shmem_sb_info *sbinfo;
+@@ -5239,7 +5242,8 @@ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
+ 		goto failed;
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+-	if (list_lru_init_memcg(&sbinfo->shrinklist, sb->s_shrink))
++	if (list_lru_init_memcg_key(&sbinfo->shrinklist, sb->s_shrink,
++				    &shmem_unused_huge_lock_key))
+ 		goto failed;
+ #endif
+ 
+-- 
+2.47.3
+

@@ -1,5 +1,5 @@
 From: "Kiryl Shutsemau (Meta)" <kas@kernel.org>
-Date: Tue, 6 Oct 2026 10:18:13 +0100
+Date: Fri, 9 Oct 2026 13:55:02 +0100
 Subject: [PATCH] mm: page_alloc: make defrag_mode retries follow the promoted
  order
 
@@ -45,9 +45,11 @@ For promoted requests:
   limit stay those of the request order, so a non-costly request still
   gets its COMPACT_PRIO_SYNC_FULL pass before it falls back.
 
-When the fallback is taken, reset the retry counters, so that the
-fallback attempt gets a full retry budget before the OOM killer is
-considered.
+When a promoted request takes the fallback, reset the retry counters,
+so that the fallback attempt gets a full retry budget before the OOM
+killer is considered. A request whose reclaim was not promoted spent
+its budget on the request itself and keeps its counters, as Usama Arif
+pointed out.
 
 __alloc_pages_slowpath() computes the promoted order once per iteration
 and passes it to direct reclaim, direct compaction and the two retry
@@ -63,10 +65,11 @@ In a VM reproducer (32G, defrag_mode, inode churn under memory.low):
 
 File creation runs 5.7x faster.
 
-Link: https://lore.kernel.org/20261006091815.897133-1-kirill@shutemov.name
+Link: https://lore.kernel.org/20261009125503.126202-1-kas@kernel.org
 Fixes: 7e8756d7ad22 ("mm: page_alloc: fix non-movable reclaim storm in defrag_mode")
 Signed-off-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
 Assisted-by: LLM
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
@@ -77,14 +80,13 @@ Cc: Michal Hocko <mhocko@suse.com>
 Cc: Brendan Jackman <brendan.jackman@linux.dev>
 Cc: Zi Yan <ziy@nvidia.com>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
-Cc: Usama Arif <usama.arif@linux.dev>
 Cc: <stable@vger.kernel.org>
 ---
- mm/page_alloc.c | 123 ++++++++++++++++++++++++++++++------------------
- 1 file changed, 78 insertions(+), 45 deletions(-)
+ mm/page_alloc.c | 126 +++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 81 insertions(+), 45 deletions(-)
 
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index ff7b9acf0144..b7a89a00c2d9 100644
+index ff7b9acf01443..9f001d609ccd5 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
 @@ -4117,6 +4117,32 @@ __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
@@ -310,7 +312,7 @@ index ff7b9acf0144..b7a89a00c2d9 100644
  		goto retry;
  
  	/*
-@@ -4997,14 +5024,20 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+@@ -4997,14 +5024,23 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
  	 * of free memory (see __compaction_suitable)
  	 */
  	if (did_some_progress > 0 && can_compact &&
@@ -323,14 +325,17 @@ index ff7b9acf0144..b7a89a00c2d9 100644
  
 -	/* Reclaim/compaction failed to prevent the fallback */
 +	/*
-+	 * Reclaim/compaction failed to prevent the fallback. The retry
-+	 * budget was spent on making blocks, not on the request itself;
-+	 * give the fallback a fresh one before considering OOM.
++	 * Reclaim/compaction failed to prevent the fallback. A promoted
++	 * request spent its retry budget on making blocks, not on the
++	 * request itself; give its fallback a fresh one before
++	 * considering OOM.
 +	 */
  	if (defrag_mode && (alloc_flags & ALLOC_NOFRAGMENT)) {
  		alloc_flags &= ~ALLOC_NOFRAGMENT;
-+		no_progress_loops = 0;
-+		compaction_retries = 0;
++		if (reclaim_order != order) {
++			no_progress_loops = 0;
++			compaction_retries = 0;
++		}
  		goto retry;
  	}
  

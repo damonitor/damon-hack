@@ -1,7 +1,87 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Sat, 3 Oct 2026 17:32:32 +0100
+Date: Fri, 9 Oct 2026 19:03:55 +0100
 Subject: [PATCH] mm/vma: fix mmap_prepare file handling, remove
  file_doesnt_need_get
+
+Patch series "mm: make VMA flag semantics explicit, eliminate VM_SPECIAL",
+v5.
+
+The VM_SPECIAL / VMA_SPECIAL_FLAGS mask conflates several unrelated
+properties:
+
+* Is this managed by core mm, or by a driver mapping MMIO, kernel-allocated
+  pages, or even ordinary pages itself?
+* Can it be expanded or merged?
+* Is this a 'weird' case like mlock where migration might race and we
+  'have' to set invalid flags to notify?
+* Is it another 'weird' case where we just want to stop GUP from touching
+  it?
+
+Driver writers have often been confused about this, and who can blame them?
+
+It also interacts badly with the eternal edgecase known as hugetlb - which
+sets VMA_DONTEXPAND_BIT but doesn't also want to be treated like a
+'special' flag.
+
+Another issue is that we cannot make sensible assumptions about flag
+use. It's not possible to assume VMA_IO_BIT means iommu because drivers
+abuse it and mlock abuses it.
+
+Special is also an overloaded term in mm. VDSO and VVAR mappings are also
+called 'special' but they're special in a... special way.
+
+Sometimes things are called special that are a subset of
+VMA_SPECIAL_FLAGS (VMA_PFNMAP_BIT and VMA_MIXEDMAP_BIT for instance when it
+comes to zapping or vm_normal_folio()).
+
+There's a specific kind of special for THP too, which considers
+PFN map, mixed map 'special' but DAX not.
+
+It's all rather a mess.
+
+This series brings some order to things by both limiting what drivers can
+do with VMA flags and switching to using predicates that describe
+behaviour, not arbitrary flags.
+
+It establishes the invariant that mm-managed mappings may neither set
+VMA_IO_BIT nor clear VMA_MAYWRITE_BIT in an mmap hook, enforcing this by
+validating VMA state after every mmap and mmap_prepare hook.
+
+It updates usbmon and sg to mmap_prepare in order to do so, adding a new
+mmap action for mapping discontiguous kernel pages, and has hfi1 and the
+ALSA PCM status page map their pages eagerly instead.
+
+It also establishes the invariant that VMA_MIXEDMAP_BIT be set when mapping
+kernel memory, something that is usually the case but happens not to be for
+some users - specifically defio, cmt_speech, uprobes and the bpf arena, all
+of which are updated to do the right thing.
+
+It replaces VM_SPECIAL and arbitrary flag tests with predicates that say
+what is actually being tested:
+
+     vma_is_mm_managed()   Are the VMA's contents established and managed
+                           by core mm, rather than a driver or other kernel
+                           component?
+
+      vma_is_mm_backed()   Is the VMA backed by memory core mm itself
+                           faults in and keeps, rather than a driver or
+                           device?
+
+  vma_is_fixed_mapping()   Is the VMA not permitted to be expanded or
+                           merged?
+
+         vma_can_merge()   Can the VMA be merged with a compatible
+                           neighbour?
+
+Remaining raw VMA_IO_BIT, VMA_PFNMAP_BIT and VMA_MIXEDMAP_BIT tests
+scattered across mm are converted to predicates where they express one, and
+left as explicit flag tests where they do not.
+
+And also the opportunity is taken to eliminate THP's vma_is_special_huge()
+which was an existing source of confusion.
+
+
+This patch (of 38):
 
 The map->file_doesnt_need_get flag is confusing and the existing
 implementation has holes.
@@ -46,7 +126,8 @@ No in-tree driver is impacted by the incorrect implementation of this
 currently (no driver that does this is mergeable for one), so this does not
 need to be a fix.
 
-Link: https://lore.kernel.org/20261003-b4-mmap-prepare-vma-flag-sanify-v4-1-a1f052500fd7@kernel.org
+Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-0-923b70125b1e@kernel.org
+Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-1-923b70125b1e@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Suren Baghdasaryan <surenb@google.com>
@@ -156,6 +237,8 @@ Cc: Chengming Zhou <chengming.zhou@linux.dev>
 Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Miklos Szeredi <miklos@szeredi.hu>
 Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Ihor Solodrai <ihor.solodrai@linux.dev>
+Cc: Bert Karwatzki <spasswolf@web.de>
 ---
  mm/internal.h |  1 +
  mm/util.c     |  5 +++-
@@ -164,7 +247,7 @@ Cc: Xu Xin <xu.xin@linux.dev>
  4 files changed, 58 insertions(+), 35 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 05179c4b2090..323fa1514b92 100644
+index 05179c4b2090e..323fa1514b92a 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -7,6 +7,7 @@
@@ -176,7 +259,7 @@ index 05179c4b2090..323fa1514b92 100644
  #include <linux/khugepaged.h>
  #include <linux/mm.h>
 diff --git a/mm/util.c b/mm/util.c
-index bf0513d1d3d0..016932780925 100644
+index bf0513d1d3d08..016932780925e 100644
 --- a/mm/util.c
 +++ b/mm/util.c
 @@ -1228,8 +1228,11 @@ int __compat_vma_mmap(struct vm_area_desc *desc,
@@ -193,7 +276,7 @@ index bf0513d1d3d0..016932780925 100644
  	compat_set_vma_from_desc(vma, desc);
  	/* Complete any specified mmap actions. */
 diff --git a/mm/vma.c b/mm/vma.c
-index f56317ee8247..82ced500e4e8 100644
+index f56317ee82471..82ced500e4e8f 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
 @@ -24,7 +24,8 @@ struct mmap_state {
@@ -429,7 +512,7 @@ index f56317ee8247..82ced500e4e8 100644
  	return error;
  }
 diff --git a/mm/vma.h b/mm/vma.h
-index f856d9ace3a6..4665b40163fa 100644
+index f856d9ace3a6a..4665b40163fa6 100644
 --- a/mm/vma.h
 +++ b/mm/vma.h
 @@ -394,8 +394,10 @@ static inline void compat_set_vma_from_desc(struct vm_area_struct *vma,

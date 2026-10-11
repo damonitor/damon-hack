@@ -1,0 +1,62 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Fri, 9 Oct 2026 22:08:18 -0400
+Subject: [PATCH] mm/rmap: don't discard lazyfree THPs at PMD level
+
+__discard_anon_folio_pmd_locked() clears a lazyfree THP PMD before it
+knows whether the folio can be discarded, and restores it if the folio was
+redirtied or has extra references.  A concurrent munmap() or
+MREMAP_DONTUNMAP skips the temporary none PMD and unlinks the VMA from its
+anon_vma, so the folio stays mapped after the anon_vma is freed and a
+later rmap walk uses the freed anon_vma.
+
+Using an invalidated PMD instead of a cleared one requires additional arch
+code fixes.  Instead, disable the PMD level discard of lazyfree THPs, as
+before commit 735ecdfaf4e8 ("mm/vmscan: avoid split lazyfree THP during
+shrink_folio_list()").
+
+Link: https://lore.kernel.org/20261009-lazyfree-stable-fix-v1-1-70997958ef8d@nvidia.com
+Fixes: 735ecdfaf4e8 ("mm/vmscan: avoid split lazyfree THP during shrink_folio_list()")
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Kyle Zeng <kylebot@openai.com>
+Closes: https://lore.kernel.org/r/20261009165214.40212-2-kylebot@openai.com
+Reviewed-by: Kyle Zeng <kylebot@openai.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Assisted-by: LLM
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/rmap.c | 11 -----------
+ 1 file changed, 11 deletions(-)
+
+diff --git a/mm/rmap.c b/mm/rmap.c
+index 805db93fe0428..1131b76bbbc28 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -2275,17 +2275,6 @@ static bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+ 		}
+ 
+ 		if (!pvmw.pte) {
+-			if (folio_test_lazyfree(folio)) {
+-				if (unmap_huge_pmd_locked(vma, pvmw.address, pvmw.pmd, folio))
+-					goto walk_done;
+-				/*
+-				 * unmap_huge_pmd_locked has either already marked
+-				 * the folio as swap-backed or decided to retain it
+-				 * due to GUP or speculative references.
+-				 */
+-				goto walk_abort;
+-			}
+-
+ 			if (flags & TTU_SPLIT_HUGE_PMD) {
+ 				/*
+ 				 * We temporarily have to drop the PTL and
+-- 
+2.47.3
+

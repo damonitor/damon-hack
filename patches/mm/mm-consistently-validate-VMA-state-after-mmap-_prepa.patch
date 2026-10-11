@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Sat, 3 Oct 2026 17:32:34 +0100
+Date: Fri, 9 Oct 2026 19:03:57 +0100
 Subject: [PATCH] mm: consistently validate VMA state after mmap[_prepare]
  hooks
 
@@ -43,7 +43,7 @@ While we're here, also fixup a couple disjoint blocks of #ifdef CONFIG_MMU.
 
 Finally, update the VMA userland tests to reflect the change.
 
-Link: https://lore.kernel.org/20261003-b4-mmap-prepare-vma-flag-sanify-v4-3-a1f052500fd7@kernel.org
+Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-3-923b70125b1e@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
@@ -153,16 +153,19 @@ Cc: Chengming Zhou <chengming.zhou@linux.dev>
 Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Miklos Szeredi <miklos@szeredi.hu>
 Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Ihor Solodrai <ihor.solodrai@linux.dev>
+Cc: Bert Karwatzki <spasswolf@web.de>
 ---
- mm/internal.h                   |  50 +++++++++------
- mm/util.c                       |  19 ++++--
- mm/vma.c                        | 109 ++++++++++++++++++++++++++------
- mm/vma.h                        |  25 +++++++-
- tools/testing/vma/include/dup.h |  10 +++
- 5 files changed, 168 insertions(+), 45 deletions(-)
+ mm/internal.h                     |  50 ++++++++------
+ mm/util.c                         |  19 ++++--
+ mm/vma.c                          | 106 +++++++++++++++++++++++++-----
+ mm/vma.h                          |  25 ++++++-
+ tools/testing/vma/include/dup.h   |  10 +++
+ tools/testing/vma/include/stubs.h |   4 ++
+ 6 files changed, 172 insertions(+), 42 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 323fa1514b92..6f346aecb2e3 100644
+index 323fa1514b92a..6f346aecb2e3d 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
 @@ -213,6 +213,24 @@ static inline void *folio_raw_mapping(const struct folio *folio)
@@ -240,7 +243,7 @@ index 323fa1514b92..6f346aecb2e3 100644
  
  /* unmap_vmas is in mm/memory.c */
 diff --git a/mm/util.c b/mm/util.c
-index 016932780925..d809e08c7b4d 100644
+index 016932780925e..d809e08c7b4db 100644
 --- a/mm/util.c
 +++ b/mm/util.c
 @@ -1224,19 +1224,28 @@ EXPORT_SYMBOL(compat_set_desc_from_vma);
@@ -278,26 +281,23 @@ index 016932780925..d809e08c7b4d 100644
  EXPORT_SYMBOL(__compat_vma_mmap);
  
 diff --git a/mm/vma.c b/mm/vma.c
-index 908545f5f3c5..2b7d824fd87e 100644
+index 908545f5f3c57..dd2a5a8815e53 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -2628,26 +2628,19 @@ static int __mmap_new_file_vma(struct mmap_state *map,
+@@ -2628,6 +2628,12 @@ static int __mmap_new_file_vma(struct mmap_state *map,
  	if (error) {
  		UNMAP_STATE(unmap, vmi, vma, vma->vm_start, vma->vm_end,
  			    map->prev, map->next);
--		if (map_same_file(map))
--			fput(map->vm_file);
- 
--		vma->vm_file = NULL;
- 		vma_iter_set(vmi, vma->vm_end);
- 		/* Undo any partial mapping done by a device driver. */
- 		unmap_region(&unmap);
-+		/* Only safe once unmapped. */
-+		vma_close(vma);
 +
-+		if (map_same_file(map))
-+			fput(map->vm_file);
-+		vma->vm_file = NULL;
++		if (vma->vm_ops->close) {
++			zap_vma(vma);
++			/* Safe, because VMA zapped. */
++			vma_close(vma);
++		}
+ 		if (map_same_file(map))
+ 			fput(map->vm_file);
+ 
+@@ -2638,16 +2644,6 @@ static int __mmap_new_file_vma(struct mmap_state *map,
  		return error;
  	}
  
@@ -314,7 +314,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  	map->vma_flags = vma->flags;
  
  	return 0;
-@@ -2725,11 +2718,6 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap,
+@@ -2725,11 +2721,6 @@ static int __mmap_new_vma(struct mmap_state *map, struct vm_area_struct **vmap,
  		vma->flags = map->vma_flags;
  	}
  
@@ -326,7 +326,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  	/* Lock the VMA since it is modified after insertion into VMA tree */
  	vma_start_write(vma);
  	vma_iter_store_new(vmi, vma);
-@@ -2792,6 +2780,80 @@ static void __mmap_complete(struct mmap_state *map, struct vm_area_struct *vma)
+@@ -2792,6 +2783,80 @@ static void __mmap_complete(struct mmap_state *map, struct vm_area_struct *vma)
  	vma_set_page_prot(vma);
  }
  
@@ -407,7 +407,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  static int call_action_prepare(struct mmap_state *map,
  			       struct vm_area_desc *desc)
  {
-@@ -2818,6 +2880,7 @@ static int call_action_prepare(struct mmap_state *map,
+@@ -2818,6 +2883,7 @@ static int call_action_prepare(struct mmap_state *map,
  static int call_mmap_prepare(struct mmap_state *map,
  		struct vm_area_desc *desc)
  {
@@ -415,7 +415,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  	int err;
  
  	/* Invoke the hook. */
-@@ -2837,6 +2900,11 @@ static int call_mmap_prepare(struct mmap_state *map,
+@@ -2837,6 +2903,11 @@ static int call_mmap_prepare(struct mmap_state *map,
  	if (err)
  		return err;
  
@@ -427,7 +427,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  	/* Update fields permitted to be changed. */
  	map->pgoff = desc->pgoff;
  	map->vma_flags = desc->vma_flags;
-@@ -3472,10 +3540,15 @@ int __vm_munmap(unsigned long start, size_t len, bool unlock)
+@@ -3472,10 +3543,15 @@ int __vm_munmap(unsigned long start, size_t len, bool unlock)
  int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
  {
  	unsigned long charged = vma_pages(vma);
@@ -444,7 +444,7 @@ index 908545f5f3c5..2b7d824fd87e 100644
  	     security_vm_enough_memory_mm(mm, charged))
  		return -ENOMEM;
 diff --git a/mm/vma.h b/mm/vma.h
-index 4665b40163fa..ba897cb96e41 100644
+index 4665b40163fa6..ba897cb96e41a 100644
 --- a/mm/vma.h
 +++ b/mm/vma.h
 @@ -787,14 +787,19 @@ struct vm_area_struct *vm_area_alloc(struct mm_struct *mm);
@@ -492,7 +492,7 @@ index 4665b40163fa..ba897cb96e41 100644
  
  struct vm_area_struct *__install_special_mapping(struct mm_struct *mm,
 diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
-index 2fd422789717..077df510a311 100644
+index 2fd422789717f..077df510a311e 100644
 --- a/tools/testing/vma/include/dup.h
 +++ b/tools/testing/vma/include/dup.h
 @@ -1359,13 +1359,23 @@ static inline int vfs_mmap_prepare(struct file *file, struct vm_area_desc *desc)
@@ -519,6 +519,21 @@ index 2fd422789717..077df510a311 100644
  	if (err)
  		return err;
  	/* Update the VMA from the descriptor. */
+diff --git a/tools/testing/vma/include/stubs.h b/tools/testing/vma/include/stubs.h
+index d6136e19a8af3..b35279a0ec78f 100644
+--- a/tools/testing/vma/include/stubs.h
++++ b/tools/testing/vma/include/stubs.h
+@@ -329,6 +329,10 @@ static inline void vma_close(struct vm_area_struct *vma)
+ {
+ }
+ 
++static inline void zap_vma(struct vm_area_struct *vma)
++{
++}
++
+ static inline int mmap_file(struct file *file, struct vm_area_struct *vma)
+ {
+ 	return 0;
 -- 
 2.47.3
 
