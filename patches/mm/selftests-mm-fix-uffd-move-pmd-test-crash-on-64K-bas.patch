@@ -1,0 +1,54 @@
+From: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+Date: Mon, 12 Oct 2026 00:35:27 +0800
+Subject: [PATCH] selftests/mm: fix uffd move-pmd test crash on 64K base page
+ systems
+
+uffd_move_pmd_test()/uffd_move_test_common() splits the test area into
+chunks of chunk_size and moves them one by one.  On arm64 with 64K base
+pages the chunk_size (read_pmd_pagesize()) is 512MB, which is larger than
+the whole 32MB (UFFD_TEST_MEM_SIZE) test area:
+
+  step_count = nr_pages / (chunk_size / page_size) == 0
+
+Because chunk_size > page_size, the test then aligns both areas up to
+512MB, which points far outside of the 32MB mappings, and decrements
+step_count, which underflows to ULONG_MAX.  The verification loop then
+runs away and the first dereference of area_src faults with a SIGSEGV.
+
+Skip the test when a single chunk cannot fit into the test area.
+
+Link: https://lore.kernel.org/20261011163527.95988-1-zenghui.yu@linux.dev
+Fixes: a2bf6a9ca805 ("selftests/mm: add UFFDIO_MOVE ioctl test")
+Signed-off-by: Zenghui Yu (Huawei) <zenghui.yu@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ tools/testing/selftests/mm/uffd-unit-tests.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/uffd-unit-tests.c b/tools/testing/selftests/mm/uffd-unit-tests.c
+index ef9b3956bdcfd..2a97ba1d6feb1 100644
+--- a/tools/testing/selftests/mm/uffd-unit-tests.c
++++ b/tools/testing/selftests/mm/uffd-unit-tests.c
+@@ -1937,6 +1937,11 @@ uffd_move_test_common(uffd_global_test_opts_t *gopts,
+ 
+ 	args.gopts = gopts;
+ 
++	if (chunk_size > gopts->nr_pages * gopts->page_size) {
++		uffd_test_skip("chunk size does not fit in the test area");
++		return;
++	}
++
+ 	/* Prevent source pages from being mapped more than once */
+ 	if (madvise(gopts->area_src, gopts->nr_pages * gopts->page_size, MADV_DONTFORK))
+ 		err("madvise(MADV_DONTFORK) failure");
+-- 
+2.47.3
+

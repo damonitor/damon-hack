@@ -66,6 +66,8 @@ helper print_file_access_error() in hugepage_settings.c to print
 TAP-compatible errors without a kselftest dependency.  This prepares the
 helpers to be moved to tools/lib/mm without a kselftest dependency.
 
+[sarthak.sharma@arm.com: convert hugetlb_nr_resv_pages()]
+  Link: https://lore.kernel.org/937939c3-ae9a-4148-a601-0f8876216423@arm.com
 Link: https://lore.kernel.org/20260918112234.195857-1-sarthak.sharma@arm.com
 Link: https://lore.kernel.org/20260918112234.195857-2-sarthak.sharma@arm.com
 Signed-off-by: Sarthak Sharma <sarthak.sharma@arm.com>
@@ -93,16 +95,16 @@ Cc: Shuah Khan <shuah@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Zi Yan <ziy@nvidia.com>
 ---
- .../testing/selftests/mm/hugepage_settings.c  |  98 +++++++++++---
+ .../testing/selftests/mm/hugepage_settings.c  | 108 +++++++++++++---
  .../selftests/mm/hugetlb-soft-offline.c       |  16 ++-
  tools/testing/selftests/mm/khugepaged.c       |  14 +-
  .../selftests/mm/split_huge_page_test.c       |   5 +-
  tools/testing/selftests/mm/vm_util.c          | 122 ++++++++++++------
  tools/testing/selftests/mm/vm_util.h          |   8 +-
- 6 files changed, 192 insertions(+), 71 deletions(-)
+ 6 files changed, 201 insertions(+), 72 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/hugepage_settings.c b/tools/testing/selftests/mm/hugepage_settings.c
-index 584054736ce99..9a63420d0744f 100644
+index 584054736ce99..6f3abd3573859 100644
 --- a/tools/testing/selftests/mm/hugepage_settings.c
 +++ b/tools/testing/selftests/mm/hugepage_settings.c
 @@ -8,6 +8,7 @@
@@ -248,7 +250,7 @@ index 584054736ce99..9a63420d0744f 100644
  	}
  	closedir(dir);
  	return count;
-@@ -425,28 +467,49 @@ static void hugetlb_sysfs_path(char *buf, size_t buflen,
+@@ -425,37 +467,66 @@ static void hugetlb_sysfs_path(char *buf, size_t buflen,
  unsigned long hugetlb_nr_pages(unsigned long size)
  {
  	char path[PATH_MAX];
@@ -301,7 +303,25 @@ index 584054736ce99..9a63420d0744f 100644
  }
  
  unsigned long hugetlb_nr_resv_pages(unsigned long size)
-@@ -511,7 +574,8 @@ unsigned long hugetlb_setup(unsigned long nr, unsigned long sizes[],
+ {
+ 	char path[PATH_MAX];
++	unsigned long nr;
++	int ret;
+ 
+ 	hugetlb_sysfs_path(path, sizeof(path), size, "resv_hugepages");
+ 
+-	return read_num(path);
++	ret = read_num(path, &nr);
++	if (ret) {
++		print_file_access_error(path, ret);
++		exit(EXIT_FAILURE);
++	}
++
++	return nr;
+ }
+ 
+ static bool __hugetlb_setup(unsigned long size, unsigned long nr)
+@@ -511,7 +582,8 @@ unsigned long hugetlb_setup(unsigned long nr, unsigned long sizes[],
  		return 0;
  
  	if (nr_enabled > max) {

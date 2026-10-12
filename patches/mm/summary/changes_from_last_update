@@ -1,4 +1,4 @@
-- baseline: v7.3-rc5-337-gff47652a4b66 -> v7.3-rc5-337-gff47652a4b66c
+- baseline: v7.3-rc5-337-gff47652a4b66c -> v7.3-rc5-337-gff47652a4b66c (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-hotfixes-unstable: 0 -> 0 commits (no change)
@@ -8,12 +8,25 @@
     - no role, maintainer: 22 -> 22 commits (no change)
     - maintainer, nobody: 60 -> 60 commits (no change)
     - maintainer, no role : 12 -> 12 commits (no change)
-- mm-unstable: 59 -> 59 commits (no change)
+- mm-unstable: 59 -> 57 commits
   - series: 11 (56) -> 11 (56) (no change)
     - no role, maintainer: 22 -> 22 commits (no change)
-    - maintainer, nobody: 31 -> 31 commits (no change)
+    - maintainer, nobody: 31 -> 29 commits
     - maintainer, no role : 5 -> 5 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
+  - changed commits
+    - series "mm/damon: introduce hugepage_size probe filter". (8)
+      - 1c0649763006 "Docs/admin-guide/mm/damon/usage: update for hugepage_size (6/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - added "[akpm@linux-foundation.org: s/files acts/file acts/, per SJ]"
+        - added "[akpm@linux-foundation.org: fix the fix]"
+        - Link: https://lore.kernel.org/20260915143359.91472-8-sj@kernel.org
+  - dropped commits
+    - series "mm/damon: introduce hugepage_size probe filter". (8)
+      - bf95b1e6f837 "docs-admin-guide-mm-damon-usage-update-for-hugepage_size-fix (7/8)"
+        - Authored by a maintainer, reviewed by nobody
+    - 707a0b2dc315 "docs-admin-guide-mm-damon-usage-update-for-hugepage_size-fix-fix"
+      - Authored by a maintainer, reviewed by nobody
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
