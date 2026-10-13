@@ -3,30 +3,186 @@
   - series: 0 (0) -> 0 (0) (no change)
 - mm-hotfixes-unstable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-stable: 94 -> 94 commits (no change)
-  - series: 16 (91) -> 16 (91) (no change)
-    - no role, maintainer: 22 -> 22 commits (no change)
-    - maintainer, nobody: 60 -> 60 commits (no change)
-    - maintainer, no role : 12 -> 12 commits (no change)
-- mm-unstable: 59 -> 57 commits
-  - series: 11 (56) -> 11 (56) (no change)
-    - no role, maintainer: 22 -> 22 commits (no change)
-    - maintainer, nobody: 31 -> 29 commits
-    - maintainer, no role : 5 -> 5 commits (no change)
-    - maintainer, reviewer: 1 -> 1 commits (no change)
+- mm-stable: 94 -> 132 commits
+  - series: 16 (91) -> 22 (129)
+    - no role, maintainer: 22 -> 34 commits
+    - maintainer, nobody: 60 -> 81 commits
+    - maintainer, no role : 12 -> 16 commits
+    - maintainer, reviewer: 0 -> 1 commits
   - changed commits
-    - series "mm/damon: introduce hugepage_size probe filter". (8)
-      - 1c0649763006 "Docs/admin-guide/mm/damon/usage: update for hugepage_size (6/8)"
+    - series "mm/damon: move damos filter range arguments validation to core". (8)
+      - 60e58be27d5e "mm/damon/sysfs-schemes: read sysfs_filter->addr_range only once (0/8)"
         - Authored by a maintainer, reviewed by nobody
-        - added "[akpm@linux-foundation.org: s/files acts/file acts/, per SJ]"
-        - added "[akpm@linux-foundation.org: fix the fix]"
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260914142327.92510-2-sj@kernel.org
+      - af19aff38d6f "mm/damon/sysfs-schemes: read sysfs_filter->sz_range only once (1/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-3-sj@kernel.org
+      - 6f276422aded "mm/damon/core: return an error from damos_commit_filter_arg() (2/8)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-4-sj@kernel.org
+      - 1bfb9384ae0e "mm/damon/core: disallow max < min damos filter range arguments commit (3/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-5-sj@kernel.org
+      - 1d2397b2c414 "mm/damon/sysfs-schemes: drop centralized filter range arg validations (4/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-6-sj@kernel.org
+      - cec08aad3def "mm/damon/sysfs-schemes: use switch-case in add_scheme_filters() (5/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-7-sj@kernel.org
+      - a1c7fdaf1657 "mm/damon/core-kunit: extend damos_commit_filter_for() for wrong input (6/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-8-sj@kernel.org
+      - 409d2ab6d982 "mm/damon/core-kunit: test invalid damos filter commits (7/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914142327.92510-9-sj@kernel.org
+    - series "mm/damon: misc improvements in tests and documents". (6)
+      - 65c7e923ed1a "selftests/damon: stop kdamond on error exits of no-op commit test (0/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260914141952.91465-2-sj@kernel.org
+      - b5c7c37cd040 "selftests/damon: ignore test-generated damon_dump_output (1/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-3-sj@kernel.org
+      - cd87d9b56bf3 "selftests/damon: add script dir to sys.path for PYTHONSAFEPATH compatibility (2/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-4-sj@kernel.org
+      - a3211bc29120 "mm/damon/tests/core-kunit: improve nr_samples_per_aggr test isolation (3/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-5-sj@kernel.org
+      - 3e8a5d695210 "Docs/mm/damon/design: clarify when qt_exceeds increases (4/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-6-sj@kernel.org
+      - 763b77347bb5 "Docs/mm/damon/design: fix typos in temporal auto-tuning algorithm section (5/6)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260914141952.91465-7-sj@kernel.org
+    - series "mm/damon: introduce hugepage_size probe filter". (8)
+      - 222636c8c139 "mm/damon/api: introduce DAMON_FILTER_TYPE_HUGEPAGE_SIZE (0/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260915143359.91472-2-sj@kernel.org
+      - a76723d4b615 "mm/damon/core: commit hugepage_size type damon filter (1/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-3-sj@kernel.org
+      - 71fb2abf3254 "mm/damon/ops-common: support hugepage_size damon filter matching (2/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-4-sj@kernel.org
+      - e63813b89336 "mm/damon/sysfs: add min,max files under probe filter directory (3/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-5-sj@kernel.org
+      - 270b82dc6f9c "mm/damon/sysfs: support hugepage_size probe filter (4/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-6-sj@kernel.org
+      - e818662fb61b "Docs/mm/damon/design: update for hugepage_size probe filter (5/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-7-sj@kernel.org
+      - 595f2ab773aa "Docs/admin-guide/mm/damon/usage: update for hugepage_size (6/8)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
         - Link: https://lore.kernel.org/20260915143359.91472-8-sj@kernel.org
-  - dropped commits
-    - series "mm/damon: introduce hugepage_size probe filter". (8)
-      - bf95b1e6f837 "docs-admin-guide-mm-damon-usage-update-for-hugepage_size-fix (7/8)"
+      - 37158d8eb89d "Docs/ABI/damon: update for hugepage_size probe filter (7/8)"
         - Authored by a maintainer, reviewed by nobody
-    - 707a0b2dc315 "docs-admin-guide-mm-damon-usage-update-for-hugepage_size-fix-fix"
-      - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260915143359.91472-9-sj@kernel.org
+    - series "mm/damon: improve readability, clarity and test coverage". (10)
+      - 4c7d26f11f81 "mm/damon/api: remove NR_DAMOS_FILTER_TYPES (0/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260917142210.90829-2-sj@kernel.org
+      - 9c6e6207aa4f "mm/damon/core: use abs_diff() in damon_feed_loop_next_input() (1/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-3-sj@kernel.org
+      - f5a038a92b25 "mm/damon/core: use mult_frac() in damon_feed_loop_next_input() (2/10)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-4-sj@kernel.org
+      - 1ead8a1db066 "mm/damon/core: set damon_ctx->walk_control_obsolete in damon_new_ctx() (3/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-5-sj@kernel.org
+        - Link: https://lore.kernel.org/20260915011614.102342-1-sj@kernel.org [1]
+      - 0ba2507de806 "mm/damon/core: document damon_call()/damon_start() race hang issue (4/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-6-sj@kernel.org
+      - 8de5dfa5d8d0 "mm/damon/paddr: remove pa parameter from damon_pa_filter_pass() (5/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-7-sj@kernel.org
+      - 266909694598 "mm/damon/tests/core-kunit: test eligible_mem_bp commitment (6/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-8-sj@kernel.org
+        - Link: https://lore.kkernel.org/20260827045035.94611-1-sj@kernel.org [1]
+      - 85368c3750ac "mm/damon/tests/core-kunit: add probe_hits_wsum damos filter commit test (7/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-9-sj@kernel.org
+      - 844eaab7a11b "selftests/damon/sysfs_memcg_path_leak: fail only for real DAMON leak (8/10)"
+        - Authored by a maintainer, reviewed by nobody
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-10-sj@kernel.org
+      - e1012e4f3760 "Docs/mm/damon/design: clarify bp is basis point (9/10)"
+        - Authored by a maintainer, reviewed by a reviewer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260917142210.90829-11-sj@kernel.org
+    - series "mm/damon/core: fix the size charged for a filter-trimmed region", v2. (2)
+      - 4ff3b4a54a32 "mm/damon/core: charge only the part of a region the filter left (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921152443.80132-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260921152443.80132-2-sj@kernel.org
+      - 1c3352282063 "mm/damon/tests/core-kunit: test the size charged for a filter-trimmed region (1/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921152443.80132-3-sj@kernel.org
+    - series "mm/damon: improvements in efficiency, error handling, documents". (4)
+      - a9799d2d2485 "mm/damon/core: skip quota score setup when the quota is full (0/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921151547.78472-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20260921151547.78472-2-sj@kernel.org
+      - 639b0cca7d11 "mm/damon/sysfs: propagate damon_call() error in turn_damon_on (1/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921151547.78472-3-sj@kernel.org
+      - 76ba2763d594 "mm/damon: fix typos in comments (2/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921151547.78472-4-sj@kernel.org
+      - 6fbcf40619ad "mm/damon: document that a zero sample_interval is accepted (3/4)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-unstable -> mm-stable
+        - Link: https://lore.kernel.org/20260921151547.78472-5-sj@kernel.org
+        - Link: https://lore.kernel.org/all/20260722094304.3132750-1-dayou5941@163.com/ [1]
+- mm-unstable: 57 -> 19 commits
+  - series: 11 (56) -> 5 (18)
+    - no role, maintainer: 22 -> 10 commits
+    - maintainer, nobody: 29 -> 8 commits
+    - maintainer, no role : 5 -> 1 commits
+    - maintainer, reviewer: 1 -> 0 commits
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
