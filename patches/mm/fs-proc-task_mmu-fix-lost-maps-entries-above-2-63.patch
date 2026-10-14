@@ -1,5 +1,5 @@
 From: Stian Halseth <stian@itx.no>
-Date: Sun, 11 Oct 2026 18:20:19 +0200
+Date: Tue, 13 Oct 2026 17:21:06 +0200
 Subject: [PATCH] fs/proc/task_mmu: fix lost maps entries above 2^63
 
 When a read of /proc/pid/{maps,smaps,numa_maps} resumes, m_start() rewinds
@@ -17,35 +17,49 @@ numa_maps at 97, and the proc-maps-race selftest fails 4 of its 6 tests.
 Python's sys.remote_exec() reads maps with fgets() and fails
 intermittently when it misses the libpython data mapping.
 
-Test for the two values that are not a vma end instead.
+Skip the rewind only for 0 and the two sentinels instead, with an
+addr_is_sentinel() helper.
 
-Link: https://lore.kernel.org/20261011162019.922436-1-stian@itx.no
-Fixes: 5631da56c9a8 ("fs/proc/task_mmu: read proc/pid/maps under per-vma lock")
+Link: https://lore.kernel.org/20261013152106.1834364-1-stian@itx.no
+Fixes: 5631da56c9a87 ("fs/proc/task_mmu: read proc/pid/maps under per-vma lock")
 Signed-off-by: Stian Halseth <stian@itx.no>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Closes: https://github.com/sparclinux/issues/issues/111
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Liam R. Howlett <liam@infradead.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Jann Horn <jannh@google.com>
 Cc: Pedro Falcato <pfalcato@suse.de>
 Cc: Andreas Larsson <andreas@gaisler.com>
 Cc: <stable@vger.kernel.org>
 ---
- fs/proc/task_mmu.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ fs/proc/task_mmu.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
-index 44147ba0b899d..bb69f194e7fcc 100644
+index 44147ba0b899d..81c464139f8f8 100644
 --- a/fs/proc/task_mmu.c
 +++ b/fs/proc/task_mmu.c
-@@ -263,7 +263,7 @@ static void *m_start(struct seq_file *m, loff_t *ppos)
+@@ -32,6 +32,11 @@
+ #define SENTINEL_VMA_END	-1
+ #define SENTINEL_VMA_GATE	-2
+ 
++static bool addr_is_sentinel(loff_t addr)
++{
++	return addr == SENTINEL_VMA_END || addr == SENTINEL_VMA_GATE;
++}
++
+ #define SEQ_PUT_DEC(str, val) \
+ 		seq_put_decimal_ull_width(m, str, (val) << (PAGE_SHIFT-10), 8)
+ void task_mem(struct seq_file *m, struct mm_struct *mm)
+@@ -263,7 +268,7 @@ static void *m_start(struct seq_file *m, loff_t *ppos)
  	 * Reset current position if last_addr was set before
  	 * and it's not a sentinel.
  	 */
 -	if (last_addr > 0)
-+	if (last_addr && last_addr != SENTINEL_VMA_GATE)
++	if (last_addr && !addr_is_sentinel(last_addr))
  		*ppos = last_addr = priv->last_pos;
  	vma_iter_init(&priv->iter, mm, (unsigned long)last_addr);
  	hold_task_mempolicy(priv);

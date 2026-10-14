@@ -1,7 +1,7 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Fri, 9 Oct 2026 19:04:23 +0100
+Date: Tue, 13 Oct 2026 16:05:11 +0100
 Subject: [PATCH] mm/madvise: update is_valid_guard_vma() to use
- vma_can_merge()
+ vma_is_mm_backed()
 
 We currently disallow the installation of lightweight guard regions in VMAs
 whose flags intersect VMA_SPECIAL_FLAGS or VMA_HUGETLB_BIT, or
@@ -12,13 +12,14 @@ VMA_SPECIAL_FLAGS already sufficed.
 
 However, now that VMA_IO_BIT is only set if VMA_PFNMAP or VMA_MIXEDMAP_BIT
 is set, this check collapses to being the equivalent of
-!vma_can_merge().
+!vma_is_mm_backed(), excluding hugetlb mappings in which guard markers
+cannot be installed.
 
 Update is_valid_guard_vma() to reflect this.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-29-923b70125b1e@kernel.org
+Link: https://lore.kernel.org/20261013-b4-mmap-prepare-vma-flag-sanify-v6-31-1aa3c9b139f9@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Zi Yan <ziy@nvidia.com>
@@ -135,7 +136,7 @@ Cc: Bert Karwatzki <spasswolf@web.de>
  1 file changed, 13 insertions(+), 7 deletions(-)
 
 diff --git a/mm/madvise.c b/mm/madvise.c
-index 4d7f398d97381..109568160ea25 100644
+index d19a8cf2d6b9b..7dbac9554fd87 100644
 --- a/mm/madvise.c
 +++ b/mm/madvise.c
 @@ -1057,19 +1057,25 @@ static long madvise_remove(struct madvise_behavior *madv_behavior)
@@ -160,10 +161,10 @@ index 4d7f398d97381..109568160ea25 100644
 +		return false;
 +	/*
 +	 * Guard regions require a VMA whose page tables are managed solely by
-+	 * the core, which is also what merging requires, so disallow any flags
-+	 * that would prevent a merge.
++	 * core mm, so the VMA must be mm-backed (excluding hugetlb, in which
++	 * guard markers cannot be installed).
 +	 */
-+	if (!vma_can_merge(vma))
++	if (!vma_is_mm_backed(vma) || vma_is_hugetlb(vma))
 +		return false;
  
 -	return !(vma->vm_flags & disallowed);

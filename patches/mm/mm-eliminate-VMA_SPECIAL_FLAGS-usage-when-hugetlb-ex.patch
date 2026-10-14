@@ -1,5 +1,5 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Fri, 9 Oct 2026 19:04:27 +0100
+Date: Tue, 13 Oct 2026 16:05:14 +0100
 Subject: [PATCH] mm: eliminate VMA_SPECIAL_FLAGS usage when hugetlb explicitly
  tested
 
@@ -12,16 +12,16 @@ This is precisely a test for a fixed or non-mm-managed mapping.
 Update a number of callsites which already explicitly handle hugetlb
 mappings.
 
-vma_supports_mlock() and ksm_compatible() also explicitly bail on droppable
-mappings - excluding non-mm-managed, fixed or droppable mappings is exactly
-what vma_is_mm_backed() tests for, so in these cases use this predicate.
+vma_supports_mlock(), ksm_compatible() and should_skip_vma() explicitly
+check for non-mm-managed or fixed mappings, i.e. for !vma_is_mm_backed(),
+with hugetlb having already been excluded separately.
 
-should_skip_vma() tests for locked, fixed or non-mm-managed memory (having
-already excluded hugetlb mappings) so simply test for those there.
+So update those to check for mm-backed (and add comments for the retained
+droppable checks).
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-33-923b70125b1e@kernel.org
+Link: https://lore.kernel.org/20261013-b4-mmap-prepare-vma-flag-sanify-v6-34-1aa3c9b139f9@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Zi Yan <ziy@nvidia.com>
@@ -134,52 +134,53 @@ Cc: Xu Xin <xu.xin@linux.dev>
 Cc: Ihor Solodrai <ihor.solodrai@linux.dev>
 Cc: Bert Karwatzki <spasswolf@web.de>
 ---
- mm/internal.h | 4 +---
- mm/ksm.c      | 4 +---
- mm/vmscan.c   | 3 ++-
- 3 files changed, 4 insertions(+), 7 deletions(-)
+ mm/internal.h | 3 ++-
+ mm/ksm.c      | 5 +++--
+ mm/vmscan.c   | 2 +-
+ 3 files changed, 6 insertions(+), 4 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 498dbb71fcf12..4579fbc15a78d 100644
+index 498dbb71fcf12..bef4ad142e2a6 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -1112,9 +1112,7 @@ static inline struct file *maybe_unlock_mmap_for_io(struct vm_fault *vmf,
+@@ -1112,8 +1112,9 @@ static inline struct file *maybe_unlock_mmap_for_io(struct vm_fault *vmf,
  
  static inline bool vma_supports_mlock(const struct vm_area_struct *vma)
  {
 -	if (vma_test_any_mask(vma, VMA_SPECIAL_FLAGS))
--		return false;
--	if (vma_test_single_mask(vma, VMA_DROPPABLE))
 +	if (!vma_is_mm_backed(vma))
  		return false;
- 	if (vma_is_dax(vma) || vma_is_hugetlb(vma))
++	/* Core mm may discard droppable memory at any time. */
+ 	if (vma_test_single_mask(vma, VMA_DROPPABLE))
  		return false;
+ 	if (vma_is_dax(vma) || vma_is_hugetlb(vma))
 diff --git a/mm/ksm.c b/mm/ksm.c
-index 624f37975e129..ed66a90e00315 100644
+index 624f37975e129..df4c5199f625e 100644
 --- a/mm/ksm.c
 +++ b/mm/ksm.c
-@@ -747,9 +747,7 @@ static bool ksm_compatible(const struct file *file, vma_flags_t vma_flags)
+@@ -747,9 +747,10 @@ static bool ksm_compatible(const struct file *file, vma_flags_t vma_flags)
  	if (vma_flags_test_any(&vma_flags, VMA_SHARED_BIT, VMA_MAYSHARE_BIT,
  			       VMA_HUGETLB_BIT))
  		return false;
 -	if (vma_flags_test_single_mask(&vma_flags, VMA_DROPPABLE))
--		return false;
--	if (vma_flags_test_any_mask(&vma_flags, VMA_SPECIAL_FLAGS))
 +	if (!vma_flags_is_mm_backed(&vma_flags))
+ 		return false;
+-	if (vma_flags_test_any_mask(&vma_flags, VMA_SPECIAL_FLAGS))
++	/* Core mm may discard droppable memory at any time. */
++	if (vma_flags_test_single_mask(&vma_flags, VMA_DROPPABLE))
  		return false;
  	if (file_is_dax(file))
  		return false;
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index f752dfd47ec2f..a8b77c223c2c0 100644
+index f752dfd47ec2f..c35b82a3069d4 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -3521,7 +3521,8 @@ static int should_skip_vma(unsigned long start, unsigned long end, struct mm_wal
+@@ -3521,7 +3521,7 @@ static int should_skip_vma(unsigned long start, unsigned long end, struct mm_wal
  	if (!vma_has_recency(vma))
  		return true;
  
 -	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL))
-+	if (vma_test(vma, VMA_LOCKED_BIT) || !vma_is_mm_managed(vma) ||
-+	    vma_is_fixed_mapping(vma))
++	if (vma_test(vma, VMA_LOCKED_BIT) || !vma_is_mm_backed(vma))
  		return true;
  
  	if (vma == get_gate_vma(vma->vm_mm))

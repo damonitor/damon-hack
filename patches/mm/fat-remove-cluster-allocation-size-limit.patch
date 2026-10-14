@@ -1,0 +1,118 @@
+From: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Date: Mon, 12 Oct 2026 14:11:04 -0300
+Subject: [PATCH] fat: remove cluster allocation size limit
+
+Patch series "fat: allocate multiple clusters in fallocate", v2.
+
+This series adds support for allocating multiple clusters in a single
+fat_add_clusters() call in fat_fallocate().
+
+The multi-cluster TODO in inode.c is not implemented, as doing so would
+require speculative preallocation or an iomap conversion.
+
+
+This patch (of 3):
+
+fat_alloc_clusters() currently BUG()s when asked to allocate more than
+MAX_BUF_PER_PAGE / 2 clusters. This limit comes from the buffer_head
+array used to defer syncing and mirroring.
+
+Remove the allocation size limit by doing buffer_head batching like
+fat_free_clusters() does.
+
+Link: https://lore.kernel.org/20261012171106.146243-1-matheus.aalmeida@inf.ufrgs.br
+Link: https://lore.kernel.org/20261012171106.146243-2-matheus.aalmeida@inf.ufrgs.br
+Signed-off-by: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: OGAWA Hirofumi <hirofumi@mail.parknet.co.jp>
+---
+ fs/fat/fatent.c | 44 +++++++++++++++++++++++++++++++-------------
+ 1 file changed, 31 insertions(+), 13 deletions(-)
+
+diff --git a/fs/fat/fatent.c b/fs/fat/fatent.c
+index df23fc85f3130..e008fb4e72e0f 100644
+--- a/fs/fat/fatent.c
++++ b/fs/fat/fatent.c
+@@ -483,6 +483,26 @@ static void fat_collect_bhs(struct buffer_head **bhs, int *nr_bhs,
+ 	}
+ }
+ 
++static int fat_flush_bhs(struct super_block *sb, struct buffer_head **bhs,
++			 int *nr_bhs, bool sync)
++{
++	int err, i;
++
++	if (sync) {
++		err = fat_sync_bhs(bhs, *nr_bhs);
++		if (err)
++			return err;
++	}
++	err = fat_mirror_bhs(sb, bhs, *nr_bhs);
++	if (err)
++		return err;
++	for (i = 0; i < *nr_bhs; i++)
++		brelse(bhs[i]);
++	*nr_bhs = 0;
++
++	return 0;
++}
++
+ int fat_alloc_clusters(struct inode *inode, int *cluster, int nr_cluster)
+ {
+ 	struct super_block *sb = inode->i_sb;
+@@ -492,8 +512,6 @@ int fat_alloc_clusters(struct inode *inode, int *cluster, int nr_cluster)
+ 	struct buffer_head *bhs[MAX_BUF_PER_PAGE];
+ 	int i, count, err, nr_bhs, idx_clus;
+ 
+-	BUG_ON(nr_cluster > (MAX_BUF_PER_PAGE / 2));	/* fixed limit */
+-
+ 	lock_fat(sbi);
+ 	if (sbi->free_clusters != -1 && sbi->free_clus_valid &&
+ 	    sbi->free_clusters < nr_cluster) {
+@@ -524,14 +542,21 @@ int fat_alloc_clusters(struct inode *inode, int *cluster, int nr_cluster)
+ 				if (prev_ent.nr_bhs)
+ 					ops->ent_put(&prev_ent, entry);
+ 
+-				fat_collect_bhs(bhs, &nr_bhs, &fatent);
+-
+ 				sbi->prev_free = entry;
+ 				if (sbi->free_clusters != -1)
+ 					sbi->free_clusters--;
+ 
+ 				cluster[idx_clus] = entry;
+ 				idx_clus++;
++
++				if (nr_bhs + fatent.nr_bhs > MAX_BUF_PER_PAGE) {
++					err = fat_flush_bhs(sb, bhs, &nr_bhs,
++							    inode_needs_sync(inode));
++					if (err)
++						goto out;
++				}
++				fat_collect_bhs(bhs, &nr_bhs, &fatent);
++
+ 				if (idx_clus == nr_cluster)
+ 					goto out;
+ 
+@@ -621,17 +646,10 @@ int fat_free_clusters(struct inode *inode, int cluster)
+ 		}
+ 
+ 		if (nr_bhs + fatent.nr_bhs > MAX_BUF_PER_PAGE) {
+-			if (sb->s_flags & SB_SYNCHRONOUS) {
+-				err = fat_sync_bhs(bhs, nr_bhs);
+-				if (err)
+-					goto error;
+-			}
+-			err = fat_mirror_bhs(sb, bhs, nr_bhs);
++			err = fat_flush_bhs(sb, bhs, &nr_bhs,
++					    sb->s_flags & SB_SYNCHRONOUS);
+ 			if (err)
+ 				goto error;
+-			for (i = 0; i < nr_bhs; i++)
+-				brelse(bhs[i]);
+-			nr_bhs = 0;
+ 		}
+ 		fat_collect_bhs(bhs, &nr_bhs, &fatent);
+ 	} while (cluster != FAT_ENT_EOF);
+-- 
+2.47.3
+

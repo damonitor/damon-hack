@@ -1,0 +1,119 @@
+From: zhoumin <teczm@foxmail.com>
+Date: Mon, 12 Oct 2026 21:20:06 +0800
+Subject: [PATCH] fat: roll back the new entry when create/mkdir fails to build
+ the inode
+
+vfat_create(), vfat_mkdir(), msdos_create() and msdos_mkdir() add the
+on-disk entry before calling fat_build_inode() to set up the VFS inode.
+If fat_build_inode() fails, the error is returned but the entry stays on
+disk and the file or directory shows up after remount.
+
+Remove the entry in that case.  For mkdir, also free the directory cluster
+and decrement the parent's link count.
+
+Link: https://lore.kernel.org/tencent_4EDD66523CED299DB0C99498B4D8C939A009@qq.com
+Signed-off-by: zhoumin <teczm@foxmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: OGAWA Hirofumi <hirofumi@mail.parknet.co.jp>
+---
+ fs/fat/namei_msdos.c | 22 ++++++++++++++++++----
+ fs/fat/namei_vfat.c  | 22 ++++++++++++++++++----
+ 2 files changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/fs/fat/namei_msdos.c b/fs/fat/namei_msdos.c
+index d46d1a3851f25..7f2c68149efda 100644
+--- a/fs/fat/namei_msdos.c
++++ b/fs/fat/namei_msdos.c
+@@ -292,11 +292,17 @@ static int msdos_create(struct mnt_idmap *idmap, struct inode *dir,
+ 	if (err)
+ 		goto out;
+ 	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
+-	brelse(sinfo.bh);
+ 	if (IS_ERR(inode)) {
++		int err2;
++
+ 		err = PTR_ERR(inode);
++		err2 = fat_remove_entries(dir, &sinfo);
++		if (err2)
++			fat_msg(sb, KERN_WARNING,
++				"failed to roll back new entry (%d)", err2);
+ 		goto out;
+ 	}
++	brelse(sinfo.bh);
+ 	fat_truncate_time(inode, &ts, FAT_UPDATE_ATIME | FAT_UPDATE_CMTIME);
+ 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
+ 
+@@ -381,12 +387,20 @@ static struct dentry *msdos_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+ 	inc_nlink(dir);
+ 
+ 	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
+-	brelse(sinfo.bh);
+ 	if (IS_ERR(inode)) {
++		int err2;
++
+ 		err = PTR_ERR(inode);
+-		/* the directory was completed, just return a error */
+-		goto out;
++		err2 = fat_remove_entries(dir, &sinfo);
++		if (err2) {
++			fat_msg(sb, KERN_WARNING,
++				"failed to roll back new entry (%d)", err2);
++			goto out;
++		}
++		drop_nlink(dir);
++		goto out_free;
+ 	}
++	brelse(sinfo.bh);
+ 	set_nlink(inode, 2);
+ 	fat_truncate_time(inode, &ts, FAT_UPDATE_ATIME | FAT_UPDATE_CMTIME);
+ 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
+diff --git a/fs/fat/namei_vfat.c b/fs/fat/namei_vfat.c
+index da3e89c0b16ac..b366e0163272c 100644
+--- a/fs/fat/namei_vfat.c
++++ b/fs/fat/namei_vfat.c
+@@ -771,11 +771,17 @@ static int vfat_create(struct mnt_idmap *idmap, struct inode *dir,
+ 	inode_inc_iversion(dir);
+ 
+ 	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
+-	brelse(sinfo.bh);
+ 	if (IS_ERR(inode)) {
++		int err2;
++
+ 		err = PTR_ERR(inode);
++		err2 = fat_remove_entries(dir, &sinfo);
++		if (err2)
++			fat_msg(sb, KERN_WARNING,
++				"failed to roll back new entry (%d)", err2);
+ 		goto out;
+ 	}
++	brelse(sinfo.bh);
+ 	inode_inc_iversion(inode);
+ 
+ 	d_instantiate(dentry, inode);
+@@ -870,12 +876,20 @@ static struct dentry *vfat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+ 	inc_nlink(dir);
+ 
+ 	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
+-	brelse(sinfo.bh);
+ 	if (IS_ERR(inode)) {
++		int err2;
++
+ 		err = PTR_ERR(inode);
+-		/* the directory was completed, just return a error */
+-		goto out;
++		err2 = fat_remove_entries(dir, &sinfo);
++		if (err2) {
++			fat_msg(sb, KERN_WARNING,
++				"failed to roll back new entry (%d)", err2);
++			goto out;
++		}
++		drop_nlink(dir);
++		goto out_free;
+ 	}
++	brelse(sinfo.bh);
+ 	inode_inc_iversion(inode);
+ 	set_nlink(inode, 2);
+ 
+-- 
+2.47.3
+

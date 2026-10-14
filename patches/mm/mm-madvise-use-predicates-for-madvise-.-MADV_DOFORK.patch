@@ -1,28 +1,29 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Fri, 9 Oct 2026 19:04:26 +0100
+Date: Tue, 13 Oct 2026 16:05:13 +0100
 Subject: [PATCH] mm/madvise: use predicates for madvise(..., MADV_DOFORK)
 
 Make it clear what we're blocking in MADV_DOFORK. Previously we simply
 disallowed VM_SPECIAL i.e. mappings not managed by core mm, fixed mappings
-and
-VMA_IO_BIT.
+and VMA_IO_BIT.
 
 Now the invariant is established that mm-managed mappings may not set
 VMA_IO_BIT, the VMA_IO_BIT check is redundant.
 
 The rest is equivalent to testing for a fixed or non-mm-managed mapping,
-i.e. exactly the same check as whether the VMA is permitted to be merged.
+i.e. a mapping which is not mm-backed, or hugetlb, which is specifically
+excluded.
 
 This was established by commit 0b2758f48f22 ("Require (reasonably) normal
 mappings for MADV_DOFORK") containing my hands-down favourite call out of
 all time.
 
-Express the same thing differently - if we wouldn't be allowed to merge it,
-then we aren't allowed to manipulate CoW behaviour on fork.
+Express the same thing using the predicates - only mm-backed mappings may
+have their copy-on-fork behaviour changed, retaining the eternal exception
+to all rules, hugetlb.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-32-923b70125b1e@kernel.org
+Link: https://lore.kernel.org/20261013-b4-mmap-prepare-vma-flag-sanify-v6-33-1aa3c9b139f9@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Zi Yan <ziy@nvidia.com>
@@ -139,7 +140,7 @@ Cc: Bert Karwatzki <spasswolf@web.de>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/mm/madvise.c b/mm/madvise.c
-index 8f43fa839258a..fd8c25641f2ba 100644
+index 7dbac9554fd87..828c284086159 100644
 --- a/mm/madvise.c
 +++ b/mm/madvise.c
 @@ -1402,7 +1402,7 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
@@ -147,7 +148,7 @@ index 8f43fa839258a..fd8c25641f2ba 100644
  		break;
  	case MADV_DOFORK:
 -		if (new_flags & VM_SPECIAL)
-+		if (!vma_can_merge(vma))
++		if (!vma_is_mm_backed(vma) || vma_is_hugetlb(vma))
  			return -EINVAL;
  		new_flags &= ~VM_DONTCOPY;
  		break;

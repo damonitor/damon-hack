@@ -1,18 +1,21 @@
 From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
-Date: Fri, 9 Oct 2026 19:04:19 +0100
+Date: Tue, 13 Oct 2026 16:05:06 +0100
 Subject: [PATCH] mm: remove VMA_IO_BIT check in vma[_flags]_is_mm_managed()
 
 We have now made it such that every driver which sets VMA_IO_BIT marks it
 as not mm-managed.
 
-However, vma_flags_is_mm_managed() currently treats VMA_IO_BIT as
-disqualifying. This was a product of drivers previously marking a range as
-not mm-managed by
-setting VMA_IO_BIT alone.
+However, vma_flags_is_mm_managed() still checks for VMA_IO_BIT and, if
+set, treats the mapping as not mm-managed. This was previously required to
+handle drivers which set VMA_IO_BIT but none of the other flags which
+identify a mapping as not mm-managed.
 
-Fix this by removing the VMA_IO_BIT check in vma_flags_is_mm_managed(),
-and update mmap_validate_vma_flags() to use vma_flags_is_mm_managed()
-rather than open-coding the VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT check.
+We have now established that a driver which sets VMA_IO_BIT must also set
+one of those flags, so the VMA_IO_BIT check is redundant.
+
+So remove the VMA_IO_BIT check in vma_flags_is_mm_managed() and update
+mmap_validate_vma_flags() to use vma_flags_is_mm_managed() rather than
+open-coding the VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT check.
 
 This change means that vma[_flags]_can_merge() doesn't check VMA_IO_BIT any
 longer (which is now redundant) as it calls vma_flags_is_mm_managed().
@@ -22,8 +25,7 @@ also use it at the other sites which open-code that pair, so the intent is
 stated rather than the flags, with no functional change:
 
 zap_special_vma_range() only zaps mappings which are not mm-managed, as
-drivers use it
-to tear down ranges they established themselves.
+drivers use it to tear down ranges they established themselves.
 
 The mprotect() arch PFN modification check applies to mappings not managed
 by core mm, which may map PFNs without struct pages.
@@ -36,7 +38,7 @@ Finally, update the VMA userland merge 'special' flag tests to no longer
 assert that VMA_IO_BIT prevents merge as VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT
 now suffices.
 
-Link: https://lore.kernel.org/20261009-b4-mmap-prepare-vma-flag-sanify-v5-25-923b70125b1e@kernel.org
+Link: https://lore.kernel.org/20261013-b4-mmap-prepare-vma-flag-sanify-v6-26-1aa3c9b139f9@kernel.org
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
@@ -159,7 +161,7 @@ Cc: Bert Karwatzki <spasswolf@web.de>
  7 files changed, 11 insertions(+), 19 deletions(-)
 
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index 12cddef4ae781..f7298862847f6 100644
+index ef81e1fa7b030..d3ca02e9aa28c 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
 @@ -1628,8 +1628,7 @@ static inline bool vma_is_shared_maywrite(const struct vm_area_struct *vma)
@@ -186,7 +188,7 @@ index 57360f5cdde4f..1e6b1761fc8f5 100644
  			continue;
  		}
 diff --git a/mm/memory.c b/mm/memory.c
-index 5c671f73909ee..b6f9e4d97639e 100644
+index c321ae0aff225..e8b6e32b66ce2 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
 @@ -2354,19 +2354,20 @@ void zap_vma_range(struct vm_area_struct *vma, unsigned long address,
@@ -228,10 +230,10 @@ index 2888ee638d872..706c679d42819 100644
  		pgprot_t new_pgprot = vm_get_page_prot(newflags);
  
 diff --git a/mm/vma.c b/mm/vma.c
-index 4495130d8a952..7b24af6996052 100644
+index 7659102398d47..039981fb66496 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -2811,7 +2811,7 @@ static int mmap_validate_vma_flags(const vma_flags_t *flags)
+@@ -2809,7 +2809,7 @@ static int mmap_validate_vma_flags(const vma_flags_t *flags)
  		return -EINVAL;
  #endif
  

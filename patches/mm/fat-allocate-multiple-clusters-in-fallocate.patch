@@ -1,0 +1,73 @@
+From: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Date: Mon, 12 Oct 2026 14:11:06 -0300
+Subject: [PATCH] fat: allocate multiple clusters in fallocate
+
+The fat_fallocate() code currently does many 1-cluster allocations when
+growing a file in the FALLOC_FL_KEEP_SIZE path. Make it allocate
+everything with one call instead.
+
+Benchmarking was done under QEMU/KVM with a virtio-blk device using
+cache=none. Each result is the arithmetic mean of the listed samples.
+
+start = now_ns();
+for (unsigned int i = 0; i < count; i++)
+     fallocate(fds[i], FALLOC_FL_KEEP_SIZE, 0, bytes);
+elapsed = now_ns() - start;
+
+FAT32 with 512-byte clusters using count=16 files:
+length    mounted sync?    before    after    improvement    samples
+256MiB    no               2.328s    0.175s   13.2x          10
+16MiB     no               149.659ms 14.036ms 10.7x          10
+16MiB     yes              747.993s  3.445s   217.1x         3
+1MiB      yes              46.63s    0.333s   140.1x         10
+
+FAT32 with 512-byte clusters using count=128 files:
+length    mounted sync?    before    after    improvement    samples
+1MiB      no               90.873ms  4.686ms  19.4x          10
+16KiB     no               1.287ms   0.241ms  5.3x           10
+128KiB    yes              47.284s   0.350s   135x           10
+4KiB      yes              1.98s     0.144s   13.7x          10
+
+FAT32 with 4096-byte clusters using count=16 files:
+length    mounted sync?    before    after    improvement    samples
+256MiB    no               295.392ms 24.733ms 11.9x          10
+16MiB     no               20.509ms  1.404ms  14.6x          10
+16MiB     yes              92.489s   0.348s   265.4x         10
+1MiB      yes              5.837s    0.048s   121.3x         10
+
+The improvement is especially large on synchronous mounts, where the
+new code can batch FAT updates instead of synchronously handling each
+cluster allocation separately.
+
+Link: https://lore.kernel.org/20261012171106.146243-4-matheus.aalmeida@inf.ufrgs.br
+Signed-off-by: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: OGAWA Hirofumi <hirofumi@mail.parknet.co.jp>
+---
+ fs/fat/file.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/fs/fat/file.c b/fs/fat/file.c
+index fc77d20e8fe7c..c08135cdda66d 100644
+--- a/fs/fat/file.c
++++ b/fs/fat/file.c
+@@ -290,12 +290,10 @@ static long fat_fallocate(struct file *file, int mode,
+ 		nr_cluster = (mm_bytes + (sbi->cluster_size - 1)) >>
+ 			sbi->cluster_bits;
+ 
+-		/* Start the allocation.We are not zeroing out the clusters */
+-		while (nr_cluster-- > 0) {
+-			err = fat_add_clusters(inode, 1);
+-			if (err)
+-				goto error;
+-		}
++		/* Allocate the clusters. We are not zeroing them out */
++		err = fat_add_clusters(inode, nr_cluster);
++		if (err)
++			goto error;
+ 	} else {
+ 		if ((offset + len) <= i_size_read(inode))
+ 			goto error;
+-- 
+2.47.3
+
