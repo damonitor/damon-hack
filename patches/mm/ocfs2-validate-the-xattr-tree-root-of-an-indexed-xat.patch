@@ -1,0 +1,85 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Wed, 14 Oct 2026 18:58:56 +0800
+Subject: [PATCH] ocfs2: validate the xattr tree root of an indexed xattr block
+
+ocfs2_validate_xattr_block() checks an xattr block's signature, blkno,
+generation and suballocator fields, and for a non-indexed block the entry
+array it carries.  An indexed block is passed straight through, so the
+extent list in its xattr tree root is never looked at.
+
+Both fields that describe the list are bounded.  The two places that
+create a root set l_count from ocfs2_xattr_recs_per_xb() and nothing
+rewrites it, and the insert path asserts in ocfs2_rotate_leaf() that
+l_next_free_rec stays within l_count.  Check both when the block is
+first read, so a root that disagrees with the block size, or claims more
+records than it has room for, is caught before anything indexes into
+l_recs[].
+
+An empty root is deliberately not rejected.  Emptying the tree leaves it
+that way: ocfs2_rm_xattr_cluster() removes one extent per transaction,
+and the last one ends in ocfs2_truncate_rec(), whose closing
+ocfs2_rotate_tree_left() reaches ocfs2_remove_empty_extent() on the
+depth-zero root and takes l_next_free_rec to zero.  That transaction
+commits before ocfs2_xattr_free_block() frees the block, and before
+ocfs2_xattr_remove() clears i_xattr_loc, in two later transactions, so a
+crash in between leaves an orphan inode pointing at an xattr block whose
+root has no extents.  Both readers already cope with it:
+__ocfs2_xattr_index_block_find() answers -ENODATA, and
+ocfs2_iterate_xattr_index_block() returns without iterating.
+
+Link: https://lore.kernel.org/20261014105856.2909777-1-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/xattr.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/fs/ocfs2/xattr.c b/fs/ocfs2/xattr.c
+index 52e46d1b8763c..8b7a382dc2ffe 100644
+--- a/fs/ocfs2/xattr.c
++++ b/fs/ocfs2/xattr.c
+@@ -491,6 +491,7 @@ static int ocfs2_validate_xattr_block(struct super_block *sb,
+ 				      struct buffer_head *bh)
+ {
+ 	int rc;
++	struct ocfs2_extent_list *el;
+ 	struct ocfs2_xattr_block *xb =
+ 		(struct ocfs2_xattr_block *)bh->b_data;
+ 
+@@ -573,6 +574,30 @@ static int ocfs2_validate_xattr_block(struct super_block *sb,
+ 							 region_offset);
+ 	}
+ 
++	/*
++	 * An indexed xattr block carries the root of the xattr tree.  Its
++	 * record count is fixed by the block size and l_next_free_rec never
++	 * exceeds it.  A zero l_next_free_rec is valid: emptying the tree on
++	 * the inode deletion path leaves the root with no extents.
++	 */
++	el = &xb->xb_attrs.xb_root.xt_list;
++
++	if (le16_to_cpu(el->l_count) != ocfs2_xattr_recs_per_xb(sb)) {
++		return ocfs2_error(sb,
++				   "Xattr tree root #%llu has invalid l_count %u (expected %u)\n",
++				   (unsigned long long)bh->b_blocknr,
++				   le16_to_cpu(el->l_count),
++				   ocfs2_xattr_recs_per_xb(sb));
++	}
++
++	if (le16_to_cpu(el->l_next_free_rec) > le16_to_cpu(el->l_count)) {
++		return ocfs2_error(sb,
++				   "Xattr tree root #%llu has l_next_free_rec %u past the end of its list (l_count %u)\n",
++				   (unsigned long long)bh->b_blocknr,
++				   le16_to_cpu(el->l_next_free_rec),
++				   le16_to_cpu(el->l_count));
++	}
++
+ 	return 0;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,60 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Wed, 14 Oct 2026 17:00:23 +0800
+Subject: [PATCH] mm/vmscan: fix missing NR_ISOLATED counter update in MGLRU
+ reclaim path
+
+MGLRU evict_folios() isolates folios from the LRU without updating the
+NR_ISOLATED_ANON/FILE counters, unlike the legacy shrink_inactive_list()
+path.  This causes compaction's too_many_isolated() check to under-count
+isolated pages when MGLRU reclaim is active.
+
+Add NR_ISOLATED counter updates in evict_folios(): increment after
+isolate_folios() and decrement after all retry passes complete, using the
+existing nr_isolated which holds the original isolated count.
+
+Link: https://lore.kernel.org/141901355a7d9e4bbca5c4840ae32ea5c65fe3b6.1791968227.git.zhuhui@kylinos.cn
+Link: https://lore.kernel.org/cover.1791968227.git.zhuhui@kylinos.cn
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+---
+ mm/vmscan.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index ac386422bc91f..28dbc5137e68e 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5081,6 +5081,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 	scanned = isolate_folios(nr_to_scan, lruvec, sc, swappiness,
+ 				 &list, &isolated, &type, &type_scanned);
+ 	nr_isolated = isolated;
++	if (nr_isolated)
++		__mod_node_page_state(pgdat, NR_ISOLATED_ANON + type,
++				      nr_isolated);
+ 
+ 	/* Scanning may have emptied the oldest gen, flush it */
+ 	if (scanned)
+@@ -5149,6 +5152,8 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+ 		goto retry;
+ 	}
+ 
++	mod_node_page_state(pgdat, NR_ISOLATED_ANON + type, -nr_isolated);
++
+ 	if (nr_isolated > total_reclaimed)
+ 		mod_lruvec_state(lruvec, PGROTATE_ANON + type,
+ 				 nr_isolated - total_reclaimed);
+-- 
+2.47.3
+
