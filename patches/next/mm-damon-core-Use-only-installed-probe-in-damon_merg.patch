@@ -1,0 +1,116 @@
+From: Suhaas Joshi <suhaas@s-joshi.in>
+Date: Thu, 15 Oct 2026 19:27:53 +0530
+Subject: [PATCH] mm/damon/core: Use only installed probe in
+ damon_merge_two_regions()
+
+While merging 2 regions, we iterate over the entire probe_hits[] array,
+whose size is determined by the DAMON_MAX_PROBES macro. However, it is
+possible that we have fewer probes installed than DAMON_MAX_PROBES. In such
+cases, we end up making redundant iterations. Therefore, to remedy this,
+iterate over the list of installed probes instead of iterating over the
+entire array. For doing this, start accepting a struct damon_ctx in
+damon_merge_two_regions(), and update calling functions to pass this
+argument.
+
+Update the damon_test_merge_two() test to use this new signature for
+damon_merge_two_regions() as well.
+
+Signed-off-by: Suhaas Joshi <suhaas@s-joshi.in>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c             | 15 ++++++++++-----
+ mm/damon/tests/core-kunit.h | 20 ++++++++++++++++++--
+ 2 files changed, 28 insertions(+), 7 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index ddf9c08aa6c1f..18bda461182c4 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3756,20 +3756,25 @@ static void damon_verify_merge_two_regions(
+ /*
+  * Merge two adjacent regions into one region
+  */
+-static void damon_merge_two_regions(struct damon_target *t,
+-		struct damon_region *l, struct damon_region *r)
++static void damon_merge_two_regions(struct damon_ctx *ctx,
++		struct damon_target *t, struct damon_region *l,
++		struct damon_region *r)
+ {
+ 	unsigned long sz_l = damon_sz_region(l), sz_r = damon_sz_region(r);
+ 	int i;
++	struct damon_probe *p;
+ 
+ 	l->nr_accesses = (l->nr_accesses * sz_l + r->nr_accesses * sz_r) /
+ 			(sz_l + sz_r);
+ 	l->age = (l->age * sz_l + r->age * sz_r) / (sz_l + sz_r);
+ 	l->ar.end = r->ar.end;
+-	/* todo: do this for only installed probes */
+-	for (i = 0; i < DAMON_MAX_PROBES; i++)
++
++	i = 0;
++	damon_for_each_probe(p, ctx) {
+ 		l->probe_hits[i] = (l->probe_hits[i] * sz_l + r->probe_hits[i]
+ 				* sz_r) / (sz_l + sz_r);
++		++i;
++	}
+ 	damon_verify_merge_two_regions(l, r);
+ 	damon_destroy_region(r, t);
+ }
+@@ -3822,7 +3827,7 @@ static void damon_merge_regions_of(struct damon_target *t, unsigned int thres,
+ 			goto set_prev_continue;
+ 		if (damon_sz_region(prev) + damon_sz_region(r) > sz_limit)
+ 			goto set_prev_continue;
+-		damon_merge_two_regions(t, prev, r);
++		damon_merge_two_regions(ctx, t, prev, r);
+ 		continue;
+ set_prev_continue:
+ 		prev = r;
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 3fbb4e4e36fac..849cf61cb828e 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -182,6 +182,8 @@ static void damon_test_merge_two(struct kunit *test)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r, *r2, *r3;
++	struct damon_probe *p;
++	struct damon_ctx *ctx;
+ 	int i;
+ 
+ 	t = damon_new_target();
+@@ -206,7 +208,21 @@ static void damon_test_merge_two(struct kunit *test)
+ 	r2->age = 21;
+ 	damon_add_region(r2, t);
+ 
+-	damon_merge_two_regions(t, r, r2);
++	p = damon_new_probe();
++	if (!p) {
++		damon_free_target(t);
++		kunit_skip(test, "probe alloc fail");
++	}
++	ctx = damon_new_ctx();
++	if (!ctx) {
++		damon_destroy_probe(p);
++		damon_free_target(t);
++		kunit_skip(test, "context alloc fail");
++	}
++	damon_add_probe(ctx, p);
++	damon_add_target(ctx, t);
++
++	damon_merge_two_regions(ctx, t, r, r2);
+ 	KUNIT_EXPECT_EQ(test, r->ar.start, 0ul);
+ 	KUNIT_EXPECT_EQ(test, r->ar.end, 300ul);
+ 	KUNIT_EXPECT_EQ(test, r->nr_accesses, 16u);
+@@ -220,7 +236,7 @@ static void damon_test_merge_two(struct kunit *test)
+ 	}
+ 	KUNIT_EXPECT_EQ(test, i, 1);
+ 
+-	damon_free_target(t);
++	damon_destroy_ctx(ctx);
+ }
+ 
+ static struct damon_region *__nth_region_of(struct damon_target *t, int idx)
+-- 
+2.47.3
+
