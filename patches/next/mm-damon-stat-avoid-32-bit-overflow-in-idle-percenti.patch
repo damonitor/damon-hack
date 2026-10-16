@@ -1,0 +1,55 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Thu, 15 Oct 2026 22:52:04 +0800
+Subject: [PATCH] mm/damon/stat: avoid 32-bit overflow in idle percentiles
+
+On 32-bit, accounted_bytes * 100 can wrap before division by total_sz.
+Some entries in memory_idle_ms_percentiles then keep their old values
+instead of being updated.
+
+For example, a 256 MiB i386 QEMU guest reported p0=19200 ms, but p50 and
+p100 were both zero.  The issue was also shared with another mail [1].
+
+Cast accounted_bytes to u64 before multiplying and use div64_ul() for
+the division. Compute the percentage once per region.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/179207592479.3.11595453180868898703@gmail.com
+- Collect R-b: from SJ.
+
+Link: https://lore.kernel.org/r/CANOyQmHad1vamnZT12M5yPrJ69==Pt1U0+MGw6u0MuNtr-DRCw@mail.gmail.com [1]
+Link: https://lore.kernel.org/179207592479.3.11595453180868898703@gmail.com
+Cc: Andrew Morton <akpm@linux-foundation.org>
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/stat.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index b05b68f73e10d..eccd372810d04 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -114,7 +114,7 @@ static void damon_stat_set_idletime_percentiles(struct damon_ctx *c)
+ {
+ 	struct damon_region **sorted_regions, *region;
+ 	int nr_regions;
+-	unsigned long total_sz, accounted_bytes = 0;
++	unsigned long total_sz, accounted_bytes = 0, percentile;
+ 	int err, i, next_percentile = 0;
+ 
+ 	err = damon_stat_sort_regions(c, &sorted_regions, &nr_regions,
+@@ -124,7 +124,8 @@ static void damon_stat_set_idletime_percentiles(struct damon_ctx *c)
+ 	for (i = 0; i < nr_regions; i++) {
+ 		region = sorted_regions[i];
+ 		accounted_bytes += region->ar.end - region->ar.start;
+-		while (next_percentile <= accounted_bytes * 100 / total_sz)
++		percentile = div64_ul((u64)accounted_bytes * 100, total_sz);
++		while (next_percentile <= percentile)
+ 			memory_idle_ms_percentiles[next_percentile++] =
+ 				damon_stat_idletime(region) *
+ 				(long)c->attrs.aggr_interval / USEC_PER_MSEC;
+-- 
+2.47.3
+
