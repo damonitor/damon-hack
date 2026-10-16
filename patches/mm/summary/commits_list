@@ -484,71 +484,71 @@
     - maintainer, no role : 1 commits
   - full commits list
     - series "mm/damon/core: preserve quota state when constructing schemes", v3. (2 commits)
-      - 12d07b198df6 "mm/damon/core: preserve the quota passed to damon_new_scheme()" (0/2)
+      - 2c7033a846a7 "mm/damon/core: preserve the quota passed to damon_new_scheme()" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928085835.7675-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260928085835.7675-2-sj@kernel.org
         - Link: https://lore.kernel.org/r/20260702212143.0CB6D1F00A3D@smtp.kernel.org/ [1]
-      - ff0eb9a1fb7a "mm/damon/tests/core-kunit: test preservation of quota state" (1/2)
+      - a66d3aefd57f "mm/damon/tests/core-kunit: test preservation of quota state" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928085835.7675-3-sj@kernel.org
     - series "mm/damon: fix the temporal goal tuner's size quota conversion", v5. (2 commits)
-      - 3a6734b55f66 "mm/damon/core: prevent size quota overflow in the temporal goal tuner" (0/2)
+      - d59684f02b4e "mm/damon/core: prevent size quota overflow in the temporal goal tuner" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928084816.5575-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260928084816.5575-2-sj@kernel.org
-      - f33bf97c310e "mm/damon/tests/core-kunit: test the temporal tuner's size quota conversion" (1/2)
+      - 7217362274d4 "mm/damon/tests/core-kunit: test the temporal tuner's size quota conversion" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928084816.5575-3-sj@kernel.org
     - series "mm/damon/core: cleanup code, reduce stack usage, and add kunit". (3 commits)
-      - bdb30cd477da "mm/damon/api: remove unused NR_DAMOS_* enumerators" (0/3)
+      - dfe1ceb15aa0 "mm/damon/api: remove unused NR_DAMOS_* enumerators" (0/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928083959.4030-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260928083959.4030-2-sj@kernel.org
-      - 398bbb246c4b "mm/damon/core: reduce stack usage further" (1/3)
+      - 679a577e5d1d "mm/damon/core: reduce stack usage further" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928083959.4030-3-sj@kernel.org
-      - b8cb18a5f475 "mm/damon/tests/core-kunit: test PSI goal values with explicit samples" (2/3)
+      - fb6aa3a8b1fa "mm/damon/tests/core-kunit: test PSI goal values with explicit samples" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20260928083959.4030-4-sj@kernel.org
     - series "mm/damon: introduce damos quota goal target metric complement flag". (8 commits)
-      - 04a9982893d6 "mm/damon/core: introduce damos_quota_goal->complement" (0/8)
+      - e0c61f7dd46f "mm/damon/core: introduce damos_quota_goal->complement" (0/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-1-sj@kernel.org
         - Link: https://lore.kernel.org/20260929080113.41708-2-sj@kernel.org
-      - e9c1e58131dd "mm-damon-core-introduce-damos_quota_goal-complement-fix" (1/8)
+      - b6ffca40390c "mm-damon-core-introduce-damos_quota_goal-complement-fix" (1/8)
         - Authored by a maintainer, reviewed by nobody
-      - df8e56b9db25 "mm/damon/core: add complement argument to damos_new_quota_goal()" (2/8)
+      - 6527fafc4cfd "mm/damon/core: add complement argument to damos_new_quota_goal()" (2/8)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20260929080113.41708-3-sj@kernel.org
-      - 625cc86536e5 "mm/damon/sysfs-schemes: support quota goal complement flag" (3/8)
+      - 63c4a798f9e7 "mm/damon/sysfs-schemes: support quota goal complement flag" (3/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-4-sj@kernel.org
-      - a12fef54bd9a "mm/damon/tests/core-kunit: test quota_goal->complement commit" (4/8)
+      - e693fab0887b "mm/damon/tests/core-kunit: test quota_goal->complement commit" (4/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-5-sj@kernel.org
-      - ff7e1c8781a5 "selftests/damon/sysfs.sh: test quota goal complement flag file" (5/8)
+      - 43ddd0220819 "selftests/damon/sysfs.sh: test quota goal complement flag file" (5/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-6-sj@kernel.org
-      - 4fb2cfaecb8d "Docs/mm/damon/design: document damos quota goal complement flag" (6/8)
+      - 5900e02acfd1 "Docs/mm/damon/design: document damos quota goal complement flag" (6/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-7-sj@kernel.org
-      - 144378024224 "Docs/admin-guide/mm/damon/usage: update for quota goal complement file" (7/8)
+      - 66c7bf360c9b "Docs/admin-guide/mm/damon/usage: update for quota goal complement file" (7/8)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20260929080113.41708-8-sj@kernel.org
-    - 655f72dd7fff "Docs/ABI/damon: update for quota goal metric complement sysfs file"
+    - 0c8a34a58dec "Docs/ABI/damon: update for quota goal metric complement sysfs file"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20260929080113.41708-9-sj@kernel.org
     - series "mm/damon: fix a minor bug, clean code, and add a test". (3 commits)
-      - ab41158c3746 "mm/damon/ops-common: fix age_in_sec overflow on 32-bit" (0/3)
+      - d2609d2e84b2 "mm/damon/ops-common: fix age_in_sec overflow on 32-bit" (0/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261006065209.41507-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261006065209.41507-2-sj@kernel.org
         - Link: https://lore.kernel.org/20260623011652.1354-1-sj@kernel.org [1]
-      - 5fee7e66698e "mm/damon: use damon_get_monitor_folio() for hugetlb entries" (1/3)
+      - d2be2c748ee8 "mm/damon: use damon_get_monitor_folio() for hugetlb entries" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261006065209.41507-3-sj@kernel.org
-      - bdbb7d6e9656 "mm/damon/tests/core-kunit: add test for unconditionally skipping the last region" (2/3)
+      - bfb60766a306 "mm/damon/tests/core-kunit: add test for unconditionally skipping the last region" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261006065209.41507-4-sj@kernel.org
 - mm-new: 0 total, 0 (0) series, 0 non-series commits
