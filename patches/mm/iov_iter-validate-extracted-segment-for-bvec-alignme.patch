@@ -12,8 +12,20 @@ aligned empty segment followed by a misaligned one completed 4096 bytes
 instead of returning -EINVAL.  A truncated iterator has the same mismatch
 when its full segment length is aligned but its remaining count is not.
 
-This can result in a misaligned segment getting fed to the device driver,
-with unknown results.
+The worst effect I have confirmed is an alignment-contract bypass.  An
+unprivileged O_DIRECT preadv() produced bvecs with offset/length pairs
+(1, 4095) and (0, 1).  The bio reached brd_submit_bio(), and the read
+completed 4096 bytes instead of failing with -EINVAL.
+
+I have not demonstrated harmful behavior on real DMA hardware.  For a
+normal blk-mq target, blk_mq_submit_bio() calls
+__bio_split_to_limits(), where bio_split_io_at() rejects the misaligned
+bvec before queue_rq().  Virtio-blk and loop both returned -EINVAL in
+my controls.
+
+So a bio-based driver can receive a bvec which violates its advertised
+dma_alignment, but any further effect is driver-specific.  I have not
+reproduced memory corruption or a crash on real hardware.
 
 Bound the normal fast-path length by iter->count.  Keep
 first_iovec_segment() for leading empty segments so validation covers the
