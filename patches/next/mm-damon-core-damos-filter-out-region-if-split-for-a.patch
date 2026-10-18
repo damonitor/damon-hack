@@ -1,0 +1,78 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 18 Oct 2026 12:07:52 -0700
+Subject: [PATCH] mm/damon/core: damos-filter out region if split for address
+ filter fail
+
+When address DAMOS filter is configured, DAMOS tries to split the region
+for the filter range, and apply DAMOS action to filter-in region.  The
+split operation (damon_split_region_at()) could fail from allocation
+failure under extreme memory pressure.  In the case, DAMOS action could
+be applied more or less than expected, ignoring the address filter.
+
+The issue only rarely happens under extremem memory pressure.  No crash
+or leak happens.  Occasionally not applying the action to a few regions
+shouldn't be a real problem.  But applying the action to a region that
+the user has excluded via address filter could be a surprise depending
+on the use case.  It is only thoeretic.  No such real case is found yet.
+
+Filter out the entire region if the split is failed.
+
+Fixes: ab9bda001b68 ("mm/damon/core: introduce address range type damos filter")
+Cc: <stable@vger.kernel.org> # 6.6.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index caa694a1ede35..831e8eb135ea3 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2774,13 +2774,14 @@ static void damos_update_stat(struct damos *s,
+ 
+ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 		struct damon_region *r, struct damos_filter *filter,
+-		unsigned long min_region_sz)
++		unsigned long min_region_sz, int *err)
+ {
+ 	bool matched = false;
+ 	struct damon_target *ti;
+ 	int target_idx = 0;
+ 	unsigned long start, end, wsum;
+ 
++	*err = 0;
+ 	switch (filter->type) {
+ 	case DAMOS_FILTER_TYPE_TARGET:
+ 		damon_for_each_target(ti, ctx) {
+@@ -2811,7 +2812,9 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 			break;
+ 		}
+ 		/* start inside the range */
+-		damon_split_region_at(ctx, t, r, end - r->ar.start);
++		*err = damon_split_region_at(ctx, t, r, end - r->ar.start);
++		if (*err)
++			return false;
+ 		matched = true;
+ 		break;
+ 	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
+@@ -2830,10 +2833,16 @@ static bool damos_core_filter_out(struct damon_ctx *ctx, struct damon_target *t,
+ 		struct damon_region *r, struct damos *s)
+ {
+ 	struct damos_filter *filter;
++	bool matching;
++	int err;
+ 
+ 	s->core_filters_allowed = false;
+ 	damos_for_each_core_filter(filter, s) {
+-		if (damos_filter_match(ctx, t, r, filter, ctx->min_region_sz)) {
++		matching = damos_filter_match(ctx, t, r, filter,
++				ctx->min_region_sz, &err);
++		if (err)
++			return true;
++		if (matching) {
+ 			if (filter->allow)
+ 				s->core_filters_allowed = true;
+ 			return !filter->allow;
+-- 
+2.47.3
+
