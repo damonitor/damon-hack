@@ -1,5 +1,5 @@
-From: Suhaas Joshi <suhaas@s-joshi.in>
-Date: Thu, 15 Oct 2026 19:27:54 +0530
+From: SJ Park <sj@kernel.org>
+Date: Sun, 18 Oct 2026 15:00:50 -0700
 Subject: [PATCH] mm/damon/core: copy only installed probe in
  damon_split_region_at()
 
@@ -24,7 +24,7 @@ Signed-off-by: SJ Park <sj@kernel.org>
  2 files changed, 78 insertions(+), 28 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index bebd2889c2c87..2677fabc9c297 100644
+index 8993027340b23..154cef59caf87 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2051,8 +2051,8 @@ static unsigned long damon_region_sz_limit(struct damon_ctx *ctx)
@@ -75,7 +75,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  			skip = true;
  		}
  	}
-@@ -2583,12 +2584,12 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+@@ -2584,12 +2585,12 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
  		}
  		/* start before the range and overlap */
  		if (r->ar.start < start) {
@@ -85,12 +85,12 @@ index bebd2889c2c87..2677fabc9c297 100644
  			break;
  		}
  		/* start inside the range */
--		damon_split_region_at(t, r, end - r->ar.start);
-+		damon_split_region_at(ctx, t, r, end - r->ar.start);
+-		*err = damon_split_region_at(t, r, end - r->ar.start);
++		*err = damon_split_region_at(ctx, t, r, end - r->ar.start);
+ 		if (*err)
+ 			return false;
  		matched = true;
- 		break;
- 	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
-@@ -2781,7 +2782,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+@@ -2790,7 +2791,7 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  					c->min_region_sz);
  			if (!sz)
  				goto update_stat;
@@ -99,7 +99,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  				goto update_stat;
  		}
  		if (damos_core_filter_out(c, t, r, s))
-@@ -2828,7 +2829,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+@@ -2837,7 +2838,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
  		if (damos_quota_is_full(quota, c->min_region_sz))
  			continue;
  
@@ -108,7 +108,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  			continue;
  
  		if (s->max_nr_snapshots &&
-@@ -3665,15 +3666,18 @@ static void damon_verify_split_region_at(struct damon_region *r,
+@@ -3674,15 +3675,18 @@ static void damon_verify_split_region_at(struct damon_region *r,
  /*
   * Split a region in two
   *
@@ -129,7 +129,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  
  	damon_verify_split_region_at(r, sz_r);
  	new = damon_new_region(r->ar.start + sz_r, r->ar.end);
-@@ -3685,11 +3689,13 @@ static int damon_split_region_at(struct damon_target *t,
+@@ -3694,11 +3698,13 @@ static int damon_split_region_at(struct damon_target *t,
  	new->age = r->age;
  	new->last_nr_accesses = r->last_nr_accesses;
  	new->nr_accesses = r->nr_accesses;
@@ -147,7 +147,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  	damon_insert_region(new, r, damon_next_region(r), t);
  	return 0;
  }
-@@ -3718,7 +3724,7 @@ static void damon_split_regions_of(struct damon_ctx *ctx,
+@@ -3727,7 +3733,7 @@ static void damon_split_regions_of(struct damon_ctx *ctx,
  			if (sz_sub == 0 || sz_sub >= sz_region)
  				continue;
  
@@ -156,7 +156,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  			sz_region = sz_sub;
  		}
  	}
-@@ -3750,7 +3756,7 @@ static void damon_split_some_regions(struct damon_ctx *ctx,
+@@ -3759,7 +3765,7 @@ static void damon_split_some_regions(struct damon_ctx *ctx,
  			if (sz_sub == 0 || sz_sub >= sz_region)
  				continue;
  
@@ -166,7 +166,7 @@ index bebd2889c2c87..2677fabc9c297 100644
  	}
  }
 diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
-index 849cf61cb828e..0a442f1e6a420 100644
+index ca10d450f7e23..a5ca4bfe2f0db 100644
 --- a/mm/damon/tests/core-kunit.h
 +++ b/mm/damon/tests/core-kunit.h
 @@ -141,6 +141,8 @@ static void damon_test_split_at(struct kunit *test)
@@ -224,10 +224,10 @@ index 849cf61cb828e..0a442f1e6a420 100644
  	struct damos_filter *f;
 +	struct damon_ctx *ctx;
 +	struct damon_probe *p;
+ 	int err;
  
  	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
- 	if (!f)
-@@ -1818,28 +1838,44 @@ static void damos_test_filter_out(struct kunit *test)
+@@ -1819,28 +1839,44 @@ static void damos_test_filter_out(struct kunit *test)
  	}
  	damon_add_region(r, t);
  
@@ -248,44 +248,44 @@ index 849cf61cb828e..0a442f1e6a420 100644
 +	damon_add_target(ctx, t);
 +
  	/* region in the range */
--	KUNIT_EXPECT_TRUE(test, damos_filter_match(NULL, t, r, f, 1));
-+	KUNIT_EXPECT_TRUE(test, damos_filter_match(ctx, t, r, f, 1));
+-	KUNIT_EXPECT_TRUE(test, damos_filter_match(NULL, t, r, f, 1, &err));
++	KUNIT_EXPECT_TRUE(test, damos_filter_match(ctx, t, r, f, 1, &err));
  	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
  
  	/* region before the range */
  	r->ar.start = 1;
  	r->ar.end = 2;
  	KUNIT_EXPECT_FALSE(test,
--			damos_filter_match(NULL, t, r, f, 1));
-+			damos_filter_match(ctx, t, r, f, 1));
+-			damos_filter_match(NULL, t, r, f, 1, &err));
++			damos_filter_match(ctx, t, r, f, 1, &err));
  	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
  
  	/* region after the range */
  	r->ar.start = 6;
  	r->ar.end = 8;
  	KUNIT_EXPECT_FALSE(test,
--			damos_filter_match(NULL, t, r, f, 1));
-+			damos_filter_match(ctx, t, r, f, 1));
+-			damos_filter_match(NULL, t, r, f, 1, &err));
++			damos_filter_match(ctx, t, r, f, 1, &err));
  	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
  
  	/* region started before the range */
  	r->ar.start = 1;
  	r->ar.end = 4;
--	KUNIT_EXPECT_FALSE(test, damos_filter_match(NULL, t, r, f, 1));
-+	KUNIT_EXPECT_FALSE(test, damos_filter_match(ctx, t, r, f, 1));
+-	KUNIT_EXPECT_FALSE(test, damos_filter_match(NULL, t, r, f, 1, &err));
++	KUNIT_EXPECT_FALSE(test, damos_filter_match(ctx, t, r, f, 1, &err));
  	/* filter should have split the region */
  	KUNIT_EXPECT_EQ(test, r->ar.start, 1);
  	KUNIT_EXPECT_EQ(test, r->ar.end, 2);
-@@ -1855,7 +1891,7 @@ static void damos_test_filter_out(struct kunit *test)
+@@ -1856,7 +1892,7 @@ static void damos_test_filter_out(struct kunit *test)
  	r->ar.start = 2;
  	r->ar.end = 8;
  	KUNIT_EXPECT_TRUE(test,
--			damos_filter_match(NULL, t, r, f, 1));
-+			damos_filter_match(ctx, t, r, f, 1));
+-			damos_filter_match(NULL, t, r, f, 1, &err));
++			damos_filter_match(ctx, t, r, f, 1, &err));
  	/* filter should have split the region */
  	KUNIT_EXPECT_EQ(test, r->ar.start, 2);
  	KUNIT_EXPECT_EQ(test, r->ar.end, 6);
-@@ -1868,7 +1904,7 @@ static void damos_test_filter_out(struct kunit *test)
+@@ -1869,7 +1905,7 @@ static void damos_test_filter_out(struct kunit *test)
  	damon_destroy_region(r2, t);
  
  out:
@@ -294,7 +294,7 @@ index 849cf61cb828e..0a442f1e6a420 100644
  	damos_free_filter(f);
  }
  
-@@ -2458,6 +2494,7 @@ static void damos_test_esz_goal_temporal(struct kunit *test)
+@@ -2459,6 +2495,7 @@ static void damos_test_esz_goal_temporal(struct kunit *test)
  static void damon_test_last_region_quota_reset(struct kunit *test)
  {
  	struct damos s = {0};
@@ -302,7 +302,7 @@ index 849cf61cb828e..0a442f1e6a420 100644
  	struct damon_target *t;
  	struct damon_region *r1, *r2;
  	unsigned long min_region_sz = 1;
-@@ -2484,7 +2521,14 @@ static void damon_test_last_region_quota_reset(struct kunit *test)
+@@ -2485,7 +2522,14 @@ static void damon_test_last_region_quota_reset(struct kunit *test)
  	s.quota.charge_target_from = t;
  	s.quota.charge_addr_from = r1->ar.end;
  
@@ -318,7 +318,7 @@ index 849cf61cb828e..0a442f1e6a420 100644
  
  	/* 'r2' is not processed, it should not skip */
  	KUNIT_EXPECT_EQ(test, skipped, false);
-@@ -2493,7 +2537,7 @@ static void damon_test_last_region_quota_reset(struct kunit *test)
+@@ -2494,7 +2538,7 @@ static void damon_test_last_region_quota_reset(struct kunit *test)
  	KUNIT_EXPECT_PTR_EQ(test, s.quota.charge_target_from, NULL);
  	KUNIT_EXPECT_EQ(test, s.quota.charge_addr_from, 0);
  
