@@ -1,0 +1,80 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 18 Oct 2026 13:43:24 -0700
+Subject: [PATCH] mm/damon/core: reset damos quota charge pointers for removed
+ target/region
+
+damos_quota->charge_{target,addr}_from saves the target and region the
+scheme's quota limit is reached.  damos_skip_charged_region() skips the
+target and regions before the point.  The target that assigned to
+charge_target_from could be removed from the context in runtime, via
+damon_commit_ctx().  In the case, damos_skip_charged_region() cannot
+find if the point is passed or not, so the scheme is effectively
+disabled.  In addition to the scenario, a new target that coincidently
+having the address same to charge_target_from can dynamically added.
+Then the skip logic can work again.  But, if the target has no region,
+again the skip pointer cannot be found because
+damos_skip_charged_region() is called for each region.
+
+No critical issues like crash or leak happens.  Users could work around
+by re-installing scheme.  Users could surprise and confused from the
+sudden stop of DAMOS works, though.
+
+Handle the corner cases in damos_adjust_quota() and reset the pointers.
+
+Fixes: da87878010e5 ("mm/damon/sysfs: support online inputs update")
+Cc: <stable@vger.kernel.org> # 5.19.x
+Closes: https://sashiko.dev/#/bug/linux-cd0c55fc-0cc8-45d8-9637-3334811c49b8
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 831e8eb135ea3..d4aa691c846a6 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3607,6 +3607,32 @@ static void damos_trace_esz(struct damon_ctx *c, struct damos *s,
+ 	trace_damos_esz(cidx, sidx, quota->esz);
+ }
+ 
++/*
++ * Target that set to charge_target_from could be dynamically removed via
++ * damon_commit_ctx().  A target having no region could be dynamically added
++ * and coincidently have the address same to charge_target_from.  Catch the
++ * conrner cases and reset charge_{target,addr}_from.
++ */
++static void damos_reset_charge_from_pointers(struct damon_ctx *c,
++		struct damos *s)
++{
++	struct damos_quota *quota;
++	struct damon_target *t;
++
++	quota = &s->quota;
++	if (!quota->charge_target_from)
++		return;
++	damon_for_each_target(t, c) {
++		if (t == quota->charge_target_from) {
++			if (damon_nr_regions(t) > 0)
++				return;
++			break;
++		}
++	}
++	quota->charge_target_from = NULL;
++	quota->charge_addr_from = 0;
++}
++
+ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ {
+ 	struct damos_quota *quota = &s->quota;
+@@ -3647,6 +3673,8 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 			damos_trace_esz(c, s, quota);
+ 	}
+ 
++	damos_reset_charge_from_pointers(c, s);
++
+ 	if (damos_quota_is_full(quota, c->min_region_sz))
+ 		return;
+ 	if (!c->ops.get_scheme_score)
+-- 
+2.47.3
+
