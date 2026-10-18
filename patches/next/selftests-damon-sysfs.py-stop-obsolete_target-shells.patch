@@ -1,0 +1,59 @@
+From: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Date: Sun, 18 Oct 2026 04:04:15 +0200
+Subject: [PATCH] selftests/damon/sysfs.py: stop obsolete_target shells hanging
+ the test
+
+The obsolete_target test spawns three 'sh' processes as monitoring
+targets.  The processes inherit stdin from the test.  When the test is
+run via 'make run_tests' from an interactive terminal, the kselftest
+runner executes it under 'timeout', which puts it in a background
+process group.  The 'sh' processes then try to read the terminal, so
+the kernel sends SIGTTIN to the whole process group.  This stops the
+'sh' processes, and also the child the test has just forked to spawn
+the next 'sh', before it can run 'sh'.  The test then waits on that
+child forever, until the kselftest runner kills it after 45 seconds.
+The test passes when run directly.
+
+Fix this by passing stdin=subprocess.PIPE when spawning the processes.
+The processes then read from a pipe that never receives input, so they
+stay alive and idle as the test expects.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/20261018020415.35567-1-jaeyeon.lee.dev@gmail.com
+- Collect R-b: from SJ.
+
+Assisted-by: LLM
+Signed-off-by: Jaeyeon Lee <jaeyeon.lee.dev@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ tools/testing/selftests/damon/sysfs.py | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/sysfs.py b/tools/testing/selftests/damon/sysfs.py
+index 66c826189320d..ce54fa21c09fe 100755
+--- a/tools/testing/selftests/damon/sysfs.py
++++ b/tools/testing/selftests/damon/sysfs.py
+@@ -390,12 +390,12 @@ def main():
+     kdamonds.stop()
+ 
+     # test obsolete_target.
+-    proc1 = subprocess.Popen(['sh'], stdout=subprocess.PIPE,
+-                             stderr=subprocess.PIPE)
+-    proc2 = subprocess.Popen(['sh'], stdout=subprocess.PIPE,
+-                             stderr=subprocess.PIPE)
+-    proc3 = subprocess.Popen(['sh'], stdout=subprocess.PIPE,
+-                             stderr=subprocess.PIPE)
++    proc1 = subprocess.Popen(['sh'], stdin=subprocess.PIPE,
++                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++    proc2 = subprocess.Popen(['sh'], stdin=subprocess.PIPE,
++                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++    proc3 = subprocess.Popen(['sh'], stdin=subprocess.PIPE,
++                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+     kdamonds = _damon_sysfs.Kdamonds(
+             [_damon_sysfs.Kdamond(
+                 contexts=[_damon_sysfs.DamonCtx(
+-- 
+2.47.3
+
