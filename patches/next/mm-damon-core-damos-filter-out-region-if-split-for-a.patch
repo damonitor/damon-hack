@@ -15,7 +15,9 @@ shouldn't be a real problem.  But applying the action to a region that
 the user has excluded via address filter could be a surprise depending
 on the use case.  It is only thoeretic.  No such real case is found yet.
 
-Filter out the entire region if the split is failed.
+Filter out the entire region if the split is failed.  Update
+damos_filter_match() signature to receive the error from split.  Also
+update kunit tests for the updated signature.
 
 The issue was discovered [1] by sashiko.
 
@@ -25,8 +27,9 @@ Fixes: ab9bda001b68 ("mm/damon/core: introduce address range type damos filter")
 Cc: <stable@vger.kernel.org> # 6.6.x
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 15 ++++++++++++---
- 1 file changed, 12 insertions(+), 3 deletions(-)
+ mm/damon/core.c             | 15 ++++++++++++---
+ mm/damon/tests/core-kunit.h | 11 ++++++-----
+ 2 files changed, 18 insertions(+), 8 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
 index caa694a1ede35..831e8eb135ea3 100644
@@ -77,6 +80,59 @@ index caa694a1ede35..831e8eb135ea3 100644
  			if (filter->allow)
  				s->core_filters_allowed = true;
  			return !filter->allow;
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index 0a442f1e6a420..a5ca4bfe2f0db 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -1819,6 +1819,7 @@ static void damos_test_filter_out(struct kunit *test)
+ 	struct damos_filter *f;
+ 	struct damon_ctx *ctx;
+ 	struct damon_probe *p;
++	int err;
+ 
+ 	f = damos_new_filter(DAMOS_FILTER_TYPE_ADDR, true, false);
+ 	if (!f)
+@@ -1855,27 +1856,27 @@ static void damos_test_filter_out(struct kunit *test)
+ 	damon_add_target(ctx, t);
+ 
+ 	/* region in the range */
+-	KUNIT_EXPECT_TRUE(test, damos_filter_match(ctx, t, r, f, 1));
++	KUNIT_EXPECT_TRUE(test, damos_filter_match(ctx, t, r, f, 1, &err));
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
+ 
+ 	/* region before the range */
+ 	r->ar.start = 1;
+ 	r->ar.end = 2;
+ 	KUNIT_EXPECT_FALSE(test,
+-			damos_filter_match(ctx, t, r, f, 1));
++			damos_filter_match(ctx, t, r, f, 1, &err));
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
+ 
+ 	/* region after the range */
+ 	r->ar.start = 6;
+ 	r->ar.end = 8;
+ 	KUNIT_EXPECT_FALSE(test,
+-			damos_filter_match(ctx, t, r, f, 1));
++			damos_filter_match(ctx, t, r, f, 1, &err));
+ 	KUNIT_EXPECT_EQ(test, damon_nr_regions(t), 1);
+ 
+ 	/* region started before the range */
+ 	r->ar.start = 1;
+ 	r->ar.end = 4;
+-	KUNIT_EXPECT_FALSE(test, damos_filter_match(ctx, t, r, f, 1));
++	KUNIT_EXPECT_FALSE(test, damos_filter_match(ctx, t, r, f, 1, &err));
+ 	/* filter should have split the region */
+ 	KUNIT_EXPECT_EQ(test, r->ar.start, 1);
+ 	KUNIT_EXPECT_EQ(test, r->ar.end, 2);
+@@ -1891,7 +1892,7 @@ static void damos_test_filter_out(struct kunit *test)
+ 	r->ar.start = 2;
+ 	r->ar.end = 8;
+ 	KUNIT_EXPECT_TRUE(test,
+-			damos_filter_match(ctx, t, r, f, 1));
++			damos_filter_match(ctx, t, r, f, 1, &err));
+ 	/* filter should have split the region */
+ 	KUNIT_EXPECT_EQ(test, r->ar.start, 2);
+ 	KUNIT_EXPECT_EQ(test, r->ar.end, 6);
 -- 
 2.47.3
 
