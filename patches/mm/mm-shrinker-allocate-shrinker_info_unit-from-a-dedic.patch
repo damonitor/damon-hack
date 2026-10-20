@@ -1,0 +1,98 @@
+From: Konstantin Khorenko <khorenko@virtuozzo.com>
+Date: Mon, 19 Oct 2026 18:11:44 +0200
+Subject: [PATCH] mm/shrinker: allocate shrinker_info_unit from a dedicated
+ kmem_cache
+
+shrinker_info_unit holds BITS_PER_LONG atomic_long_t of deferred work plus
+a one-word bitmap, 520 bytes on 64-bit.  kzalloc_node() takes it from
+kmalloc-1k, so almost half of every unit is padding.
+
+Allocate the units from a cache of their own, sized to the unit.  The
+cache is not cache-line aligned: the counters of a unit already share
+cache lines between shrinkers, and aligning the unit would only keep
+neighbouring units off each other's boundary line, at the cost of part of
+the saving.
+
+Link: https://lore.kernel.org/20261019-vstor-144715-shrinker_info_unit-kmem_cache-v3-1-0fb061e09bf4@virtuozzo.com
+Signed-off-by: Konstantin Khorenko <khorenko@virtuozzo.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Harry Yoo (Meta) <harry@kernel.org>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Assisted-by: LLM
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+---
+ include/linux/memcontrol.h |  1 +
+ mm/memcontrol.c            |  2 ++
+ mm/shrinker.c              | 11 +++++++++--
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index 74110a324f9e2..69e1bcc67c588 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -1717,6 +1717,7 @@ static inline u64 mem_cgroup_get_socket_pressure(const struct mem_cgroup *memcg)
+ }
+ #endif
+ 
++void shrinker_unit_cache_init(void);
+ int alloc_shrinker_info(struct mem_cgroup *memcg);
+ void free_shrinker_info(struct mem_cgroup *memcg);
+ void set_shrinker_bit(struct mem_cgroup *memcg, int nid, int shrinker_id);
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index aad0498a7bd65..e7d7db5718f9a 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5984,6 +5984,8 @@ int __init mem_cgroup_init(void)
+ 	memcg_pn_cachep = KMEM_CACHE(mem_cgroup_per_node,
+ 				     SLAB_PANIC | SLAB_HWCACHE_ALIGN);
+ 
++	shrinker_unit_cache_init();
++
+ 	return 0;
+ }
+ 
+diff --git a/mm/shrinker.c b/mm/shrinker.c
+index 7ec2a9704f6f2..4fb424e721bca 100644
+--- a/mm/shrinker.c
++++ b/mm/shrinker.c
+@@ -12,6 +12,12 @@ DEFINE_MUTEX(shrinker_mutex);
+ 
+ #ifdef CONFIG_MEMCG
+ static int shrinker_nr_max;
++static struct kmem_cache *shrinker_unit_cachep;
++
++void __init shrinker_unit_cache_init(void)
++{
++	shrinker_unit_cachep = KMEM_CACHE(shrinker_info_unit, SLAB_PANIC);
++}
+ 
+ static inline int shrinker_unit_size(int nr_items)
+ {
+@@ -33,7 +39,7 @@ static inline void shrinker_unit_free(struct shrinker_info *info, int start)
+ 		if (!unit[i])
+ 			break;
+ 
+-		kfree(unit[i]);
++		kmem_cache_free(shrinker_unit_cachep, unit[i]);
+ 		unit[i] = NULL;
+ 	}
+ }
+@@ -47,7 +53,8 @@ static inline int shrinker_unit_alloc(struct shrinker_info *new,
+ 	int i;
+ 
+ 	for (i = start; i < nr; i++) {
+-		unit = kzalloc_node(sizeof(*unit), GFP_KERNEL, nid);
++		unit = kmem_cache_alloc_node(shrinker_unit_cachep,
++					     GFP_KERNEL | __GFP_ZERO, nid);
+ 		if (!unit) {
+ 			shrinker_unit_free(new, start);
+ 			return -ENOMEM;
+-- 
+2.47.3
+
