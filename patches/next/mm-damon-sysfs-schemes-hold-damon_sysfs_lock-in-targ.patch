@@ -3,21 +3,39 @@ Date: Mon, 19 Oct 2026 20:58:44 -0700
 Subject: [PATCH] mm/damon/sysfs-schemes: hold damon_sysfs_lock in
  target_value_store()
 
-damon_sysfs_add_quota_score() reads target_value twice.  Once to check
-if the value is valid (non-zero), and again to pass the value to the
-core layer.  Meanwhile, target_value can be set by the user via
-target_value_store() without any synchronization.  As a result, if the
-user sets target_value as zero between the two reads in
-damon_sysfs_add_quota_score(), zero target_value can be passed to the
-core layer.  It can result in divide-by-zero in mult_frac() call of
-damos_quota_score().
+Remove a race condition under certain use cases that can trigger
+divide-by-zero.
 
-The write require sysfs write permission.  Sane users wouldn't do such
-racy writes.  That said, the user impact is very bad: Divide-by-zero.
+damon_sysfs_add_quota_score() setup damos quota goal as user configured
+and pass to the core layer.  Because it could have a race with
+damos_sysfs_quota_goals_rm_dirs(), which destructs the files that carry
+user configuration, both are called under damon_sysfs_lock protection.
+
+The damos quota goal setup disallows zero target_value parameter because
+it can be used as a denominator later in the core layer function,
+damos_quota_score().  Otherwise, divide-by-zero can happen.
+
+For the zero value check and final assignment,
+damon_sysfs_add_quota_score() reads damos_sysfs_quota_goal->target_value
+twice.  And user can update damos_sysfs_quota_goal->target_value via
+target_value_store(), which doesn't hold damon_sysfs_lock.  As a result,
+a time-of-check-to time-of-use (toctou) race can happen.  If the user
+sets the value to zero between the zero value check and final
+target_value assignment, zero target_value is passed to the core layer
+and results in divide-by-zero.
 
 Fix by holding damon_sysfs_lock in target_value_store() while saving the
 value.  The read side, damon_sysfs_add_quota_score(), is already called
-while hoding the same mutex lock, so it avoids the race.
+while holding the same mutex lock, so it avoids the race.
+
+From the user's perspective, the bug could be reproduced by writing zero
+to the target_value sysfs file while DAMON is starting, or online
+parameters update is ongoing.  The issue will only rarely happen in the
+real use cases.  It requires sysfs write permission.  The race window is
+short.  Sane users wouldn't write zero target_value.  Especially, they
+wouldn't do that while DAMON enablement and/or online parameters update
+is ongoing.  That said, the probability is not zero, and the consequence
+(divide-by-zero) is quite bad.
 
 Closes: https://sashiko.dev/#/bug/linux-7f814c9a-986f-4103-a55a-ef9537dcf62b
 Fixes: 8b549a4fd3c5 ("mm/damon/sysfs-schemes: commit damos quota goals user input to DAMOS")
