@@ -1,0 +1,51 @@
+From: SJ Park <sj@kernel.org>
+Date: Mon, 19 Oct 2026 20:58:44 -0700
+Subject: [PATCH] mm/damon/sysfs-schemes: hold damon_sysfs_lock in
+ target_value_store()
+
+damon_sysfs_add_quota_score() reads target_value twice.  Once to check
+if the value is valid (non-zero), and again to pass the value to the
+core layer.  Meanwhile, target_value can be set by the user via
+target_value_store() without any synchronization.  As a result, if the
+user sets target_value as zero between the two reads in
+damon_sysfs_add_quota_score(), zero target_value can be passed to the
+core layer.  It can result in divide-by-zero in mult_frac() call of
+damos_quota_score().
+
+The write require sysfs write permission.  Sane users wouldn't do such
+racy writes.  That said, the user impact is very bad: Divide-by-zero.
+
+Fix by holding damon_sysfs_lock in target_value_store() while saving the
+value.  The read side, damon_sysfs_add_quota_score(), is already called
+while hoding the same mutex lock, so it avoids the race.
+
+Closes: https://sashiko.dev/#/bug/linux-7f814c9a-986f-4103-a55a-ef9537dcf62b
+Fixes: 8b549a4fd3c5 ("mm/damon/sysfs-schemes: commit damos quota goals user input to DAMOS")
+Cc: <stable@vger.kernel.org> # 6.8.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/sysfs-schemes.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/sysfs-schemes.c b/mm/damon/sysfs-schemes.c
+index 3252e2ab09173..3c669b2c6db60 100644
+--- a/mm/damon/sysfs-schemes.c
++++ b/mm/damon/sysfs-schemes.c
+@@ -1355,7 +1355,13 @@ static ssize_t target_value_store(struct kobject *kobj,
+ {
+ 	struct damos_sysfs_quota_goal *goal = container_of(kobj, struct
+ 			damos_sysfs_quota_goal, kobj);
+-	int err = kstrtoul(buf, 0, &goal->target_value);
++	unsigned long target_value;
++	int err = kstrtoul(buf, 0, target_value);
++
++	if (!mutex_trylock(&damon_sysfs_lock))
++		return -EBUSY;
++	goal->target_value = target_value;
++	mutex_unlock(&damon_sysfs_lock);
+ 
+ 	return err ? err : count;
+ }
+-- 
+2.47.3
+
