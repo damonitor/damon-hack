@@ -1,0 +1,65 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Tue, 20 Oct 2026 15:28:00 -0700
+Subject: [PATCH] profile: account for partial /proc/profile reads
+
+read_profile() returns -EFAULT without advancing the file position
+when a user copy faults, even if earlier header bytes or a prefix of
+the counters were successfully copied.  A retry can therefore copy
+the same bytes again despite the previous read having delivered data.
+
+Return the number of successfully copied bytes and advance *ppos by
+that amount.  Return -EFAULT only if the fault occurs before any bytes
+are copied.  Preserve the four-byte sampling-step header, raw counter
+representation, and normal successful-read behavior.
+
+Avi Weiss's "profiling: fix sampling step on 64-bit big-endian
+systems" is unchanged.  This patch changes only short-read and fault
+reporting, not the output format.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/profile.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/kernel/profile.c b/kernel/profile.c
+index e7defa90a34c9..ffa6d0fce3d45 100644
+--- a/kernel/profile.c
++++ b/kernel/profile.c
+@@ -157,6 +157,7 @@ read_profile(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 	ssize_t read;
+ 	char *pnt;
+ 	unsigned int sample_step = (unsigned int)(1UL << prof_shift);
++	size_t not_copied;
+ 
+ 	if (p >= (prof_len+1)*sizeof(unsigned int))
+ 		return 0;
+@@ -166,15 +167,21 @@ read_profile(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ 
+ 	while (p < sizeof(unsigned int) && count > 0) {
+ 		if (put_user(*((char *)(&sample_step)+p), buf))
+-			return -EFAULT;
++			goto out;
+ 		buf++; p++; count--; read++;
+ 	}
+-	pnt = (char *)prof_buffer + p - sizeof(atomic_t);
+-	if (copy_to_user(buf, (void *)pnt, count))
+-		return -EFAULT;
+-	read += count;
++	if (count) {
++		pnt = (char *)prof_buffer + p - sizeof(atomic_t);
++		not_copied = copy_to_user(buf, pnt, count);
++		read += count - not_copied;
++		if (not_copied)
++			goto out;
++	}
+ 	*ppos += read;
+ 	return read;
++out:
++	*ppos += read;
++	return read ? read : -EFAULT;
+ }
+ 
+ /* default is to not implement this call */
+-- 
+2.47.3
+

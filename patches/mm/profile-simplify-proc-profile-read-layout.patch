@@ -1,0 +1,118 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Tue, 20 Oct 2026 23:58:33 +0000
+Subject: [PATCH] profile: simplify /proc/profile read layout
+
+read_profile() is needlessly difficult to understand.  It copies the
+four-byte sampling-step header one byte at a time, then manufactures
+a pointer before prof_buffer so a file offset can be used as a
+counter-array offset.  Its signed byte counter, unsigned long file
+offset and repeated size calculations further obscure where each
+read starts and how many bytes it transfers.
+
+Treat the file as two consecutive regions: a four-byte header and
+the profiling counters.  Use size_t for byte positions and lengths,
+copy the bounded header in one operation, and address the counters
+relative to the start of prof_buffer.  Retain the full loff_t value
+for EOF and negative-offset checks before narrowing it to size_t.
+Brief comments explain each region.
+
+Keep the word-sized shift and explicit narrowing required by Avi
+Weiss's "profiling: fix sampling step on 64-bit big-endian systems".
+Assign the header value separately and explain why the 32-bit ABI
+requires a narrowing conversion.
+
+Preserve the partial-read and fault semantics established by [1/2],
+including short copies within either region.  The full-width offset
+check also prevents 32-bit pread64() offsets from wrapping into earlier
+profile data.  No other userspace-visible
+behavior change is intended.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ kernel/profile.c | 65 ++++++++++++++++++++++++++++++------------------
+ 1 file changed, 41 insertions(+), 24 deletions(-)
+
+diff --git a/kernel/profile.c b/kernel/profile.c
+index ffa6d0fce3d45..13be6fc9fd006 100644
+--- a/kernel/profile.c
++++ b/kernel/profile.c
+@@ -153,35 +153,52 @@ void profile_tick(int type)
+ static ssize_t
+ read_profile(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+ {
+-	unsigned long p = *ppos;
+-	ssize_t read;
+-	char *pnt;
+-	unsigned int sample_step = (unsigned int)(1UL << prof_shift);
+-	size_t not_copied;
+-
+-	if (p >= (prof_len+1)*sizeof(unsigned int))
++	const size_t header_size = sizeof(unsigned int);
++	const size_t file_size = (prof_len + 1) * sizeof(unsigned int);
++	unsigned int sample_step;
++	loff_t offset = *ppos;
++	size_t pos;
++	size_t done = 0;
++	size_t n, not_copied;
++
++	/* Keep the shift word-sized before narrowing to the 32-bit ABI. */
++	sample_step = (unsigned int)(1UL << prof_shift);
++
++	if (offset < 0)
++		return -EINVAL;
++	if (offset >= file_size)
+ 		return 0;
+-	if (count > (prof_len+1)*sizeof(unsigned int) - p)
+-		count = (prof_len+1)*sizeof(unsigned int) - p;
+-	read = 0;
+-
+-	while (p < sizeof(unsigned int) && count > 0) {
+-		if (put_user(*((char *)(&sample_step)+p), buf))
+-			goto out;
+-		buf++; p++; count--; read++;
++	pos = offset;
++	count = min(count, file_size - pos);
++
++	/* Copy the four-byte sampling resolution. */
++	if (pos < header_size) {
++		n = min(count, header_size - pos);
++		not_copied = copy_to_user(buf, (u8 *)&sample_step + pos, n);
++		done += n - not_copied;
++		if (not_copied)
++			goto fault;
++		buf += n;
++		pos += n;
++		count -= n;
+ 	}
++
++	/* Copy raw counters using offsets relative to the counter array. */
+ 	if (count) {
+-		pnt = (char *)prof_buffer + p - sizeof(atomic_t);
+-		not_copied = copy_to_user(buf, pnt, count);
+-		read += count - not_copied;
++		not_copied = copy_to_user(buf,
++					(u8 *)prof_buffer + pos - header_size,
++					count);
++		done += count - not_copied;
+ 		if (not_copied)
+-			goto out;
++			goto fault;
+ 	}
+-	*ppos += read;
+-	return read;
+-out:
+-	*ppos += read;
+-	return read ? read : -EFAULT;
++	*ppos += done;
++	return done;
++fault:
++	*ppos += done;
++	if (!done)
++		return -EFAULT;
++	return done;
+ }
+ 
+ /* default is to not implement this call */
+-- 
+2.47.3
+

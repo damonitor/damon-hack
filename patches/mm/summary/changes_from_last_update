@@ -9,19 +9,11 @@
     - maintainer, nobody: 81 -> 81 commits (no change)
     - maintainer, no role : 16 -> 16 commits (no change)
     - maintainer, reviewer: 1 -> 1 commits (no change)
-- mm-unstable: 19 -> 21 commits
+- mm-unstable: 21 -> 21 commits (no change)
   - series: 5 (18) -> 5 (18) (no change)
     - no role, maintainer: 10 -> 10 commits (no change)
-    - maintainer, nobody: 8 -> 10 commits
+    - maintainer, nobody: 10 -> 10 commits (no change)
     - maintainer, no role : 1 -> 1 commits (no change)
-  - new commits
-    - 0aee933b06af "mm/damon/core: filter out damos address filter-split failed region"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20261020004119.106690-1-sj@kernel.org
-      - Link: https://lore.kernel.org/20260801203121.117449-1-sj@kernel.org [1]
-    - 880a2031a540 "mm/damon/core: remove unreachable damos charge_{target,addr}_from"
-      - Authored by a maintainer, reviewed by nobody
-      - Link: https://lore.kernel.org/20261020023958.108276-1-sj@kernel.org
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
