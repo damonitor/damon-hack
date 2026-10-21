@@ -1,0 +1,73 @@
+From: Tzung-Bi Shih <tzungbi@kernel.org>
+Date: Wed, 7 Oct 2026 05:17:26 +0000
+Subject: [PATCH] watchdog: force console verbose when reporting lockups
+
+When a hard or soft lockup is detected, the watchdog prints a header at
+KERN_EMERG (<0>), followed by diagnostic details (modules, registers, and
+backtraces) at KERN_WARNING/KERN_DEFAULT (<4>) and KERN_INFO (<6>).  If
+console_loglevel is quiet (<= 4), the console skips those <4>/<6>
+diagnostic messages before vpanic() has a chance to call
+console_verbose().  With the buddy detector, this leaves only the detector
+CPU's panic stack on the console and nothing about the locked CPU:
+
+  <0>[ 1535.991833][    C6] watchdog: Watchdog detected hard LOCKUP on cpu 7
+  <0>[ 1535.995960][    C6] Kernel panic - not syncing: Hard LOCKUP
+  <4>[ 1535.995970][    C6] CPU: 6 UID: 0 PID: 0 Comm: swapper/6 ...
+  <4>[ 1535.995997][    C6] Call trace:
+  ...
+  <4>[ 1535.996063][    C6]  watchdog_hardlockup_check+0x1e0/0x288
+  <4>[ 1535.996075][    C6]  watchdog_buddy_check_hardlockup+0xb4/0xc0
+
+Similar to commit 168e06f7937d ("kernel/hung_task.c: force console verbose
+before panic"), call console_verbose() before printing the lockup report
+so the diagnostic output is not suppressed.
+
+Link: https://lore.kernel.org/20261007051726.4154849-1-tzungbi@kernel.org
+Signed-off-by: Tzung-Bi Shih <tzungbi@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Reviewed-by: Bradley Morgan <brads@mainlining.org>
+Tested-by: Bradley Morgan <brads@mainlining.org> # Power10 / ARM64
+Reviewed-by: Douglas Anderson <dianders@chromium.org>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Tomasz Figa <tfiga@chromium.org>
+---
+ kernel/watchdog.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/watchdog.c b/kernel/watchdog.c
+index e5134ad7b6634..64da2e5001440 100644
+--- a/kernel/watchdog.c
++++ b/kernel/watchdog.c
+@@ -255,6 +255,9 @@ void watchdog_hardlockup_check(unsigned int cpu, struct pt_regs *regs)
+ 			return;
+ 	}
+ 
++	if (hardlockup_panic)
++		console_verbose();
++
+ 	/*
+ 	 * NOTE: we call printk_cpu_sync_get_irqsave() after printing
+ 	 * the lockup message. While it would be nice to serialize
+@@ -880,6 +883,10 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
+ 		/* Start period for the next softlockup warning. */
+ 		update_report_ts();
+ 
++		thresh_count = duration / get_softlockup_thresh();
++		if (softlockup_panic && thresh_count >= softlockup_panic)
++			console_verbose();
++
+ 		printk_cpu_sync_get_irqsave(flags);
+ 		pr_emerg("BUG: soft lockup - CPU#%d stuck for %us! [%s:%d]\n",
+ 			smp_processor_id(), duration,
+@@ -901,7 +908,6 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
+ 
+ 		add_taint(TAINT_SOFTLOCKUP, LOCKDEP_STILL_OK);
+ 		sys_info(softlockup_si_mask & ~SYS_INFO_ALL_BT);
+-		thresh_count = duration / get_softlockup_thresh();
+ 
+ 		if (softlockup_panic && thresh_count >= softlockup_panic)
+ 			panic("softlockup: hung tasks");
+-- 
+2.47.3
+
