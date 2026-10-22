@@ -1,0 +1,57 @@
+From: "Shubhang Kaushik (Ampere)" <sh@gentwo.org>
+Date: Wed, 21 Oct 2026 23:36:19 -0700
+Subject: [PATCH] mm/damon/ops-common: align MMU notifier range when clearing
+ PTE young bit
+
+DAMON selects a byte-granular sampling address.  damon_ptep_mkold()
+clears the young bit of the PTE covering that address, but passes the
+unaligned range [addr, addr + PAGE_SIZE) to MMU notifiers.
+
+For an unaligned address, that range extends into the following page.
+KVM ages every guest page intersecting the notifier range, so it can age
+a secondary mapping for the following page although DAMON cleared only
+the sampled page's primary PTE.
+
+Align the address before both the primary PTE operation and the
+MMU notifier call so that they cover the same page.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/20261021-damon-align-pte-young-notifier-v1-1-d0365ac45b66@gentwo.org
+- Collect R-b: from SJ.
+- None.
+
+Fixes: 3f49584b262c ("mm/damon: implement primitives for the virtual memory address spaces")
+Signed-off-by: Shubhang Kaushik (Ampere) <sh@gentwo.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/ops-common.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/ops-common.c b/mm/damon/ops-common.c
+index 2f3bf86a221be..f88c6fd189fca 100644
+--- a/mm/damon/ops-common.c
++++ b/mm/damon/ops-common.c
+@@ -64,6 +64,8 @@ void damon_ptep_mkold(pte_t *pte, struct vm_area_struct *vma, unsigned long addr
+ 	bool young = false;
+ 	unsigned long pfn;
+ 
++	addr = PAGE_ALIGN_DOWN(addr);
++
+ 	if (likely(pte_present(pteval)))
+ 		pfn = pte_pfn(pteval);
+ 	else
+@@ -83,8 +85,7 @@ void damon_ptep_mkold(pte_t *pte, struct vm_area_struct *vma, unsigned long addr
+ 		 * Arch implementation of ptep_test_and_clear_young() may
+ 		 * require aligned @addr
+ 		 */
+-		young |= ptep_test_and_clear_young(vma, PAGE_ALIGN_DOWN(addr),
+-				pte);
++		young |= ptep_test_and_clear_young(vma, addr, pte);
+ 	young |= mmu_notifier_clear_young(vma->vm_mm, addr, addr + PAGE_SIZE);
+ 	if (young)
+ 		folio_set_young(folio);
+-- 
+2.47.3
+
