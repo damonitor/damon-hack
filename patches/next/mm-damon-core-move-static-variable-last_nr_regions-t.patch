@@ -1,0 +1,65 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 22 Oct 2026 08:00:42 -0700
+Subject: [PATCH] mm/damon/core: move static variable last_nr_regions to
+ damon_ctx
+
+kdamond_split_regions() uses a static variable last_nr_regions, to
+infer if the region boundaries are too stable.  Because it is static,
+the inference can be racy and wrong when multiple kdamonds are running
+in parallel.  Move the variable to damon_ctx field.
+
+The original racy behavior was introduced by commit b9a6ac4e4ede
+("mm/damon: adaptively adjust regions").
+
+Closes: https://sashiko.dev/#/bug/linux-eebfcdde-2881-48ef-8df1-e2019d2a47f2
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h | 1 +
+ mm/damon/core.c       | 5 ++---
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 3d0c05df3258d..0631e77423c4f 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1091,6 +1091,7 @@ struct damon_ctx {
+ 
+ 	/* @rnd_state:	Per-ctx PRNG state for damon_rand(). */
+ 	struct rnd_state rnd_state;
++	unsigned long last_nr_regions;
+ };
+ 
+ /* Get a random number in [@l, @r) using @ctx's lockless PRNG. */
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index beab1a7dab31c..4cf1ddc9d1fb3 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -4033,7 +4033,6 @@ static noinline_for_stack void kdamond_split_regions(struct damon_ctx *ctx)
+ 	struct damon_target *t;
+ 	unsigned long nr_regions = 0;
+ 	unsigned long max_nr_regions = ctx->attrs.max_nr_regions;
+-	static unsigned long last_nr_regions;
+ 	int nr_subregions = 2;
+ 
+ 	damon_for_each_target(t, ctx)
+@@ -4049,7 +4048,7 @@ static noinline_for_stack void kdamond_split_regions(struct damon_ctx *ctx)
+ 	}
+ 
+ 	/* Maybe the middle of the region has different access frequency */
+-	if (last_nr_regions == nr_regions &&
++	if (ctx->last_nr_regions == nr_regions &&
+ 			nr_regions < max_nr_regions / 3)
+ 		nr_subregions = 3;
+ 
+@@ -4058,7 +4057,7 @@ static noinline_for_stack void kdamond_split_regions(struct damon_ctx *ctx)
+ 				       ctx->min_region_sz);
+ 
+ done:
+-	last_nr_regions = nr_regions;
++	ctx->last_nr_regions = nr_regions;
+ }
+ 
+ /*
+-- 
+2.47.3
+
