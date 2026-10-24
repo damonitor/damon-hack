@@ -1,25 +1,34 @@
 From: Usama Arif <usama.arif@linux.dev>
-Date: Fri, 9 Oct 2026 09:30:30 -0700
+Date: Sat, 17 Oct 2026 09:08:53 -0700
 Subject: [PATCH] mm: zswap: use separate compression and decompression
  requests
 
-Patch series "mm: zswap: reduce request contention on loads", v2.
+Patch series "mm: zswap: reduce request contention on loads", v4.
 
-Stores and loads share a per-CPU acomp request and mutex.  A low-priority
-store can be preempted right after the compressor drops its stream lock,
-while it still holds the zswap mutex, and a higher-priority load on that
-CPU then waits for the store to run again.  This follows the work from
-Sergey Senozhatsky's zram series which splits it for the same reason [1].
+Stores and loads share a per-CPU acomp request and mutex. A low-priority
+store can be preempted right after the compressor drops its stream
+lock, while it still holds the zswap mutex, and a higher-priority load
+on that CPU then waits for the store to run again. This follows the work
+from Sergey Senozhatsky's zram series which splits it for the same
+reason [1].
 
-Patch 1 gives compression and decompression separate requests, waits and
-mutexes, so loads no longer wait for stores, though they can still wait
-for each other.  Patch 2 decompresses with an on-stack request when the
-algorithm is synchronous and needs no request context, which covers all
-in-tree software compressors, so those loads take no zswap lock.
-Asynchronous algorithms keep the per-CPU request and mutex.  For software
-compressors the series allocates the same number of requests as before;
-each per-CPU context grows by 72 bytes, and the load path is about 270
-bytes deeper on x86-64.
+Patch 1 gives compression and decompression separate requests, waits
+and mutexes, so loads no longer wait for stores, though they can still
+wait for each other. Patch 2, authored by Herbert Xu, enforces
+MAX_SYNC_COMP_REQSIZE when synchronous Crypto ACOMP transforms are
+initialized. Patch 3 uses an on-stack request for synchronous
+decompression, so those loads take no zswap lock. This covers all
+in-tree software compressors. Asynchronous algorithms keep the per-CPU
+request and mutex.
+
+On x86-64 without PREEMPT_RT or lock debugging, each pool's per-CPU
+context grows from 88 to 160 bytes (+72 bytes). Patch 1 also adds one
+heap request per initialized CPU per pool: 176 bytes plus the
+algorithm's request context, before alignment and allocator rounding.
+Patch 3 drops that extra heap request for synchronous algorithms,
+including zstd. The context increase remains for all algorithms, and
+asynchronous algorithms retain the extra heap request. The load path is
+about 270 bytes deeper on x86-64.
 
 The series does not fix two related cases:
 - Stores still serialize on the compression mutex, so a high-priority
@@ -28,24 +37,25 @@ The series does not fix two related cases:
 - On PREEMPT_RT the codec stream locks are preemptible, so a load can
   still wait for a preempted store inside the codec.
 
-The numbers below are the slowest read per run, as a median (min-max) of 5
-runs.  Each run is 12 seconds in a zstd VM with lazy preemption,
-vm.page-cluster=0 and swap on /dev/ram0.  With 1 vCPU, four nice +10
-workers page memory out and read it back while a nice 0 task spins.  A
-nice -19 reader pages out its own buffer and measures how long each read
-of it takes.  With 8 vCPUs there are 16 workers, 8 spinning tasks and 8
-readers.
+The numbers below are the slowest read per run, as a median (min-max)
+of 5 runs. Each run is 12 seconds in a zstd VM with lazy preemption,
+vm.page-cluster=0 and swap on /dev/ram0. With 1 vCPU, four nice +10
+workers page memory out and read it back while a nice 0 task spins. A
+nice -19 reader pages out its own buffer and measures how long each
+read of it takes. With 8 vCPUs there are 16 workers, 8 spinning tasks
+and 8 readers.
 
               Before series (ms)      With series (ms)
   1 vCPU      22.3 (21.6-22.6)        0.97 (0.72-1.4)
   8 vCPUs     314 (97-2542)           7.0 (5.0-98)
 
 Reads over 10 ms fell from 26-35 per run to none with 1 vCPU, and from
-3-18 per run to at most one with 8 vCPUs. The benchmark and test programs
+3-18 per run to at most one with 8 vCPUs. The benchmark and test
+programs
 were written with the help of an LLM.
 
 
-This patch (of 2):
+This patch (of 3):
 
 Stores and loads serialize on the same per-CPU acomp request and mutex.
 A low-priority store can be preempted as soon as the compressor drops
@@ -62,35 +72,40 @@ synchronize their shared state internally. Loads can still wait for
 each other on the decompression mutex, and stores still serialize on
 the compression mutex.
 
+On x86-64 without PREEMPT_RT or lock debugging, each pool's per-CPU
+context grows from 88 to 160 bytes. Each initialized CPU also needs an
+extra acomp request: 176 bytes plus the algorithm's request context,
+before alignment and allocator rounding.
+
 acomp_request_free() ignores NULL requests, so drop the check in
 acomp_ctx_free().
 
 This follows the proposal from Sergey Senozhatsky for the same split
 for zram [1].
 
-Link: https://lore.kernel.org/20261009163146.83112-1-usama.arif@linux.dev
-Link: https://lore.kernel.org/20261009163146.83112-2-usama.arif@linux.dev
+Link: https://lore.kernel.org/20261017160918.2738626-1-usama.arif@linux.dev
+Link: https://lore.kernel.org/20261017160918.2738626-2-usama.arif@linux.dev
 Link: https://lore.kernel.org/all/20261005122036.718976-10-senozhatsky@chromium.org/ [1]
 Signed-off-by: Usama Arif <usama.arif@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Nhat Pham <nphamcs@gmail.com>
 Acked-by: Herbert Xu <herbert@gondor.apana.org.au>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
 Cc: <chengming.zhou@linux.dev>
 Cc: David Sterba <dsterba@suse.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Nick Terrell <terrelln@fb.com>
-Cc: Yosry Ahmed <yosry@kernel.org>
 Cc: Rik van Riel <riel@surriel.com>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: <alex@ghiti.fr>
 Cc: Sergey Senozhatsky <senozhatsky@chromium.org>
 Cc: David S. Miller <davem@davemloft.net>
 ---
- mm/zswap.c | 108 +++++++++++++++++++++++++++++++----------------------
- 1 file changed, 64 insertions(+), 44 deletions(-)
+ mm/zswap.c | 117 ++++++++++++++++++++++++++++++++---------------------
+ 1 file changed, 70 insertions(+), 47 deletions(-)
 
 diff --git a/mm/zswap.c b/mm/zswap.c
-index ae19e301fced7..23c4298765795 100644
+index ae19e301fced7..b23ef5f3bd529 100644
 --- a/mm/zswap.c
 +++ b/mm/zswap.c
 @@ -137,14 +137,25 @@ bool zswap_never_enabled(void)
@@ -192,22 +207,23 @@ index ae19e301fced7..23c4298765795 100644
  		return ret;
  
  	/*
-@@ -827,25 +856,13 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
+@@ -827,27 +856,18 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
  		goto fail;
  	}
  
 -	/* acomp_request_alloc() returns NULL in case of an error. */
 -	acomp_ctx->req = acomp_request_alloc(acomp_ctx->acomp);
 -	if (!acomp_ctx->req) {
-+	if (zswap_acomp_req_init(&acomp_ctx->comp.areq, acomp_ctx->acomp) ||
-+	    zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp)) {
- 		pr_err("could not alloc crypto acomp_request %s\n",
- 		       pool->tfm_name);
- 		goto fail;
- 	}
- 
--	crypto_init_wait(&acomp_ctx->wait);
+-		pr_err("could not alloc crypto acomp_request %s\n",
+-		       pool->tfm_name);
+-		goto fail;
+-	}
 -
+-	crypto_init_wait(&acomp_ctx->wait);
++	ret = zswap_acomp_req_init(&acomp_ctx->comp.areq, acomp_ctx->acomp);
++	if (ret)
++		goto req_fail;
+ 
 -	/*
 -	 * if the backend of acomp is async zip, crypto_req_done() will wakeup
 -	 * crypto_wait_req(); if the backend of acomp is scomp, the callback
@@ -215,12 +231,19 @@ index ae19e301fced7..23c4298765795 100644
 -	 */
 -	acomp_request_set_callback(acomp_ctx->req, CRYPTO_TFM_REQ_MAY_BACKLOG,
 -				   crypto_req_done, &acomp_ctx->wait);
--
++	ret = zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp);
++	if (ret)
++		goto req_fail;
+ 
 -	mutex_init(&acomp_ctx->mutex);
  	return 0;
  
++req_fail:
++	pr_err("could not alloc crypto acomp_request %s\n", pool->tfm_name);
  fail:
-@@ -856,7 +873,7 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
+ 	acomp_ctx_free(acomp_ctx);
+ 	return ret;
+@@ -856,7 +876,7 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
  static bool zswap_compress(struct folio *folio, long index,
  			   struct zswap_entry *entry, struct zswap_pool *pool)
  {
@@ -229,7 +252,7 @@ index ae19e301fced7..23c4298765795 100644
  	struct scatterlist input, output;
  	int comp_ret = 0, alloc_ret = 0;
  	unsigned int dlen = PAGE_SIZE;
-@@ -865,15 +882,16 @@ static bool zswap_compress(struct folio *folio, long index,
+@@ -865,15 +885,16 @@ static bool zswap_compress(struct folio *folio, long index,
  	u8 *dst;
  	bool mapped = false;
  
@@ -250,7 +273,7 @@ index ae19e301fced7..23c4298765795 100644
  
  	/*
  	 * it maybe looks a little bit silly that we send an asynchronous request,
-@@ -885,10 +903,12 @@ static bool zswap_compress(struct folio *folio, long index,
+@@ -885,10 +906,12 @@ static bool zswap_compress(struct folio *folio, long index,
  	 * existing method to send the second page before the first page is done
  	 * in one thread doing zswap.
  	 * but in different threads running on different cpu, we have different
@@ -266,7 +289,7 @@ index ae19e301fced7..23c4298765795 100644
  
  	/*
  	 * If a page cannot be compressed into a size smaller than PAGE_SIZE,
-@@ -932,7 +952,7 @@ static bool zswap_compress(struct folio *folio, long index,
+@@ -932,7 +955,7 @@ static bool zswap_compress(struct folio *folio, long index,
  	else if (alloc_ret)
  		zswap_reject_alloc_fail++;
  
@@ -275,7 +298,7 @@ index ae19e301fced7..23c4298765795 100644
  	return comp_ret == 0 && alloc_ret == 0;
  }
  
-@@ -948,7 +968,7 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+@@ -948,7 +971,7 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
  		return false;
  
  	acomp_ctx = raw_cpu_ptr(pool->acomp_ctx);
@@ -284,7 +307,7 @@ index ae19e301fced7..23c4298765795 100644
  	zs_obj_read_sg_begin(pool->zs_pool, entry->handle, input, entry->length);
  
  	/* zswap entries of length PAGE_SIZE are not compressed. */
-@@ -965,15 +985,15 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+@@ -965,15 +988,15 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
  	} else {
  		sg_init_table(&output, 1);
  		sg_set_folio(&output, folio, PAGE_SIZE, 0);

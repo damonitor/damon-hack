@@ -1,5 +1,5 @@
 From: Usama Arif <usama.arif@linux.dev>
-Date: Fri, 9 Oct 2026 09:30:31 -0700
+Date: Sat, 17 Oct 2026 09:08:55 -0700
 Subject: [PATCH] mm: zswap: use stack requests for synchronous decompression
 
 With separate requests for compression and decompression, loads still
@@ -7,11 +7,10 @@ serialize on the per-CPU decompression mutex. A low-priority load that
 is preempted after the codec drops its stream lock keeps holding the mutex
 and stalls every other load on that CPU, including higher-priority ones.
 
-Synchronous algorithms whose requests need no extra context can use an
-on-stack request, so decompress with one and take no zswap lock. All
-in-tree software compressors qualify. Add acomp_can_use_stack_req() to
-keep the synchronous and request-size checks in the Crypto API.
-Asynchronous algorithms, and synchronous ones with request context,
+Synchronous algorithms can use an on-stack request, so decompress with
+one and take no zswap lock. All in-tree software compressors qualify.
+The Crypto API enforces MAX_SYNC_COMP_REQSIZE during initialization,
+so checking acomp_is_async() is sufficient. Asynchronous algorithms
 keep the per-CPU request and mutex, which is still taken before the
 zsmalloc read lock.
 
@@ -22,57 +21,32 @@ until the pool is destroyed. The codecs keep their own stream locks, and
 crypto_acomp_decompress() rejects on-stack requests only for
 asynchronous transforms, which never take this path.
 
-For software compressors this drops the heap request added by the
-previous patch. The on-stack request and wait take 216 bytes, which
+For software compressors this drops the heap request added for
+decompression. The on-stack request and wait take 216 bytes, which
 makes the load path about 270 bytes deeper on x86-64. Asynchronous
 algorithms pay this too.
 
-Link: https://lore.kernel.org/20261009163146.83112-3-usama.arif@linux.dev
+Link: https://lore.kernel.org/20261017160918.2738626-4-usama.arif@linux.dev
 Signed-off-by: Usama Arif <usama.arif@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Nhat Pham <nphamcs@gmail.com>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
 Cc: Herbert Xu <herbert@gondor.apana.org.au>
 Cc: <chengming.zhou@linux.dev>
 Cc: David Sterba <dsterba@suse.com>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: Nick Terrell <terrelln@fb.com>
-Cc: Yosry Ahmed <yosry@kernel.org>
 Cc: Rik van Riel <riel@surriel.com>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: <alex@ghiti.fr>
 Cc: Sergey Senozhatsky <senozhatsky@chromium.org>
 Cc: David S. Miller <davem@davemloft.net>
 ---
- include/crypto/acompress.h | 13 ++++++
- mm/zswap.c                 | 87 ++++++++++++++++++++++++++------------
- 2 files changed, 72 insertions(+), 28 deletions(-)
+ mm/zswap.c | 82 +++++++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 56 insertions(+), 26 deletions(-)
 
-diff --git a/include/crypto/acompress.h b/include/crypto/acompress.h
-index 5d5358dfab734..12c1ce1f6243b 100644
---- a/include/crypto/acompress.h
-+++ b/include/crypto/acompress.h
-@@ -203,6 +203,19 @@ static inline bool acomp_is_async(struct crypto_acomp *tfm)
- 	       CRYPTO_ALG_ASYNC;
- }
- 
-+/**
-+ * acomp_can_use_stack_req() - check whether a transform can use stack requests
-+ * @tfm: ACOMPRESS transform
-+ *
-+ * Return: true if @tfm completes synchronously and its request context fits
-+ * in the storage reserved by ACOMP_REQUEST_ON_STACK(), false otherwise.
-+ */
-+static inline bool acomp_can_use_stack_req(struct crypto_acomp *tfm)
-+{
-+	return !acomp_is_async(tfm) &&
-+	       crypto_acomp_reqsize(tfm) <= MAX_SYNC_COMP_REQSIZE;
-+}
-+
- static inline struct crypto_acomp *crypto_acomp_reqtfm(struct acomp_req *req)
- {
- 	return __crypto_acomp_tfm(req->base.tfm);
 diff --git a/mm/zswap.c b/mm/zswap.c
-index 23c4298765795..572075bb1c1c1 100644
+index b23ef5f3bd529..9cb75215b2703 100644
 --- a/mm/zswap.c
 +++ b/mm/zswap.c
 @@ -153,7 +153,7 @@ struct zswap_comp_ctx {
@@ -119,32 +93,23 @@ index 23c4298765795..572075bb1c1c1 100644
  
  	mutex_init(&areq->mutex);
  	return 0;
-@@ -856,15 +861,19 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
- 		goto fail;
- 	}
+@@ -860,9 +865,12 @@ static int zswap_cpu_comp_prepare(unsigned int cpu, struct hlist_node *node)
+ 	if (ret)
+ 		goto req_fail;
  
--	if (zswap_acomp_req_init(&acomp_ctx->comp.areq, acomp_ctx->acomp) ||
--	    zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp)) {
--		pr_err("could not alloc crypto acomp_request %s\n",
--		       pool->tfm_name);
--		goto fail;
-+	if (zswap_acomp_req_init(&acomp_ctx->comp.areq, acomp_ctx->acomp))
-+		goto req_fail;
-+
+-	ret = zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp);
+-	if (ret)
+-		goto req_fail;
 +	/* Skip the per-CPU request when decompression can use the stack. */
-+	if (!acomp_can_use_stack_req(acomp_ctx->acomp)) {
-+		if (zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp))
++	if (acomp_is_async(acomp_ctx->acomp)) {
++		ret = zswap_acomp_req_init(&acomp_ctx->decomp, acomp_ctx->acomp);
++		if (ret)
 +			goto req_fail;
- 	}
++	}
  
  	return 0;
  
-+req_fail:
-+	pr_err("could not alloc crypto acomp_request %s\n", pool->tfm_name);
- fail:
- 	acomp_ctx_free(acomp_ctx);
- 	return ret;
-@@ -956,19 +965,14 @@ static bool zswap_compress(struct folio *folio, long index,
+@@ -959,19 +967,14 @@ static bool zswap_compress(struct folio *folio, long index,
  	return comp_ret == 0 && alloc_ret == 0;
  }
  
@@ -167,7 +132,7 @@ index 23c4298765795..572075bb1c1c1 100644
  	zs_obj_read_sg_begin(pool->zs_pool, entry->handle, input, entry->length);
  
  	/* zswap entries of length PAGE_SIZE are not compressed. */
-@@ -985,15 +989,13 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+@@ -988,15 +991,13 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
  	} else {
  		sg_init_table(&output, 1);
  		sg_set_folio(&output, folio, PAGE_SIZE, 0);
@@ -187,7 +152,7 @@ index 23c4298765795..572075bb1c1c1 100644
  
  	if (!ret && dlen == PAGE_SIZE)
  		return true;
-@@ -1007,6 +1009,35 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+@@ -1010,6 +1011,35 @@ static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
  	return false;
  }
  

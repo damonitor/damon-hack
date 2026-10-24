@@ -1,0 +1,102 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Fri, 23 Oct 2026 16:17:31 +0100
+Subject: [PATCH] mm/vma: fix expansion of VMA_MIXEDMAP_BIT VMAs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit ca3d76b0aa80 ("mm: add merging after mremap resize") combined
+merging with expansion of mremap()'d VMAs, however it also unintentionally
+disallowed the expansion of unmergeable VMAs.
+
+Previously it was possible to expand a mixed mapping which mremap() had
+already ensured was a legal expansion.
+
+This is clearly seen in the mremap() logic, as it checks
+vma_is_fixed_mapping() to determine legality of an expansion rather than
+vma_can_merge().
+
+Additionally, copy_vma() allows for a failed merge to result in a new VMA
+being instantiated if MREMAP_MAYMOVE is specified.
+
+However, this is not attempted, as a failure in vma_merge_extend() is
+assumed to be an -ENOMEM failure.
+
+Since vma_merge_extend() is used exclusively by mremap() to perform a merge
+and/or expansion, resolve the issue by invoking vma_expand() for
+unmergeable VMAs there.
+
+Explicitly assert that the VMA is both non-fixed and a mixed mapping.
+This provides double insurance against broken changes in future.
+
+Note that khugepaged_enter_vma() (which vma_merge_new_range() runs) is
+redundant in this case, as a mixed mapping is not subject to khugepaged.
+
+Also update the VMA userland tests to add a required predicate.
+
+Link: https://lore.kernel.org/20261023-vma-expansion-fix-v1-1-6142baf1f46b@kernel.org
+Fixes: ca3d76b0aa80 ("mm: add merging after mremap resize")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Luiz Capitulino <luizcap@redhat.com>
+Closes: https://lore.kernel.org/all/20261023023106.515365-1-luizcap@redhat.com/
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Jakub Matěna <matenajakub@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/vma.c                        | 19 ++++++++++++++++---
+ tools/testing/vma/include/dup.h |  5 +++++
+ 2 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index 1be613044b4a5..88ef92ab24ecf 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -1851,12 +1851,25 @@ struct vm_area_struct *vma_merge_extend(struct vma_iterator *vmi,
+ 					struct vm_area_struct *vma,
+ 					unsigned long delta)
+ {
+-	VMG_VMA_STATE(vmg, vmi, vma, vma, vma->vm_end, vma->vm_end + delta);
++	const unsigned long start =
++		vma_can_merge(vma) ? vma->vm_end : vma->vm_start;
++	VMG_VMA_STATE(vmg, vmi, vma, vma, start, vma->vm_end + delta);
+ 
+-	vmg.next = vma_iter_next_rewind(vmi, NULL);
+ 	vmg.middle = NULL; /* We use the VMA to populate VMG fields only. */
+ 
+-	return vma_merge_new_range(&vmg);
++	if (vma_can_merge(vma)) {
++		vmg.next = vma_iter_next_rewind(vmi, NULL);
++		return vma_merge_new_range(&vmg);
++	}
++
++	/* Mixed mappings are permitted to be expanded, not merged. */
++	VM_WARN_ON_ONCE(vma_is_fixed_mapping(vma));
++	VM_WARN_ON_ONCE(!vma_test(vma, VMA_MIXEDMAP_BIT));
++	vma_prev(vmi); /* Reposition to start of VMA. */
++	vmg.target = vma;
++	if (vma_expand(&vmg))
++		return NULL;
++	return vma;
+ }
+ 
+ void unlink_file_vma_batch_init(struct unlink_vma_file_batch *vb)
+diff --git a/tools/testing/vma/include/dup.h b/tools/testing/vma/include/dup.h
+index f449129ea97a9..e0eab4eca998e 100644
+--- a/tools/testing/vma/include/dup.h
++++ b/tools/testing/vma/include/dup.h
+@@ -1727,3 +1727,8 @@ static inline bool vma_flags_can_merge(const vma_flags_t *flags)
+ 	 */
+ 	return !vma_flags_is_hugetlb(flags);
+ }
++
++static inline bool vma_can_merge(const struct vm_area_struct *vma)
++{
++	return vma_flags_can_merge(&vma->flags);
++}
+-- 
+2.47.3
+
