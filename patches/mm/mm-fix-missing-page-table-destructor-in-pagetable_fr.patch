@@ -1,26 +1,30 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Sat, 10 Oct 2026 19:24:54 +0800
+Date: Fri, 23 Oct 2026 14:34:25 +0800
 Subject: [PATCH] mm: fix missing page-table destructor in pagetable_free()
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Patch series "mm: Fix page-table teardown during memory hot-remove", v4.
+Patch series "mm: Fix page-table teardown during memory hot-remove", v3.
 
 Memory hot-remove can free page-table pages allocated through paths with
-different constructor state.  Some paths run the page-table constructor,
-while generic sparse-vmemmap population may not.  The x86, RISC-V, and
-arm64 teardown paths did not handle that distinction consistently, leaving
-constructor/destructor accounting unbalanced.
+different constructor state. Some paths run the page-table constructor,
+while generic sparse-vmemmap population may not. The x86, RISC-V, and
+arm64 teardown paths did not handle that distinction consistently,
+leaving constructor/destructor accounting unbalanced.
 
 Make pagetable_free() handle any remaining constructor state before
-freeing a page-table page.  Callers that already ran pagetable_dtor() have
-cleared that state, so the destructor is not run twice.  The RISC-V and
-arm64 fixes then use this common helper for their memory-hot-remove paths.
+freeing a page-table page. Callers that already ran pagetable_dtor()
+have cleared that state, so the destructor is not run twice. The RISC-V
+and arm64 fixes then use this common helper for their memory-hot-remove
+paths.
 
-The architecture fixes depend on the common MM change in patch 1, so this
-remains a single series.  I expect it to go through the MM tree, with
-review or acks from the relevant architecture maintainers.
+The architecture fixes depend on the common MM change in patch 1, so
+this remains a single series. I expect it to go through the MM tree,
+with review or acks from the relevant architecture maintainers.
+
+
+This patch (of 2):
 
 Since commit 49f599666420 ("mm: call ctor/dtor for kernel PTEs"),
 pte_alloc_one_kernel() runs the page-table constructor for kernel PTE
@@ -32,17 +36,22 @@ the PTE table, so a later memory hot-remove eventually frees it through
 pagetable_free() on x86-64. That releases the page without running the
 matching destructor and leaves NR_PAGETABLE elevated.
 
-Make pagetable_free() detect constructor-backed pages and run the
-destructor before releasing their memory to fix the problem.
+Make pagetable_free() the common free-side primitive for page-table
+pages. It checks PageTable() and runs the destructor only when the
+constructor state is still present. Callers that explicitly ran
+pagetable_dtor() have already cleared PageTable(), so they are not
+destructed twice; pages that never ran a constructor are freed directly.
 
-Link: https://lore.kernel.org/20261010112457.49485-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261023063428.3658761-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261023063428.3658761-2-songmuchun@bytedance.com
 Fixes: 49f599666420 ("mm: call ctor/dtor for kernel PTEs")
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Acked-by: Dave Hansen <dave.hansen@intel.com>
-Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
 Reviewed-by: Kevin Brodsky <kevin.brodsky@arm.com>
+Acked-by: Dave Hansen <dave.hansen@intel.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Anshuman Khandual <anshuman.khandual@arm.com>
 Assisted-by: LLM
 Cc: Oscar Salvador <osalvador@suse.de>
 Cc: Paul Walmsley <pjw@kernel.org>
@@ -50,20 +59,21 @@ Cc: Palmer Dabbelt <palmer@dabbelt.com>
 Cc: Albert Ou <aou@eecs.berkeley.edu>
 Cc: Alexandre Ghiti <alex@ghiti.fr>
 Cc: Björn Töpel <bjorn@rivosinc.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
 Cc: Will Deacon <will@kernel.org>
 Cc: Mark Rutland <mark.rutland@arm.com>
 Cc: Alexander Gordeev <agordeev@linux.ibm.com>
 Cc: Alistair Popple <apopple@nvidia.com>
-Cc: <stable@vger.kernel.org> # 6.16-6.18: bf9e4e30f353: x86/mm: use pagetable_free()
+Cc: <stable@vger.kernel.org> # bf9e4e30f353: x86/mm: use pagetable_free()
 ---
  include/linux/mm.h | 37 ++++++++++++++++++++-----------------
  1 file changed, 20 insertions(+), 17 deletions(-)
 
 diff --git a/include/linux/mm.h b/include/linux/mm.h
-index 4275f698ebfb4..5f82be0fcde58 100644
+index 6756f7fc18068..35f5fc43861ab 100644
 --- a/include/linux/mm.h
 +++ b/include/linux/mm.h
-@@ -3971,23 +3971,6 @@ static inline void pagetable_free_kernel(struct ptdesc *pt)
+@@ -3967,23 +3967,6 @@ static inline void pagetable_free_kernel(struct ptdesc *pt)
  	__pagetable_free(pt);
  }
  #endif
@@ -87,7 +97,7 @@ index 4275f698ebfb4..5f82be0fcde58 100644
  #if defined(CONFIG_SPLIT_PTE_PTLOCKS)
  #if ALLOC_SPLIT_PTLOCKS
  void __init ptlock_cache_init(void);
-@@ -4080,6 +4063,26 @@ static inline void pagetable_dtor(struct ptdesc *ptdesc)
+@@ -4076,6 +4059,26 @@ static inline void pagetable_dtor(struct ptdesc *ptdesc)
  	lruvec_stat_sub_folio(folio, NR_PAGETABLE);
  }
  
