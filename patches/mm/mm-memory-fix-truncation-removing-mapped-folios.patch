@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Fri, 16 Oct 2026 09:48:08 +0800
+Date: Mon, 26 Oct 2026 10:05:06 +0800
 Subject: [PATCH] mm: memory: fix truncation removing mapped folios
 
 Ayush reported an issue that shmem/tmpfs folios are still mapped when
@@ -42,12 +42,12 @@ workingset|swapbacked|node=0|zone=2|lastcpupid=0x3ffff)
 [  189.187078]  el0t_64_sync+0x184/0x188
 "
 
-After analysis, I believe the race exists between truncation and
-MADV_DONTNEED, and shmem's ->map_pages() merely makes the issue easier to
-reproduce.  Since MADV_DONTNEED synchronously releases the pagetable page
-before calling tlb_flush_rmaps(), this could cause another thread's
-truncation to skip zap_pte_range() (due to pmd is none) but still observe
-the folio's mapcount as non-zero.  A possible race scenario is as follows:
+After analysis, I believe the race exists between truncation and MADV_DONTNEED,
+and shmem's ->map_pages() merely makes the issue easier to reproduce. Since
+MADV_DONTNEED synchronously releases the pagetable page before calling
+tlb_flush_rmaps(), this could cause another thread's truncation to skip
+zap_pte_range() (due to pmd is none) but still observe the folio's mapcount
+as non-zero. A possible race scenario is as follows:
 
 CPU 0                           CPU 1
 shmem_fallocate                 madvise_dontneed_single_vma
@@ -71,7 +71,7 @@ find a pmd_none() while unmapping a folio without holding the PTL, the
 folio's mappings are guaranteed to have been removed via
 tlb_flush_rmaps().
 
-Link: https://lore.kernel.org/e2f76ed117b0c22a26b7688fd46a38c9d035336e.1792114445.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/4cc521a118564b4145edf0324066ab532fb41181.1792979870.git.baolin.wang@linux.alibaba.com
 Link: https://lore.kernel.org/all/20260925065013.3682431-1-ayushr@modal.com/ [1]
 Fixes: 6375e95f381e ("mm: pgtable: reclaim empty PTE page in madvise(MADV_DONTNEED)")
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
@@ -79,8 +79,8 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reported-by: Ayush Ranjan <ayushr@modal.com>
 Closes: https://lore.kernel.org/all/20260924061708.1645968-1-ayushr@modal.com/
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
-Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>
@@ -89,15 +89,15 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Jan Kara <jack@suse.cz>
 ---
- mm/internal.h |  9 +++++----
- mm/memory.c   | 25 ++++++++++++-------------
- 2 files changed, 17 insertions(+), 17 deletions(-)
+ mm/internal.h | 10 ++++++----
+ mm/memory.c   | 28 +++++++++++++++-------------
+ 2 files changed, 21 insertions(+), 17 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 38b1165212c94..a8820ad7e2f21 100644
+index 38b1165212c94..a533b56e2f2b9 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -584,14 +584,15 @@ void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
+@@ -584,14 +584,16 @@ void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
  void pmd_install(struct mm_struct *mm, pmd_t *pmd, pgtable_t *pte);
  
  /**
@@ -110,15 +110,16 @@ index 38b1165212c94..a8820ad7e2f21 100644
 - * zap_huge_pmd() may have cleared the PMD but not yet modified the folio to
 - * indicate that it's unmapped. Skipping the PMD without synchronization could
 - * make folio unmapping code assume that unmapping failed.
-+ * zap_huge_pmd() or zap_empty_pte_table() may have cleared the PMD but not
-+ * yet modified the mapped folios to indicate they are unmapped. Skipping the
-+ * PMD without synchronization could make folio unmapping code assume that
-+ * unmapping failed.
++ * zap_huge_pmd() may have cleared the PMD but not yet updated the folio
++ * mapcount, and zap_empty_pte_table() clears the PMD only after the rmaps
++ * for the table have been removed, but nothing orders the pmd_none() read
++ * against later mapcount reads. Skipping the PMD without synchronization
++ * could make folio unmapping code assume that unmapping failed.
   *
   * Wait for concurrent zapping to complete by grabbing the PTL.
   */
 diff --git a/mm/memory.c b/mm/memory.c
-index 8b0c2c735d3de..fdabfd89f7513 100644
+index a12dcbc0e709e..b2b33ac2d28d8 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
 @@ -2073,6 +2073,15 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
@@ -137,7 +138,13 @@ index 8b0c2c735d3de..fdabfd89f7513 100644
  	/*
  	 * Fast path: try to hold the pmd lock and unmap the PTE page.
  	 *
-@@ -2083,15 +2092,6 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+@@ -2080,18 +2089,12 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+ 	 * to hold the pmd lock failed, then we need to recheck all pte entries
+ 	 * to ensure they are still none, thereby preventing the pte entries
+ 	 * from being repopulated by another thread.
++	 *
++	 * Clear the PMD after the rmaps for the table have been removed, in case
++	 * an incorrect mapcount is observed after unmapping the folio.
  	 */
  	if (can_reclaim_pt && direct_reclaim && addr == end)
  		direct_reclaim = zap_empty_pte_table(mm, pmd, ptl, &pmdval);
@@ -153,7 +160,7 @@ index 8b0c2c735d3de..fdabfd89f7513 100644
  	pte_unmap_unlock(start_pte, ptl);
  
  	/*
-@@ -2139,12 +2139,11 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
+@@ -2139,12 +2142,11 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
  				continue;
  			}
  			/* fall through */

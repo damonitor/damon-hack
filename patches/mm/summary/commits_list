@@ -550,7 +550,23 @@
     - 5695abc4e742 "mm/damon/core: remove unreachable damos charge_{target,addr}_from"
       - Authored by a maintainer, reviewed by nobody
       - Link: https://lore.kernel.org/20261020023958.108276-1-sj@kernel.org
-- mm-unstable: 0 total, 0 (0) series, 0 non-series commits
+- mm-unstable: 3 total, 1 (3) series, 0 non-series commits
+  - author/reviewer role stat
+    - maintainer, nobody: 3 commits
+  - full commits list
+    - series "mm/damon: fix three race bugs in sysfs and core", v1. (3 commits)
+      - a8e1f6daa376 "mm/damon/sysfs-schemes: hold damon_sysfs_lock in target_metric_store()" (0/3)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20261025164808.152048-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261025164808.152048-2-sj@kernel.org
+        - Link: https://sashiko.dev/#/bug/linux-7f814c9a-986f-4103-a55a-ef9537dcf62b [1]
+        - Link: https://lore.kernel.org/20261021005234.94107-1-sj@kernel.org [2]
+      - 22ab11bba18a "mm/damon/core: move static variable last_nr_regions to damon_ctx" (1/3)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20261025164808.152048-3-sj@kernel.org
+      - adc5df12bea5 "mm/damon/core: move static variable rotation to damon_ctx" (2/3)
+        - Authored by a maintainer, reviewed by nobody
+        - Link: https://lore.kernel.org/20261025164808.152048-4-sj@kernel.org
 - mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits
