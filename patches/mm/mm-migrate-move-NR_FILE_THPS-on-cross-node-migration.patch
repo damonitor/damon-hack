@@ -1,0 +1,85 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Sun, 25 Oct 2026 19:02:09 +0800
+Subject: [PATCH] mm/migrate: move NR_FILE_THPS on cross-node migration
+
+When a page cache folio is migrated to another node,
+__folio_migrate_mapping() moves the per-node and per-memcg counters
+that are keyed off the folio's node: NR_FILE_PAGES, NR_SHMEM,
+NR_SHMEM_THPS, NR_SWAPCACHE and NR_FILE_DIRTY.  NR_FILE_THPS is not
+moved, although __filemap_add_folio() charges it to the source node and
+filemap_unaccount_folio() takes it off whatever node the folio lives on
+when it is removed.
+
+Commit 0b52c420350e ("mm: fix shmem THP counters on migration") added
+the NR_SHMEM_THPS case but not its file-backed counterpart.  Now that
+ext4, xfs, btrfs and erofs can all have PMD-sized page cache folios,
+migrating them via NUMA balancing, mbind(), migratepages, demotion or
+memory offlining leaks FileHugePages on the source node and underflows
+it on the destination, in both /sys/devices/system/node/nodeN/meminfo
+and memory.numa_stat.  The global value is unaffected, which is why this
+went unnoticed.
+
+Reproducer, on a 2-node QEMU guest with THP set to "always":
+
+  1. read a 256M ext4 file through a MADV_HUGEPAGE mapping while bound
+     to node 0, so its page cache is 128 PMD-sized folios on node 0;
+  2. move the mapping to node 1 with mbind(MPOL_MF_MOVE);
+  3. unmap the file and drop its page cache.
+
+nr_file_hugepages in /sys/devices/system/node/nodeN/vmstat after each
+step (in units of PMD-sized folios):
+
+                    without this patch     with this patch
+                     node0     node1       node0     node1
+  1. cached           128         0         128         0
+  2. migrated         128         0           0       128
+  3. dropped          128         0 (*)       0         0
+
+  (*) the counter has underflowed to -128; negative values read as 0.
+
+Without the patch the 128 folios stay accounted to node 0 forever, and
+every further round adds another 128.  The same happens to the per-memcg
+per-node counter: after step 3, memory.stat of the cgroup shows
+"file_thp 0", while memory.numa_stat still shows
+"file_thp N0=268435456 N1=0".  With the patch both are 0.
+
+Move NR_FILE_THPS together with NR_FILE_PAGES, using the same condition
+filemap_unaccount_folio() uses to take it off, so that THPs in the swap
+cache are left alone.
+
+Link: https://lore.kernel.org/20261025110209.4105994-1-ridong.chen@linux.dev
+Fixes: d68eccad3706 ("mm/filemap: Allow large folios to be added to the page cache")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: "Garg, Shivank" <shivankg@amd.com>
+---
+ mm/migrate.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index d649a6cfce6c0..99e3026e31265 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -700,6 +700,10 @@ static int __folio_migrate_mapping(struct address_space *mapping,
+ 				mod_lruvec_state(old_lruvec, NR_SHMEM_THPS, -nr);
+ 				mod_lruvec_state(new_lruvec, NR_SHMEM_THPS, nr);
+ 			}
++		} else if (!folio_test_swapbacked(folio) &&
++			   folio_test_pmd_mappable(folio)) {
++			mod_lruvec_state(old_lruvec, NR_FILE_THPS, -nr);
++			mod_lruvec_state(new_lruvec, NR_FILE_THPS, nr);
+ 		}
+ #ifdef CONFIG_SWAP
+ 		if (folio_test_swapcache(folio)) {
+-- 
+2.47.3
+

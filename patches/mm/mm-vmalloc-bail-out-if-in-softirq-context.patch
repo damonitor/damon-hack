@@ -1,0 +1,65 @@
+From: "Uladzislau Rezki (Sony)" <urezki@gmail.com>
+Date: Mon, 26 Oct 2026 11:25:03 +0100
+Subject: [PATCH] mm/vmalloc: bail out if in softirq context
+
+vmalloc() is not allowed to be invoked from the NMI, hard-irq and softirq
+contexts because doing so may deadlock on internal locks.
+
+Commit 04aa71da5f35 ("mm/vmalloc: do not trigger BUG() on BH disabled
+context") replaced the deprecated in_interrupt() macro with explicit
+in_nmi() and in_hardirq() checks, but unintentionally dropped the softirq
+context check.
+
+Example:
+
+<snip>
+vzalloc() in a task
+ spin_lock(&vn->busy.lock)
+  <------ Hard irq
+   irq_exit()
+    process softirq on the same CPU
+     vmalloc()
+      spin_lock(&vn->busy.lock)
+       spins forever
+<snip>
+
+Restore the check by checking the caller's context with the
+in_serving_softirq() helper.  Note that, it is still allowed to invoke
+vmalloc() with disabled bottom halves.
+
+Replace BUG_ON() with WARN_ON_ONCE() for in_nmi() and
+in_hardirq() case.
+
+Link: https://lore.kernel.org/20261026102503.30860-1-urezki@gmail.com
+Fixes: 04aa71da5f35 ("mm/vmalloc: do not trigger BUG() on BH disabled context")
+Signed-off-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/vmalloc.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index db669103dc666..04067dac4cb9b 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3271,7 +3271,13 @@ struct vm_struct *__get_vm_area_node(unsigned long size,
+ 	struct vm_struct *area;
+ 	unsigned long requested_size = size;
+ 
+-	BUG_ON(in_nmi() || in_hardirq());
++	/* IRQ re-entrancy -> irq_exit() -> process softirq. */
++	if (in_serving_softirq())
++		return NULL;
++
++	if (WARN_ON_ONCE(in_nmi() || in_hardirq()))
++		return NULL;
++
+ 	size = ALIGN(size, 1ul << shift);
+ 	if (unlikely(!size))
+ 		return NULL;
+-- 
+2.47.3
+

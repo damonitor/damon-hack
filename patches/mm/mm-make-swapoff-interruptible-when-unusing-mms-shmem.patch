@@ -1,5 +1,5 @@
 From: Chris Down <chris@chrisdown.name>
-Date: Thu, 1 Oct 2026 01:17:40 +0200
+Date: Mon, 26 Oct 2026 22:31:03 +0800
 Subject: [PATCH] mm: make swapoff interruptible when unusing mms/shmem
 
 try_to_unuse() only checks for a pending signal between mms, and
@@ -46,30 +46,30 @@ in the same test while swapoff is happening on my computer:
     400MiB shmem      1.639s                  0.003s
     2GiB anon         failed after 20.003s    0.011s
 
-Link: https://lore.kernel.org/ar2YlFYjYUZ49ZA5@chrisdown.name
+Link: https://lore.kernel.org/at9kJwdGkHPsWwgG@chrisdown.name
 Fixes: b56a2d8af914 ("mm: rid swapoff of quadratic complexity")
 Signed-off-by: Chris Down <chris@chrisdown.name>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Acked-by: Vineeth Pillai (Google) <vineeth@bitbyteword.org>
-Cc: Hugh Dickins <hughd@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Hugh Dickins <hughd@google.com>
 Cc: Chris Li <chrisl@kernel.org>
 Cc: Kairui Song <kasong@tencent.com>
-Cc: Kemeng Shi <shikemeng@huaweicloud.com>
 Cc: Nhat Pham <nphamcs@gmail.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
 Cc: Barry Song <baohua@kernel.org>
 Cc: Youngjun Park <youngjun.park@lge.com>
 Cc: Ying Huang <huang.ying.caritas@gmail.com>
 Cc: Kelley Nielsen <kelleynnn@gmail.com>
-Cc: "Rafael J. Wysocki" <rafael.j.wysocki@intel.com>
+Cc: Rafael J. Wysocki <rafael.j.wysocki@intel.com>
+Cc: <stable@vger.kernel.org>
 ---
  mm/shmem.c    | 4 ++++
- mm/swapfile.c | 2 ++
- 2 files changed, 6 insertions(+)
+ mm/swapfile.c | 4 +++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/mm/shmem.c b/mm/shmem.c
-index fadf23f9e21ed..fd0953d55fd64 100644
+index fadf23f9e21ed..13e0786436cda 100644
 --- a/mm/shmem.c
 +++ b/mm/shmem.c
 @@ -1742,6 +1742,10 @@ static int shmem_unuse_inode(struct inode *inode, unsigned int type)
@@ -77,14 +77,14 @@ index fadf23f9e21ed..fd0953d55fd64 100644
  			break;
  
 +		if (signal_pending(current)) {
-+			ret = -EINTR;
++			ret = -ERESTARTSYS;
 +			break;
 +		}
  		start = indices[folio_batch_count(&fbatch) - 1];
  	} while (true);
  
 diff --git a/mm/swapfile.c b/mm/swapfile.c
-index 254ce86fa923e..c3288910b3e35 100644
+index 254ce86fa923e..0f72a5b23a3a6 100644
 --- a/mm/swapfile.c
 +++ b/mm/swapfile.c
 @@ -2689,6 +2689,8 @@ static inline int unuse_pmd_range(struct vm_area_struct *vma, pud_t *pud,
@@ -92,10 +92,19 @@ index 254ce86fa923e..c3288910b3e35 100644
  	do {
  		cond_resched();
 +		if (signal_pending(current))
-+			return -EINTR;
++			return -ERESTARTSYS;
  		next = pmd_addr_end(addr, end);
  		ret = unuse_pte_range(vma, pmd, addr, next, type);
  		if (ret)
+@@ -2922,7 +2924,7 @@ static int try_to_unuse(unsigned int type)
+ 	if (swap_usage_in_pages(si)) {
+ 		if (!signal_pending(current))
+ 			goto retry;
+-		return -EINTR;
++		return -ERESTARTSYS;
+ 	}
+ 
+ success:
 -- 
 2.47.3
 
