@@ -1,0 +1,64 @@
+From: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Date: Mon, 26 Oct 2026 13:39:41 -0300
+Subject: [PATCH] fat: improve fat_sync_bhs() write submission
+
+fat_sync_bhs() does many individual write_dirty_buffer() calls without
+plugging, making batching in the block layer more difficult.  It also does
+not pass the REQ_SYNC hint for these synchronous writes.
+
+Use a plug around the writes so the block layer can more easily batch
+them.  Pass the REQ_SYNC hint to write_dirty_buffer().
+
+Benchmarking was done under QEMU/KVM with a virtio-blk device using
+cache=directsync.  Each result is the arithmetic mean of 10 samples.
+
+start = now_ns();
+for (unsigned i = 0; i < count; i++) {
+    fallocate(fds[i], FALLOC_FL_KEEP_SIZE, 0, bytes);
+}
+elapsed = now_ns() - start;
+
+Sync-mounted FAT32 using count=16 files:
+File size    Cluster size    Before    After    Improvement
+256MiB       512B            13.11s    11.87s   1.10x
+256MiB       4096B           1.657s    1.469s   1.13x
+
+Link: https://lore.kernel.org/20261026163941.495833-3-matheus.aalmeida@inf.ufrgs.br
+Signed-off-by: Matheus Alves de Almeida <matheus.aalmeida@inf.ufrgs.br>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: OGAWA Hirofumi <hirofumi@mail.parknet.co.jp>
+---
+ fs/fat/misc.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/fs/fat/misc.c b/fs/fat/misc.c
+index aa9c7ea8b0715..15e68c9bf0126 100644
+--- a/fs/fat/misc.c
++++ b/fs/fat/misc.c
+@@ -9,6 +9,7 @@
+ 
+ #include "fat.h"
+ #include <linux/iversion.h>
++#include <linux/blk_plug.h>
+ 
+ /*
+  * fat_fs_error reports a file system problem that might indicate fa data
+@@ -353,9 +354,14 @@ EXPORT_SYMBOL_GPL(fat_update_time);
+ int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs)
+ {
+ 	int i, err = 0;
++	struct blk_plug plug;
++
++	blk_start_plug(&plug);
+ 
+ 	for (i = 0; i < nr_bhs; i++)
+-		write_dirty_buffer(bhs[i], 0);
++		write_dirty_buffer(bhs[i], REQ_SYNC);
++
++	blk_finish_plug(&plug);
+ 
+ 	for (i = 0; i < nr_bhs; i++) {
+ 		wait_on_buffer(bhs[i]);
+-- 
+2.47.3
+

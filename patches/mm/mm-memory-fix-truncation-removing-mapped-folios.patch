@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Mon, 26 Oct 2026 10:05:06 +0800
+Date: Wed, 28 Oct 2026 08:52:57 +0800
 Subject: [PATCH] mm: memory: fix truncation removing mapped folios
 
 Ayush reported an issue that shmem/tmpfs folios are still mapped when
@@ -42,12 +42,12 @@ workingset|swapbacked|node=0|zone=2|lastcpupid=0x3ffff)
 [  189.187078]  el0t_64_sync+0x184/0x188
 "
 
-After analysis, I believe the race exists between truncation and MADV_DONTNEED,
-and shmem's ->map_pages() merely makes the issue easier to reproduce. Since
-MADV_DONTNEED synchronously releases the pagetable page before calling
-tlb_flush_rmaps(), this could cause another thread's truncation to skip
-zap_pte_range() (due to pmd is none) but still observe the folio's mapcount
-as non-zero. A possible race scenario is as follows:
+After analysis, I believe the race exists between truncation and
+MADV_DONTNEED, and shmem's ->map_pages() merely makes the issue easier to
+reproduce.  Since MADV_DONTNEED synchronously releases the pagetable page
+before calling tlb_flush_rmaps(), this could cause another thread's
+truncation to skip zap_pte_range() (due to pmd is none) but still observe
+the folio's mapcount as non-zero.  A possible race scenario is as follows:
 
 CPU 0                           CPU 1
 shmem_fallocate                 madvise_dontneed_single_vma
@@ -71,7 +71,10 @@ find a pmd_none() while unmapping a folio without holding the PTL, the
 folio's mappings are guaranteed to have been removed via
 tlb_flush_rmaps().
 
-Link: https://lore.kernel.org/4cc521a118564b4145edf0324066ab532fb41181.1792979870.git.baolin.wang@linux.alibaba.com
+Meanwhile move the second pmd_none() check to where it belongs: if
+splitting zapped the PMD.
+
+Link: https://lore.kernel.org/14ebbd556cc4941f0ebc43da59fa6a2fdca25dc8.1793148609.git.baolin.wang@linux.alibaba.com
 Link: https://lore.kernel.org/all/20260925065013.3682431-1-ayushr@modal.com/ [1]
 Fixes: 6375e95f381e ("mm: pgtable: reclaim empty PTE page in madvise(MADV_DONTNEED)")
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
@@ -88,16 +91,17 @@ Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Jan Kara <jack@suse.cz>
+Cc: <stable@vger.kernel.org>
 ---
  mm/internal.h | 10 ++++++----
- mm/memory.c   | 28 +++++++++++++++-------------
- 2 files changed, 21 insertions(+), 17 deletions(-)
+ mm/memory.c   | 35 ++++++++++++++++++++---------------
+ 2 files changed, 26 insertions(+), 19 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index 38b1165212c94..a533b56e2f2b9 100644
+index 566cbd2dce485..8b1263e81054e 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -584,14 +584,16 @@ void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
+@@ -589,14 +589,16 @@ void free_pgtables(struct mmu_gather *tlb, struct unmap_desc *desc);
  void pmd_install(struct mm_struct *mm, pmd_t *pmd, pgtable_t *pte);
  
  /**
@@ -119,10 +123,10 @@ index 38b1165212c94..a533b56e2f2b9 100644
   * Wait for concurrent zapping to complete by grabbing the PTL.
   */
 diff --git a/mm/memory.c b/mm/memory.c
-index a12dcbc0e709e..b2b33ac2d28d8 100644
+index 591592bc5a941..916637e8381da 100644
 --- a/mm/memory.c
 +++ b/mm/memory.c
-@@ -2073,6 +2073,15 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+@@ -2036,6 +2036,15 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
  		}
  	} while (pte += nr, addr += PAGE_SIZE * nr, addr != end);
  
@@ -138,7 +142,7 @@ index a12dcbc0e709e..b2b33ac2d28d8 100644
  	/*
  	 * Fast path: try to hold the pmd lock and unmap the PTE page.
  	 *
-@@ -2080,18 +2089,12 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
+@@ -2043,18 +2052,12 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
  	 * to hold the pmd lock failed, then we need to recheck all pte entries
  	 * to ensure they are still none, thereby preventing the pte entries
  	 * from being repopulated by another thread.
@@ -160,17 +164,23 @@ index a12dcbc0e709e..b2b33ac2d28d8 100644
  	pte_unmap_unlock(start_pte, ptl);
  
  	/*
-@@ -2139,12 +2142,11 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
+@@ -2101,13 +2104,15 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
+ 				addr = next;
  				continue;
  			}
++			/* We already synchronized with concurrent zapping. */
++			if (pmd_none(*pmd)) {
++				addr = next;
++				continue;
++			}
  			/* fall through */
 -		} else if (details && details->single_folio &&
 -			   folio_test_pmd_mappable(details->single_folio) &&
 -			   next - addr == HPAGE_PMD_SIZE && pmd_none(*pmd)) {
 -			sync_with_folio_pmd_zap(tlb->mm, pmd);
- 		}
-+
- 		if (pmd_none(*pmd)) {
+-		}
+-		if (pmd_none(*pmd)) {
++		} else if (pmd_none(*pmd)) {
 +			if (details && details->single_folio)
 +				sync_with_folio_pmd_zap(tlb->mm, pmd);
  			addr = next;
