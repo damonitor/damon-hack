@@ -1,0 +1,91 @@
+From: "Zenghui Yu (Huawei)" <zenghui.yu@linux.dev>
+Date: Wed, 28 Oct 2026 18:01:19 +0800
+Subject: [PATCH] selftests/mm: skip collapse_compound_extreme() on THP
+ allocation failure
+
+collapse_compound_extreme() needs hpage_pmd_nr PMD-order allocations in a
+row, and it kills the whole test binary via ksft_exit_fail_msg() as soon
+as one of them fails.
+
+Gating the case by PMD size (commit b36bec6a01b1) -- the current
+workaround for arm64 with 64K base pages, where a 512M PMD makes every
+construction step an order-13 allocation -- is not enough: the case still
+dies below the cutoff, e.g.  on an arm64 VM with 16K base pages and 8G of
+RAM, where the construction would need ~64G worth of PMD-order
+allocations.
+
+Remove the PMD-size gating and treat a failure to allocate a huge page
+during the construction as a skip: whether the allocator can hand out that
+many PMD-order folios in a row depends on the memory available on the
+machine, not on the kernel.
+
+Link: https://lore.kernel.org/20261028100119.11340-1-zenghui.yu@linux.dev
+Signed-off-by: Zenghui Yu (Huawei) <zenghui.yu@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Link: https://lore.kernel.org/all/atiQmWnz8zx2AKI7@thinkstation
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+---
+ tools/testing/selftests/mm/khugepaged.c | 26 +++++++++++++------------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/khugepaged.c b/tools/testing/selftests/mm/khugepaged.c
+index 1bc7acc66a469..e6151732b17cd 100644
+--- a/tools/testing/selftests/mm/khugepaged.c
++++ b/tools/testing/selftests/mm/khugepaged.c
+@@ -953,23 +953,25 @@ static void collapse_compound_extreme(struct collapse_context *c, struct mem_ops
+ 	void *p;
+ 	int i;
+ 
+-	/*
+-	 * This needs hpage_pmd_nr PMD-order allocations in a row, which the
+-	 * allocator will not supply if the PMD is very large.
+-	 */
+-	if (hpage_pmd_size > (32UL << 20)) {
+-		ksft_test_result_skip("%s: PMD too large for fault-time THP construction\n",
+-				      __func__);
+-		return;
+-	}
+-
+ 	p = ops->setup_area(1);
+ 	ksft_print_msg("Construct PTE page table full of different PTE-mapped compound pages\n");
+ 	for (i = 0; i < hpage_pmd_nr; i++) {
+ 		madvise(BASE_ADDR, hpage_pmd_size, MADV_HUGEPAGE);
+ 		ops->fault(BASE_ADDR, 0, hpage_pmd_size);
+-		if (!ops->check_huge(BASE_ADDR, hpage_pmd_size, 1, hpage_pmd_size))
+-			ksft_exit_fail_msg("Failed to allocate huge page\n");
++		if (!ops->check_huge(BASE_ADDR, hpage_pmd_size, 1, hpage_pmd_size)) {
++			/*
++			 * Constructing the PTE table requires hpage_pmd_nr
++			 * PMD-order allocations in a row.  Whether the
++			 * allocator can supply them depends on the memory
++			 * available on the machine, not on the kernel: skip
++			 * instead of failing the test run.
++			 */
++			ops->cleanup_area(BASE_ADDR - i * page_size,
++					  i * page_size + hpage_pmd_size);
++			ksft_test_result_skip("%s: Failed to allocate huge page\n",
++					      __func__);
++			return;
++		}
+ 		madvise(BASE_ADDR, hpage_pmd_size, MADV_NOHUGEPAGE);
+ 
+ 		p = mremap(BASE_ADDR - i * page_size,
+-- 
+2.47.3
+

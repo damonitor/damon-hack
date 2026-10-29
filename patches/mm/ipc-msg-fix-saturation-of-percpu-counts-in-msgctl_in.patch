@@ -1,0 +1,52 @@
+From: David Laight <david.laight.linux@gmail.com>
+Date: Wed, 19 Nov 2025 22:41:01 +0000
+Subject: [PATCH] ipc/msg: fix saturation of percpu counts in msgctl_info()
+
+While the percpu_counter_sum() values are unlikely to be large the code
+tries to saturate them using min_t(int, percpu_counter_sum(), INT_MAX)
+This just doesn't work since the high bits are all masked and then the
+(possibly negative) value assigned.
+
+When aggregate System V message queue usage exceeds INT_MAX, MSG_INFO
+returns wrapped statistics instead of saturating them.  At 2 GiB of queued
+data the byte count becomes negative, and at 4 GiB it becomes zero.
+Consequently, ipcs -q -u can display an enormous used-space value or
+report no queued data despite substantial usage.  Monitoring programs
+using this interface can therefore substantially underreport or overreport
+resource consumption.  The bug affects statistics; it does not corrupt
+queued messages or alter queue-limit enforcement.
+
+Replace the min_t() with a plain min().
+
+Link: https://lore.kernel.org/20251119224140.8616-6-david.laight.linux@gmail.com
+Fixes: 72d1e611082e ("ipc/msg: mitigate the lock contention with percpu counter")
+Signed-off-by: David Laight <david.laight.linux@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Manfred Spraul <manfred@colorfullife.com>
+Cc: <stable@vger.kernel.org>
+---
+ ipc/msg.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/ipc/msg.c b/ipc/msg.c
+index 62996b97f0ac2..18855b8ab019b 100644
+--- a/ipc/msg.c
++++ b/ipc/msg.c
+@@ -501,11 +501,9 @@ static int msgctl_info(struct ipc_namespace *ns, int msqid,
+ 	max_idx = ipc_get_maxidx(&msg_ids(ns));
+ 	up_read(&msg_ids(ns).rwsem);
+ 	if (cmd == MSG_INFO) {
+-		msginfo->msgmap = min_t(int,
+-				     percpu_counter_sum(&ns->percpu_msg_hdrs),
++		msginfo->msgmap = min(percpu_counter_sum(&ns->percpu_msg_hdrs),
+ 				     INT_MAX);
+-		msginfo->msgtql = min_t(int,
+-		                     percpu_counter_sum(&ns->percpu_msg_bytes),
++		msginfo->msgtql = min(percpu_counter_sum(&ns->percpu_msg_bytes),
+ 				     INT_MAX);
+ 	} else {
+ 		msginfo->msgmap = MSGMAP;
+-- 
+2.47.3
+
