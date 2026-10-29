@@ -1,0 +1,70 @@
+From: Wang Xiaolei <xiaoleiwangxiaolei@gmail.com>
+Date: Thu, 29 Oct 2026 15:56:09 +0800
+Subject: [PATCH] mm/damon/tests/sysfs-kunit: fix leaked pid reference in
+ add_targets test
+
+damon_sysfs_test_add_targets() creates its monitoring context with
+damon_new_ctx(), which leaves ctx->ops zero-initialized.  Since
+DAMON_OPS_VADDR is zero, damon_target_has_pid() returns true for the
+context, and damon_sysfs_add_targets() therefore calls
+damon_set_target_pid() for each target it adds.  That function grabs a
+reference to the target's struct pid via find_get_pid().
+
+The test then tears the context down with damon_destroy_ctx(), which
+releases such a reference from ctx->ops.cleanup_target().  For the vaddr
+operations set that callback is damon_va_cleanup_target(), and it is the
+only place where the reference is put.  The test never selects an
+operations set, though, so cleanup_target is NULL and both references --
+one for each of the two damon_sysfs_add_targets() calls -- are leaked on
+every run of the test.  Running the test with CONFIG_DEBUG_KMEMLEAK
+enabled reports the leaked struct pid objects as unreferenced.
+
+Fix this by selecting the vaddr operations set for the context before
+adding the targets, mirroring what the sysfs interface does.
+damon_select_ops() fails if the vaddr operations set is not registered,
+in which case the test cannot exercise the pid handling and skips
+itself.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/20261029075609.35661-1-xiaoleiwangxiaolei@gmail.com
+- Add Cc: stable@.
+- Collect R-b: from SJ.
+
+Fixes: b8ee5575f763 ("mm/damon/sysfs-test: add a unit test for damon_sysfs_set_targets()")
+Cc: <stable@vger.kernel.org> # 6.7.x
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: "Liam R. Howlett" <liam@infradead.org>
+Signed-off-by: Wang Xiaolei <xiaoleiwangxiaolei@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/sysfs-kunit.h | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/mm/damon/tests/sysfs-kunit.h b/mm/damon/tests/sysfs-kunit.h
+index 138a4b8d14e73..16373ba751dbc 100644
+--- a/mm/damon/tests/sysfs-kunit.h
++++ b/mm/damon/tests/sysfs-kunit.h
+@@ -79,6 +79,15 @@ static void damon_sysfs_test_add_targets(struct kunit *test)
+ 		kunit_skip(test, "ctx alloc fail");
+ 	}
+ 
++	if (damon_select_ops(ctx, DAMON_OPS_VADDR)) {
++		damon_destroy_ctx(ctx);
++		kfree(sysfs_targets->targets_arr);
++		kfree(sysfs_targets);
++		kfree(sysfs_target->regions);
++		kfree(sysfs_target);
++		kunit_skip(test, "vaddr ops not registered");
++	}
++
+ 	damon_sysfs_add_targets(ctx, sysfs_targets);
+ 	KUNIT_EXPECT_EQ(test, 1u, nr_damon_targets(ctx));
+ 
+-- 
+2.47.3
+
