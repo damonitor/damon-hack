@@ -1,0 +1,122 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Thu, 29 Oct 2026 00:05:46 +1100
+Subject: [PATCH] mm/damon: skip folios already on the migration target node
+
+While measuring DAMOS migration overhead, I found that the target_nid
+path isolates folios already on the target node, then puts them back on
+the LRU without migrating them.
+
+Skip them before isolation in vaddr and paddr, as the vaddr explicit
+destinations path already does.
+
+In a synthetic same-node fvaddr test on a two-node x86-64 KVM guest (8
+interleaved runs per kernel), guest-kernel cycles fell by about 29% with
+4 KiB regions and 90% with 16 MiB regions. Median kdamond CPU time fell
+by about 76% with 16 MiB regions, with no clear change with 4 KiB
+regions.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/179320218513.2.7432933245840036676.damon-same-node-skip@gmail.com
+- Put performance results in commit message.
+- Use two tabs indentation for second parameter lines.
+- Collect R-b: from SJ.
+
+Cc: Bijan Tabatabai <bijan311@gmail.com>
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/paddr.c |  2 ++
+ mm/damon/vaddr.c | 18 ++++++++++--------
+ 2 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index f4fa7c231e551..459b6bbe60a9b 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -433,6 +433,8 @@ static unsigned long damon_pa_migrate(struct damon_region *r,
+ 		else
+ 			*sz_filter_passed += folio_size(folio) / addr_unit;
+ 
++		if (folio_nid(folio) == s->target_nid)
++			goto put_folio;
+ 		if (!folio_isolate_lru(folio))
+ 			goto put_folio;
+ 		node_stat_add_folio(folio, NR_ISOLATED_ANON +
+diff --git a/mm/damon/vaddr.c b/mm/damon/vaddr.c
+index b549496ea8e2c..1e65e7651cd98 100644
+--- a/mm/damon/vaddr.c
++++ b/mm/damon/vaddr.c
+@@ -786,14 +786,15 @@ struct damos_va_migrate_private {
+  */
+ static void damos_va_migrate_dests_add(struct folio *folio,
+ 		struct vm_area_struct *vma, unsigned long addr,
+-		struct damos_migrate_dests *dests,
++		struct damos *s,
+ 		struct list_head *migration_lists)
+ {
++	struct damos_migrate_dests *dests = &s->migrate_dests;
+ 	pgoff_t ilx;
+ 	int order;
+ 	unsigned int target;
+ 	unsigned int weight_total = 0;
+-	int i;
++	int i, nid;
+ 
+ 	/*
+ 	 * If dests is empty, there is only one migration list corresponding
+@@ -801,7 +802,8 @@ static void damos_va_migrate_dests_add(struct folio *folio,
+ 	 */
+ 	if (!dests->nr_dests) {
+ 		i = 0;
+-		goto isolate;
++		nid = s->target_nid;
++		goto check_nid;
+ 	}
+ 
+ 	order = folio_order(folio);
+@@ -821,12 +823,13 @@ static void damos_va_migrate_dests_add(struct folio *folio,
+ 			break;
+ 		target -= dests->weight_arr[i];
+ 	}
++	nid = dests->node_id_arr[i];
+ 
++check_nid:
+ 	/* If the folio is already in the right node, don't do anything */
+-	if (folio_nid(folio) == dests->node_id_arr[i])
++	if (folio_nid(folio) == nid)
+ 		return;
+ 
+-isolate:
+ 	if (!folio_isolate_lru(folio))
+ 		return;
+ 	node_stat_add_folio(folio, NR_ISOLATED_ANON +
+@@ -840,7 +843,6 @@ static int damos_va_migrate_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 	struct damos_va_migrate_private *priv = walk->private;
+ 	struct list_head *migration_lists = priv->migration_lists;
+ 	struct damos *s = priv->scheme;
+-	struct damos_migrate_dests *dests = &s->migrate_dests;
+ 	struct folio *folio;
+ 	spinlock_t *ptl;
+ 	pte_t *start_pte, *pte, ptent;
+@@ -858,7 +860,7 @@ static int damos_va_migrate_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 			goto huge_out;
+ 		if (damos_va_filter_out(s, folio, walk->vma, addr, NULL, pmd))
+ 			goto huge_out;
+-		damos_va_migrate_dests_add(folio, walk->vma, addr, dests,
++		damos_va_migrate_dests_add(folio, walk->vma, addr, s,
+ 				migration_lists);
+ huge_out:
+ 		spin_unlock(ptl);
+@@ -883,7 +885,7 @@ static int damos_va_migrate_pmd_entry(pmd_t *pmd, unsigned long addr,
+ 			continue;
+ 		if (damos_va_filter_out(s, folio, walk->vma, addr, pte, NULL))
+ 			continue;
+-		damos_va_migrate_dests_add(folio, walk->vma, addr, dests,
++		damos_va_migrate_dests_add(folio, walk->vma, addr, s,
+ 				migration_lists);
+ 		page_idx = folio_page_idx(folio, pte_page(ptent));
+ 		nr = folio_nr_pages(folio) - page_idx;
+-- 
+2.47.3
+
