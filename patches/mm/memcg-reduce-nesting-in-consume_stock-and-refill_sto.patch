@@ -1,0 +1,119 @@
+From: Kuniyuki Iwashima <kuniyu@google.com>
+Date: Thu, 29 Oct 2026 19:44:13 +0000
+Subject: [PATCH] memcg: reduce nesting in consume_stock() and refill_stock().
+
+A later patch adds more code to the most nested block in
+consume_stock() and refill_stock().
+
+Let's reduce the nesting to make the later change cleaner.
+
+Link: https://lore.kernel.org/20261029194452.3189365-3-kuniyu@google.com
+Signed-off-by: Kuniyuki Iwashima <kuniyu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+---
+ mm/memcontrol.c | 64 ++++++++++++++++++++++++++-----------------------
+ 1 file changed, 34 insertions(+), 30 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 8a401550dfaa0..6666acc9cee8a 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2168,15 +2168,17 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 			continue;
+ 
+ 		stock_pages = stock->nr_pages[i];
+-		if (stock_pages >= nr_pages) {
+-			stock_pages -= nr_pages;
+-			WRITE_ONCE(stock->nr_pages[i], stock_pages);
+-			if (!stock_pages) {
+-				WRITE_ONCE(stock->cached[i], NULL);
+-				css_put(&memcg->css);
+-			}
+-			ret = true;
++		if (stock_pages < nr_pages)
++			break;
++
++		stock_pages -= nr_pages;
++		WRITE_ONCE(stock->nr_pages[i], stock_pages);
++		if (!stock_pages) {
++			WRITE_ONCE(stock->cached[i], NULL);
++			css_put(&memcg->css);
+ 		}
++
++		ret = true;
+ 		break;
+ 	}
+ 
+@@ -2258,7 +2260,6 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 	struct memcg_stock_pcp *stock;
+ 	struct mem_cgroup *cached;
+ 	unsigned int stock_pages;
+-	bool success = false;
+ 	int empty_slot = -1;
+ 	int i;
+ 
+@@ -2287,32 +2288,35 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 		cached = stock->cached[i];
+ 		if (!cached && empty_slot == -1)
+ 			empty_slot = i;
+-		if (memcg == stock->cached[i]) {
+-			stock_pages = stock->nr_pages[i] + nr_pages;
+-			if (stock_pages > MEMCG_STOCK_HIGH) {
+-				memcg_uncharge(memcg,
+-					       stock_pages - MEMCG_STOCK_LOW);
+-				stock_pages = MEMCG_STOCK_LOW;
+-			}
+-			WRITE_ONCE(stock->nr_pages[i], stock_pages);
+-			success = true;
+-			break;
++
++		if (memcg != cached)
++			continue;
++
++		stock_pages = stock->nr_pages[i] + nr_pages;
++		if (stock_pages > MEMCG_STOCK_HIGH) {
++			memcg_uncharge(memcg,
++				       stock_pages - MEMCG_STOCK_LOW);
++			stock_pages = MEMCG_STOCK_LOW;
+ 		}
++
++		WRITE_ONCE(stock->nr_pages[i], stock_pages);
++
++		local_unlock(&memcg_stock.lock);
++		return;
+ 	}
+ 
+-	if (!success) {
+-		i = empty_slot;
+-		if (i == -1) {
+-			i = stock->drain_idx++;
+-			if (stock->drain_idx == NR_MEMCG_STOCK)
+-				stock->drain_idx = 0;
+-			drain_stock(stock, i);
+-		}
+-		css_get(&memcg->css);
+-		WRITE_ONCE(stock->cached[i], memcg);
+-		WRITE_ONCE(stock->nr_pages[i], nr_pages);
++	i = empty_slot;
++	if (i == -1) {
++		i = stock->drain_idx++;
++		if (stock->drain_idx == NR_MEMCG_STOCK)
++			stock->drain_idx = 0;
++		drain_stock(stock, i);
+ 	}
+ 
++	css_get(&memcg->css);
++	WRITE_ONCE(stock->cached[i], memcg);
++	WRITE_ONCE(stock->nr_pages[i], nr_pages);
++
+ 	local_unlock(&memcg_stock.lock);
+ }
+ 
+-- 
+2.47.3
+

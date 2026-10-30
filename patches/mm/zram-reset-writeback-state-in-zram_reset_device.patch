@@ -1,0 +1,56 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Sun, 25 Oct 2026 11:18:19 +0900
+Subject: [PATCH] zram: reset writeback state in zram_reset_device()
+
+Reset all writeback state to its initial defaults on device reset.
+We used to keep writeback related data in zram->stats, which
+zram_reset_device() clears, but commit 1d69a3f8ae77 ("zram: idle
+writeback fixes and cleanup") moved it (along with the newly added
+wb_limit_enable) to struct zram, after which neither of them was
+reset anymore.  wb_batch_size and compressed_wb, which were added
+later, are not reset either.
+
+The patch is more about just being pedantic.
+
+Link: https://lore.kernel.org/20261025021839.1542805-4-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Brian Geffon <bgeffon@google.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hillf Danton <hdanton@sina.com>
+---
+ drivers/block/zram/zram_drv.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 593fa4ae47c4f..0e1aa0da11aae 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -694,6 +694,7 @@ static void reset_bdev(struct zram *zram)
+ 	zram->disk->fops = &zram_devops;
+ 	kvfree(zram->bitmap);
+ 	zram->bitmap = NULL;
++	zram->nr_pages = 0;
+ }
+ 
+ static ssize_t backing_dev_show(struct device *dev,
+@@ -2881,6 +2882,12 @@ static void zram_reset_device(struct zram *zram)
+ 	zram_destroy_comps(zram);
+ 	memset(&zram->stats, 0, sizeof(zram->stats));
+ 	reset_bdev(zram);
++#ifdef CONFIG_ZRAM_WRITEBACK
++	zram->wb_limit_enable = false;
++	zram->bd_wb_limit = 0;
++	zram->wb_batch_size = 32;
++	zram->compressed_wb = false;
++#endif
+ }
+ 
+ static ssize_t disksize_store(struct device *dev, struct device_attribute *attr,
+-- 
+2.47.3
+

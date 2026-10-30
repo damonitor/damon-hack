@@ -1,0 +1,124 @@
+From: Hungyu Lin <dennylin0707@gmail.com>
+Date: Fri, 30 Oct 2026 06:00:11 +0000
+Subject: [PATCH] fat: fix parent link count when replacing a sibling directory
+
+vfat_rename() and do_msdos_rename() adjust parent link counts only when
+updating the dotdot entry for a move between different parents.  Replacing
+an existing empty directory in the same parent also removes a
+subdirectory, but leaves the parent's link count unchanged.
+
+For example, renaming one of two sibling directories over the other leaves
+the parent with four links instead of three.  stat and ls report the stale
+count, and find -links 3 does not match the parent.
+
+Drop the parent's link count for this case after the source entry has been
+removed successfully.  Leave cross-parent renames, regular files and the
+existing error paths unchanged.
+
+Share the parent link count check with rmdir through fat_dir_drop_nlink().
+Only decrement counts of at least three and report a filesystem error
+otherwise, rather than reducing a corrupted directory's count below two.
+Export the helper for the VFAT and MSDOS modules.
+
+Link: https://lore.kernel.org/20261030060011.70237-1-dennylin0707@gmail.com
+Signed-off-by: Hungyu Lin <dennylin0707@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: OGAWA Hirofumi <hirofumi@mail.parknet.co.jp>
+Cc: Christian Brauner <brauner@kernel.org>
+---
+ fs/fat/dir.c         | 10 ++++++++++
+ fs/fat/fat.h         |  1 +
+ fs/fat/namei_msdos.c |  9 +++------
+ fs/fat/namei_vfat.c  |  9 +++------
+ 4 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/fs/fat/dir.c b/fs/fat/dir.c
+index 35bdb62944a2e..0cebcaf824264 100644
+--- a/fs/fat/dir.c
++++ b/fs/fat/dir.c
+@@ -963,6 +963,16 @@ int fat_dir_empty(struct inode *dir)
+ }
+ EXPORT_SYMBOL_GPL(fat_dir_empty);
+ 
++void fat_dir_drop_nlink(struct inode *dir)
++{
++	if (dir->i_nlink >= 3)
++		drop_nlink(dir);
++	else
++		fat_fs_error(dir->i_sb, "parent dir link count too low (%u)",
++			     dir->i_nlink);
++}
++EXPORT_SYMBOL_GPL(fat_dir_drop_nlink);
++
+ /*
+  * fat_subdirs counts the number of sub-directories of dir. It can be run
+  * on directories being created.
+diff --git a/fs/fat/fat.h b/fs/fat/fat.h
+index 76978a268410a..a8a3ca4f465bf 100644
+--- a/fs/fat/fat.h
++++ b/fs/fat/fat.h
+@@ -332,6 +332,7 @@ extern const struct file_operations fat_dir_operations;
+ extern int fat_search_long(struct inode *inode, const unsigned char *name,
+ 			   int name_len, struct fat_slot_info *sinfo);
+ extern int fat_dir_empty(struct inode *dir);
++void fat_dir_drop_nlink(struct inode *dir);
+ extern int fat_subdirs(struct inode *dir);
+ extern int fat_scan(struct inode *dir, const unsigned char *name,
+ 		    struct fat_slot_info *sinfo);
+diff --git a/fs/fat/namei_msdos.c b/fs/fat/namei_msdos.c
+index c7500c2859e00..5a43d042eb01f 100644
+--- a/fs/fat/namei_msdos.c
++++ b/fs/fat/namei_msdos.c
+@@ -333,12 +333,7 @@ static int msdos_rmdir(struct inode *dir, struct dentry *dentry)
+ 	err = fat_remove_entries(dir, &sinfo);	/* and releases bh */
+ 	if (err)
+ 		goto out;
+-	if (dir->i_nlink >= 3)
+-		drop_nlink(dir);
+-	else {
+-		fat_fs_error(sb, "parent dir link count too low (%u)",
+-			dir->i_nlink);
+-	}
++	fat_dir_drop_nlink(dir);
+ 
+ 	clear_nlink(inode);
+ 	fat_detach(inode);
+@@ -565,6 +560,8 @@ static int do_msdos_rename(struct inode *old_dir, unsigned char *old_name,
+ 		(void)sync_inode_metadata(old_dir, 1);
+ 
+ 	if (new_inode) {
++		if (is_dir && old_dir == new_dir)
++			fat_dir_drop_nlink(old_dir);
+ 		drop_nlink(new_inode);
+ 		if (is_dir)
+ 			drop_nlink(new_inode);
+diff --git a/fs/fat/namei_vfat.c b/fs/fat/namei_vfat.c
+index ff7652bf0410b..791f2d7b85092 100644
+--- a/fs/fat/namei_vfat.c
++++ b/fs/fat/namei_vfat.c
+@@ -809,12 +809,7 @@ static int vfat_rmdir(struct inode *dir, struct dentry *dentry)
+ 	err = fat_remove_entries(dir, &sinfo);	/* and releases bh */
+ 	if (err)
+ 		goto out;
+-	if (dir->i_nlink >= 3)
+-		drop_nlink(dir);
+-	else {
+-		fat_fs_error(sb, "parent dir link count too low (%u)",
+-			dir->i_nlink);
+-	}
++	fat_dir_drop_nlink(dir);
+ 
+ 	clear_nlink(inode);
+ 	fat_truncate_time(inode, NULL, FAT_UPDATE_ATIME | FAT_UPDATE_CMTIME);
+@@ -1011,6 +1006,8 @@ static int vfat_rename(struct inode *old_dir, struct dentry *old_dentry,
+ 	vfat_update_dir_metadata(old_dir, &ts);
+ 
+ 	if (new_inode) {
++		if (is_dir && old_dir == new_dir)
++			fat_dir_drop_nlink(old_dir);
+ 		drop_nlink(new_inode);
+ 		if (is_dir)
+ 			drop_nlink(new_inode);
+-- 
+2.47.3
+

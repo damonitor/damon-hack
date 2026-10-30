@@ -1,0 +1,129 @@
+From: "Gregory Price (Meta)" <gourry@gourry.net>
+Date: Thu, 15 Oct 2026 19:13:22 -0400
+Subject: [PATCH] mm/mempolicy: convert mempolicy refcnt to refcount_t
+
+struct mempolicy uses an atomic_t as a pure reference counter.
+
+Convert it to refcount_t so that overflow and underflow are caught by the
+refcount saturation checks.
+
+This silences the atomic_as_refcounter.cocci warning, which started
+matching __mpol_put() when it switched kmem_cache_free() to kfree_rcu().
+No functional change for correct callers.
+
+Link: https://lore.kernel.org/20261015231322.3392551-1-gourry@gourry.net
+Signed-off-by: Gregory Price (Meta) <gourry@gourry.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202610061946.Bx22ZFrw-lkp@intel.com/
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+---
+ include/linux/mempolicy.h |  5 +++--
+ mm/mempolicy.c            | 14 +++++++-------
+ 2 files changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/include/linux/mempolicy.h b/include/linux/mempolicy.h
+index 65c732d440d2f..8b7570a90e547 100644
+--- a/include/linux/mempolicy.h
++++ b/include/linux/mempolicy.h
+@@ -10,6 +10,7 @@
+ #include <linux/mmzone.h>
+ #include <linux/slab.h>
+ #include <linux/rbtree.h>
++#include <linux/refcount.h>
+ #include <linux/spinlock.h>
+ #include <linux/node.h>
+ #include <linux/nodemask.h>
+@@ -45,7 +46,7 @@ struct mm_struct;
+  * to 1, representing the caller of mpol_dup().
+  */
+ struct mempolicy {
+-	atomic_t refcnt;
++	refcount_t refcnt;
+ 	unsigned short mode; 	/* See MPOL_* above */
+ 	unsigned short flags;	/* See set_mempolicy() MPOL_F_* above */
+ 	nodemask_t nodes;	/* interleave/bind/preferred/etc */
+@@ -96,7 +97,7 @@ static inline struct mempolicy *mpol_dup(struct mempolicy *pol)
+ static inline void mpol_get(struct mempolicy *pol)
+ {
+ 	if (pol)
+-		atomic_inc(&pol->refcnt);
++		refcount_inc(&pol->refcnt);
+ }
+ 
+ extern bool __mpol_equal(struct mempolicy *a, struct mempolicy *b);
+diff --git a/mm/mempolicy.c b/mm/mempolicy.c
+index 0884c629670dd..dd065616dabda 100644
+--- a/mm/mempolicy.c
++++ b/mm/mempolicy.c
+@@ -138,7 +138,7 @@ enum zone_type policy_zone = 0;
+  * run-time system-wide default policy => local allocation
+  */
+ static struct mempolicy default_policy = {
+-	.refcnt = ATOMIC_INIT(1), /* never free it */
++	.refcnt = REFCOUNT_INIT(1), /* never free it */
+ 	.mode = MPOL_LOCAL,
+ };
+ 
+@@ -492,7 +492,7 @@ static struct mempolicy *mpol_new(unsigned short mode, unsigned short flags,
+ 	policy = kmem_cache_alloc(policy_cache, GFP_KERNEL);
+ 	if (!policy)
+ 		return ERR_PTR(-ENOMEM);
+-	atomic_set(&policy->refcnt, 1);
++	refcount_set(&policy->refcnt, 1);
+ 	policy->mode = mode;
+ 	policy->flags = flags;
+ 	policy->home_node = NUMA_NO_NODE;
+@@ -503,7 +503,7 @@ static struct mempolicy *mpol_new(unsigned short mode, unsigned short flags,
+ /* Slow path of a mpol destructor. */
+ void __mpol_put(struct mempolicy *pol)
+ {
+-	if (!atomic_dec_and_test(&pol->refcnt))
++	if (!refcount_dec_and_test(&pol->refcnt))
+ 		return;
+ 	/*
+ 	 * Required to allow mmap_lock_speculative*() access, see for example
+@@ -2871,7 +2871,7 @@ struct mempolicy *__mpol_dup(struct mempolicy *old)
+ 		nodemask_t mems = cpuset_mems_allowed(current);
+ 		mpol_rebind_policy(new, &mems);
+ 	}
+-	atomic_set(&new->refcnt, 1);
++	refcount_set(&new->refcnt, 1);
+ 	return new;
+ }
+ 
+@@ -3188,7 +3188,7 @@ static int shared_policy_replace(struct shared_policy *sp, pgoff_t start,
+ 					goto alloc_new;
+ 
+ 				*mpol_new = *n->policy;
+-				atomic_set(&mpol_new->refcnt, 1);
++				refcount_set(&mpol_new->refcnt, 1);
+ 				sp_node_init(n_new, end, n->end, mpol_new);
+ 				n->end = start;
+ 				sp_insert(sp, n_new);
+@@ -3224,7 +3224,7 @@ static int shared_policy_replace(struct shared_policy *sp, pgoff_t start,
+ 	mpol_new = kmem_cache_alloc(policy_cache, GFP_KERNEL);
+ 	if (!mpol_new)
+ 		goto err_out;
+-	atomic_set(&mpol_new->refcnt, 1);
++	refcount_set(&mpol_new->refcnt, 1);
+ 	goto restart;
+ }
+ 
+@@ -3380,7 +3380,7 @@ void __init numa_policy_init(void)
+ 
+ 	for_each_node(nid) {
+ 		preferred_node_policy[nid] = (struct mempolicy) {
+-			.refcnt = ATOMIC_INIT(1),
++			.refcnt = REFCOUNT_INIT(1),
+ 			.mode = MPOL_PREFERRED,
+ 			.flags = MPOL_F_MOF | MPOL_F_MORON,
+ 			.nodes = nodemask_of_node(nid),
+-- 
+2.47.3
+

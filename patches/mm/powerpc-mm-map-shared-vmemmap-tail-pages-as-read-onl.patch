@@ -1,0 +1,54 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Mon, 19 Oct 2026 17:08:28 +0800
+Subject: [PATCH] powerpc/mm: map shared vmemmap tail pages as read-only
+
+PowerPC radix uses an architecture-specific vmemmap population path for
+shared tail mappings, so it does not inherit the read-only protection added
+to the common path.
+
+Protect these mappings as well so illegal writes fault instead of
+corrupting metadata shared by multiple tail pages.
+
+Link: https://lore.kernel.org/20261019090830.1917657-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+---
+ arch/powerpc/mm/book3s64/radix_pgtable.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/arch/powerpc/mm/book3s64/radix_pgtable.c b/arch/powerpc/mm/book3s64/radix_pgtable.c
+index 44868b62b14ec..ebac5f9058f6c 100644
+--- a/arch/powerpc/mm/book3s64/radix_pgtable.c
++++ b/arch/powerpc/mm/book3s64/radix_pgtable.c
+@@ -1059,6 +1059,9 @@ static pte_t * __meminit radix__vmemmap_pte_populate(pmd_t *pmdp, unsigned long
+ 
+ 		VM_BUG_ON(!PAGE_ALIGNED(addr));
+ 		entry = pfn_pte(__pa(p) >> PAGE_SHIFT, PAGE_KERNEL);
++		/* Map the shared tail page as read-only to catch illegal writes. */
++		if (reuse)
++			entry = pte_wrprotect(entry);
+ 		set_pte_at(&init_mm, addr, pte, entry);
+ 		asm volatile("ptesync": : :"memory");
+ 	}
+-- 
+2.47.3
+

@@ -1,0 +1,90 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Tue, 27 Oct 2026 12:32:14 +0800
+Subject: [PATCH] mm/migrate: move NR_KERNEL_FILE_PAGES on cross-node migration
+
+NR_KERNEL_FILE_PAGES counts page cache folios of mappings flagged
+AS_KERNEL_FILE (currently the btrfs btree inode).  It is a per-node
+counter: filemap_add_folio() adds to folio_pgdat() of the new folio and
+filemap_unaccount_folio() subtracts from folio_pgdat() of the folio
+being removed.
+
+__folio_migrate_mapping() does not move it when such a folio is
+migrated to another node, so the source node keeps the count forever
+and the destination node underflows once the folio is freed.  btree
+folios are migratable through btree_migrate_folio(), so demotion,
+DAMON-based migration (DAMOS_MIGRATE_{HOT,COLD}) or memory offlining
+all hit this.
+
+Reproducer, on a QEMU guest with two memory tiers (node0 is DRAM with
+all CPUs, node1 is a CPU-less slower node described via HMAT) and
+/sys/kernel/mm/numa/demotion_enabled set:
+
+  1. mount a btrfs and create 20000 empty files, so that btree folios
+     are cached on node0;
+  2. echo 2G > /sys/devices/system/node/node0/reclaim, which demotes
+     them to node1;
+  3. umount and drop caches.
+
+nr_kernel_file_pages in /sys/devices/system/node/nodeN/vmstat after
+each step:
+
+                  without this patch     with this patch
+                   node0     node1       node0     node1
+  1. cached         1868         0        1868         0
+  2. demoted        1868         0          36      1832
+  3. dropped        1832         0 (*)       0         0
+
+  (*) the counter has underflowed to -1832; negative values read as 0.
+
+The global value in /proc/vmstat is 0 after step 3 in both cases.
+
+Move it together with the other node-keyed page cache counters.  It is
+a node-only counter, so use the node accessor, matching how it is
+accounted elsewhere.  Interrupts are disabled here, as for the zone
+counters below.
+
+This was pointed out by Shivank while reviewing the NR_FILE_THPS fix
+for the same function.
+
+Link: https://lore.kernel.org/20261027043214.2248986-1-ridong.chen@linux.dev
+Fixes: e3a9ac4e866e ("mm: add vmstat for kernel_file pages")
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Shivank Garg <shivankg@amd.com>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Shivank Garg <shivankg@amd.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Assisted-by: LLM
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Boris Burkov <boris@bur.io>
+Cc: <stable@vger.kernel.org>
+---
+ mm/migrate.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index f7dfe47656183..28a8d7734735b 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -705,6 +705,12 @@ static int __folio_migrate_mapping(struct address_space *mapping,
+ 			mod_lruvec_state(old_lruvec, NR_FILE_THPS, -nr);
+ 			mod_lruvec_state(new_lruvec, NR_FILE_THPS, nr);
+ 		}
++		if (test_bit(AS_KERNEL_FILE, &mapping->flags)) {
++			__mod_node_page_state(oldzone->zone_pgdat,
++					      NR_KERNEL_FILE_PAGES, -nr);
++			__mod_node_page_state(newzone->zone_pgdat,
++					      NR_KERNEL_FILE_PAGES, nr);
++		}
+ #ifdef CONFIG_SWAP
+ 		if (folio_test_swapcache(folio)) {
+ 			mod_lruvec_state(old_lruvec, NR_SWAPCACHE, -nr);
+-- 
+2.47.3
+

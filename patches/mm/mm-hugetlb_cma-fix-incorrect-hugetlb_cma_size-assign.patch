@@ -1,0 +1,52 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Wed, 28 Oct 2026 19:33:17 +0800
+Subject: [PATCH] mm/hugetlb_cma: fix incorrect hugetlb_cma_size assignment on
+ malformed input
+
+When hugetlb_cma contains a global size after node-specific entries,
+cmdline_parse_hugetlb_cma() enters the global branch and reparses the
+original parameter string.  For hugetlb_cma=1:2G,4G, this interprets the
+initial node ID as a one-byte global size and clears the 2 GiB reservation
+recorded for node 1.
+
+Global and node-specific formats cannot be mixed.  Return -EINVAL when a
+global entry follows a node-specific entry, before updating any settings.
+This preserves the valid prefix, so the example retains node 1's 2 GiB
+reservation and reports the malformed option.
+
+Link: https://lore.kernel.org/20261028113319.38544-2-kaitao.cheng@linux.dev
+Fixes: 38e719ab2673 ("hugetlb: support node specified when using cma for gigantic hugepages")
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Closes: https://sashiko.dev/#/bug/linux-10f40d3e-3feb-4622-9da8-1fedecb2d0e2
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Chris Down <chris@chrisdown.name>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+---
+ mm/hugetlb_cma.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index 95fd2d190f0d2..8e6b20341fc48 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -167,6 +167,9 @@ static int __init cmdline_parse_hugetlb_cma(char *p)
+ 		} else {
+ 			char *next;
+ 
++			if (s != p)
++				return -EINVAL;
++
+ 			tmp = memparse(p, &next);
+ 			if (*next == '%') {
+ 				if (tmp > 100) {
+-- 
+2.47.3
+

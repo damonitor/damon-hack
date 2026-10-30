@@ -1,0 +1,84 @@
+From: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Date: Mon, 26 Oct 2026 20:23:12 +0000
+Subject: [PATCH] mm: multi-gen LRU: use mem_cgroup_lruvec() in get_lruvec()
+
+Patch series "mm: multi-gen LRU: replace get_lruvec() with
+mem_cgroup_lruvec()", v2.
+
+This series cleans up MGLRU's get_lruvec() helper in mm/vmscan.c.
+
+Patch 1 updates get_lruvec() to delegate to mem_cgroup_lruvec() rather
+than returning &pgdat->__lruvec directly when memcg is disabled on the
+kernel command line.
+
+Patch 2 removes get_lruvec() completely and replaces all 15 call sites
+with mem_cgroup_lruvec().
+
+
+This patch (of 2):
+
+Andrew Morton noted that get_lruvec() has the same pattern as
+lru_gen_shrink_node(): when memcg is disabled on the command line
+(cgroup_disable=memory), it returns &pgdat->__lruvec directly instead of
+going through mem_cgroup_lruvec(), which initializes lruvec->pgdat.
+
+In practice all callers of get_lruvec() run after kswapd_init() has
+already initialized pgdat->__lruvec.pgdat on every N_MEMORY node, so
+this is not a runtime bug. Have get_lruvec() delegate to
+mem_cgroup_lruvec() directly.
+
+Link: https://lore.kernel.org/20261026202313.63122-1-sidchintamaneni@gmail.com
+Link: https://lore.kernel.org/20261026202313.63122-2-sidchintamaneni@gmail.com
+Signed-off-by: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Signed-off-by: Hardik Garg <hargar@linux.microsoft.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: <apais@microsoft.com>
+Cc: <rlmenge@gmail.com>
+---
+ mm/vmscan.c | 15 ++-------------
+ 1 file changed, 2 insertions(+), 13 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index fb9f8f020f634..dfcdd1f313a52 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2866,20 +2866,9 @@ static struct lruvec *get_lruvec(struct mem_cgroup *memcg, int nid)
+ {
+ 	struct pglist_data *pgdat = NODE_DATA(nid);
+ 
+-#ifdef CONFIG_MEMCG
+-	if (memcg) {
+-		struct lruvec *lruvec = &memcg->nodeinfo[nid]->lruvec;
+-
+-		/* see the comment in mem_cgroup_lruvec() */
+-		if (!lruvec->pgdat)
+-			lruvec->pgdat = pgdat;
+-
+-		return lruvec;
+-	}
+-#endif
+-	VM_WARN_ON_ONCE(!mem_cgroup_disabled());
++	VM_WARN_ON_ONCE(!memcg && !mem_cgroup_disabled());
+ 
+-	return &pgdat->__lruvec;
++	return mem_cgroup_lruvec(memcg, pgdat);
+ }
+ 
+ static int get_swappiness(struct lruvec *lruvec, struct scan_control *sc)
+-- 
+2.47.3
+

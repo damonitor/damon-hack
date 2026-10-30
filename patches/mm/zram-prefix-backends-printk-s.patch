@@ -1,0 +1,200 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Sun, 25 Oct 2026 11:18:17 +0900
+Subject: [PATCH] zram: prefix backends printk-s
+
+Patch series "zram: redesign zcomp and rework backends", v7.
+
+The series has a number of memory usage optimisations and fixes
+that result in savings from double digits KB to triple digits
+KB per-context/per-CPU, depending on backend and its configuration.
+More details are in the corresponding commit messages.
+
+The zcomp redesign and backend rework happen in the final five
+patches.  zcomp part, basically, attempts to address the priority
+inversion problem, that is seen on some setups.  In zcomp, we have
+always kept Read and Write contexts together in per-CPU streams.
+With preemptible zram this becomes a bit of a problem, as a higher
+priority Reader can preempt a Writer, which may hold a stream
+lock, but since the compression stream is locked by the preempted
+Writer, the Reader gets blocked on the very same stream lock.
+However, we don't have any reasons to have Read and Write contexts
+share and compete for the stream, because Read (decompression) and
+Write (compression) paths are completely independent, they never
+touch each other's buffers.  Thus, we can split compression streams
+into per-CPU Read streams and per-CPU Write streams (Barry Song),
+so that Readers and Writers don't block each other anymore.
+Decoupling Reads and Writes results in noticeable performance
+improvements on synthetic tests.  The Reader vs Reader priority
+inversion is still possible.  To attack this problem we introduce
+shared decompression stream (Brian Geffon) which can be used when
+decompression is stateless.  There, however, stateful backends (zstd,
+deflate) that cannot have shared decompression contexts.  For those
+backends, we introduce a remote CPU borrowing of idle exclusive
+decompression contexts, if an exclusive Reader get preempted on
+current CPU.  We also now allocate a per-request (Read) bounce
+buffer for linearisation of spanning zsmalloc objects, so stateless
+decompression contexts do not block each other.
+
+Reader vs Reader priority inversion tests (fg reader, average of
+3 runs):
+
+  exclusive zstd
+  Metric           Base               Patched
+  ----------------------------------------------------------
+  Read IOPS        391k               1,064k        (+2.7x)
+  Read clat max    3,208,867 us       5,881 us      (-546x)
+
+  shared lz4
+  Metric           Base               Patched
+  ----------------------------------------------------------
+  Read IOPS        972k               1,466k        (+50.9%)
+  Read clat max    2,204,467 us       6,442 us      (-342x)
+
+Writer vs Reader priority inversion tests (fg reader, average of
+3 runs):
+
+  lz4
+  Metric           Base               Patched
+  ----------------------------------------------------------
+  Read IOPS        642k               1,472k        (+2.3x)
+  Read clat max    2,393,767 us       5,711 us      (-419x)
+
+Proxy execution was brought up during v6 review, so I re-ran the
+tests with CONFIG_SCHED_PROXY_EXEC=y in both kernels, 21 runs per
+configuration (lz4, zstd level 3, zstd level 12).  Per-patch commit
+messages have the full tables.  In short: with proxy execution base
+catches up with patched on IOPS in Reader vs Reader tests, and is
+still 26-28% behind in zstd Writer vs Reader tests.  What proxy
+execution does not fix is the worst case: out of 126 base runs (R-vs-R
+and W-vs-R combined), 108 had a read stalled for over 100 ms and 47
+for over 1 s.  Patched never exceeded 8.4 ms in 126 runs.  One thing
+to notice, Proxy execution is EXPERT-only option; this series doesn't
+depend on it.
+
+The final patch builds atop of decoupled Read and Write streams and
+reworks the way secondary streams are handled.  Secondary compression
+streams are only used from recompression, which is serialized by
+device lock, IOW it's single-threaded.  However, we still allocated
+secondary streams per-CPU (we needed to permit concurrent Reads
+of recompressed objects).  Because we now have dedicated R/W
+streams, we can allocate a singleton compression context (for
+recompression) yet still have per-CPU decompression contexts.
+This saves a notable amount of memory with some backends and
+configurations (e.g. zstd, deflate).
+
+
+This patch (of 15):
+
+Currently, zram backends prefix printk-s with their names, which may
+look a little confusing, e.g. "zstd: alloc size 408128".  Prefix
+backend names with "zram:" so it's clear that the message is coming
+from a zram backend.
+
+Link: https://lore.kernel.org/20261025021839.1542805-1-senozhatsky@chromium.org
+Link: https://lore.kernel.org/20261025021839.1542805-2-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hillf Danton <hdanton@sina.com>
+---
+ drivers/block/zram/backend_842.c     | 2 +-
+ drivers/block/zram/backend_deflate.c | 2 +-
+ drivers/block/zram/backend_lz4.c     | 2 +-
+ drivers/block/zram/backend_lz4hc.c   | 2 +-
+ drivers/block/zram/backend_lzo.c     | 2 +-
+ drivers/block/zram/backend_lzorle.c  | 2 +-
+ drivers/block/zram/backend_zstd.c    | 2 +-
+ 7 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/block/zram/backend_842.c b/drivers/block/zram/backend_842.c
+index 3846a04c69d71..56ffda2017279 100644
+--- a/drivers/block/zram/backend_842.c
++++ b/drivers/block/zram/backend_842.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "842: " fmt
++#define pr_fmt(fmt) "zram: 842: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+diff --git a/drivers/block/zram/backend_deflate.c b/drivers/block/zram/backend_deflate.c
+index f71b11bcac788..20685aca9bdc5 100644
+--- a/drivers/block/zram/backend_deflate.c
++++ b/drivers/block/zram/backend_deflate.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "deflate: " fmt
++#define pr_fmt(fmt) "zram: deflate: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+diff --git a/drivers/block/zram/backend_lz4.c b/drivers/block/zram/backend_lz4.c
+index 1e4ad31d39a63..158fd8b5e8a90 100644
+--- a/drivers/block/zram/backend_lz4.c
++++ b/drivers/block/zram/backend_lz4.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "lz4: " fmt
++#define pr_fmt(fmt) "zram: lz4: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/lz4.h>
+diff --git a/drivers/block/zram/backend_lz4hc.c b/drivers/block/zram/backend_lz4hc.c
+index d8aa01bb258fe..5c009835a6842 100644
+--- a/drivers/block/zram/backend_lz4hc.c
++++ b/drivers/block/zram/backend_lz4hc.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "lz4hc: " fmt
++#define pr_fmt(fmt) "zram: lz4hc: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/lz4.h>
+diff --git a/drivers/block/zram/backend_lzo.c b/drivers/block/zram/backend_lzo.c
+index d83f92cf757cf..78538479c511e 100644
+--- a/drivers/block/zram/backend_lzo.c
++++ b/drivers/block/zram/backend_lzo.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "lzo: " fmt
++#define pr_fmt(fmt) "zram: lzo: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+diff --git a/drivers/block/zram/backend_lzorle.c b/drivers/block/zram/backend_lzorle.c
+index 1b120d062c928..011787f1430be 100644
+--- a/drivers/block/zram/backend_lzorle.c
++++ b/drivers/block/zram/backend_lzorle.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "lzo-rle: " fmt
++#define pr_fmt(fmt) "zram: lzo-rle: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+diff --git a/drivers/block/zram/backend_zstd.c b/drivers/block/zram/backend_zstd.c
+index 08da3810cffd8..127976b5455bd 100644
+--- a/drivers/block/zram/backend_zstd.c
++++ b/drivers/block/zram/backend_zstd.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#define pr_fmt(fmt) "zstd: " fmt
++#define pr_fmt(fmt) "zram: zstd: " fmt
+ 
+ #include <linux/kernel.h>
+ #include <linux/slab.h>
+-- 
+2.47.3
+

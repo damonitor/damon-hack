@@ -1,0 +1,64 @@
+From: Qiliang Yuan <odys.yuan@gmail.com>
+Date: Thu, 29 Oct 2026 02:24:36 -0400
+Subject: [PATCH] selftests/mm: load xfs before checking for it in
+ run_vmtests.sh
+
+run_vmtests.sh creates a loop-mounted XFS for "khugepaged all:file" and
+for the pagecache folio split cases of split_huge_page_test, since
+tmpfs does not give them large pagecache folios.
+
+It only does so when xfs already shows up in /proc/filesystems. When
+xfs is built as a module that is not loaded yet, the check fails, no
+XFS is created, "khugepaged all:file" is reported as skipped and every
+pagecache folio split case of split_huge_page_test is skipped with "No
+large pagecache folio generated".
+
+Load xfs with load_module() when it is not registered yet, so that it
+is unloaded again once the script is done. Match xfs as a whole word,
+as "selinuxfs" contains it too, as does "vxfs" on kernels before 7.3,
+and would otherwise skip the load and leave xfs to be loaded by
+mount(). "run_vmtests.sh -t thp" with xfs built as a module and not
+loaded:
+
+                                        before    after
+  khugepaged all:file                  skipped      run
+  skipped split_huge_page_test cases        43        0
+  xfs loaded after the run                  no       no
+  xfs loaded after the run, with
+  selinuxfs or vxfs registered             yes       no
+
+Link: https://lore.kernel.org/20261029-bug-selftests-mm-run-vmtests-xfs-modprobe-v3-2-16ad772850ee@gmail.com
+Fixes: fc4d182316bd ("mm: huge_memory: enable debugfs to split huge pages to any order")
+Signed-off-by: Qiliang Yuan <odys.yuan@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Tested-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+---
+ tools/testing/selftests/mm/run_vmtests.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
+index e104a9c6fdefb..b422edc2e2664 100755
+--- a/tools/testing/selftests/mm/run_vmtests.sh
++++ b/tools/testing/selftests/mm/run_vmtests.sh
+@@ -412,7 +412,7 @@ CATEGORY="thp" run_test ./khugepaged -s 4 all:shmem
+ # Try to create XFS if not provided
+ if [ -z "${SPLIT_HUGE_PAGE_TEST_XFS_PATH}" ]; then
+     if test_selected "thp"; then
+-	if grep xfs /proc/filesystems &>/dev/null; then
++	if grep -qw xfs /proc/filesystems || load_module xfs; then
+ 	    XFS_IMG=$(mktemp /tmp/xfs_img_XXXXXX)
+ 	    XFS_DIR=$(mktemp -d /tmp/xfs_dir_XXXXXX)
+ 	    truncate -s 314572800 ${XFS_IMG}
+-- 
+2.47.3
+

@@ -1,31 +1,13 @@
 - baseline: v7.3-17318-g65ba8f34ec886 -> v7.3-17318-g65ba8f34ec886 (no change)
 - mm-hotfixes-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 0 -> 3 commits
-  - series: 0 (0) -> 1 (3)
-    - maintainer, nobody: 0 -> 3 commits
-  - changed commits
-    - series "mm/damon: fix three race bugs in sysfs and core", v1. (3)
-      - d0e9b797b8e5 "mm/damon/sysfs-schemes: hold damon_sysfs_lock in target_metric_store() (0/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-hotfixes-unstable
-        - Link: https://lore.kernel.org/20261025164808.152048-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261025164808.152048-2-sj@kernel.org
-        - Link: https://sashiko.dev/#/bug/linux-7f814c9a-986f-4103-a55a-ef9537dcf62b [1]
-        - Link: https://lore.kernel.org/20261021005234.94107-1-sj@kernel.org [2]
-      - e422a7abc2df "mm/damon/core: move static variable last_nr_regions to damon_ctx (1/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-hotfixes-unstable
-        - Link: https://lore.kernel.org/20261025164808.152048-3-sj@kernel.org
-      - a803794f3c79 "mm/damon/core: move static variable rotation to damon_ctx (2/3)"
-        - Authored by a maintainer, reviewed by nobody
-        - branch: mm-unstable -> mm-hotfixes-unstable
-        - Link: https://lore.kernel.org/20261025164808.152048-4-sj@kernel.org
+- mm-hotfixes-unstable: 3 -> 3 commits (no change)
+  - series: 1 (3) -> 1 (3) (no change)
+    - maintainer, nobody: 3 -> 3 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 3 -> 0 commits
-  - series: 1 (3) -> 0 (0)
-    - maintainer, nobody: 3 -> 0 commits
+- mm-unstable: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-new: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)

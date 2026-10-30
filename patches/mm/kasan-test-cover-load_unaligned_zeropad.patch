@@ -1,0 +1,111 @@
+From: Qiliang Yuan <odys.yuan@gmail.com>
+Date: Fri, 23 Oct 2026 09:49:49 +0800
+Subject: [PATCH] kasan/test: cover load_unaligned_zeropad()
+
+On architectures with CONFIG_DCACHE_WORD_ACCESS, load_unaligned_zeropad()
+does the word loads of the dcache name compare and of path name hashing.
+
+None of the KASAN test cases reads memory through it, so nothing noticed
+that KASAN did not check these loads at all.
+
+Add a case that reads a freed object through load_unaligned_zeropad() and
+expects a report.  Skip it with hardware tag-based KASAN, since arm64
+turns tag checking off for this load:
+
+  kasan_load_unaligned_zeropad, x86_64, generic KASAN
+  without "word-at-a-time: check the first byte in
+  load_unaligned_zeropad()"                                 FAILED
+  with it                                                   PASSED
+
+Link: https://lore.kernel.org/20261023-bug-word-at-a-time-zeropad-kasan-v2-2-be0ecfbae847@gmail.com
+Signed-off-by: Qiliang Yuan <odys.yuan@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrey Ryabinin <ryabinin.a.a@gmail.com>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: Palmer Dabbelt <palmer@dabbelt.com>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: AlexandreGhiti <alex@ghiti.fr>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Marco Elver <elver@google.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Vincenzo Frascino <vincenzo.frascino@arm.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Peter Collingbourne <peter@pcc.me.uk>
+---
+ mm/kasan/kasan_test_c.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/mm/kasan/kasan_test_c.c b/mm/kasan/kasan_test_c.c
+index 3c9ffee8001b8..f34163e19bd68 100644
+--- a/mm/kasan/kasan_test_c.c
++++ b/mm/kasan/kasan_test_c.c
+@@ -28,6 +28,9 @@
+ #include <trace/events/printk.h>
+ 
+ #include <asm/page.h>
++#ifdef CONFIG_DCACHE_WORD_ACCESS
++#include <asm/word-at-a-time.h>
++#endif
+ 
+ #include "kasan.h"
+ #include "../slab.h"
+@@ -1807,6 +1810,26 @@ static void kasan_memcmp(struct kunit *test)
+ 	kfree(ptr);
+ }
+ 
++static void kasan_load_unaligned_zeropad(struct kunit *test)
++{
++#ifdef CONFIG_DCACHE_WORD_ACCESS
++	char *ptr;
++
++	/* The tag check is turned off for this load on arm64 with MTE. */
++	KASAN_TEST_NEEDS_CONFIG_OFF(test, CONFIG_KASAN_HW_TAGS);
++
++	ptr = kmalloc(64, GFP_KERNEL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ptr);
++	kfree(ptr);
++
++	OPTIMIZER_HIDE_VAR(ptr);
++	KUNIT_EXPECT_KASAN_FAIL_READ(test,
++		kasan_int_result = load_unaligned_zeropad(ptr));
++#else
++	kunit_skip(test, "Test requires CONFIG_DCACHE_WORD_ACCESS=y");
++#endif
++}
++
+ static void kasan_strings(struct kunit *test)
+ {
+ 	char *ptr;
+@@ -2403,6 +2426,7 @@ static struct kunit_case kasan_kunit_test_cases[] = {
+ 	KUNIT_CASE(kasan_alloca_oob_right),
+ 	KUNIT_CASE(kasan_memchr),
+ 	KUNIT_CASE(kasan_memcmp),
++	KUNIT_CASE(kasan_load_unaligned_zeropad),
+ 	KUNIT_CASE(kasan_strings),
+ 	KUNIT_CASE(kasan_bitops_generic),
+ 	KUNIT_CASE(kasan_bitops_tags),
+-- 
+2.47.3
+

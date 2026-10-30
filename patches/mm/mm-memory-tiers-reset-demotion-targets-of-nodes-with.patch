@@ -1,0 +1,54 @@
+From: "Gregory Price (Meta)" <gourry@gourry.net>
+Date: Tue, 20 Oct 2026 22:44:38 -0400
+Subject: [PATCH] mm/memory-tiers: reset demotion targets of nodes without
+ memory
+
+When a node loses its last memory, offline_pages() clears N_MEMORY before
+the memory-tier callback rebuilds the demotion targets.
+disable_all_demotion_targets() resets only N_MEMORY nodes, so the node
+keeps its old node_demotion[] entry while it has no memory.  Before
+6c542ab75714, the reset covered every online node.
+
+A reclaimer reads the stale entry only between the node regaining memory
+and its targets being rebuilt, and it filters the entry against the
+current allowed targets, so there is no user-visible effect.  To see it,
+online and then offline a node's only DIMM: a debugger still finds the
+lower-tier node in node_demotion[nid].preferred.
+
+Reset the targets of every node.
+
+Link: https://lore.kernel.org/20261021024438.1942502-1-gourry@gourry.net
+Fixes: 6c542ab75714 ("mm/demotion: build demotion targets based on explicit memory tiers")
+Signed-off-by: Gregory Price (Meta) <gourry@gourry.net>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>
+---
+ mm/memory-tiers.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memory-tiers.c b/mm/memory-tiers.c
+index 25e121851b586..9d872404592e4 100644
+--- a/mm/memory-tiers.c
++++ b/mm/memory-tiers.c
+@@ -378,7 +378,11 @@ static void disable_all_demotion_targets(void)
+ 	struct memory_tier *memtier;
+ 	int node;
+ 
+-	for_each_node_state(node, N_MEMORY) {
++	/*
++	 * When the NODE_REMOVED_LAST_MEMORY event fires, N_MEMORY has already
++	 * been dropped from the node, so we must walk every node instead.
++	 */
++	for_each_node(node) {
+ 		node_demotion[node].preferred = NODE_MASK_NONE;
+ 		/*
+ 		 * We are holding memory_tier_lock, it is safe
+-- 
+2.47.3
+

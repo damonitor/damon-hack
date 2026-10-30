@@ -1,0 +1,97 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Mon, 19 Oct 2026 17:08:27 +0800
+Subject: [PATCH] mm/sparse-vmemmap: map shared vmemmap tail pages as read-only
+
+Patch series "mm: Enforce read-only shared vmemmap tail mappings", v1.
+
+This series is split out from the earlier, larger series "mm: Generalize
+HVO for HugeTLB and device DAX" [1]. While the parent series generalizes
+vmemmap optimization across HugeTLB and device DAX, this subset addresses
+a single, self-contained step: mapping shared vmemmap tail pages read-only
+at population time.
+
+After the previous HugeTLB and device DAX conversions, both can install
+optimized shared-tail mappings during vmemmap population. These mappings
+should be read-only because each shared tail vmemmap page backs metadata
+for many tail pages. HugeTLB applies this protection in a later,
+subsystem-specific pass, but device DAX currently lacks it.
+
+This series moves the protection into the generic sparse-vmemmap and
+powerpc radix population paths. This protects device DAX mappings and
+makes the HugeTLB-specific vmemmap_wrprotect_hvo() pass redundant. With
+that pass gone, the bootmem-only optimization wrapper has no distinct
+work and is removed as well.
+
+This is intended to be the fifth smaller step toward the broader HVO
+generalization. The remaining HVO naming and enablement consolidation is
+left for follow-up series.
+
+
+This patch (of 4):
+
+Both early HugeTLB HVO and device DAX use the common vmemmap population
+path for shared tail mappings. Map these pages read-only so that illegal
+writes fault instead of corrupting metadata shared by multiple tail
+pages.
+
+For early HugeTLB, this moves existing write protection into initial
+population without changing the final mapping. Device DAX gains the same
+protection.
+
+Link: https://lore.kernel.org/all/20260513130542.35604-1-songmuchun@bytedance.com/ [1]
+Link: https://lore.kernel.org/20261019090830.1917657-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261019090830.1917657-2-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+---
+ Documentation/mm/vmemmap_dedup.rst | 3 +--
+ mm/sparse-vmemmap.c                | 3 +++
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/mm/vmemmap_dedup.rst b/Documentation/mm/vmemmap_dedup.rst
+index 5e792b7a27f07..9a7b4b9ac6d91 100644
+--- a/Documentation/mm/vmemmap_dedup.rst
++++ b/Documentation/mm/vmemmap_dedup.rst
+@@ -204,5 +204,4 @@ There's no remapping of vmemmap given that device-dax memory is not part of
+ System RAM ranges initialized at boot. Thus the tail page deduplication
+ happens at a later stage when we populate the sections.
+ 
+-Deduplicated tail pages are not mapped read-only. The mapping layout is the same
+-as HugeTLB.
++The mapping layout is the same as HugeTLB.
+diff --git a/mm/sparse-vmemmap.c b/mm/sparse-vmemmap.c
+index 5d7e982f94d0a..e5d422ec4c8d2 100644
+--- a/mm/sparse-vmemmap.c
++++ b/mm/sparse-vmemmap.c
+@@ -295,6 +295,9 @@ static pte_t * __meminit vmemmap_pte_populate(pmd_t *pmd, unsigned long addr, in
+ 			return NULL;
+ 
+ 		entry = pfn_pte(PHYS_PFN(__pa(p)), PAGE_KERNEL);
++		/* Map the shared tail page as read-only to catch illegal writes. */
++		if (vmemmap_optimizable_pfn(pfn))
++			entry = pte_wrprotect(entry);
+ 		set_pte_at(&init_mm, addr, pte, entry);
+ 	} else if (WARN_ON_ONCE(vmemmap_optimizable_pfn(pfn)))
+ 		return NULL;
+-- 
+2.47.3
+

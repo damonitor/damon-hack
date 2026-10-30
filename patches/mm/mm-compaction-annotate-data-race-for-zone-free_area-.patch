@@ -1,0 +1,104 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Fri, 30 Oct 2026 10:55:07 +0800
+Subject: [PATCH] mm/compaction: annotate data race for
+ zone->free_area[order].nr_free
+
+KCSAN reports a data-race on nr_free which also exists on mainline:
+
+  BUG: KCSAN: data-race in fast_isolate_freepages+0x284/0x1550 mm/compaction.c:1589
+
+  race at unknown origin, with read to 0xffff9894ff3dcb60 of 8 bytes by task 179078 on cpu 12:
+   fast_isolate_freepages+0x284/0x1550 mm/compaction.c:1589
+   isolate_freepages+0x52/0x650 mm/compaction.c:1722
+   compaction_alloc_noprof+0x36e/0x3e0 mm/compaction.c:1850
+   compaction_alloc+0x21/0x30 mm/compaction.c:1880
+   migrate_folio_unmap+0x7f/0x820 mm/migrate.c:1177
+   migrate_pages_batch+0x37e/0x1200 mm/migrate.c:1762
+   migrate_pages_sync+0xce/0x560 mm/migrate.c:1928
+   migrate_pages+0x8c6/0xc20 mm/migrate.c:2037
+   compact_zone+0x539/0x10b0 mm/compaction.c:2660
+   compact_zone_order+0x1b8/0x230 mm/compaction.c:2795
+   try_to_compact_pages+0x20b/0x630 mm/compaction.c:2851
+   __alloc_pages_direct_compact+0x98/0x2b0 mm/page_alloc.c:3722
+   __alloc_pages_slowpath.constprop.0+0x452/0xdf0 mm/page_alloc.c:4401
+   __alloc_pages_noprof+0x28a/0x2d0 mm/page_alloc.c:4794
+   alloc_pages_mpol_noprof+0x1b1/0x470 mm/mempolicy.c:2270
+   alloc_pages_noprof+0x7a/0xe0 mm/mempolicy.c:2347
+   io_mem_alloc_compound io_uring/io_uring.c:2848 [inline]
+   io_pages_map+0xb9/0x330 io_uring/io_uring.c:2892
+   io_allocate_scq_urings+0x231/0x300 io_uring/io_uring.c:3933
+   io_uring_create+0x29c/0x9c0 io_uring/io_uring.c:4091
+   io_uring_setup+0xb6/0x100 io_uring/io_uring.c:4203
+   __do_sys_io_uring_setup io_uring/io_uring.c:4230 [inline]
+   __se_sys_io_uring_setup io_uring/io_uring.c:4224 [inline]
+   __x64_sys_io_uring_setup+0x66/0xe0 io_uring/io_uring.c:4224
+   x64_sys_call+0x1816/0x1d90 arch/x86/include/generated/asm/syscalls_64.h:426
+   do_syscall_x64 arch/x86/entry/common.c:51 [inline]
+   do_syscall_64+0x70/0x2a0 arch/x86/entry/common.c:81
+   entry_SYSCALL_64_after_hwframe+0x76/0xe0
+
+  value changed: 0x00000000000002f4 -> 0x00000000000002f5
+
+nr_free is only updated with zone->lock held, but fast_isolate_freepages()
+and fast_find_migrateblock() read it locklessly to skip an order that has
+no free pages.  page_alloc.o is excluded from KCSAN, so the writer is not
+instrumented and the report is of unknown origin.
+
+The race is benign: a stale zero only skips the order for this round, and
+a stale non-zero just finds an empty MIGRATE_MOVABLE freelist under the
+lock.  Annotate both reads with data_race(), following commit
+af1c31acc853 ("mm/vmstat: annotate data race for zone->free_area[order].nr_free").
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261030025507.115248-1-hui.zhu@linux.dev
+Fixes: 70b44595eafe ("mm, compaction: use free lists to quickly locate a migration source")
+Fixes: 5a811889de10 ("mm, compaction: use free lists to quickly locate a migration target")
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: <stable+noautosel@kernel.org> # KCSAN annotation only, no functional change
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Hui Zhu <hui.zhu@linux.dev>
+---
+ mm/compaction.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/mm/compaction.c b/mm/compaction.c
+index f1b2060eb2016..499ec7ceaa3ed 100644
+--- a/mm/compaction.c
++++ b/mm/compaction.c
+@@ -1601,7 +1601,11 @@ static void fast_isolate_freepages(struct compact_control *cc)
+ 		unsigned int order_scanned = 0;
+ 		unsigned long high_pfn = 0;
+ 
+-		if (!area->nr_free)
++		/*
++		 * Access to nr_free is lockless as it is only a hint; a stale
++		 * value is harmless. Use data_race to avoid KCSAN warning.
++		 */
++		if (!data_race(area->nr_free))
+ 			continue;
+ 
+ 		spin_lock_irqsave(&cc->zone->lock, flags);
+@@ -2031,7 +2035,11 @@ static unsigned long fast_find_migrateblock(struct compact_control *cc)
+ 		unsigned long flags;
+ 		struct page *freepage;
+ 
+-		if (!area->nr_free)
++		/*
++		 * Access to nr_free is lockless as it is only a hint; a stale
++		 * value is harmless. Use data_race to avoid KCSAN warning.
++		 */
++		if (!data_race(area->nr_free))
+ 			continue;
+ 
+ 		spin_lock_irqsave(&cc->zone->lock, flags);
+-- 
+2.47.3
+

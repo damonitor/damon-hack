@@ -1,0 +1,127 @@
+From: Kuniyuki Iwashima <kuniyu@google.com>
+Date: Thu, 29 Oct 2026 19:44:12 +0000
+Subject: [PATCH] memcg: remove unnecessary READ_ONCE() under memcg_stock.lock.
+
+Patch series "memcg: Misc cleanup and perf improvement for TCP.", v3.
+
+On host w/ AMD EPYC 9B45 128-Core Processor (Zen 5 Turin,
+2 sockets, 512 vCPUs), tcp_rr w/ 20000 flows throughput often
+degrades by ~50%, 32M -> 17M~27M.
+
+In the bad case, the number of involuntary context switches
+was extremely high by 12x (241733 -> 3093367).
+
+The root cause was that refill_stock() calls memcg_uncharge()
+or drain_stock() while holding memcg_stock.lock.
+
+Patch 1~3 are misc cleanup for better asm output and patch 4
+moves heavy operations to out of local_lock(&memcg_stock.lock).
+
+This series removes the flakiness and gives ~3% gain on the
+512 vCPU platform.
+
+In addition, on machine w/ AMD EPYC 7B12 64-Core Processor
+(Zen 2 Rome, 2 sockets, 256 vCPU), tcp_rr w/ 10000 flows achieves
+36% more throughput with lower latency.
+
+  tcp_rr (10000 flows, 128 threads, 60s, average of 3 runs):
+
+  Metric                     |       Baseline |    Patched |    Diff
+  ---------------------------+----------------+------------+--------
+
+
+This patch (of 4):
+
+this_cpu_ptr(&memcg_stock)->{cached[],nr_pages[]} are always
+modified under local_lock(&memcg_stock.lock).
+
+Unlike is_memcg_drain_needed() under RCU, consume_stock(),
+drain_stock(), and refill_stock() do not need READ_ONCE().
+
+Especially, in refill_stock(), READ_ONCE() is used twice for
+stock->cached[i], which forces the compiler to emit two volatile
+loads from stock->cached[i].
+
+Let's remove the unnecessary READ_ONCE() and eliminate the
+redundant loads in refill_stock():
+
+Before:
+
+  cached = READ_ONCE(stock->cached[i]);
+   4c 8b 80 88 d7 bd 84 	movq	-0x7b422878(%rax), %r8
+  if (memcg == READ_ONCE(stock->cached[i])) {
+   48 3b 98 88 d7 bd 84 	cmpq	-0x7b422878(%rax), %rbx
+   0f 84 86 01 00 00    	je	0xffffffff817d01e0 <refill_stock+0x210>
+
+After:
+
+  cached = stock->cached[i];
+   4c 8b 88 88 d7 bd 84 	movq	-0x7b422878(%rax), %r9
+  if (memcg == stock->cached[i]) {
+   4c 39 cb             	cmpq	%r9, %rbx
+   0f 84 7a 01 00 00    	je	0xffffffff817d01d0 <refill_stock+0x200>
+
+Link: https://lore.kernel.org/20261029194452.3189365-1-kuniyu@google.com
+Link: https://lore.kernel.org/20261029194452.3189365-2-kuniyu@google.com
+Signed-off-by: Kuniyuki Iwashima <kuniyu@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+---
+ mm/memcontrol.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 84f4a8fd4d16f..8a401550dfaa0 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2164,10 +2164,10 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 	stock = this_cpu_ptr(&memcg_stock);
+ 
+ 	for (i = 0; i < NR_MEMCG_STOCK; ++i) {
+-		if (memcg != READ_ONCE(stock->cached[i]))
++		if (memcg != stock->cached[i])
+ 			continue;
+ 
+-		stock_pages = READ_ONCE(stock->nr_pages[i]);
++		stock_pages = stock->nr_pages[i];
+ 		if (stock_pages >= nr_pages) {
+ 			stock_pages -= nr_pages;
+ 			WRITE_ONCE(stock->nr_pages[i], stock_pages);
+@@ -2197,13 +2197,13 @@ static void memcg_uncharge(struct mem_cgroup *memcg, unsigned int nr_pages)
+  */
+ static void drain_stock(struct memcg_stock_pcp *stock, int i)
+ {
+-	struct mem_cgroup *old = READ_ONCE(stock->cached[i]);
++	struct mem_cgroup *old = stock->cached[i];
+ 	uint8_t stock_pages;
+ 
+ 	if (!old)
+ 		return;
+ 
+-	stock_pages = READ_ONCE(stock->nr_pages[i]);
++	stock_pages = stock->nr_pages[i];
+ 	if (stock_pages) {
+ 		memcg_uncharge(old, stock_pages);
+ 		WRITE_ONCE(stock->nr_pages[i], 0);
+@@ -2284,11 +2284,11 @@ static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
+ 
+ 	stock = this_cpu_ptr(&memcg_stock);
+ 	for (i = 0; i < NR_MEMCG_STOCK; ++i) {
+-		cached = READ_ONCE(stock->cached[i]);
++		cached = stock->cached[i];
+ 		if (!cached && empty_slot == -1)
+ 			empty_slot = i;
+-		if (memcg == READ_ONCE(stock->cached[i])) {
+-			stock_pages = READ_ONCE(stock->nr_pages[i]) + nr_pages;
++		if (memcg == stock->cached[i]) {
++			stock_pages = stock->nr_pages[i] + nr_pages;
+ 			if (stock_pages > MEMCG_STOCK_HIGH) {
+ 				memcg_uncharge(memcg,
+ 					       stock_pages - MEMCG_STOCK_LOW);
+-- 
+2.47.3
+

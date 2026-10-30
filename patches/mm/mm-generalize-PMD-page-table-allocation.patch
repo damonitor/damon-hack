@@ -1,0 +1,203 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 14 Oct 2026 11:59:09 +0800
+Subject: [PATCH] mm: generalize PMD page table allocation
+
+The generic PMD allocator assumes order-0 page tables and zero-valued
+empty entries. MIPS and LoongArch need pmd_init() to install their invalid
+entries, while MIPS and parisc use PMD_TABLE_ORDER to describe the
+allocation size.
+
+Default PMD_TABLE_ORDER to zero, honor architecture overrides, and invoke
+pmd_init() from the generic allocator. MIPS, LoongArch, and parisc can then
+use the generic GFP selection, constructor handling, and kernel ptdesc
+marking instead of duplicating most of the helper.
+
+Link: https://lore.kernel.org/20261014035910.687847-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Cc: James Bottomley <james.bottomley@hansenpartnership.com>
+Cc: Helge Deller <deller@gmx.de>
+---
+ arch/loongarch/include/asm/pgalloc.h | 21 ---------------------
+ arch/mips/include/asm/pgalloc.h      | 25 -------------------------
+ arch/parisc/include/asm/pgalloc.h    | 17 -----------------
+ include/asm-generic/pgalloc.h        | 12 ++++++++++--
+ 4 files changed, 10 insertions(+), 65 deletions(-)
+
+diff --git a/arch/loongarch/include/asm/pgalloc.h b/arch/loongarch/include/asm/pgalloc.h
+index a3f93a8b58bea..1fc9a0751f197 100644
+--- a/arch/loongarch/include/asm/pgalloc.h
++++ b/arch/loongarch/include/asm/pgalloc.h
+@@ -8,7 +8,6 @@
+ #include <linux/mm.h>
+ #include <linux/sched.h>
+ 
+-#define __HAVE_ARCH_PMD_ALLOC_ONE
+ #define __HAVE_ARCH_PUD_ALLOC_ONE
+ #include <asm-generic/pgalloc.h>
+ 
+@@ -47,26 +46,6 @@ extern pgd_t *pgd_alloc(struct mm_struct *mm);
+ #define __pte_free_tlb(tlb, pte, address)	tlb_remove_ptdesc((tlb), page_ptdesc(pte))
+ 
+ #ifndef __PAGETABLE_PMD_FOLDED
+-
+-static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
+-{
+-	pmd_t *pmd;
+-	struct ptdesc *ptdesc;
+-
+-	ptdesc = pagetable_alloc(GFP_KERNEL_ACCOUNT, 0);
+-	if (!ptdesc)
+-		return NULL;
+-
+-	if (!pagetable_pmd_ctor(mm, ptdesc)) {
+-		pagetable_free(ptdesc);
+-		return NULL;
+-	}
+-
+-	pmd = ptdesc_address(ptdesc);
+-	pmd_init(pmd);
+-	return pmd;
+-}
+-
+ #define __pmd_free_tlb(tlb, x, addr)	tlb_remove_ptdesc((tlb), virt_to_ptdesc(x))
+ 
+ #endif
+diff --git a/arch/mips/include/asm/pgalloc.h b/arch/mips/include/asm/pgalloc.h
+index 9ec9cf01e92ef..2f123455e363e 100644
+--- a/arch/mips/include/asm/pgalloc.h
++++ b/arch/mips/include/asm/pgalloc.h
+@@ -13,7 +13,6 @@
+ #include <linux/mm.h>
+ #include <linux/sched.h>
+ 
+-#define __HAVE_ARCH_PMD_ALLOC_ONE
+ #define __HAVE_ARCH_PUD_ALLOC_ONE
+ #include <asm-generic/pgalloc.h>
+ 
+@@ -29,11 +28,6 @@ static inline void pmd_populate(struct mm_struct *mm, pmd_t *pmd,
+ 	set_pmd(pmd, __pmd((unsigned long)page_address(pte)));
+ }
+ 
+-/*
+- * Initialize a new pmd table with invalid pointers.
+- */
+-extern void pmd_init(void *addr);
+-
+ #ifndef __PAGETABLE_PMD_FOLDED
+ 
+ static inline void pud_populate(struct mm_struct *mm, pud_t *pud, pmd_t *pmd)
+@@ -52,25 +46,6 @@ extern pgd_t *pgd_alloc(struct mm_struct *mm);
+ 
+ #ifndef __PAGETABLE_PMD_FOLDED
+ 
+-static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
+-{
+-	pmd_t *pmd;
+-	struct ptdesc *ptdesc;
+-
+-	ptdesc = pagetable_alloc(GFP_KERNEL_ACCOUNT, PMD_TABLE_ORDER);
+-	if (!ptdesc)
+-		return NULL;
+-
+-	if (!pagetable_pmd_ctor(mm, ptdesc)) {
+-		pagetable_free(ptdesc);
+-		return NULL;
+-	}
+-
+-	pmd = ptdesc_address(ptdesc);
+-	pmd_init(pmd);
+-	return pmd;
+-}
+-
+ #define __pmd_free_tlb(tlb, x, addr)	tlb_remove_ptdesc((tlb), virt_to_ptdesc(x))
+ 
+ #endif
+diff --git a/arch/parisc/include/asm/pgalloc.h b/arch/parisc/include/asm/pgalloc.h
+index 3b84ee93edaa1..880a3e9ad0cba 100644
+--- a/arch/parisc/include/asm/pgalloc.h
++++ b/arch/parisc/include/asm/pgalloc.h
+@@ -10,7 +10,6 @@
+ 
+ #include <asm/cache.h>
+ 
+-#define __HAVE_ARCH_PMD_ALLOC_ONE
+ #include <asm-generic/pgalloc.h>
+ 
+ /* Allocate the top level pgd (page directory) */
+@@ -29,22 +28,6 @@ static inline void pud_populate(struct mm_struct *mm, pud_t *pud, pmd_t *pmd)
+ 			(__u32)(__pa((unsigned long)pmd) >> PxD_VALUE_SHIFT)));
+ }
+ 
+-static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
+-{
+-	struct ptdesc *ptdesc;
+-	gfp_t gfp = GFP_PGTABLE_USER;
+-
+-	if (mm == &init_mm)
+-		gfp = GFP_PGTABLE_KERNEL;
+-	ptdesc = pagetable_alloc(gfp, PMD_TABLE_ORDER);
+-	if (!ptdesc)
+-		return NULL;
+-	if (!pagetable_pmd_ctor(mm, ptdesc)) {
+-		pagetable_free(ptdesc);
+-		return NULL;
+-	}
+-	return ptdesc_address(ptdesc);
+-}
+ #endif
+ 
+ static inline void
+diff --git a/include/asm-generic/pgalloc.h b/include/asm-generic/pgalloc.h
+index a1de7d246754b..68e473908758a 100644
+--- a/include/asm-generic/pgalloc.h
++++ b/include/asm-generic/pgalloc.h
+@@ -125,6 +125,10 @@ static inline void pte_free(struct mm_struct *mm, struct page *pte_page)
+ 
+ #if CONFIG_PGTABLE_LEVELS > 2
+ 
++#ifndef PMD_TABLE_ORDER
++#define PMD_TABLE_ORDER	0
++#endif
++
+ #ifndef __HAVE_ARCH_PMD_ALLOC_ONE
+ /**
+  * pmd_alloc_one - allocate memory for a PMD-level page table
+@@ -140,11 +144,12 @@ static inline void pte_free(struct mm_struct *mm, struct page *pte_page)
+ static inline pmd_t *pmd_alloc_one_noprof(struct mm_struct *mm, unsigned long addr)
+ {
+ 	struct ptdesc *ptdesc;
++	pmd_t *pmd;
+ 	gfp_t gfp = GFP_PGTABLE_USER;
+ 
+ 	if (mm == &init_mm)
+ 		gfp = GFP_PGTABLE_KERNEL;
+-	ptdesc = pagetable_alloc_noprof(gfp, 0);
++	ptdesc = pagetable_alloc_noprof(gfp, PMD_TABLE_ORDER);
+ 	if (!ptdesc)
+ 		return NULL;
+ 	if (!pagetable_pmd_ctor(mm, ptdesc)) {
+@@ -152,10 +157,13 @@ static inline pmd_t *pmd_alloc_one_noprof(struct mm_struct *mm, unsigned long ad
+ 		return NULL;
+ 	}
+ 
++	pmd = ptdesc_address(ptdesc);
++	pmd_init(pmd);
++
+ 	if (mm == &init_mm)
+ 		ptdesc_set_kernel(ptdesc);
+ 
+-	return ptdesc_address(ptdesc);
++	return pmd;
+ }
+ #define pmd_alloc_one(...)	alloc_hooks(pmd_alloc_one_noprof(__VA_ARGS__))
+ #endif
+-- 
+2.47.3
+

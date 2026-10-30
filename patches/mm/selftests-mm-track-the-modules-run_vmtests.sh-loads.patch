@@ -1,0 +1,118 @@
+From: Qiliang Yuan <odys.yuan@gmail.com>
+Date: Thu, 29 Oct 2026 02:24:35 -0400
+Subject: [PATCH] selftests/mm: track the modules run_vmtests.sh loads
+
+Patch series "selftests/mm: run the XFS-backed THP tests when xfs is a
+module", v3.
+
+run_vmtests.sh only creates the XFS that "khugepaged all:file" and the
+pagecache folio split cases of split_huge_page_test need when xfs is
+already registered, so with xfs built as a module and not loaded yet
+those tests are all skipped.
+
+Patch 1 adds load_module(), which records the modules the script loads
+and unloads them again before it exits, and moves hwpoison_inject over
+to it. Patch 2 loads xfs through it.
+
+
+This patch (of 2):
+
+run_vmtests.sh loads hwpoison_inject for the memory-failure test when it
+is not there yet, remembers that in a variable local to run_test() and
+unloads the module right after the test.
+
+The thp tests need xfs loaded in the same way, and repeating the load,
+the bookkeeping and the unload for every module that some test needs
+does not scale.
+
+Add load_module(), which loads a module unless it is already present
+and records it, and unload every recorded module, in reverse order,
+before the script exits. Use it for hwpoison_inject.
+
+Link: https://lore.kernel.org/20261029-bug-selftests-mm-run-vmtests-xfs-modprobe-v3-0-16ad772850ee@gmail.com
+Link: https://lore.kernel.org/20261029-bug-selftests-mm-run-vmtests-xfs-modprobe-v3-1-16ad772850ee@gmail.com
+Signed-off-by: Qiliang Yuan <odys.yuan@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+---
+ tools/testing/selftests/mm/run_vmtests.sh | 31 +++++++++++++++++------
+ 1 file changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/run_vmtests.sh b/tools/testing/selftests/mm/run_vmtests.sh
+index a1b45a3dedaee..e104a9c6fdefb 100755
+--- a/tools/testing/selftests/mm/run_vmtests.sh
++++ b/tools/testing/selftests/mm/run_vmtests.sh
+@@ -171,11 +171,30 @@ pretty_name() {
+ 	echo "$*" | sed -e 's/^\(bash \)\?\.\///'
+ }
+ 
++# Modules this script loaded, unloaded again before it exits
++LOADED_MODULES=()
++
++# Usage: load_module [module]
++load_module() {
++	if [ -d "/sys/module/$1" ]; then
++		return 0
++	fi
++	modprobe -q "$1" || return 1
++	LOADED_MODULES+=("$1")
++}
++
++unload_modules() {
++	local i
++
++	for (( i = ${#LOADED_MODULES[@]} - 1; i >= 0; i-- )); do
++		modprobe -r -q "${LOADED_MODULES[i]}"
++	done
++}
++
+ # Usage: run_test [test binary] [arbitrary test arguments...]
+ run_test() {
+ 	if test_selected ${CATEGORY}; then
+ 		local skip=0
+-		local LOADED_HWPOISON_INJECT_MOD=0
+ 
+ 		# On memory constrainted systems some tests can fail to allocate hugepages.
+ 		# perform some cleanup before the test for a higher success rate.
+@@ -201,8 +220,7 @@ run_test() {
+ 						| tap_prefix
+ 					skip=1
+ 				else
+-					modprobe hwpoison_inject > /dev/null 2>&1
+-					LOADED_HWPOISON_INJECT_MOD=1
++					load_module hwpoison_inject
+ 					if [ ! -d "$HWPOISON_DIR" ]; then
+ 						echo "hwpoison debugfs interface not present" \
+ 							| tap_prefix
+@@ -225,11 +243,6 @@ run_test() {
+ 			local ret=${PIPESTATUS[0]}
+ 		fi
+ 
+-		# Unload hwpoison_inject if we loaded it
+-		if [ "${LOADED_HWPOISON_INJECT_MOD}" = "1" ]; then
+-			modprobe -r hwpoison_inject > /dev/null 2>&1
+-		fi
+-
+ 		count_total=$(( count_total + 1 ))
+ 		if [ $ret -eq 0 ]; then
+ 			count_pass=$(( count_pass + 1 ))
+@@ -453,4 +466,6 @@ CATEGORY="memory-failure" run_test ./memory-failure
+ echo "SUMMARY: PASS=${count_pass} SKIP=${count_skip} FAIL=${count_fail}" | tap_prefix
+ echo "1..${count_total}" | tap_output
+ 
++unload_modules
++
+ exit $exitcode
+-- 
+2.47.3
+

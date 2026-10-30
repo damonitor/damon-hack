@@ -1,0 +1,152 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Mon, 19 Oct 2026 17:08:30 +0800
+Subject: [PATCH] mm/hugetlb_vmemmap: remove
+ hugetlb_vmemmap_optimize_bootmem_folios()
+
+With vmemmap_wrprotect_hvo() removed, the bootmem wrapper no longer
+performs any bootmem-specific work.
+
+Call hugetlb_vmemmap_optimize_folios() directly for bootmem folios and
+remove the redundant wrapper.
+
+Link: https://lore.kernel.org/20261019090830.1917657-5-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+---
+ mm/hugetlb.c         |  2 +-
+ mm/hugetlb_vmemmap.c | 29 ++++-------------------------
+ mm/hugetlb_vmemmap.h |  6 ------
+ 3 files changed, 5 insertions(+), 32 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index ec05e8c1d1f85..566d424f9c0eb 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3290,7 +3290,7 @@ static void __init prep_and_add_bootmem_folios(struct hstate *h,
+ 	struct folio *folio, *tmp_f;
+ 
+ 	/* Send list for bulk vmemmap optimization processing */
+-	hugetlb_vmemmap_optimize_bootmem_folios(h, folio_list);
++	hugetlb_vmemmap_optimize_folios(h, folio_list);
+ 
+ 	list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
+ 		if (!folio_test_hugetlb_vmemmap_optimized(folio)) {
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index 6fdef5982614d..b8ce014ba6e6d 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -590,19 +590,16 @@ static int hugetlb_vmemmap_split_folio(const struct hstate *h, struct folio *fol
+ 	return vmemmap_remap_split(vmemmap_start, vmemmap_end);
+ }
+ 
+-static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+-					      struct list_head *folio_list,
+-					      bool boot)
++void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list)
+ {
+ 	struct folio *folio;
+-	int nr_to_optimize;
++	unsigned long nr_to_optimize = 0;
+ 	LIST_HEAD(vmemmap_pages);
+ 	unsigned long flags = VMEMMAP_REMAP_NO_TLB_FLUSH;
+ 
+ 	if (list_empty(folio_list))
+ 		return;
+ 
+-	nr_to_optimize = 0;
+ 	list_for_each_entry(folio, folio_list, lru) {
+ 		int ret;
+ 
+@@ -610,7 +607,7 @@ static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+ 		 * Bootmem gigantic folios may already be marked optimized when
+ 		 * their vmemmap layout was prepared earlier, so skip them here.
+ 		 */
+-		if (boot && folio_test_hugetlb_vmemmap_optimized(folio))
++		if (folio_test_hugetlb_vmemmap_optimized(folio))
+ 			continue;
+ 
+ 		nr_to_optimize++;
+@@ -628,14 +625,7 @@ static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+ 	}
+ 
+ 	if (!nr_to_optimize)
+-		/*
+-		 * All pre-HVO folios, nothing left to do. It's ok if
+-		 * there is a mix of pre-HVO and not yet HVO-ed folios
+-		 * here, as __hugetlb_vmemmap_optimize_folio() will
+-		 * skip any folios that already have the optimized flag
+-		 * set, see vmemmap_should_optimize_folio().
+-		 */
+-		goto out;
++		return;
+ 
+ 	flush_tlb_all();
+ 
+@@ -660,21 +650,10 @@ static void __hugetlb_vmemmap_optimize_folios(struct hstate *h,
+ 		}
+ 	}
+ 
+-out:
+ 	flush_tlb_all();
+ 	free_vmemmap_page_list(&vmemmap_pages);
+ }
+ 
+-void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list)
+-{
+-	__hugetlb_vmemmap_optimize_folios(h, folio_list, false);
+-}
+-
+-void hugetlb_vmemmap_optimize_bootmem_folios(struct hstate *h, struct list_head *folio_list)
+-{
+-	__hugetlb_vmemmap_optimize_folios(h, folio_list, true);
+-}
+-
+ void __init hugetlb_vmemmap_optimize_bootmem_page(unsigned long pfn, unsigned int order)
+ {
+ 	if (!READ_ONCE(vmemmap_optimize_enabled))
+diff --git a/mm/hugetlb_vmemmap.h b/mm/hugetlb_vmemmap.h
+index 464192e32decf..d717d0d109609 100644
+--- a/mm/hugetlb_vmemmap.h
++++ b/mm/hugetlb_vmemmap.h
+@@ -24,7 +24,6 @@ long hugetlb_vmemmap_restore_folios(const struct hstate *h,
+ 					struct list_head *non_hvo_folios);
+ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio);
+ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list);
+-void hugetlb_vmemmap_optimize_bootmem_folios(struct hstate *h, struct list_head *folio_list);
+ void hugetlb_vmemmap_optimize_bootmem_page(unsigned long pfn, unsigned int order);
+ 
+ static inline unsigned int hugetlb_vmemmap_size(const struct hstate *h)
+@@ -66,11 +65,6 @@ static inline void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list
+ {
+ }
+ 
+-static inline void hugetlb_vmemmap_optimize_bootmem_folios(struct hstate *h,
+-						struct list_head *folio_list)
+-{
+-}
+-
+ static inline unsigned int hugetlb_vmemmap_optimizable_size(const struct hstate *h)
+ {
+ 	return 0;
+-- 
+2.47.3
+

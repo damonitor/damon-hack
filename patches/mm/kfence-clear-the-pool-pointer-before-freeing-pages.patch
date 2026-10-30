@@ -1,0 +1,53 @@
+From: Jackie Liu <liuyun01@kylinos.cn>
+Date: Thu, 29 Oct 2026 10:57:42 +0800
+Subject: [PATCH] kfence: clear the pool pointer before freeing pages
+
+Late initialization frees a failed pool before clearing __kfence_pool.
+Slab allocations can reuse those pages in between and be mistaken for
+KFENCE objects by is_kfence_address(), even though KFENCE is not enabled.
+
+Clear __kfence_pool before freeing the pages, and use the saved address
+for cleanup.
+
+Link: https://lore.kernel.org/2fab8aaa82ab2004e706fd7ec8dac20427976457.1793242457.git.liuyun01@kylinos.cn
+Fixes: b33f778bba5e ("kfence: alloc kfence_pool after system startup")
+Signed-off-by: Jackie Liu <liuyun01@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Marco Elver <elver@google.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Paul Walmsley <pjw@kernel.org>
+Cc: AlexandreGhiti <alex@ghiti.fr>
+Cc: Albert Ou <aou@eecs.berkeley.edu>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: <stable@vger.kernel.org>
+---
+ mm/kfence/core.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/kfence/core.c b/mm/kfence/core.c
+index 0c9cccafb5716..bae787fd9baf7 100644
+--- a/mm/kfence/core.c
++++ b/mm/kfence/core.c
+@@ -1052,16 +1052,17 @@ static int kfence_init_late(void)
+ 	free_contig_range(page_to_pfn(virt_to_page((void *)kfence_metadata_init)),
+ 			  nr_pages_meta);
+ free_pool:
++	WRITE_ONCE(__kfence_pool, NULL);
+ 	free_contig_range(page_to_pfn(virt_to_page((void *)addr)),
+ 			  free_size / PAGE_SIZE);
+ #else
+ 	free_pages_exact((void *)kfence_metadata_init, KFENCE_METADATA_SIZE);
+ free_pool:
++	WRITE_ONCE(__kfence_pool, NULL);
+ 	free_pages_exact((void *)addr, free_size);
+ #endif
+ 
+ 	kfence_metadata_init = NULL;
+-	__kfence_pool = NULL;
+ 	return err;
+ }
+ 
+-- 
+2.47.3
+

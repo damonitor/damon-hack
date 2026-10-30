@@ -1,0 +1,249 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Sun, 25 Oct 2026 11:18:30 +0900
+Subject: [PATCH] zram: borrow idle decompression streams in exclusive mode
+
+Shared decompression streams eliminate Reader vs Reader priority
+inversion for backends with stateless decompression.  However,
+backends with stateful decompression contexts (zstd, deflate)
+still require exclusive access to the stream [1].
+
+Instead of unconditionally blocking on the local CPU's ->excl_lock,
+we can scan online CPUs starting from the current one and try to
+borrow the first free stream.  Only when all online streams are
+busy, sleep on a per-zcomp waitqueue until any CPU releases an
+exclusive stream, which significantly drops contention and wait
+time, per Bo Zhang's measurements [2]:
+
+  Metric              Base      cross-CPU borrow
+  ----------------------------------------------
+  dexcl_contended     15,919    1,447
+  dexcl_wait_ns_total 109.6 s   3.66 s
+  dexcl_wait_ns_max   145 ms    26.6 ms
+  dexcl_avg_wait      6.88 ms   2.53 ms
+  dexcl_acquire       2.21M     2.94M
+
+A quick synthetic fio test for Reader vs Reader inversion on 24 CPUs
+(preempt=full, zstd, 48 low priority (nice 19) bg readers, 24 normal
+priority (nice 0) CPU hogs and 24 high priority (nice -19) fg readers),
+fg reader results (average of 3 runs):
+
+  Metric           Base               Patched
+  ----------------------------------------------------------
+  Read IOPS        396k               1,064k        (+2.7x)
+  Read clat avg    48.32 us           9.66 us       (-5.0x)
+  Read clat p50    7.58 us            8.85 us       (+17%)
+  Read clat p99    14.27 us           31.02 us      (+2.2x)
+  Read clat stdev  7,571 us           31.92 us      (-237x)
+  Read clat max    3,555,300 us       6,288 us      (-565x)
+
+Reader vs Reader with CONFIG_SCHED_PROXY_EXEC=y in both kernels,
+21 runs each:
+
+                          Base                    Patched
+  ------------------------------------------------------------------
+  zstd-3   Read IOPS      1,055k (+-160k)         1,045k (+-50k)
+           Read clat max  113 ms - 2.35 s         2.8 - 6.3 ms
+  zstd-12  Read IOPS      973k (+-175k)           1,045k (+-17k)
+           Read clat max  135 ms - 2.34 s         2.9 - 7.5 ms
+
+  Welch's t-test on IOPS, 21 runs each (patched vs base):
+                          diff        95% CI              p
+  ------------------------------------------------------------------
+  zstd-3                  -1.0%       [-76k, +63k]        0.78
+  zstd-12                 +7.4%       [+2k, +149k]        0.073
+
+  Runs with max read latency over 100 ms / over 1 s:
+                          Base                    Patched
+  ------------------------------------------------------------------
+  zstd-3                  21 of 21 / 9 of 21      0 / 0
+  zstd-12                 21 of 21 / 14 of 21     0 / 0
+
+With proxy execution base is about as fast as patched at both levels
+(no significant difference, p = 0.78 and p = 0.073).  Base is noisy
+though, and its worst case is still 0.1-2.3 s in every run.
+
+Link: https://lore.kernel.org/20261025021839.1542805-15-senozhatsky@chromium.org
+Link: https://lore.kernel.org/linux-kernel/20261015112440.1491168-1-zhangbo56@xiaomi.com [1]
+Link: https://lore.kernel.org/linux-kernel/20261016134847.1620103-1-zhangbo0325@gmail.com [2]
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hillf Danton <hdanton@sina.com>
+---
+ drivers/block/zram/zcomp.c    | 77 +++++++++++++++++++++++++----------
+ drivers/block/zram/zcomp.h    |  5 ++-
+ drivers/block/zram/zram_drv.c |  4 +-
+ 3 files changed, 61 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index 4fda13aac8965..72683f91313f9 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -185,38 +185,67 @@ bool zcomp_shared_decomp(struct zcomp *comp)
+ 	return !comp->ops->create_dctx;
+ }
+ 
++static bool zcomp_dstrm_excl_trylock(struct zcomp_dstrm *zstrm)
++{
++	/* Cheap pre-check: don't touch a busy stream's cachelines */
++	if (mutex_is_locked(&zstrm->excl_lock))
++		return false;
++	/*
++	 * Pin the stream.  The write side of ->lock is only taken by
++	 * zcomp_cpu_dead(), which also sets ->local_copy to NULL.
++	 */
++	if (!down_read_trylock(&zstrm->lock))
++		return false;
++	if (zstrm->local_copy && mutex_trylock(&zstrm->excl_lock))
++		return true;
++	up_read(&zstrm->lock);
++	return false;
++}
++
++static struct zcomp_dstrm *zcomp_dstrm_excl_tryget(struct zcomp *comp)
++{
++	unsigned int cpu, start = raw_smp_processor_id();
++	struct zcomp_dstrm *zstrm;
++
++	/* Best-effort start CPU hint; migration during the scan is fine */
++	for_each_online_cpu_wrap(cpu, start) {
++		zstrm = per_cpu_ptr(comp->dstream, cpu);
++		if (zcomp_dstrm_excl_trylock(zstrm))
++			return zstrm;
++	}
++	return NULL;
++}
++
+ struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp,
+ 				    enum zcomp_dstrm_mode mode)
+ {
+-	for (;;) {
+-		struct zcomp_dstrm *zstrm = raw_cpu_ptr(comp->dstream);
+-
+-		/*
+-		 * Pin the stream.  The write side of ->lock is only taken
+-		 * by zcomp_cpu_dead(), so this never contends with other
+-		 * decompression requests, regardless of their mode.
+-		 */
+-		down_read(&zstrm->lock);
+-		if (!zstrm->local_copy) {
+-			/* The stream has been destroyed, re-try */
++	struct zcomp_dstrm *zstrm;
++
++	if (mode == ZCOMP_DSTRM_SHARED) {
++		for (;;) {
++			zstrm = raw_cpu_ptr(comp->dstream);
++			down_read(&zstrm->lock);
++			if (zstrm->local_copy)
++				return zstrm;
+ 			up_read(&zstrm->lock);
+-			continue;
+ 		}
+-
+-		/*
+-		 * Exclusive requests additionally own ->local_copy and
+-		 * ->ctx and hence can only wait for each other.
+-		 */
+-		if (mode == ZCOMP_DSTRM_EXCLUSIVE)
+-			mutex_lock(&zstrm->excl_lock);
+-		return zstrm;
+ 	}
++
++	/* Checks zcomp_dstrm_excl_tryget() before touching the waitq */
++	wait_event(comp->dstrm_waitq, (zstrm = zcomp_dstrm_excl_tryget(comp)));
++	return zstrm;
+ }
+ 
+-void zcomp_dstrm_put(struct zcomp_dstrm *zstrm, enum zcomp_dstrm_mode mode)
++void zcomp_dstrm_put(struct zcomp *comp, struct zcomp_dstrm *zstrm,
++		     enum zcomp_dstrm_mode mode)
+ {
+-	if (mode == ZCOMP_DSTRM_EXCLUSIVE)
++	if (mode == ZCOMP_DSTRM_EXCLUSIVE) {
+ 		mutex_unlock(&zstrm->excl_lock);
++		up_read(&zstrm->lock);
++		if (wq_has_sleeper(&comp->dstrm_waitq))
++			wake_up(&comp->dstrm_waitq);
++		return;
++	}
+ 	up_read(&zstrm->lock);
+ }
+ 
+@@ -289,6 +318,8 @@ int zcomp_decompress(struct zcomp *comp, struct zcomp_dstrm *zstrm,
+ 	mutex_lock(&zstrm->excl_lock);
+ 	ret = zcomp_decompress_buf(comp, zstrm, sg, zstrm->local_copy, &req);
+ 	mutex_unlock(&zstrm->excl_lock);
++	if (wq_has_sleeper(&comp->dstrm_waitq))
++		wake_up(&comp->dstrm_waitq);
+ 	return ret;
+ }
+ 
+@@ -357,6 +388,8 @@ static int zcomp_init(struct zcomp *comp, struct zcomp_params *params)
+ 		goto cleanup;
+ 	}
+ 
++	init_waitqueue_head(&comp->dstrm_waitq);
++
+ 	for_each_possible_cpu(cpu) {
+ 		struct zcomp_dstrm *zstrm = per_cpu_ptr(comp->dstream, cpu);
+ 
+diff --git a/drivers/block/zram/zcomp.h b/drivers/block/zram/zcomp.h
+index 362a6da014aad..ca1ebc70ad0a4 100644
+--- a/drivers/block/zram/zcomp.h
++++ b/drivers/block/zram/zcomp.h
+@@ -5,6 +5,7 @@
+ 
+ #include <linux/mutex.h>
+ #include <linux/rwsem.h>
++#include <linux/wait.h>
+ 
+ struct scatterlist;
+ 
+@@ -96,6 +97,7 @@ struct zcomp_ops {
+ struct zcomp {
+ 	struct zcomp_cstrm __percpu *cstream;
+ 	struct zcomp_dstrm __percpu *dstream;
++	wait_queue_head_t dstrm_waitq;
+ 	const struct zcomp_ops *ops;
+ 	struct zcomp_params *params;
+ 	struct hlist_node node;
+@@ -115,7 +117,8 @@ void zcomp_cstrm_put(struct zcomp_cstrm *zstrm);
+ bool zcomp_shared_decomp(struct zcomp *comp);
+ struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp,
+ 				    enum zcomp_dstrm_mode mode);
+-void zcomp_dstrm_put(struct zcomp_dstrm *zstrm, enum zcomp_dstrm_mode mode);
++void zcomp_dstrm_put(struct zcomp *comp, struct zcomp_dstrm *zstrm,
++		     enum zcomp_dstrm_mode mode);
+ 
+ int zcomp_compress(struct zcomp *comp, struct zcomp_cstrm *zstrm,
+ 		   const void *src, unsigned int *dst_len);
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 8c0fe34b7a281..8d55b1104b76e 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -1382,7 +1382,7 @@ static int decompress_bdev_page(struct zram *zram, struct page *page,
+ 		copy_page(dst, zstrm->local_copy);
+ 		kunmap_local(dst);
+ 	}
+-	zcomp_dstrm_put(zstrm, ZCOMP_DSTRM_EXCLUSIVE);
++	zcomp_dstrm_put(zram->comps[prio], zstrm, ZCOMP_DSTRM_EXCLUSIVE);
+ 	slot_unlock(zram, index);
+ 
+ 	return ret;
+@@ -2135,7 +2135,7 @@ static int read_compressed_page(struct zram *zram, struct page *page,
+ 	dst = kmap_local_page(page);
+ 	ret = zcomp_decompress(zram->comps[prio], zstrm, sg, size, dst);
+ 	kunmap_local(dst);
+-	zcomp_dstrm_put(zstrm, mode);
++	zcomp_dstrm_put(zram->comps[prio], zstrm, mode);
+ 	zs_obj_read_sg_end(zram->mem_pool, handle);
+ 
+ 	return ret;
+-- 
+2.47.3
+
