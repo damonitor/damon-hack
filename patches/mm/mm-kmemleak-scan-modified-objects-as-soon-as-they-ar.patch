@@ -1,0 +1,140 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Fri, 30 Oct 2026 11:31:10 -0700
+Subject: [PATCH] mm: kmemleak: scan modified objects as soon as they are
+ grayed
+
+kmemleak keeps reporting the guard page of a systemd-journald thread stack
+on Meta's debug kernels, even with min_unref_scans set:
+
+  unreferenced object 0xffff88829a30ae40 (size 256):
+    comm "systemd-journal", pid 961, jiffies 4294814590
+    backtrace (crc 49b3881c):
+      kmem_cache_alloc_noprof+0x2ee/0x630
+      vm_area_dup+0x36/0x750
+      __split_vma+0xef/0x7d0
+      vma_modify+0x11c3/0x18a0
+      vma_modify_flags+0x1ea/0x2a0
+      mprotect_fixup+0x249/0x630
+      do_mprotect_pkey+0x531/0x820
+      __x64_sys_mprotect+0x7c/0x90
+
+The VMA is still mapped.  It was never faulted in, so it has no anon_vma
+and no file, and the only pointer to it is a slot in a maple tree leaf.
+The mm tree runs in RCU mode: every write replaces the leaf with a copy
+and frees the old one after a grace period.  journald rewrites its tree
+every couple of seconds, while a scan on a large debug host takes many
+minutes, so the leaf kmemleak queued is freed before its turn, and the
+copy that replaced it was linked after its parent had been scanned.
+
+The pass over modified objects is meant to catch such moved references,
+and the new leaf, being a new white object, does get grayed there.
+
+But the gray list is only scanned after the whole object_list walk, and by
+then that copy has been replaced and freed as well.  The confirmation scan
+has no such pass, so the miss repeats round after round no matter how many
+consecutive scans are required.
+
+Scan the gray list during the walk instead, within a jiffy of an object
+being grayed.  Do it from a variant of kmemleak_cond_resched(), which
+already pins the current object while the RCU read lock is dropped.  The
+live leaf is then read shortly after the walk reaches it, before it can be
+freed.
+
+Scanning the gray list after every grayed object made a full scan 41%
+slower (1.72s -> 2.42s, arm64 guest with lockdep) when the pass grays a
+million objects that do not point to each other.  Scanning it at most once
+a jiffy keeps that at the baseline, leaves idle, file storm and mmap churn
+workloads unchanged, and still removes the false positives at HZ=100.
+
+I was able to come up with a reproducer that reproduces these false
+positives most of the time:
+
+https://github.com/leitao/linux/commit/1291579c487303c5ffbea2cf532649d26329c8a9
+
+Link: https://lore.kernel.org/20261030-kmemleak-gray-drain-v2-1-3ec29a96668e@debian.org
+Fixes: 04609ccc40c4 ("kmemleak: Reduce the false positives by checking for modified objects")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/kmemleak.c | 31 ++++++++++++++++++++++++++++---
+ 1 file changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index 20c0eb41c8730..1bca27787df62 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -1696,8 +1696,10 @@ static void scan_gray_list(void)
+  * Conditionally call resched() in an object iteration loop while making sure
+  * that the given object won't go away without RCU read lock by performing a
+  * get_object() if necessaary.
++ * If @scan_gray is set, also scan the gray list while the RCU lock is dropped.
+  */
+-static void kmemleak_cond_resched(struct kmemleak_object *object)
++static void __kmemleak_cond_resched(struct kmemleak_object *object,
++				    bool scan_gray)
+ {
+ 	if (!get_object(object))
+ 		return;	/* Try next object */
+@@ -1709,6 +1711,8 @@ static void kmemleak_cond_resched(struct kmemleak_object *object)
+ 	raw_spin_unlock_irq(&kmemleak_lock);
+ 
+ 	rcu_read_unlock();
++	if (scan_gray)
++		scan_gray_list();
+ 	cond_resched_tasks_rcu_qs();
+ 	rcu_read_lock();
+ 
+@@ -1721,6 +1725,26 @@ static void kmemleak_cond_resched(struct kmemleak_object *object)
+ 	put_object(object);
+ }
+ 
++static void kmemleak_cond_resched(struct kmemleak_object *object)
++{
++	__kmemleak_cond_resched(object, false);
++}
++
++/*
++ * Scan newly grayed objects within a jiffy, not after the object_list walk:
++ * one may hold the only reference to another and be freed by then, like a
++ * maple tree node being replaced.
++ */
++static void kmemleak_resched_drain(struct kmemleak_object *object,
++				   unsigned long *last_drain)
++{
++	if (need_resched() ||
++	    (!list_empty(&gray_list) && time_after(jiffies, *last_drain))) {
++		__kmemleak_cond_resched(object, true);
++		*last_drain = jiffies;
++	}
++}
++
+ /*
+  * Scan all task kernel stacks, rescheduling between tasks. Each task is looked
+  * up and pinned within its own RCU read-side section, so no lock is held across
+@@ -1909,6 +1933,7 @@ static int scan_zone_pages(struct zone *zone)
+ static int __kmemleak_scan(bool full)
+ {
+ 	struct kmemleak_object *object;
++	unsigned long last_drain;
+ 	struct zone *zone;
+ 	int __maybe_unused i;
+ 	int stop = 0;
+@@ -2003,10 +2028,10 @@ static int __kmemleak_scan(bool full)
+ 	 * Check for new or unreferenced objects modified since the previous
+ 	 * scan and color them gray until the next scan.
+ 	 */
++	last_drain = jiffies;
+ 	rcu_read_lock();
+ 	list_for_each_entry_rcu(object, &object_list, object_list) {
+-		if (need_resched())
+-			kmemleak_cond_resched(object);
++		kmemleak_resched_drain(object, &last_drain);
+ 
+ 		/*
+ 		 * This is racy but we can save the overhead of lock/unlock
+-- 
+2.47.3
+

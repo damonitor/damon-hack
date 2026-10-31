@@ -1,0 +1,88 @@
+From: Karl Mehltretter <kmehltretter@gmail.com>
+Date: Sat, 3 Oct 2026 13:01:37 +0200
+Subject: [PATCH] userfaultfd: docs: fix an error code, two names and the
+ POLLERR cause
+
+Four statements in userfaultfd.rst do not match the code:
+
+- UFFDIO_COPY is said to return -ENOSPC when the monitored process
+  exits at the time of the copy. That error is -ESRCH since
+  commit e86b298bebf7 ("userfaultfd: replace ENOSPC with ESRCH in case
+  mm has gone during copy/zeropage"), and userfaultfd_copy() still
+  returns -ESRCH when mmget_not_zero() fails.
+- the postcopy example says that UFFDIO_ZEROCOPY is used for zero pages.
+  The ioctl is UFFDIO_ZEROPAGE, as the same sentence says a line
+  earlier.
+- the write protect section says to clear UFFDIO_WRITEPROTECT_MODE_WP in
+  pagefault.mode. struct uffd_msg's pagefault has no mode field. The
+  flag goes in the mode field of struct uffdio_writeprotect, as the
+  paragraph says when it sets the flag.
+- poll() is said to report POLLERR "when ranges supplied were
+  incorrect". userfaultfd_poll() never looks at ranges, and an ioctl
+  with a bad range fails on its own. It returns EPOLLERR when the
+  UFFDIO_API handshake has not been done yet and when the file does not
+  have O_NONBLOCK set, and it did so when the sentence was written.
+
+Say -ESRCH, UFFDIO_ZEROPAGE and mode, and name the two POLLERR cases.
+
+Link: https://lore.kernel.org/20261003110137.88619-1-kmehltretter@gmail.com
+Fixes: e86b298bebf7 ("userfaultfd: replace ENOSPC with ESRCH in case mm has gone during copy/zeropage")
+Fixes: 25edd8bffd0f ("userfaultfd: linux/Documentation/vm/userfaultfd.txt")
+Fixes: 57e5d4f278b9 ("userfaultfd: wp: UFFDIO_REGISTER_MODE_WP documentation update")
+Signed-off-by: Karl Mehltretter <kmehltretter@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+---
+ Documentation/admin-guide/mm/userfaultfd.rst | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/Documentation/admin-guide/mm/userfaultfd.rst b/Documentation/admin-guide/mm/userfaultfd.rst
+index 783d969f0e28f..97daea83b7f17 100644
+--- a/Documentation/admin-guide/mm/userfaultfd.rst
++++ b/Documentation/admin-guide/mm/userfaultfd.rst
+@@ -199,8 +199,9 @@ Notes:
+   those IOCTLs wakes up the faulting thread.
+ 
+ - Be sure to test for all errors including
+-  (``pollfd[0].revents & POLLERR``).  This can happen, e.g. when ranges
+-  supplied were incorrect.
++  (``pollfd[0].revents & POLLERR``).  This happens if the userfaultfd
++  does not have ``O_NONBLOCK`` set, or if it is polled before the
++  ``UFFDIO_API`` handshake.
+ 
+ Write Protect Notifications
+ ---------------------------
+@@ -218,7 +219,7 @@ protect as many ranges as you like (inside the registered range).
+ Then, in the thread reading from uffd the struct will have
+ ``msg.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP`` set. Now you send
+ ``ioctl(uffd, UFFDIO_WRITEPROTECT, struct *uffdio_writeprotect)``
+-again while ``pagefault.mode`` does not have ``UFFDIO_WRITEPROTECT_MODE_WP``
++again while ``mode`` does not have ``UFFDIO_WRITEPROTECT_MODE_WP``
+ set. This wakes up the thread which will continue to run with writes. This
+ allows you to do the bookkeeping about the write in the uffd reading
+ thread before the ioctl.
+@@ -584,7 +585,7 @@ The QEMU in the source node writes all pages that it knows are missing
+ in the destination node, into the socket, and the migration thread of
+ the QEMU running in the destination node runs ``UFFDIO_COPY|ZEROPAGE``
+ ioctls on the ``userfaultfd`` in order to map the received pages into the
+-guest (``UFFDIO_ZEROCOPY`` is used if the source page was a zero page).
++guest (``UFFDIO_ZEROPAGE`` is used if the source page was a zero page).
+ 
+ A different postcopy thread in the destination node listens with
+ poll() to the ``userfaultfd`` in parallel. When a ``POLLIN`` event is
+@@ -672,7 +673,7 @@ asynchronously and the non-cooperative process resumes execution as
+ soon as manager executes read(). The ``userfaultfd`` manager should
+ carefully synchronize calls to ``UFFDIO_COPY`` with the events
+ processing. To aid the synchronization, the ``UFFDIO_COPY`` ioctl will
+-return ``-ENOSPC`` when the monitored process exits at the time of
++return ``-ESRCH`` when the monitored process exits at the time of
+ ``UFFDIO_COPY``, and ``-ENOENT``, when the non-cooperative process has changed
+ its virtual memory layout simultaneously with outstanding ``UFFDIO_COPY``
+ operation.
+-- 
+2.47.3
+

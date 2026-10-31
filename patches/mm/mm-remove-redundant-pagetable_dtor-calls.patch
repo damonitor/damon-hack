@@ -1,0 +1,160 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Fri, 30 Oct 2026 16:38:00 +0800
+Subject: [PATCH] mm: remove redundant pagetable_dtor() calls
+
+pagetable_free() now runs pagetable_dtor() for constructed page tables.
+Calling the destructor immediately before freeing the page table therefore
+duplicates the lifecycle handling at each caller.
+
+Remove the redundant calls and let pagetable_free() handle the destructor.
+No functional change is intended.
+
+Link: https://lore.kernel.org/20261030083800.599152-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Geert Uytterhoeven <geert@linux-m68k.org> # m68k
+Acked-by: Vishal Moola (Fractile) <vishal.moola@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K . V <aneesh.kumar@kernel.org>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Gerald Schaefer <gerald.schaefer@linux.ibm.com>
+Cc: Yoshinori Sato <ysato@users.sourceforge.jp>
+Cc: Rich Felker <dalias@libc.org>
+Cc: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Andreas Larsson <andreas@gaisler.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+---
+ arch/m68k/include/asm/mcf_pgalloc.h    | 1 -
+ arch/powerpc/mm/book3s64/mmu_context.c | 1 -
+ arch/powerpc/mm/book3s64/pgtable.c     | 1 -
+ arch/powerpc/mm/pgtable-frag.c         | 2 --
+ arch/s390/include/asm/pgalloc.h        | 4 ----
+ arch/sparc/mm/init_64.c                | 1 -
+ arch/x86/mm/pgtable.c                  | 1 -
+ 7 files changed, 11 deletions(-)
+
+diff --git a/arch/m68k/include/asm/mcf_pgalloc.h b/arch/m68k/include/asm/mcf_pgalloc.h
+index 27c3b91ac0b86..f607d239ce168 100644
+--- a/arch/m68k/include/asm/mcf_pgalloc.h
++++ b/arch/m68k/include/asm/mcf_pgalloc.h
+@@ -62,7 +62,6 @@ static inline void pte_free(struct mm_struct *mm, pgtable_t pgtable)
+ {
+ 	struct ptdesc *ptdesc = virt_to_ptdesc(pgtable);
+ 
+-	pagetable_dtor(ptdesc);
+ 	pagetable_free(ptdesc);
+ }
+ 
+diff --git a/arch/powerpc/mm/book3s64/mmu_context.c b/arch/powerpc/mm/book3s64/mmu_context.c
+index 2fe787e6c2dcb..36ce18e625cc8 100644
+--- a/arch/powerpc/mm/book3s64/mmu_context.c
++++ b/arch/powerpc/mm/book3s64/mmu_context.c
+@@ -249,7 +249,6 @@ static void pmd_frag_destroy(void *pmd_frag)
+ 	count = ((unsigned long)pmd_frag & ~PAGE_MASK) >> PMD_FRAG_SIZE_SHIFT;
+ 	/* We allow PTE_FRAG_NR fragments from a PTE page */
+ 	if (atomic_sub_and_test(PMD_FRAG_NR - count, &ptdesc->pt_frag_refcount)) {
+-		pagetable_dtor(ptdesc);
+ 		pagetable_free(ptdesc);
+ 	}
+ }
+diff --git a/arch/powerpc/mm/book3s64/pgtable.c b/arch/powerpc/mm/book3s64/pgtable.c
+index 85ab6723c8f2b..4ff471775f2d9 100644
+--- a/arch/powerpc/mm/book3s64/pgtable.c
++++ b/arch/powerpc/mm/book3s64/pgtable.c
+@@ -450,7 +450,6 @@ void pmd_fragment_free(unsigned long *pmd)
+ 
+ 	BUG_ON(atomic_read(&ptdesc->pt_frag_refcount) <= 0);
+ 	if (atomic_dec_and_test(&ptdesc->pt_frag_refcount)) {
+-		pagetable_dtor(ptdesc);
+ 		pagetable_free(ptdesc);
+ 	}
+ }
+diff --git a/arch/powerpc/mm/pgtable-frag.c b/arch/powerpc/mm/pgtable-frag.c
+index ae742564a3d56..2568bb514181b 100644
+--- a/arch/powerpc/mm/pgtable-frag.c
++++ b/arch/powerpc/mm/pgtable-frag.c
+@@ -26,7 +26,6 @@ void pte_frag_destroy(void *pte_frag)
+ 	/* We allow PTE_FRAG_NR fragments from a PTE page */
+ 	if (atomic_sub_and_test(PTE_FRAG_NR - count, &ptdesc->pt_frag_refcount)) {
+ 		folio_clear_active(ptdesc_folio(ptdesc));
+-		pagetable_dtor(ptdesc);
+ 		pagetable_free(ptdesc);
+ 	}
+ }
+@@ -110,7 +109,6 @@ static void pte_free_now(struct rcu_head *head)
+ 	struct ptdesc *ptdesc;
+ 
+ 	ptdesc = container_of(head, struct ptdesc, pt_rcu_head);
+-	pagetable_dtor(ptdesc);
+ 	pagetable_free(ptdesc);
+ }
+ 
+diff --git a/arch/s390/include/asm/pgalloc.h b/arch/s390/include/asm/pgalloc.h
+index a5de9e61ea9eb..d554c475c61f8 100644
+--- a/arch/s390/include/asm/pgalloc.h
++++ b/arch/s390/include/asm/pgalloc.h
+@@ -66,7 +66,6 @@ static inline void p4d_free(struct mm_struct *mm, p4d_t *p4d)
+ 	if (mm_p4d_folded(mm))
+ 		return;
+ 
+-	pagetable_dtor(virt_to_ptdesc(p4d));
+ 	crst_table_free(mm, (unsigned long *) p4d);
+ }
+ 
+@@ -88,7 +87,6 @@ static inline void pud_free(struct mm_struct *mm, pud_t *pud)
+ 	if (mm_pud_folded(mm))
+ 		return;
+ 
+-	pagetable_dtor(virt_to_ptdesc(pud));
+ 	crst_table_free(mm, (unsigned long *) pud);
+ }
+ 
+@@ -111,7 +109,6 @@ static inline void pmd_free(struct mm_struct *mm, pmd_t *pmd)
+ {
+ 	if (mm_pmd_folded(mm))
+ 		return;
+-	pagetable_dtor(virt_to_ptdesc(pmd));
+ 	crst_table_free(mm, (unsigned long *) pmd);
+ }
+ 
+@@ -144,7 +141,6 @@ static inline pgd_t *pgd_alloc_noprof(struct mm_struct *mm)
+ 
+ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
+ {
+-	pagetable_dtor(virt_to_ptdesc(pgd));
+ 	crst_table_free(mm, (unsigned long *) pgd);
+ }
+ 
+diff --git a/arch/sparc/mm/init_64.c b/arch/sparc/mm/init_64.c
+index 9bbccb5d23a8f..9f3cb7883f3f9 100644
+--- a/arch/sparc/mm/init_64.c
++++ b/arch/sparc/mm/init_64.c
+@@ -2840,7 +2840,6 @@ static void __pte_free(pgtable_t pte)
+ {
+ 	struct ptdesc *ptdesc = virt_to_ptdesc(pte);
+ 
+-	pagetable_dtor(ptdesc);
+ 	pagetable_free(ptdesc);
+ }
+ 
+diff --git a/arch/x86/mm/pgtable.c b/arch/x86/mm/pgtable.c
+index 81b3bb9a197af..9929d7d55d729 100644
+--- a/arch/x86/mm/pgtable.c
++++ b/arch/x86/mm/pgtable.c
+@@ -156,7 +156,6 @@ static void free_pmds(struct mm_struct *mm, pmd_t *pmds[], int count)
+ 		if (pmds[i]) {
+ 			ptdesc = virt_to_ptdesc(pmds[i]);
+ 
+-			pagetable_dtor(ptdesc);
+ 			pagetable_free(ptdesc);
+ 			mm_dec_nr_pmds(mm);
+ 		}
+-- 
+2.47.3
+

@@ -1,0 +1,196 @@
+From: "Shubhang Kaushik (Ampere)" <sh@gentwo.org>
+Date: Thu, 29 Oct 2026 12:35:50 -0700
+Subject: [PATCH] ipc/msg: fix msg_qbytes truncation in IPC_SET
+
+The msg_qbytes field in the struct msqid64_ds userspace ABI is an unsigned
+long.  Commit 889b331724c82 ("ipc/msg.c: consolidate all xxxctl_down()
+functions") passes that value to msgctl_down() as an int.
+
+On ABIs where unsigned long is wider than unsigned int, this narrows
+msg_qbytes before validation and assignment.  For example, an unprivileged
+queue owner can request msg_qbytes = 0x100000000.  The conversion to int
+changes this value to zero, which passes the msg_ctlmnb check.  IPC_SET
+then succeeds and sets q_qbytes to zero instead of rejecting the requested
+value with EPERM.
+
+For callers with CAP_SYS_RESOURCE, values with bit 31 set are also
+incorrectly sign-extended when assigned to q_qbytes.  In particular,
+UINT_MAX becomes ULONG_MAX rather than the requested UINT_MAX.
+
+Keep msg_qbytes as unsigned long through validation and assignment.  Also
+preserve its type in ipcctl_obtain_check(), which passes it to the
+unsigned-long audit field.
+
+Add a regression test which drops CAP_SYS_RESOURCE and verifies that
+IPC_SET with a value above UINT_MAX fails with EPERM where unsigned long
+is wider than unsigned int.  Skip the test when it is not, capabilities
+are unavailable, or System V message queues are unavailable.
+
+Link: https://lore.kernel.org/20261029-ipc-msg-qbytes-v3-1-fc3f4307c85b@gentwo.org
+Fixes: 889b331724c8 ("ipc/msg.c: consolidate all xxxctl_down() functions")
+Signed-off-by: Shubhang Kaushik (Ampere) <sh@gentwo.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Lu Shuaibing <shuaibinglu@126.com>
+Cc: Shubhang Kaushik <shubhang@os.amperecomputing.com>
+Cc: Christopher Lameter (Ampere) <cl@gentwo.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Manfred Spraul <manfred@colorfullife.com>
+Cc: Jan Koester <jan.koester@tuxist.de>
+Cc: <stable@vger.kernel.org>
+---
+ ipc/msg.c                                   |  2 +-
+ ipc/util.c                                  |  3 +-
+ ipc/util.h                                  |  3 +-
+ tools/testing/selftests/ipc/Makefile        |  2 +-
+ tools/testing/selftests/ipc/msgctl_qbytes.c | 84 +++++++++++++++++++++
+ 5 files changed, 90 insertions(+), 4 deletions(-)
+ create mode 100644 tools/testing/selftests/ipc/msgctl_qbytes.c
+
+diff --git a/ipc/msg.c b/ipc/msg.c
+index ea1d191d3810a..75e67d277521d 100644
+--- a/ipc/msg.c
++++ b/ipc/msg.c
+@@ -399,7 +399,7 @@ copy_msqid_from_user(struct msqid64_ds *out, void __user *buf, int version)
+  * NOTE: no locks must be held, the rwsem is taken inside this function.
+  */
+ static int msgctl_down(struct ipc_namespace *ns, int msqid, int cmd,
+-			struct ipc64_perm *perm, int msg_qbytes)
++			struct ipc64_perm *perm, unsigned long msg_qbytes)
+ {
+ 	struct kern_ipc_perm *ipcp;
+ 	struct msg_queue *msq;
+diff --git a/ipc/util.c b/ipc/util.c
+index 1737d776bc089..c435b2d93a12e 100644
+--- a/ipc/util.c
++++ b/ipc/util.c
+@@ -718,7 +718,8 @@ int ipc_update_perm(struct ipc64_perm *in, struct kern_ipc_perm *out)
+  */
+ struct kern_ipc_perm *ipcctl_obtain_check(struct ipc_namespace *ns,
+ 					struct ipc_ids *ids, int id, int cmd,
+-					struct ipc64_perm *perm, int extra_perm)
++					struct ipc64_perm *perm,
++					unsigned long extra_perm)
+ {
+ 	kuid_t euid;
+ 	int err = -EPERM;
+diff --git a/ipc/util.h b/ipc/util.h
+index a55d6cebe6d3b..55a76f94667cd 100644
+--- a/ipc/util.h
++++ b/ipc/util.h
+@@ -180,7 +180,8 @@ void ipc64_perm_to_ipc_perm(struct ipc64_perm *in, struct ipc_perm *out);
+ int ipc_update_perm(struct ipc64_perm *in, struct kern_ipc_perm *out);
+ struct kern_ipc_perm *ipcctl_obtain_check(struct ipc_namespace *ns,
+ 					     struct ipc_ids *ids, int id, int cmd,
+-					     struct ipc64_perm *perm, int extra_perm);
++					     struct ipc64_perm *perm,
++					     unsigned long extra_perm);
+ 
+ static inline void ipc_update_pid(struct pid **pos, struct pid *pid)
+ {
+diff --git a/tools/testing/selftests/ipc/Makefile b/tools/testing/selftests/ipc/Makefile
+index fad10f2bb57b0..930a334747a63 100644
+--- a/tools/testing/selftests/ipc/Makefile
++++ b/tools/testing/selftests/ipc/Makefile
+@@ -12,7 +12,7 @@ endif
+ 
+ CFLAGS += $(KHDR_INCLUDES)
+ 
+-TEST_GEN_PROGS := msgque
++TEST_GEN_PROGS := msgctl_qbytes msgque
+ 
+ include ../lib.mk
+ 
+diff --git a/tools/testing/selftests/ipc/msgctl_qbytes.c b/tools/testing/selftests/ipc/msgctl_qbytes.c
+new file mode 100644
+index 0000000000000..5549229a25eb6
+--- /dev/null
++++ b/tools/testing/selftests/ipc/msgctl_qbytes.c
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <errno.h>
++#include <limits.h>
++#include <linux/capability.h>
++#include <stdio.h>
++#include <sys/msg.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#include "kselftest.h"
++
++static int drop_cap_sys_resource(void)
++{
++	struct __user_cap_header_struct hdr = {
++		.version = _LINUX_CAPABILITY_VERSION_3,
++	};
++	struct __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3];
++	unsigned int index = CAP_SYS_RESOURCE / 32;
++	__u32 mask = 1U << (CAP_SYS_RESOURCE % 32);
++
++	if (syscall(SYS_capget, &hdr, data))
++		return -1;
++
++	data[index].effective &= ~mask;
++	data[index].permitted &= ~mask;
++
++	return syscall(SYS_capset, &hdr, data);
++}
++
++int main(void)
++{
++	struct msqid_ds ds;
++	int msqid;
++	int ret;
++
++	ksft_print_header();
++	ksft_set_plan(1);
++
++#if ULONG_MAX <= UINT_MAX
++	ksft_exit_skip("requires unsigned long wider than unsigned int\n");
++#endif
++
++	if (drop_cap_sys_resource()) {
++		if (errno == ENOSYS)
++			ksft_exit_skip("capabilities are unavailable\n");
++		ksft_exit_fail_perror("drop CAP_SYS_RESOURCE");
++	}
++
++	msqid = msgget(IPC_PRIVATE, 0600);
++	if (msqid == -1) {
++		if (errno == ENOSYS)
++			ksft_exit_skip("System V message queues are unavailable\n");
++		ksft_exit_fail_perror("msgget");
++	}
++
++	ret = msgctl(msqid, IPC_STAT, &ds);
++	if (ret == -1) {
++		ksft_perror("msgctl(IPC_STAT)");
++		goto out_fail;
++	}
++
++	/*
++	 * Without CAP_SYS_RESOURCE, a value above UINT_MAX must be rejected
++	 * rather than truncated to zero.
++	 */
++	ds.msg_qbytes = (unsigned long)UINT_MAX + 1;
++	errno = 0;
++	ret = msgctl(msqid, IPC_SET, &ds);
++	if (ret == -1 && errno == EPERM) {
++		ksft_test_result_pass("IPC_SET rejects oversized msg_qbytes\n");
++		msgctl(msqid, IPC_RMID, NULL);
++		ksft_exit_pass();
++	}
++
++	if (ret == -1)
++		ksft_perror("msgctl(IPC_SET)");
++	else
++		ksft_print_msg("msgctl(IPC_SET) unexpectedly succeeded\n");
++
++out_fail:
++	msgctl(msqid, IPC_RMID, NULL);
++	ksft_test_result_fail("IPC_SET accepted oversized msg_qbytes\n");
++	ksft_exit_fail();
++}
+-- 
+2.47.3
+

@@ -1,0 +1,111 @@
+From: Alexandre Ghiti <alex@ghiti.fr>
+Date: Wed, 7 Oct 2026 17:34:44 +0200
+Subject: [PATCH] mm/zswap: plug the writeback IO of an LRU walk
+
+zswap writeback only appends an entry to the pending bio when its slot
+directly follows the previous one, and submits the pending bio
+otherwise.
+
+Plug the LRU walk so that the block layer can merge what the batch
+cannot.
+
+Kernel build (defconfig, -j4) in a 600M memory.max cgroup with the zswap
+shrinker enabled, swapping to an NVMe partition with iocost enabled. It
+runs alone, and next to a sibling fio random writer with 10 times its
+io.weight so that iocost throttles it. Mean +- stddev, counters from the
+build's cgroup:
+
+Alone:
+
+                                unplugged       plugged
+  build time (s)                1061 +- 2     1057 +- 2   -0.4%
+  write requests (k)            622 +- 34     579 +- 21   -6.8%
+  pages per write request    1.30 +- 0.02  1.36 +- 0.05   +4.9%
+  iocost debt (s)             14.0 +- 2.5   11.0 +- 1.7   -21.6%
+  iocost wait (s)              7.7 +- 1.8    7.1 +- 1.1   -7.9%
+  IO full pressure (s)        18.3 +- 1.4   17.5 +- 1.3   -4.5%
+
+Next to the writer:
+
+                                unplugged       plugged
+  build time (s)               2188 +- 45    2104 +- 75   -3.8%
+  write requests (k)            594 +- 21     567 +- 24   -4.6%
+  pages per write request    1.30 +- 0.01  1.35 +- 0.02   +3.6%
+  iocost debt (s)               648 +- 22     645 +- 29   -0.5%
+  iocost wait (s)               624 +- 23     633 +- 29   +1.5%
+  IO full pressure (s)          615 +- 31     550 +- 44   -10.6%
+
+Link: https://lore.kernel.org/20261007153507.50715-3-alex@ghiti.fr
+Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+---
+ mm/zswap.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index b7eb1dc473b36..7660f19ed5bf5 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -20,6 +20,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/types.h>
+ #include <linux/atomic.h>
++#include <linux/blkdev.h>
+ #include <linux/swap_ops.h>
+ #include <linux/crypto.h>
+ #include <linux/scatterlist.h>
+@@ -1283,6 +1284,7 @@ static unsigned long zswap_shrinker_scan(struct shrinker *shrinker,
+ 		.encountered_page_in_swapcache = &encountered_page_in_swapcache,
+ 	};
+ 	unsigned long shrink_ret;
++	struct blk_plug plug;
+ 
+ 	if (!zswap_shrinker_enabled ||
+ 			!mem_cgroup_zswap_writeback_enabled(sc->memcg)) {
+@@ -1290,10 +1292,12 @@ static unsigned long zswap_shrinker_scan(struct shrinker *shrinker,
+ 		return SHRINK_STOP;
+ 	}
+ 
++	blk_start_plug(&plug);
+ 	shrink_ret = list_lru_shrink_walk(&zswap_list_lru, sc, &shrink_memcg_cb,
+ 		&ctl);
+ 
+ 	swap_write_submit(&ctl.io_ctx);
++	blk_finish_plug(&plug);
+ 
+ 	if (encountered_page_in_swapcache)
+ 		return SHRINK_STOP;
+@@ -1401,6 +1405,7 @@ static int shrink_memcg(struct mem_cgroup *memcg)
+ {
+ 	struct zswap_shrink_ctl ctl = {};
+ 	int nid, shrunk = 0, scanned = 0;
++	struct blk_plug plug;
+ 
+ 	if (!mem_cgroup_zswap_writeback_enabled(memcg))
+ 		return -ENOENT;
+@@ -1412,6 +1417,7 @@ static int shrink_memcg(struct mem_cgroup *memcg)
+ 	if (memcg && !mem_cgroup_online(memcg))
+ 		return -ENOENT;
+ 
++	blk_start_plug(&plug);
+ 	for_each_node_state(nid, N_NORMAL_MEMORY) {
+ 		unsigned long nr_to_walk = SWAP_CLUSTER_MAX;
+ 
+@@ -1421,6 +1427,7 @@ static int shrink_memcg(struct mem_cgroup *memcg)
+ 	}
+ 
+ 	swap_write_submit(&ctl.io_ctx);
++	blk_finish_plug(&plug);
+ 
+ 	/* Nothing was scanned: every LRU under @memcg was empty. */
+ 	if (!scanned)
+-- 
+2.47.3
+

@@ -1,0 +1,80 @@
+From: Nickolai Zeldovich <nickolai@csail.mit.edu>
+Date: Sun, 11 Oct 2026 07:51:34 -0400
+Subject: [PATCH] lib/plist: add a plist_test case for plist_requeue() on the
+ last priority bucket
+
+The plist_requeue() shortcut inserted the node at the head of the list
+when the node was the first of the last priority bucket and had a
+successor of the same priority, with an earlier bucket present (fixed by
+43c91b152243 "lib/plist: fix plist_requeue() corrupting order in the last
+bucket").
+
+The CONFIG_DEBUG_PLIST self-test did not catch it: it only requeues nodes
+it has just added, which are always the last of their bucket, so
+plist_requeue() returned early every time.
+
+Add a deterministic case for the failing shape: A(1) B(2) C(2), requeue B.
+The expected result is A(1) C(2) B(2), with B at the end of the list; the
+broken shortcut produced B(2) A(1) C(2).  Check it with a WARN() rather
+than a BUG_ON(), and skip plist_test_check() when the warning fires, since
+its BUG_ON()s would stop the boot on the misordered list; the node_list
+and prio_list links of the result are still verified by plist_test_check()
+when the order is right.
+
+Boot-tested on QEMU virt with a riscv64 defconfig kernel plus
+CONFIG_DEBUG_PLIST=y, built with LLVM=1.  With the fix applied the test
+passes and the boot proceeds.  With the fix reverted the warning fires at
+boot and the boot proceeds:
+
+  [    0.864761] start plist test
+  [    0.871849] ------------[ cut here ]------------
+  [    0.871905] plist_requeue() put the node in front of the list
+  [    0.872921] WARNING: lib/plist.c:295 at plist_test+0x33a/0x342, CPU#0: swapper/0/1
+  ...
+  [    0.885968] ---[ end trace 0000000000000000 ]---
+  [    0.887060] end plist test
+
+Link: https://lore.kernel.org/20261011115136.767838-1-nickolai@csail.mit.edu
+Signed-off-by: Nickolai Zeldovich <nickolai@csail.mit.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Adam Harshbarger <handyhandyman.adam@gmail.com>
+Cc: I Hsin Cheng <richard120310@gmail.com>
+---
+ lib/plist.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/lib/plist.c b/lib/plist.c
+index b0273533c04d2..9591c38e8ad65 100644
+--- a/lib/plist.c
++++ b/lib/plist.c
+@@ -283,6 +283,27 @@ static int  __init plist_test(void)
+ 		plist_test_check(nr_expect);
+ 	}
+ 
++	/*
++	 * Requeue a node which is the first of the last priority run and has
++	 * a successor of the same priority, with an earlier run present: the
++	 * shortcut in plist_requeue() must append it at the end of the list,
++	 * not in front of the first run.  The random test above never
++	 * exercises this, since it only requeues nodes it has just added,
++	 * which are always the last of their run.  On failure warn and skip
++	 * plist_test_check(), which would BUG_ON() the misordered list.
++	 */
++	plist_head_init(&test_head);
++	for (i = 0; i < 3; i++) {
++		plist_node_init(test_node + i, i ? 2 : 1);
++		plist_add(test_node + i, &test_head);
++	}
++	plist_test_requeue(test_node + 1);
++	if (!WARN(plist_last(&test_head) != test_node + 1,
++		  "plist_requeue() put the node in front of the list\n"))
++		plist_test_check(3);
++	for (i = 0; i < 3; i++)
++		plist_del(test_node + i, &test_head);
++
+ 	printk(KERN_DEBUG "end plist test\n");
+ 
+ 	/* Worst case test for plist_add() */
+-- 
+2.47.3
+
