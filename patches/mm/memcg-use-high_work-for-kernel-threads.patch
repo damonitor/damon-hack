@@ -1,0 +1,76 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 30 Oct 2026 13:54:14 -0700
+Subject: [PATCH] memcg: use high_work for kernel threads
+
+Kernel threads never return to userspace, so deferred memory.high
+reclaim does not run. Reclaim and throttling during a charge can also
+delay work they do for other tasks.
+
+Treat kernel threads like interrupts. Queue high_work for the first
+cgroup over memory.high and skip reclaim and throttling in the charging
+thread.
+
+User workers created by create_io_thread() and vhost_task_create() keep
+their current behavior. Vhost kernel threads use the new path, even when
+they borrow the owner's mm.
+
+The worker requests a fixed batch of pages each time. A fast allocator
+can keep usage well above memory.high. Kernel threads also skip
+memory.swap.high throttling and its high-event reporting. The memory.max
+and memory.swap.max checks stay the same.
+
+Link: https://lore.kernel.org/20261030205418.341214-4-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Tejun Heo <tj@kernel.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Harry Yoo <harry@kernel.org>
+---
+ mm/memcontrol.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index d4ed49c35fd90..bf15a6c0b1eff 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2714,6 +2714,7 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 			       gfp_t gfp_mask)
+ {
+ 	bool allow_spinning = gfpflags_allow_spinning(gfp_mask);
++	bool use_worker = !in_task() || (current->flags & PF_KTHREAD);
+ 
+ 	/*
+ 	 * If the hierarchy is above the normal consumption range, schedule
+@@ -2732,8 +2733,12 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 		swap_high = page_counter_read(&memcg->swap) >
+ 			READ_ONCE(memcg->swap.high);
+ 
+-		/* Don't bother a random interrupted task */
+-		if (!in_task()) {
++		/*
++		 * Don't make an unrelated interrupted task handle this charge.
++		 * Kernel threads may be working for other tasks, so let a worker
++		 * reclaim instead.
++		 */
++		if (use_worker) {
+ 			if (mem_high) {
+ 				if (allow_spinning)
+ 					schedule_work(&memcg->high_work);
+@@ -2760,6 +2765,10 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 		}
+ 	} while ((memcg = parent_mem_cgroup(memcg)));
+ 
++	/* Interrupts and kernel threads stop here. */
++	if (use_worker)
++		return;
++
+ 	/*
+ 	 * Reclaim is set up above to be called from the userland
+ 	 * return path. But also attempt synchronous reclaim to avoid
+-- 
+2.47.3
+

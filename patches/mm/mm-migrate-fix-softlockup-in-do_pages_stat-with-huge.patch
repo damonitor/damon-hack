@@ -1,0 +1,49 @@
+From: Qi Xi <xiqi2@huawei.com>
+Date: Sat, 31 Oct 2026 11:33:30 +0800
+Subject: [PATCH] mm/migrate: fix softlockup in do_pages_stat() with huge page
+ arrays
+
+do_pages_stat() walks the user page array in 16-page chunks but never
+reschedules, so a huge nr_pages can hold a CPU past the watchdog threshold
+on non-preemptible kernels.  Add cond_resched() to the loop so long
+move_pages() node-query calls yield periodically.
+
+With KASAN and function tracing enabled, a move_pages() node query (nodes
+== NULL) over 10 million page entries (~40GB) can trigger the softlockup
+on a PREEMPT_NONE kernel.
+
+Link: https://lore.kernel.org/20261031033330.3416326-1-xiqi5703@163.com
+Fixes: 80bba1290ab5 ("mm: no get_user/put_user while holding mmap_sem in do_pages_stat?")
+Signed-off-by: Qi Xi <xiqi2@huawei.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Qiliang Yuan <odys.yuan@gmail.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: Nanyong Sun <sunnanyong@huawei.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/migrate.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/migrate.c b/mm/migrate.c
+index 28a8d7734735b..94e8cd46c6dbd 100644
+--- a/mm/migrate.c
++++ b/mm/migrate.c
+@@ -2555,6 +2555,7 @@ static int do_pages_stat(struct mm_struct *mm, unsigned long nr_pages,
+ 
+ 		chunk_offset += chunk_nr;
+ 		nr_pages -= chunk_nr;
++		cond_resched();
+ 	}
+ 	return nr_pages ? -EFAULT : 0;
+ }
+-- 
+2.47.3
+

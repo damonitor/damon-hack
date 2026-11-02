@@ -1,0 +1,80 @@
+From: Chris Gellermann <christian.gellermann@codasip.com>
+Date: Wed, 2 Sep 2026 10:50:30 +0200
+Subject: [PATCH] selftests/uevent: gracefully handle receive buffer overrun
+
+Due to udevd rebroadcasting uevents, the receiver's socket buffer may
+overrun and the kernel has to drop messages.  Instead of failing on the
+overrun, continue listening for the remaining copies if we expect a uevent
+until killed by the timeout.
+
+For each subtest do_test() of the uevent_filtering test case, the sender
+triggers uevents that a receiver should listen for.  These uevents may
+also be received and rebroadcasted by udevd.  This can happen with some
+delay, so uevents from an earlier do_test() subtest may generate
+rebroadcasted uevents for a subsequent subtest.  Both, uevents triggered
+by the sender and rebroadcasted ones are queued by the kernel to the
+receiver socket buffer.  The buffer may overrun forcing the kernel to drop
+uevents.  This causes the recvmsg() call by the receiver to fail with
+ENOBUFS.  To fix this, do not treat ENOBUFS as a fatal receive error and,
+if we expect a uevent, keep listening for one of the ten triggered by the
+sender.  If the receiver is in a namespace where it should not receive any
+uevents, a dropped package may be the one it should never reach.  So we
+defensively fail in this case.  The wait is bounded by the sender that
+kills the receiver after a timeout.
+
+The rebroadcast can be observed in the udev logs:
+udevd[115]:  seq 6774 queued, 'add' 'mem'
+udevd[2436]: seq 6774 running
+udevd[2436]: handling device node '/dev/full', devnum=c1:7
+udevd[2436]: passed 200 byte device to netlink monitor
+udevd[2436]: seq 6774 processed
+
+Link: https://lore.kernel.org/20260902085030.1378789-1-christian.gellermann@codasip.com
+Fixes: 9d3df886d17b ("selftests: uevent filtering")
+Signed-off-by: Chris Gellermann <christian.gellermann@codasip.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Bala-Vignesh-Reddy <reddybalavignesh9979@gmail.com>
+Cc: Wei Yang <richard.weiyang@gmail.com>
+---
+ .../selftests/uevent/uevent_filtering.c       | 24 +++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/tools/testing/selftests/uevent/uevent_filtering.c b/tools/testing/selftests/uevent/uevent_filtering.c
+index 33a09f66d7e22..d0ea6a9f8fcb3 100644
+--- a/tools/testing/selftests/uevent/uevent_filtering.c
++++ b/tools/testing/selftests/uevent/uevent_filtering.c
+@@ -158,6 +158,30 @@ static int uevent_listener(unsigned long post_flags, bool expect_uevent,
+ 		ssize_t r;
+ 
+ 		r = recvmsg(sk_fd, &hdr, 0);
++		if (r < 0 && errno == ENOBUFS) {
++			/*
++			 * The socket receive buffer overran and the kernel
++			 * dropped uevents. This may happen due to udev
++			 * rebroadcasting kernel uevents that end up in the
++			 * receive buffer as we are subscribed to all groups.
++			 *
++			 * When a uevent is expected, we trigger it multiple
++			 * times to tolerate drops, so keep listening for one
++			 * of the remaining copies. The parent bounds this
++			 * wait by killing us on a timeout.
++			 *
++			 * When no uevent is expected, our socket sits in a
++			 * namespace that should not receive any, so a drop
++			 * means traffic reached it, or that we can no longer
++			 * prove it did not. Rather fail.
++			 */
++			if (!expect_uevent) {
++				fprintf(stderr, "Unexpected buffer overrun\n");
++				ret = -1;
++				break;
++			}
++			continue;
++		}
+ 		if (r <= 0) {
+ 			fprintf(stderr, "%s - Failed to receive uevent\n", strerror(errno));
+ 			ret = -1;
+-- 
+2.47.3
+

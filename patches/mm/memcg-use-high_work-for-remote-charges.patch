@@ -1,0 +1,67 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 30 Oct 2026 13:54:15 -0700
+Subject: [PATCH] memcg: use high_work for remote charges
+
+Some charges go to a cgroup outside the current mm's cgroup and its
+ancestors. The high handler uses current->mm, so it cannot handle these
+overages. Filesystem notifications and remote page faults can take
+this path.
+
+Use mm_match_cgroup() before checking the high limits. If it does not
+match, use high_work instead of recording task overage or doing
+synchronous reclaim and throttling. Charges to the current mm's cgroup
+or one of its ancestors keep their current handling. Tasks without an
+mm also use the worker.
+
+Like kernel threads, remote chargers skip memory.swap.high throttling
+and its high-event reporting, and a fast allocator can outrun the worker.
+The memory.max and memory.swap.max checks stay the same.
+
+Link: https://lore.kernel.org/20261030205418.341214-5-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Tejun Heo <tj@kernel.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Harry Yoo <harry@kernel.org>
+---
+ mm/memcontrol.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index bf15a6c0b1eff..2fc42b15c5ea2 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2714,7 +2714,8 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 			       gfp_t gfp_mask)
+ {
+ 	bool allow_spinning = gfpflags_allow_spinning(gfp_mask);
+-	bool use_worker = !in_task() || (current->flags & PF_KTHREAD);
++	bool use_worker = !in_task() || (current->flags & PF_KTHREAD) ||
++		!current->mm || !mm_match_cgroup(current->mm, memcg);
+ 
+ 	/*
+ 	 * If the hierarchy is above the normal consumption range, schedule
+@@ -2737,6 +2738,7 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 		 * Don't make an unrelated interrupted task handle this charge.
+ 		 * Kernel threads may be working for other tasks, so let a worker
+ 		 * reclaim instead.
++		 * Remote charges need reclaim from their charged hierarchy.
+ 		 */
+ 		if (use_worker) {
+ 			if (mem_high) {
+@@ -2765,7 +2767,7 @@ static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
+ 		}
+ 	} while ((memcg = parent_mem_cgroup(memcg)));
+ 
+-	/* Interrupts and kernel threads stop here. */
++	/* Interrupts, kernel threads, and remote chargers stop here. */
+ 	if (use_worker)
+ 		return;
+ 
+-- 
+2.47.3
+

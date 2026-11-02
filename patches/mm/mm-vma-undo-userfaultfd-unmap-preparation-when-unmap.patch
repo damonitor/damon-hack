@@ -1,0 +1,205 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Sun, 1 Nov 2026 10:24:02 +0200
+Subject: [PATCH] mm/vma: undo userfaultfd unmap preparation when unmapping
+ fails
+
+vms_gather_munmap_vmas() collects VMAs to unmap and calls
+userfaultfd_unmap_prep() for each of these VMAs. This takes a reference
+to the userfaultfd context, raises ctx->mmap_changing and queues an
+UFFD_EVENT_UNMAP on the caller's list.
+
+If gathering fails half way, e.g. because one of the VMAs is sealed, or
+the operation fails after the VMAs were gathered, the original mappings
+stay intact but the queued events remain on the list.
+
+Depending on the caller they are either delivered although nothing was
+unmapped (munmap(), mremap(), mmap(MAP_FIXED)), or silently dropped
+(brk()). In the latter case the userfaultfd context and the mm_struct it
+pins are leaked and mmap_changing is never lowered, so UFFDIO_COPY,
+UFFDIO_ZEROPAGE and all other ioctls that check mmap_changing fail with
+-EAGAIN forever.
+
+With mseal() this is trivially triggered by an unprivileged process.
+
+Collect the events in do_vmi_align_munmap() on a local list and splice
+it to the caller's list only when the unmap completes, because mremap()
+may already have events for earlier unmaps on that list.
+
+Drop the pending events with a new userfaultfd_unmap_abort() helper when
+do_vmi_align_munmap() or __mmap_setup() fail.
+
+Link: https://lore.kernel.org/20261101-uffd-unmap-abort-v1-1-1588d7a7c61a@kernel.org
+Fixes: 65ac132027a8 ("userfaultfd: fix regression in userfaultfd_unmap_prep()")
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Noah Weinberger <NoahWeinberger2003@proton.me>
+Reviewed-by: Tal Zussman <tz2294@columbia.edu>
+Tested-by: Tal Zussman <tz2294@columbia.edu>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ include/linux/userfaultfd_k.h     |  5 +++++
+ mm/userfaultfd.c                  | 19 +++++++++++++++++++
+ mm/vma.c                          | 28 +++++++++++++++++++++++-----
+ tools/testing/vma/include/stubs.h |  4 ++++
+ 4 files changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/userfaultfd_k.h b/include/linux/userfaultfd_k.h
+index ebd86677b052d..5857ff0542905 100644
+--- a/include/linux/userfaultfd_k.h
++++ b/include/linux/userfaultfd_k.h
+@@ -279,6 +279,7 @@ extern int userfaultfd_unmap_prep(struct vm_area_struct *vma,
+ 		unsigned long start, unsigned long end, struct list_head *uf);
+ extern void userfaultfd_unmap_complete(struct mm_struct *mm,
+ 				       struct list_head *uf);
++void userfaultfd_unmap_abort(struct list_head *uf);
+ extern bool userfaultfd_wp_unpopulated(struct vm_area_struct *vma);
+ extern bool userfaultfd_wp_async(struct vm_area_struct *vma);
+ extern bool userfaultfd_rwp_async(struct vm_area_struct *vma);
+@@ -445,6 +446,10 @@ static inline void userfaultfd_unmap_complete(struct mm_struct *mm,
+ {
+ }
+ 
++static inline void userfaultfd_unmap_abort(struct list_head *uf)
++{
++}
++
+ static inline bool uffd_disable_fault_around(struct vm_area_struct *vma)
+ {
+ 	return false;
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index ee98091c5ea8d..38ffec6b516a1 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -3307,6 +3307,25 @@ void userfaultfd_unmap_complete(struct mm_struct *mm, struct list_head *uf)
+ 	}
+ }
+ 
++void userfaultfd_unmap_abort(struct list_head *uf)
++{
++	struct userfaultfd_unmap_ctx *unmap_ctx, *n;
++
++	if (!uf)
++		return;
++
++	list_for_each_entry_safe(unmap_ctx, n, uf, list) {
++		struct userfaultfd_ctx *ctx = unmap_ctx->ctx;
++
++		atomic_dec(&ctx->mmap_changing);
++		VM_WARN_ON_ONCE(atomic_read(&ctx->mmap_changing) < 0);
++		userfaultfd_ctx_put(ctx);
++
++		list_del(&unmap_ctx->list);
++		kfree(unmap_ctx);
++	}
++}
++
+ static int userfaultfd_release(struct inode *inode, struct file *file)
+ {
+ 	struct userfaultfd_ctx *ctx = file->private_data;
+diff --git a/mm/vma.c b/mm/vma.c
+index d416ba58eb4c2..4672d420521e3 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -1675,9 +1675,18 @@ int do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 	mt_init_flags(&mt_detach, vmi->mas.tree->ma_flags & MT_FLAGS_LOCK_MASK);
+ 	mt_on_stack(mt_detach);
+ 	struct vma_munmap_struct vms;
++	struct list_head *uf_unmaps;
++	LIST_HEAD(uf_new_unmaps);
+ 	int error;
+ 
+-	init_vma_munmap(&vms, vmi, vma, start, end, uf, unlock);
++	/*
++	 * @uf may already hold events of earlier successful unmaps, e.g. in
++	 * mremap().
++	 * Collect new events on a separate list so they can be dropped if this
++	 * unmap fails, and splice them into @uf on success.
++	 */
++	uf_unmaps = uf ? &uf_new_unmaps : NULL;
++	init_vma_munmap(&vms, vmi, vma, start, end, uf_unmaps, unlock);
+ 	error = vms_gather_munmap_vmas(&vms, &mas_detach);
+ 	if (error)
+ 		goto gather_failed;
+@@ -1687,12 +1696,15 @@ int do_vmi_align_munmap(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 		goto clear_tree_failed;
+ 
+ 	/* Point of no return */
++	if (uf)
++		list_splice_tail(&uf_new_unmaps, uf);
+ 	vms_complete_munmap_vmas(&vms, &mas_detach);
+ 	return 0;
+ 
+ clear_tree_failed:
+ 	reattach_vmas(&mas_detach);
+ gather_failed:
++	userfaultfd_unmap_abort(&uf_new_unmaps);
+ 	validate_mm(mm);
+ 	return error;
+ }
+@@ -2581,7 +2593,7 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
+ 		if (error) {
+ 			/* On error VMAs will already have been reattached. */
+ 			vms->nr_pages = 0;
+-			return error;
++			goto abort_unmaps;
+ 		}
+ 
+ 		map->next = vms->next;
+@@ -2591,8 +2603,10 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
+ 	}
+ 
+ 	/* Check against address space limit. */
+-	if (!may_expand_vm(map->mm, &map->vma_flags, map->pglen - vms->nr_pages))
+-		return -ENOMEM;
++	if (!may_expand_vm(map->mm, &map->vma_flags, map->pglen - vms->nr_pages)) {
++		error = -ENOMEM;
++		goto abort_unmaps;
++	}
+ 
+ 	/* Private writable mapping: check memory availability. */
+ 	if (accountable_mapping(map)) {
+@@ -2602,7 +2616,7 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
+ 		if (uncharged) {
+ 			error = security_vm_enough_memory_mm(map->mm, uncharged);
+ 			if (error)
+-				return error;
++				goto abort_unmaps;
+ 		}
+ 
+ 		/* Our new mapping owns the entire charge now. */
+@@ -2621,6 +2635,10 @@ static int __mmap_setup(struct mmap_state *map, struct vm_area_desc *desc,
+ 
+ 	set_desc_from_map(desc, map);
+ 	return 0;
++
++abort_unmaps:
++	userfaultfd_unmap_abort(uf);
++	return error;
+ }
+ 
+ static bool map_same_file(struct mmap_state *map)
+diff --git a/tools/testing/vma/include/stubs.h b/tools/testing/vma/include/stubs.h
+index 8d030a3ace848..9f5b8e996abf6 100644
+--- a/tools/testing/vma/include/stubs.h
++++ b/tools/testing/vma/include/stubs.h
+@@ -148,6 +148,10 @@ static inline int userfaultfd_unmap_prep(struct vm_area_struct *vma,
+ 	return 0;
+ }
+ 
++static inline void userfaultfd_unmap_abort(struct list_head *uf)
++{
++}
++
+ static inline void mmap_write_downgrade(struct mm_struct *mm)
+ {
+ }
+-- 
+2.47.3
+

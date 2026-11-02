@@ -1,0 +1,116 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Sat, 31 Oct 2026 20:14:03 +0200
+Subject: [PATCH] userfaultfd: clear uffd state in child PTEs if uffd is
+ released during fork
+
+With UFFD_FEATURE_EVENT_FORK the userfaultfd context is duplicated for the
+child process, the child VMAs are registered with the new context, and
+uffd protection state from the parent PTEs is copied into the child.
+
+If the parent's userfaultfd is released before the fork event is read,
+userfaultfd_release_new() resets the VMA flags but keeps uffd state in the
+child PTEs.
+
+This leaves the child's VMAs in an inconsistent state: they are not
+registered with userfaultfd but their mappings carry uffd protection
+state.
+
+If the child registers the range with userfaultfd again, the stale state
+turns into protection the child never asked for.
+
+When a write fault makes such a PTE writable without copying the page, the
+uffd bit remains set and page_table_check_pte_flags() warns about it.
+
+Split resolving of the uffd PTE state out of userfaultfd_clear_vma() and
+call it from userfaultfd_release_new() before resetting the VMA.
+
+Link: https://lore.kernel.org/20261031-uffd-prot-bits-fork-event-v2-1-c448e57df417@kernel.org
+Fixes: f369b07c8614 ("mm/uffd: reset write protection when unregister with wp-mode")
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Tested-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Tal Zussman <tz2294@columbia.edu>
+Tested-by: Tal Zussman <tz2294@columbia.edu>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/userfaultfd.c | 47 ++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 30 insertions(+), 17 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 928ad95eeb2ba..ee98091c5ea8d 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -2219,6 +2219,32 @@ static void userfaultfd_reset_ctx(struct vm_area_struct *vma)
+ 	userfaultfd_set_ctx(vma, NULL, 0);
+ }
+ 
++/*
++ * Clear uffd state from a WP or RWP range: the uffd bit, WP markers and
++ * RWP PAGE_NONE entries. Call this before dropping the registration, as it
++ * needs the VMA flags to know what to resolve.
++ */
++static void userfaultfd_clear_ptes(struct vm_area_struct *vma,
++		unsigned long start, unsigned long end)
++{
++	unsigned int mm_cp_flags = 0;
++	struct mmu_gather tlb;
++
++	if (!userfaultfd_protected(vma))
++		return;
++
++	if (userfaultfd_wp(vma))
++		mm_cp_flags |= MM_CP_UFFD_WP_RESOLVE;
++	if (userfaultfd_rwp(vma))
++		mm_cp_flags |= MM_CP_UFFD_RWP_RESOLVE;
++	if (vma_wants_manual_pte_write_upgrade(vma))
++		mm_cp_flags |= MM_CP_TRY_CHANGE_WRITABLE;
++
++	tlb_gather_mmu(&tlb, vma->vm_mm);
++	change_protection(&tlb, vma, start, end, mm_cp_flags);
++	tlb_finish_mmu(&tlb);
++}
++
+ static struct vm_area_struct *userfaultfd_clear_vma(struct vma_iterator *vmi,
+ 					     struct vm_area_struct *prev,
+ 					     struct vm_area_struct *vma,
+@@ -2238,22 +2264,7 @@ static struct vm_area_struct *userfaultfd_clear_vma(struct vma_iterator *vmi,
+ 	if (start == vma->vm_start && end == vma->vm_end)
+ 		give_up_on_oom = true;
+ 
+-	/* Clear the uffd bit and/or restore protnone PTEs */
+-	if (userfaultfd_protected(vma)) {
+-		unsigned int mm_cp_flags = 0;
+-		struct mmu_gather tlb;
+-
+-		if (userfaultfd_wp(vma))
+-			mm_cp_flags |= MM_CP_UFFD_WP_RESOLVE;
+-		if (userfaultfd_rwp(vma))
+-			mm_cp_flags |= MM_CP_UFFD_RWP_RESOLVE;
+-		if (vma_wants_manual_pte_write_upgrade(vma))
+-			mm_cp_flags |= MM_CP_TRY_CHANGE_WRITABLE;
+-
+-		tlb_gather_mmu(&tlb, vma->vm_mm);
+-		change_protection(&tlb, vma, start, end, mm_cp_flags);
+-		tlb_finish_mmu(&tlb);
+-	}
++	userfaultfd_clear_ptes(vma, start, end);
+ 
+ 	ret = vma_modify_flags_uffd(vmi, prev, vma, start, end,
+ 				    &new_vma_flags, NULL_VM_UFFD_CTX,
+@@ -2352,8 +2363,10 @@ static void userfaultfd_release_new(struct userfaultfd_ctx *ctx)
+ 	/* the various vma->vm_userfaultfd_ctx still points to it */
+ 	mmap_write_lock(mm);
+ 	for_each_vma(vmi, vma) {
+-		if (vma->vm_userfaultfd_ctx.ctx == ctx)
++		if (vma->vm_userfaultfd_ctx.ctx == ctx) {
++			userfaultfd_clear_ptes(vma, vma->vm_start, vma->vm_end);
+ 			userfaultfd_reset_ctx(vma);
++		}
+ 	}
+ 	mmap_write_unlock(mm);
+ }
+-- 
+2.47.3
+

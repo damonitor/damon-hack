@@ -1,0 +1,217 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Fri, 30 Oct 2026 13:54:12 -0700
+Subject: [PATCH] memcg: move memory.high enforcement out of try_charge_memcg()
+
+Patch series "memcg: clean up memory.high enforcement", v2.
+
+This series cleans up memory.high enforcement and uses a worker for
+kernel threads and remote charges.
+
+Kernel threads never return to userspace to run deferred reclaim.
+Reclaiming and sleeping during a charge can also delay work they do for
+other tasks.
+
+Remote charges can go to a different cgroup from the caller's mm, for
+example through filesystem notifications or faults in another process's
+memory. The high handler uses current->mm, so it can check the caller's
+limits instead of the limits of the charged cgroup.
+
+Use high_work to reclaim from the charged hierarchy in these cases.
+mm_match_cgroup() identifies charges outside the current mm's cgroup
+and its ancestors. Local user charges keep their current handling.
+
+Before that, force charges from PF_MEMALLOC tasks before trying the
+limits, so they skip memory.high enforcement. Reclaim can charge memory
+itself, for example when zswap stores a page, and the high_work worker
+must not queue itself from its own reclaim. These charges still raise
+MEMCG_MAX for the same cgroup as before.
+
+This is best effort. A fast allocator can keep usage well above
+memory.high; memory.max stays the hard limit, as it already is for
+interrupts. The worker paths also skip memory.swap.high throttling and
+its high-event reporting. memory.swap.high only throttles the charging
+task, and a worker has no task to throttle. The cgroup's own tasks are
+still throttled on their own charges, and memory.swap.max still caps
+swap.
+
+The first patch moves enforcement into memcg_enforce_high(). The second
+forces charges from reclaim before the limit checks. The next two add
+kernel thread and remote charge handling. The last simplifies the scan
+and comments. The first and last patches have no intended behavior
+change.
+
+
+This patch (of 5):
+
+try_charge_memcg() does a lot. It charges the page counters, reclaims
+when a limit is hit, may call the OOM killer, and at the end it checks
+and enforces memory.high. Move the memory.high part into a new function,
+memcg_enforce_high(), so that try_charge_memcg() is shorter and the
+memory.high code is easier to read and change.
+
+The code and its comments move as they are. The only difference is that
+the new function gets allow_spinning from gfp_mask itself.
+
+No functional change.
+
+Link: https://lore.kernel.org/20261030205418.341214-1-shakeel.butt@linux.dev
+Link: https://lore.kernel.org/20261030205418.341214-2-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Harry Yoo (Meta) <harry@kernel.org>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+---
+ mm/memcontrol.c | 125 ++++++++++++++++++++++++++----------------------
+ 1 file changed, 69 insertions(+), 56 deletions(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index db485f086182a..56b4c7033bc00 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -2705,6 +2705,74 @@ void __mem_cgroup_handle_over_high(gfp_t gfp_mask)
+ 	css_put(&memcg->css);
+ }
+ 
++/*
++ * Called after @nr_pages were charged to @memcg. If @memcg or one of its
++ * ancestors is over memory.high or memory.swap.high, start reclaim or slow
++ * down the task.
++ */
++static void memcg_enforce_high(struct mem_cgroup *memcg, unsigned int nr_pages,
++			       gfp_t gfp_mask)
++{
++	bool allow_spinning = gfpflags_allow_spinning(gfp_mask);
++
++	/*
++	 * If the hierarchy is above the normal consumption range, schedule
++	 * reclaim on returning to userland.  We can perform reclaim here
++	 * if __GFP_RECLAIM but let's always punt for simplicity and so that
++	 * GFP_KERNEL can consistently be used during reclaim.  @memcg is
++	 * not recorded as it most likely matches current's and won't
++	 * change in the meantime.  As high limit is checked again before
++	 * reclaim, the cost of mismatch is negligible.
++	 */
++	do {
++		bool mem_high, swap_high;
++
++		mem_high = page_counter_read(&memcg->memory) >
++			READ_ONCE(memcg->memory.high);
++		swap_high = page_counter_read(&memcg->swap) >
++			READ_ONCE(memcg->swap.high);
++
++		/* Don't bother a random interrupted task */
++		if (!in_task()) {
++			if (mem_high) {
++				if (allow_spinning)
++					schedule_work(&memcg->high_work);
++				else
++					irq_work_queue(&memcg->high_irq_work);
++				break;
++			}
++			continue;
++		}
++
++		if (mem_high || swap_high) {
++			/*
++			 * The allocating tasks in this cgroup will need to do
++			 * reclaim or be throttled to prevent further growth
++			 * of the memory or swap footprints.
++			 *
++			 * Target some best-effort fairness between the tasks,
++			 * and distribute reclaim work and delay penalties
++			 * based on how much each task is actually allocating.
++			 */
++			current->memcg_nr_pages_over_high += nr_pages;
++			set_notify_resume(current);
++			break;
++		}
++	} while ((memcg = parent_mem_cgroup(memcg)));
++
++	/*
++	 * Reclaim is set up above to be called from the userland
++	 * return path. But also attempt synchronous reclaim to avoid
++	 * excessive overrun while the task is still inside the
++	 * kernel. If this is successful, the return path will see it
++	 * when it rechecks the overage and simply bail out.
++	 */
++	if (current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH &&
++	    !(current->flags & PF_MEMALLOC) &&
++	    gfpflags_allow_blocking(gfp_mask))
++		__mem_cgroup_handle_over_high(gfp_mask);
++}
++
+ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 			    unsigned int nr_pages)
+ {
+@@ -2862,62 +2930,7 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask,
+ 	if (batch > nr_pages)
+ 		refill_stock(memcg, batch - nr_pages);
+ 
+-	/*
+-	 * If the hierarchy is above the normal consumption range, schedule
+-	 * reclaim on returning to userland.  We can perform reclaim here
+-	 * if __GFP_RECLAIM but let's always punt for simplicity and so that
+-	 * GFP_KERNEL can consistently be used during reclaim.  @memcg is
+-	 * not recorded as it most likely matches current's and won't
+-	 * change in the meantime.  As high limit is checked again before
+-	 * reclaim, the cost of mismatch is negligible.
+-	 */
+-	do {
+-		bool mem_high, swap_high;
+-
+-		mem_high = page_counter_read(&memcg->memory) >
+-			READ_ONCE(memcg->memory.high);
+-		swap_high = page_counter_read(&memcg->swap) >
+-			READ_ONCE(memcg->swap.high);
+-
+-		/* Don't bother a random interrupted task */
+-		if (!in_task()) {
+-			if (mem_high) {
+-				if (allow_spinning)
+-					schedule_work(&memcg->high_work);
+-				else
+-					irq_work_queue(&memcg->high_irq_work);
+-				break;
+-			}
+-			continue;
+-		}
+-
+-		if (mem_high || swap_high) {
+-			/*
+-			 * The allocating tasks in this cgroup will need to do
+-			 * reclaim or be throttled to prevent further growth
+-			 * of the memory or swap footprints.
+-			 *
+-			 * Target some best-effort fairness between the tasks,
+-			 * and distribute reclaim work and delay penalties
+-			 * based on how much each task is actually allocating.
+-			 */
+-			current->memcg_nr_pages_over_high += batch;
+-			set_notify_resume(current);
+-			break;
+-		}
+-	} while ((memcg = parent_mem_cgroup(memcg)));
+-
+-	/*
+-	 * Reclaim is set up above to be called from the userland
+-	 * return path. But also attempt synchronous reclaim to avoid
+-	 * excessive overrun while the task is still inside the
+-	 * kernel. If this is successful, the return path will see it
+-	 * when it rechecks the overage and simply bail out.
+-	 */
+-	if (current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH &&
+-	    !(current->flags & PF_MEMALLOC) &&
+-	    gfpflags_allow_blocking(gfp_mask))
+-		__mem_cgroup_handle_over_high(gfp_mask);
++	memcg_enforce_high(memcg, batch, gfp_mask);
+ 	return ret;
+ }
+ 
+-- 
+2.47.3
+

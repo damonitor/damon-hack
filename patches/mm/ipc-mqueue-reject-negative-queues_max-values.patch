@@ -1,0 +1,51 @@
+From: Yingjie Wang <1075151112@qq.com>
+Date: Wed, 26 Aug 2026 14:10:40 +0800
+Subject: [PATCH] ipc: mqueue: reject negative queues_max values
+
+fs.mqueue.queues_max is documented as the maximum number of POSIX message
+queues.  Its sysctl entry uses proc_dointvec, but its backing field,
+ipc_namespace::mq_queues_max, is unsigned int.
+
+Consequently, writing -1 is accepted and reads back as -1, while the
+stored bit pattern is UINT_MAX.  The admission check in do_mq_open() then
+permits an effectively unbounded number of queues for callers without
+CAP_SYS_RESOURCE, rather than enforcing the configured maximum.
+
+Use proc_dointvec_minmax with a zero lower bound.  This rejects negative
+input while retaining the previously accepted nonnegative signed-int
+range, including zero.
+
+The issue was reproduced on 6.12.80 and 6.12.105.  With queues_max=1, an
+unprivileged workload could create one of three requested queues and the
+rest failed with ENOSPC.  With queues_max=-1, all three creations
+succeeded.  After this change, writing -1 fails with EINVAL, and the
+finite and zero-value controls retain their prior behavior.
+
+Link: https://lore.kernel.org/tencent_0D48FFD2E604EA5FED532748CCAAD5139905@qq.com
+Fixes: bdc8e5f85f9a ("namespaces: mqueue namespace: adapt sysctl")
+Signed-off-by: Yingjie Wang <1075151112@qq.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Manfred Spraul <manfred@colorfullife.com>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: <stable@vger.kernel.org>
+---
+ ipc/mq_sysctl.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/ipc/mq_sysctl.c b/ipc/mq_sysctl.c
+index 0dd12e1c9f53e..7c4f9d039218a 100644
+--- a/ipc/mq_sysctl.c
++++ b/ipc/mq_sysctl.c
+@@ -26,7 +26,8 @@ static const struct ctl_table mq_sysctls[] = {
+ 		.data		= &init_ipc_ns.mq_queues_max,
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+-		.proc_handler	= proc_dointvec,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= SYSCTL_ZERO,
+ 	},
+ 	{
+ 		.procname	= "msg_max",
+-- 
+2.47.3
+

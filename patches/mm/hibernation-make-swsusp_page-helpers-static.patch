@@ -1,0 +1,138 @@
+From: "Mike Rapoport (Microsoft)" <rppt@kernel.org>
+Date: Sat, 26 Sep 2026 12:26:30 +0300
+Subject: [PATCH] hibernation: make swsusp_page helpers static
+
+Patch series "hibernation: make safe_copy_page more robust and remove
+debug_pagealloc support", v2.
+
+When hibernation creates a memory image, it uses set_direct_map() APIs to
+temporarily map pages that are marked as not present in the kernel page
+tables.
+
+Initially, this was intended to support debug_pagealloc along with
+hibernation on x86.
+
+With the increasing desire to use set_direct_map APIs for hardening
+features and with their inconsistent implementations across architectures,
+using kernel_page_present() + set_direct_map_valid_noflush() to save
+non-present pages in the hibernation image is not very safe, to say the
+least.
+
+Worse, some combinations of debug features, such as debug_pagealloc and
+PAGE_POISON cause a crash during restore.
+
+Keeping debug_pagealloc compatible with hibernation requires a complex
+infrastructure for tracking free unmapped pages with a page flag/page type,
+verifying that it is actually a free page that hibernate_map_page() tries
+to remap and making sure there are no stale or failed page table updates.
+With init_on_{alloc,free} and/or PAGE_POISON on top, this also requires the
+ability to map and initialize these free pages on restore.
+
+This complexity does not seem justified for a somewhat niche debugging
+scenario.
+
+Instead of a complex fix to support hibernation with debug_pagealloc, make
+sure that copy_data_pages() and its helpers properly handle errors that may
+happen during page table updates, explicitly enable saving of KFENCE pages
+and disallow hibernation when debug_pagealloc is enabled.
+
+
+This patch (of 5):
+
+Since commit 31a1b9d7fe768 ("mm: page_alloc: move mark_free_page() into
+snapshot.c") several helpers that set, clear and query free and forbidden
+page status are only used inside kernel/power/snapshot.c
+
+Make them static and add necessary forward declarations near the existing
+declarations of similar helpers.
+
+Link: https://lore.kernel.org/20260926-hibernation-v2-0-235f69f3ab2a@kernel.org
+Link: https://lore.kernel.org/20260926-hibernation-v2-1-235f69f3ab2a@kernel.org
+Signed-off-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Pavel Machek <pavel@kernel.org>
+---
+ include/linux/suspend.h |  6 ------
+ kernel/power/snapshot.c | 15 +++++++++------
+ 2 files changed, 9 insertions(+), 12 deletions(-)
+
+diff --git a/include/linux/suspend.h b/include/linux/suspend.h
+index a3815027773c5..a0a4eb9ffce9a 100644
+--- a/include/linux/suspend.h
++++ b/include/linux/suspend.h
+@@ -381,9 +381,6 @@ struct platform_hibernation_ops {
+ #ifdef CONFIG_HIBERNATION
+ /* kernel/power/snapshot.c */
+ extern void register_nosave_region(unsigned long b, unsigned long e);
+-extern int swsusp_page_is_forbidden(struct page *);
+-extern void swsusp_set_page_free(struct page *);
+-extern void swsusp_unset_page_free(struct page *);
+ extern unsigned long get_safe_page(gfp_t gfp_mask);
+ extern asmlinkage int swsusp_arch_suspend(void);
+ extern asmlinkage int swsusp_arch_resume(void);
+@@ -405,9 +402,6 @@ bool arch_hibernation_available(void);
+ 
+ #else /* CONFIG_HIBERNATION */
+ static inline void register_nosave_region(unsigned long b, unsigned long e) {}
+-static inline int swsusp_page_is_forbidden(struct page *p) { return 0; }
+-static inline void swsusp_set_page_free(struct page *p) {}
+-static inline void swsusp_unset_page_free(struct page *p) {}
+ 
+ static inline void hibernation_set_ops(const struct platform_hibernation_ops *ops) {}
+ static inline int hibernate(void) { return -ENOSYS; }
+diff --git a/kernel/power/snapshot.c b/kernel/power/snapshot.c
+index d5dba0e50b2eb..e732bf6389e4c 100644
+--- a/kernel/power/snapshot.c
++++ b/kernel/power/snapshot.c
+@@ -112,9 +112,12 @@ static inline void hibernate_unmap_page(struct page *page)
+ 	}
+ }
+ 
+-static int swsusp_page_is_free(struct page *);
+-static void swsusp_set_page_forbidden(struct page *);
+-static void swsusp_unset_page_forbidden(struct page *);
++static int swsusp_page_is_free(struct page *page);
++static void swsusp_set_page_free(struct page *page);
++static void swsusp_unset_page_free(struct page *page);
++static int swsusp_page_is_forbidden(struct page *page);
++static void swsusp_set_page_forbidden(struct page *page);
++static void swsusp_unset_page_forbidden(struct page *page);
+ 
+ /*
+  * Number of bytes to reserve for memory allocations made by device drivers
+@@ -1036,7 +1039,7 @@ static struct memory_bitmap *free_pages_map;
+  * corresponding bits in forbidden_pages_map and free_pages_map simultaneously
+  */
+ 
+-void swsusp_set_page_free(struct page *page)
++static void swsusp_set_page_free(struct page *page)
+ {
+ 	if (free_pages_map)
+ 		memory_bm_set_bit(free_pages_map, page_to_pfn(page));
+@@ -1048,7 +1051,7 @@ static int swsusp_page_is_free(struct page *page)
+ 		memory_bm_test_bit(free_pages_map, page_to_pfn(page)) : 0;
+ }
+ 
+-void swsusp_unset_page_free(struct page *page)
++static void swsusp_unset_page_free(struct page *page)
+ {
+ 	if (free_pages_map)
+ 		memory_bm_clear_bit(free_pages_map, page_to_pfn(page));
+@@ -1060,7 +1063,7 @@ static void swsusp_set_page_forbidden(struct page *page)
+ 		memory_bm_set_bit(forbidden_pages_map, page_to_pfn(page));
+ }
+ 
+-int swsusp_page_is_forbidden(struct page *page)
++static int swsusp_page_is_forbidden(struct page *page)
+ {
+ 	return forbidden_pages_map ?
+ 		memory_bm_test_bit(forbidden_pages_map, page_to_pfn(page)) : 0;
+-- 
+2.47.3
+

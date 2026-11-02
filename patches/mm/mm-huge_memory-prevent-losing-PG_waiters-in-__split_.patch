@@ -1,0 +1,172 @@
+From: Zi Yan <ziy@nvidia.com>
+Date: Thu, 29 Oct 2026 22:08:44 -0400
+Subject: [PATCH] mm/huge_memory: prevent losing PG_waiters in
+ __split_folio_to_order()
+
+__split_folio_to_order() calls prep_compound_page() on each new head page
+to create a compound page after clear_compound_head().
+prep_compound_page() uses non atomic __SetPageHead().  It is mostly OK,
+since the folio is locked and frozen and no one else is supposed to modify
+the folio's flags.
+
+However, code calling migration_entry_wait() can reach the folio by PFN,
+then access its flags.  It is because softleaf_entry_wait_on_locked() used
+by migration_entry_wait() sets PG_waiters concurrently without taking a
+reference and the frozen refcount during split cannot block it.
+Meanwhile, __SetPageHead() does a plain read and write, so PG_waiters
+atomically set by softleaf_entry_wait_on_locked() will be lost if the set
+happens after __SetPageHead()'s read and before its write.
+
+One example code interleaving:
+
+CPU0: __split_folio_to_order(new_order>0)  CPU1: do_swap_page()
+
+1. clear_compound_head(new_head)
+   new_head->compound_info = 0
+   (page_folio(new_head) == new_head now)
+
+                                           2. migration_entry_wait()
+                                             softleaf_to_folio(entry)
+                                             page_folio() -> new_head
+                                             (not the old head any more)
+
+3. prep_compound_page(new_head, new_order)
+     __SetPageHead(new_head)
+       tmp = new_head->flags.f  <-- load; PG_waiters == 0 in tmp
+
+                                           4. folio_set_waiters(new_head)
+                                             set_bit(PG_waiters, &flags.f)
+                                             enqueue on waitqueue, sleep
+
+5.     new_head->flags.f = tmp | (1UL << PG_head)
+       <-- store; overwrites step 4, PG_waiters == 0 again
+
+Later, folio_unlock(new_folio) sees no PG_waiters, skips folio_wake_bit(),
+and CPU1 can remain blocked indefinitely.
+
+Fix it by adding the atomic version SetPageHead() and
+prep_compound_page_atomic() using it.  __split_folio_to_order() uses
+prep_compound_page_atomic() to avoid the issue without adding an atomic
+ops to other prep_compound_page() users.
+
+Link: https://lore.kernel.org/20261029-fix-split_folio_to_order-race-v1-1-a483c7451b0d@nvidia.com
+Fixes: c010d47f107f ("mm: thp: split huge page to any lower order pages")
+Signed-off-by: Zi Yan <ziy@nvidia.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: David Hildenbrand <david@kernel.org>
+Closes: https://lore.kernel.org/all/DMHE8BEEER1H.2BIY52NXATPIA@nvidia.com/
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Ye Liu <ye.liu@linux.dev>
+Cc: <stable@vger.kernel.org>
+---
+ include/linux/page-flags.h |  1 +
+ mm/huge_memory.c           | 10 +++++++++-
+ mm/internal.h              |  2 ++
+ mm/page_alloc.c            | 20 ++++++++++++++++++--
+ 4 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/page-flags.h b/include/linux/page-flags.h
+index b0ddc652e76cc..08492ab3da895 100644
+--- a/include/linux/page-flags.h
++++ b/include/linux/page-flags.h
+@@ -854,6 +854,7 @@ static __always_inline int PageHead(const struct page *page)
+ 	return test_bit(PG_head, &page->flags.f);
+ }
+ 
++SETPAGEFLAG(Head, head, PF_ANY)
+ __SETPAGEFLAG(Head, head, PF_ANY)
+ __CLEARPAGEFLAG(Head, head, PF_ANY)
+ CLEARPAGEFLAG(Head, head, PF_ANY)
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 5d5afefda649e..14599d0fff013 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3779,7 +3779,15 @@ static void __split_folio_to_order(struct folio *folio, int old_order,
+ 		 */
+ 		clear_compound_head(new_head);
+ 		if (new_order) {
+-			prep_compound_page(new_head, new_order);
++			/*
++			 * new_head is recognized as a folio after
++			 * clear_compound_head().
++			 * softleaf_entry_wait_on_locked() can set PG_waiters
++			 * on it without taking a reference, so its frozen state
++			 * cannot prevent it. Use the atomic version to avoid
++			 * losing a concurrently set PG_waiters.
++			 */
++			prep_compound_page_atomic(new_head, new_order);
+ 			folio_set_large_rmappable(new_folio);
+ 		}
+ 
+diff --git a/mm/internal.h b/mm/internal.h
+index 8b1263e81054e..c53c369bf8b5d 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -806,6 +806,8 @@ static inline void prep_compound_tail(struct page *tail,
+ 	VM_WARN_ON_ONCE(tail->private);
+ }
+ 
++void prep_compound_page_atomic(struct page *page, unsigned int order);
++
+ #if defined CONFIG_COMPACTION || defined CONFIG_CMA
+ 
+ /*
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index eb4f02617f53c..faf5ec197fbbf 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -682,18 +682,34 @@ static inline bool pcp_allowed_order(unsigned int order)
+  * This usage means that zero-order pages may not be compound.
+  */
+ 
+-void prep_compound_page(struct page *page, unsigned int order)
++static void __prep_compound_head_and_tail(struct page *page, unsigned int order)
+ {
+ 	int i;
+ 	int nr_pages = 1 << order;
+ 
+-	__SetPageHead(page);
+ 	for (i = 1; i < nr_pages; i++)
+ 		prep_compound_tail(page + i, page, order);
+ 
+ 	prep_compound_head(page, order);
+ }
+ 
++void prep_compound_page(struct page *page, unsigned int order)
++{
++	__SetPageHead(page);
++	__prep_compound_head_and_tail(page, order);
++}
++
++/*
++ * PG_head is set atomically whereas the other metadata is set with plain stores.
++ * It should be used when @page's flags can be modified concurrently,
++ * e.g., in __split_folio_to_order().
++ */
++void prep_compound_page_atomic(struct page *page, unsigned int order)
++{
++	SetPageHead(page);
++	__prep_compound_head_and_tail(page, order);
++}
++
+ static inline void set_buddy_order(struct page *page, unsigned int order)
+ {
+ 	set_page_private(page, order);
+-- 
+2.47.3
+
