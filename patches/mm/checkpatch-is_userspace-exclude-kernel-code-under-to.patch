@@ -1,0 +1,72 @@
+From: Kir Kolyshkin <kolyshkin@gmail.com>
+Date: Thu, 22 Oct 2026 15:44:20 -0700
+Subject: [PATCH] checkpatch: is_userspace: exclude kernel code under tools/
+
+Patch series "checkpatch: skip more kernel-only checks for userspace code".
+
+Commit 99b70ece33d8 ("checkpatch: suppress strscpy warnings for
+userspace tools") added is_userspace() to skip checks which only make
+sense for the kernel. This series extends that to a few more checks
+which produce false positives for userspace code under tools/:
+
+ - ENOSYS: the "ENOSYS means invalid syscall nr" rule is about the
+   kernel ABI; in userspace, errno == ENOSYS is the standard way to
+   detect a missing syscall (e.g. to skip a selftest on older kernels);
+ - AVOID_BUG: "Do not crash the kernel" does not apply to userspace,
+   where BUG()/BUG_ON() are assert-like shims;
+ - SSCANF_TO_KSTRTO: kstrto<type> is not available in userspace.
+
+Running "checkpatch.pl -f" (with --strict for AVOID_BUG, which is
+a CHECK in file mode) on the files under tools/ that use ENOSYS, BUG()
+or sscanf() gives 699 such warnings before this series (ENOSYS: 188,
+AVOID_BUG: 491, SSCANF_TO_KSTRTO: 20), and none after.
+
+Since tools/ also contains some kernel code (test modules, Kbuild-built
+mocks, rvgen templates), patch 1 makes is_userspace() return false for
+those locations, so they are still subject to all the kernel checks
+(this also applies to the existing strcpy/strlcpy/strncpy checks).
+
+
+This patch (of 4):
+
+is_userspace() treats everything under tools/ as userspace code, and is
+used to skip checks that only make sense for the kernel. However, tools/
+also contains some kernel code: test modules, Kbuild-built mocks, and
+templates and golden outputs of the runtime verification monitor
+generator. Such code should be subject to the same checks as the rest
+of the kernel.
+
+Explicitly exclude the known locations of kernel code under tools/.
+
+Link: https://lore.kernel.org/20261022224426.2756960-1-kolyshkin@gmail.com
+Link: https://lore.kernel.org/20261022224426.2756960-2-kolyshkin@gmail.com
+Signed-off-by: Kir Kolyshkin <kolyshkin@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Joe Perches <joe@perches.com>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Dwaipayan Ray <dwaipayanray1@gmail.com>
+Cc: Lukas Bulwahn <lukas.bulwahn@gmail.com>
+Cc: Shuah Khan <shuah@kernel.org>
+---
+ scripts/checkpatch.pl | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/scripts/checkpatch.pl b/scripts/checkpatch.pl
+index 02d47e5bb5edb..0f666c15c10f8 100755
+--- a/scripts/checkpatch.pl
++++ b/scripts/checkpatch.pl
+@@ -2670,6 +2670,11 @@ sub exclude_global_initialisers {
+ sub is_userspace {
+     my ($realfile) = @_;
+ 
++    # Kernel code under tools/: test modules, mocks, code generator templates.
++    return 0 if ($realfile =~ m@^tools/testing/(?:cxl|nvdimm|crypto)/@ ||
++             $realfile =~ m@^tools/testing/selftests/(?:bpf/test_kmods|livepatch/test_modules|mm/page_frag|net/bench/page_pool)/@ ||
++             $realfile =~ m@^tools/(?:power/cpupower/debug/kernel|virtio/vhost_test|verification/rvgen)/@);
++
+     return $userspace if (defined $userspace);
+ 
+     return ($realfile =~ m@^tools/@ ||
+-- 
+2.47.3
+

@@ -1,0 +1,66 @@
+From: Mauro Carvalho Chehab <m.chehab@huawei.com>
+Date: Wed, 28 Oct 2026 09:09:57 +0100
+Subject: [PATCH] mm: memory-failure: update statistics before emitting the
+ trace event
+
+Today's rasdaemon-ci run showed a race condition at the page poison logic
+affecting userspace (rasdaemon): action_result() emits a
+memory_failure_event before incrementing num_poisoned_pages and updating
+the per-node memory failure statistics.
+
+That causes userspace to read /proc/meminfo to detect HardwareCorrupted
+trace events to warn if the value exceeds POISON_STAT_THRESHOLD.  This
+works most of the cases, but there is a chance that the value not being
+updated in time before libtraceevent notification is handled.
+
+Root cause is commit e240ac52f7da ("mm/memory-failure.c: simplify
+num_poisoned_pages_inc/dec") which changed the order of updates.
+
+Rasdaemod-ci run up to Oct 27 worked properly, but on today's run, it
+failed to get the HardwareCorrupted data from /proc/meminfo because
+it was updated only after trigging the hardware error event:
+	https://mchehab.github.io/rasdaemon-ci/failures/20261028T035110Z-40629018388/daily/aarch64/consumer-poison-page-stat.html
+
+E.g. it failed to log this:
+	rasdaemon: Poison page statistics exceeded threshold: 4 kB (threshold: 0 kB)
+
+This is important for rasdaemon, as the consumer's action monitors a
+failed threshold before poisoning pages.  So, if the counter doesn't
+update properly, it will end not poisoning pages at the expected
+threshold.
+
+Link: https://lore.kernel.org/d472a9a3ccfa8c0359d7d7acabed92c8927d8e47.1793174996.git.mchehab+huawei@kernel.org
+Fixes: e240ac52f7da ("mm/memory-failure.c: simplify num_poisoned_pages_inc/dec")
+Signed-off-by: Mauro Carvalho Chehab <mchehab+huawei@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Closes: https://github.com/mchehab/rasdaemon-ci/actions/runs/40629018388
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: zhenwei pi <pizhenwei@bytedance.com>
+---
+ mm/memory-failure.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 12aa4e52b2bce..b215312f261b8 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -1320,13 +1320,13 @@ static bool panic_on_unrecoverable_mf(enum mf_action_page_type type,
+ static int action_result(unsigned long pfn, enum mf_action_page_type type,
+ 			 enum mf_result result)
+ {
+-	trace_memory_failure_event(pfn, type, result);
+-
+ 	if (type != MF_MSG_ALREADY_POISONED && type != MF_MSG_PFN_MAP) {
+ 		num_poisoned_pages_inc(pfn);
+ 		update_per_node_mf_stats(pfn, result);
+ 	}
+ 
++	trace_memory_failure_event(pfn, type, result);
++
+ 	pr_err("%#lx: recovery action for %s: %s\n",
+ 		pfn, action_page_types[type], action_name[result]);
+ 
+-- 
+2.47.3
+

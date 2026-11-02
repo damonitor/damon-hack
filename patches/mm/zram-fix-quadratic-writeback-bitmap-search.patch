@@ -1,0 +1,79 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Fri, 30 Oct 2026 13:16:49 +0900
+Subject: [PATCH] zram: fix quadratic writeback bitmap search
+
+zram_reserve_bdev_block() always scans writeback's bitmap from offset 0,
+which results in quadratic complexity.  Introduce per-device bitmap cursor
+member that is set to next to most recently allocated bit, so next time
+the bitmap scan starts from that offset.
+
+Link: https://lore.kernel.org/20da9e9a5ffefd1e6875e311d3740b9f3c1061f3.1793333729.git.senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+---
+ drivers/block/zram/zram_drv.c | 17 ++++++++++++++---
+ drivers/block/zram/zram_drv.h |  1 +
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 9593c14a1f81a..632045b65bdb5 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -694,6 +694,7 @@ static void reset_bdev(struct zram *zram)
+ 	zram->disk->fops = &zram_devops;
+ 	kvfree(zram->bitmap);
+ 	zram->bitmap = NULL;
++	zram->bitmap_cursor = 0;
+ 	zram->nr_pages = 0;
+ }
+ 
+@@ -786,6 +787,7 @@ static ssize_t backing_dev_store(struct device *dev,
+ 	zram->bdev = I_BDEV(inode);
+ 	zram->backing_dev = backing_dev;
+ 	zram->bitmap = bitmap;
++	zram->bitmap_cursor = 0;
+ 	zram->nr_pages = nr_pages;
+ 
+ 	pr_info("setup backing device %s\n", file_name);
+@@ -807,10 +809,19 @@ static unsigned long zram_reserve_bdev_block(struct zram *zram)
+ {
+ 	unsigned long blk_idx;
+ 
+-	blk_idx = find_next_zero_bit(zram->bitmap, zram->nr_pages, 0);
+-	if (blk_idx == zram->nr_pages)
+-		return INVALID_BDEV_BLOCK;
++	/* continue after the last allocated block */
++	blk_idx = find_next_zero_bit(zram->bitmap, zram->nr_pages,
++				     zram->bitmap_cursor);
++	/* wrap */
++	if (blk_idx == zram->nr_pages) {
++		blk_idx = find_next_zero_bit(zram->bitmap, zram->bitmap_cursor,
++					     0);
++		/* bitmap is full */
++		if (blk_idx == zram->bitmap_cursor)
++			return INVALID_BDEV_BLOCK;
++	}
+ 
++	zram->bitmap_cursor = blk_idx + 1;
+ 	set_bit(blk_idx, zram->bitmap);
+ 	atomic64_inc(&zram->stats.bd_count);
+ 	return blk_idx;
+diff --git a/drivers/block/zram/zram_drv.h b/drivers/block/zram/zram_drv.h
+index 7a55d751417e2..c563a7c13a49e 100644
+--- a/drivers/block/zram/zram_drv.h
++++ b/drivers/block/zram/zram_drv.h
+@@ -152,6 +152,7 @@ struct zram {
+ 	u64 bd_wb_limit;
+ 	struct block_device *bdev;
+ 	unsigned long *bitmap;
++	unsigned long bitmap_cursor;
+ 	unsigned long nr_pages;
+ #endif
+ #ifdef CONFIG_ZRAM_MEMORY_TRACKING
+-- 
+2.47.3
+

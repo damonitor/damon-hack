@@ -1,0 +1,68 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Fri, 30 Oct 2026 13:16:50 +0900
+Subject: [PATCH] zram: lz4/lz4hc: accept dictionaries of more than 64 KiB
+
+LZ4_loadDict() and LZ4_loadDictHC() only use the last 64KiB of a
+dictionary and return how much they used, which the zram backends take for
+an error.  Expect that instead.
+
+Link: https://lore.kernel.org/f2ac22a731e507e90217a5e9cf29c987ec24e2b0.1793333729.git.senozhatsky@chromium.org
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ drivers/block/zram/backend_lz4.c   | 4 +++-
+ drivers/block/zram/backend_lz4hc.c | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/block/zram/backend_lz4.c b/drivers/block/zram/backend_lz4.c
+index 9767482a2fea0..bad648c158da5 100644
+--- a/drivers/block/zram/backend_lz4.c
++++ b/drivers/block/zram/backend_lz4.c
+@@ -4,6 +4,7 @@
+ 
+ #include <linux/kernel.h>
+ #include <linux/lz4.h>
++#include <linux/sizes.h>
+ #include <linux/vmalloc.h>
+ 
+ #include "backend_lz4.h"
+@@ -39,7 +40,8 @@ static int lz4_setup_params(struct zcomp_params *params)
+ 		return -ENOMEM;
+ 
+ 	ret = LZ4_loadDict(dict_stream, params->dict, params->dict_sz);
+-	if (ret != params->dict_sz) {
++	/* Only the last 64 KiB of a dictionary are of use */
++	if (ret != min_t(size_t, params->dict_sz, SZ_64K)) {
+ 		vfree(dict_stream);
+ 		return -EINVAL;
+ 	}
+diff --git a/drivers/block/zram/backend_lz4hc.c b/drivers/block/zram/backend_lz4hc.c
+index 2d1364a29b27b..5825c8ba78dac 100644
+--- a/drivers/block/zram/backend_lz4hc.c
++++ b/drivers/block/zram/backend_lz4hc.c
+@@ -4,6 +4,7 @@
+ 
+ #include <linux/kernel.h>
+ #include <linux/lz4.h>
++#include <linux/sizes.h>
+ #include <linux/vmalloc.h>
+ 
+ #include "backend_lz4hc.h"
+@@ -46,7 +47,8 @@ static int lz4hc_setup_params(struct zcomp_params *params)
+ 
+ 	LZ4_resetStreamHC(dict_stream, params->level);
+ 	ret = LZ4_loadDictHC(dict_stream, params->dict, params->dict_sz);
+-	if (ret != params->dict_sz) {
++	/* Only the last 64 KiB of a dictionary are of use */
++	if (ret != min_t(size_t, params->dict_sz, SZ_64K)) {
+ 		vfree(dict_stream);
+ 		return -EINVAL;
+ 	}
+-- 
+2.47.3
+
