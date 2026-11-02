@@ -30,6 +30,8 @@ versions=(
 	v7.0
 	v7.1
 	v7.2
+	v7.3
+	v7.4
 	akpm.korg.mm/mm-stable
 	akpm.korg.mm/mm-unstable
 	akpm.korg.mm/mm-new
