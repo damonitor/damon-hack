@@ -81,7 +81,7 @@ def pr_damon_mail_traffic(linux_dir, base, tip):
     now_dir = os.getcwd()
     os.chdir(linux_dir)
     cmd = ['hkml', 'list', 'damon', '--since', base, '--until', tip,
-           '--collapse', '--stat_only', '--stdout']
+           '--collapse', '--stat_only', '--stdout', '--ignore_cache']
     res = subprocess.run(cmd, capture_output=True, text=True)
     print(' '.join(cmd))
     if res.returncode != 0:
