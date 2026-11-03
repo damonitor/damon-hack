@@ -1,0 +1,235 @@
+From: "Liam R. Howlett (Google)" <liam@infradead.org>
+Date: Mon, 2 Nov 2026 21:07:24 -0500
+Subject: [PATCH] maple_tree: Update internal warning and bug_on code
+
+When CONFIG_DEBUG_MAPLE_TREE is set, call WARN_ON() once per site after
+the custom information is dumped about the tree.  Without using the
+kernel's WARN_ON calls, syzbot will not catch issues detected by this
+code.  The BUG_ON variants now stop instead of dumping and continuing.
+
+Update the non-debug code to call WARN_ON_ONCE() as well.
+
+The userspace tests asserted on dump_stack() but only print on
+WARN_ON(), so make WARN() fatal in maple-shared.h and have the maple
+test exit with the result of maple_tree_seed().
+
+Link: https://lore.kernel.org/20261103020724.2614498-4-liam@infradead.org
+Fixes: f0a1f866aba1 ("maple_tree: add debug BUG_ON and WARN_ON variants")
+Signed-off-by: Liam R. Howlett (Google) <liam@infradead.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ include/linux/maple_tree.h          | 48 ++++++++++++++---------------
+ tools/testing/radix-tree/maple.c    | 13 +++++---
+ tools/testing/shared/maple-shared.h | 33 ++++++++++++++++++++
+ 3 files changed, 66 insertions(+), 28 deletions(-)
+
+diff --git a/include/linux/maple_tree.h b/include/linux/maple_tree.h
+index 691f6012daea3..3892201d7efd5 100644
+--- a/include/linux/maple_tree.h
++++ b/include/linux/maple_tree.h
+@@ -684,7 +684,7 @@ void mt_cache_shrink(void);
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
++		BUG_ON(1);						\
+ 	} else {							\
+ 		atomic_inc(&maple_tree_tests_passed);			\
+ 	}								\
+@@ -700,7 +700,7 @@ void mt_cache_shrink(void);
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
++		BUG_ON(1);						\
+ 	} else {							\
+ 		atomic_inc(&maple_tree_tests_passed);			\
+ 	}								\
+@@ -717,7 +717,7 @@ void mt_cache_shrink(void);
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
++		BUG_ON(1);						\
+ 	} else {							\
+ 		atomic_inc(&maple_tree_tests_passed);			\
+ 	}								\
+@@ -726,16 +726,16 @@ void mt_cache_shrink(void);
+ #define MT_WARN_ON(__tree, __x)  ({					\
+ 	int ret = !!(__x);						\
+ 	atomic_inc(&maple_tree_tests_run);				\
+-	if (ret) {							\
+-		pr_info("WARN at %s:%d (%u)\n",				\
+-		__func__, __LINE__, __x);				\
++	if (!ret) {							\
++		atomic_inc(&maple_tree_tests_passed);			\
++	} else if (__ONCE_LITE_IF(ret)) {				\
++		pr_info("WARN at %s:%d\n",				\
++		__func__, __LINE__);					\
+ 		mt_dump(__tree, mt_dump_hex);				\
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
+-	} else {							\
+-		atomic_inc(&maple_tree_tests_passed);			\
++		WARN_ON(1);						\
+ 	}								\
+ 	unlikely(ret);							\
+ })
+@@ -743,17 +743,17 @@ void mt_cache_shrink(void);
+ #define MAS_WARN_ON(__mas, __x) ({					\
+ 	int ret = !!(__x);						\
+ 	atomic_inc(&maple_tree_tests_run);				\
+-	if (ret) {							\
+-		pr_info("WARN at %s:%d (%u)\n",				\
+-		__func__, __LINE__, __x);				\
++	if (!ret) {							\
++		atomic_inc(&maple_tree_tests_passed);			\
++	} else if (__ONCE_LITE_IF(ret)) {				\
++		pr_info("WARN at %s:%d\n",				\
++		__func__, __LINE__);					\
+ 		mas_dump(__mas);					\
+ 		mt_dump((__mas)->tree, mt_dump_hex);			\
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
+-	} else {							\
+-		atomic_inc(&maple_tree_tests_passed);			\
++		WARN_ON(1);						\
+ 	}								\
+ 	unlikely(ret);							\
+ })
+@@ -761,18 +761,18 @@ void mt_cache_shrink(void);
+ #define MAS_WR_WARN_ON(__wrmas, __x) ({					\
+ 	int ret = !!(__x);						\
+ 	atomic_inc(&maple_tree_tests_run);				\
+-	if (ret) {							\
+-		pr_info("WARN at %s:%d (%u)\n",				\
+-		__func__, __LINE__, __x);				\
++	if (!ret) {							\
++		atomic_inc(&maple_tree_tests_passed);			\
++	} else if (__ONCE_LITE_IF(ret)) {				\
++		pr_info("WARN at %s:%d\n",				\
++		__func__, __LINE__);					\
+ 		mas_wr_dump(__wrmas);					\
+ 		mas_dump((__wrmas)->mas);				\
+ 		mt_dump((__wrmas)->mas->tree, mt_dump_hex);		\
+ 		pr_info("Pass: %u Run:%u\n",				\
+ 			atomic_read(&maple_tree_tests_passed),		\
+ 			atomic_read(&maple_tree_tests_run));		\
+-		dump_stack();						\
+-	} else {							\
+-		atomic_inc(&maple_tree_tests_passed);			\
++		WARN_ON(1);						\
+ 	}								\
+ 	unlikely(ret);							\
+ })
+@@ -780,9 +780,9 @@ void mt_cache_shrink(void);
+ #define MT_BUG_ON(__tree, __x)		BUG_ON(__x)
+ #define MAS_BUG_ON(__mas, __x)		BUG_ON(__x)
+ #define MAS_WR_BUG_ON(__mas, __x)	BUG_ON(__x)
+-#define MT_WARN_ON(__tree, __x)		WARN_ON(__x)
+-#define MAS_WARN_ON(__mas, __x)		WARN_ON(__x)
+-#define MAS_WR_WARN_ON(__mas, __x)	WARN_ON(__x)
++#define MT_WARN_ON(__tree, __x)		WARN_ON_ONCE(__x)
++#define MAS_WARN_ON(__mas, __x)		WARN_ON_ONCE(__x)
++#define MAS_WR_WARN_ON(__mas, __x)	WARN_ON_ONCE(__x)
+ #endif /* CONFIG_DEBUG_MAPLE_TREE */
+ 
+ /**
+diff --git a/tools/testing/radix-tree/maple.c b/tools/testing/radix-tree/maple.c
+index bfe4b8626c429..846c67e20e82a 100644
+--- a/tools/testing/radix-tree/maple.c
++++ b/tools/testing/radix-tree/maple.c
+@@ -36502,22 +36502,27 @@ static void regression_tests(void)
+ 	test_spanning_store_regression();
+ }
+ 
+-void maple_tree_tests(void)
++int maple_tree_tests(void)
+ {
++	int ret;
++
+ #if !defined(BENCH)
+ 	regression_tests();
+ 	farmer_tests();
+ #endif
+-	maple_tree_seed();
++	ret = maple_tree_seed();
+ 	maple_tree_harvest();
++	return ret;
+ }
+ 
+ int __weak main(void)
+ {
++	int ret;
++
+ 	maple_tree_init();
+-	maple_tree_tests();
++	ret = maple_tree_tests();
+ 	rcu_barrier();
+ 	if (nr_allocated)
+ 		printf("nr_allocated = %d\n", nr_allocated);
+-	return 0;
++	return ret ? EXIT_FAILURE : EXIT_SUCCESS;
+ }
+diff --git a/tools/testing/shared/maple-shared.h b/tools/testing/shared/maple-shared.h
+index 2a1e9a8594a28..5f827709773a0 100644
+--- a/tools/testing/shared/maple-shared.h
++++ b/tools/testing/shared/maple-shared.h
+@@ -8,6 +8,7 @@
+ #include "shared.h"
+ #include <stdlib.h>
+ #include <time.h>
++#include <assert.h>
+ #include "linux/init.h"
+ 
+ void maple_rcu_cb(struct rcu_head *head);
+@@ -20,5 +21,37 @@ do {                                            \
+     call_rcu(&((_p_struct)->_memb), rcu_cb);    \
+ } while(0);
+ 
++/* Make WARN() fatal */
++#undef WARN
++#undef WARN_ON
++#undef WARN_ONCE
++#undef WARN_ON_ONCE
++#define WARN(condition, format...) ({				\
++	int __ret_warn_on = !!(condition);			\
++	if (unlikely(__ret_warn_on)) {				\
++		__WARN_printf(format);				\
++		assert(0);					\
++	}							\
++	unlikely(__ret_warn_on);				\
++})
++#define WARN_ON(condition)					\
++	WARN(condition, "assertion failed at %s:%d\n", __FILE__, __LINE__)
++#define WARN_ONCE(condition, format...)	WARN(condition, format)
++#define WARN_ON_ONCE(condition)		WARN_ON(condition)
++
++/* Once state for the debug macros */
++#ifndef __ONCE_LITE_IF
++#define __ONCE_LITE_IF(condition)				\
++	({							\
++		static bool __already_done;			\
++		bool __ret_once = false;			\
++								\
++		if ((condition) && !__already_done) {		\
++			__already_done = true;			\
++			__ret_once = true;			\
++		}						\
++		__ret_once;					\
++	})
++#endif
+ 
+ #endif /* __MAPLE_SHARED_H__ */
+-- 
+2.47.3
+

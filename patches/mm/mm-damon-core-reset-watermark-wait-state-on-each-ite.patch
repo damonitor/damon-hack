@@ -1,0 +1,66 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Mon, 2 Nov 2026 06:46:24 -0800
+Subject: [PATCH] mm/damon/core: reset watermark wait state on each iteration
+
+Patch series "mm/damon: fix watermark state, kunit pid leak and selftest
+fake pass".
+
+Three hotfixes for core, kunit and selftest.  Fix kdamond deactivation
+from missed watermark reset with patch 1.  Fix pid leak in kunit test
+with patch 2.  Fix a selftest wrongly passing when it should skip, with
+patch 3.
+
+Note for reviewers.  This series is a collection of fixes that were
+initially developed by different people.  Changelog is in each patch.
+
+
+This patch (of 3):
+
+Found while reviewing the DAMON source code that if an online commit
+removes all schemes while kdamond is waiting for watermark activation,
+the scheme loop becomes empty but min_wait_time keeps the previous
+positive value.  kdamond then keeps sleeping instead of resuming
+monitoring without schemes.
+
+The way to wake up the kdamond again without DAMON is bit complicated.
+Install a scheme having watermarks that can activate the kdamond again,
+and remove the scheme again.  Doable but cumbersome and complicated.
+
+Initialize min_wait_time and init_wait_time on each loop iteration so
+the wait is calculated from the current schemes and an empty scheme
+list resumes monitoring.
+
+Link: https://lore.kernel.org/20261102144627.88843-1-sj@kernel.org
+Link: https://lore.kernel.org/20261102144627.88843-2-sj@kernel.org
+Fixes: da87878010e5 ("mm/damon/sysfs: support online inputs update")
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Wang Xiaolei <xiaoleiwangxiaolei@gmail.com>
+Cc: <stable@vger.kernel.org> # 5.19.x
+---
+ mm/damon/core.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 73b571b429cb3..7441cdea57dc5 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3976,10 +3976,11 @@ static int kdamond_wait_activation(struct damon_ctx *ctx)
+ {
+ 	struct damos *s;
+ 	unsigned long wait_time;
+-	unsigned long min_wait_time = 0;
+-	bool init_wait_time = false;
+ 
+ 	while (!kdamond_need_stop(ctx)) {
++		unsigned long min_wait_time = 0;
++		bool init_wait_time = false;
++
+ 		damon_for_each_scheme(s, ctx) {
+ 			wait_time = damos_wmark_wait_us(s);
+ 			if (!init_wait_time || wait_time < min_wait_time) {
+-- 
+2.47.3
+

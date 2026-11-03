@@ -1,0 +1,92 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Mon, 2 Nov 2026 10:49:09 +0800
+Subject: [PATCH] mm/hugetlb: preserve persistent flags when returning folios
+ to the pool
+
+add_hugetlb_folio() returns a folio to the HugeTLB pool when vmemmap
+restoration fails. It clears folio->private and restores only
+HPG_vmemmap_optimized, losing other flags that must survive the rollback.
+
+Clearing HPG_cma causes a later free to bypass the CMA release path,
+leaving the CMA allocation bitmap set. Clearing HPG_raw_hwp_unreliable
+loses the indication that the locations of poisoned subpages are unknown,
+undermining the checks that prevent freeing or unpoisoning such folios.
+
+Preserve the existing flags instead of resetting folio->private. Callers
+already clear HPG_restore_reserve, HPG_migratable and HPG_freed before
+returning a folio to the pool. Clear HPG_temporary in free_huge_folio()
+before attempting to free a temporary folio, so a failed vmemmap restore
+does not leave that flag set on a folio returned as surplus.
+
+Add a VM_WARN_ON_ONCE_FOLIO() check for flags other than
+HPG_vmemmap_optimized, HPG_raw_hwp_unreliable and HPG_cma to detect
+incomplete transient flag cleanup.
+
+Link: https://lore.kernel.org/20261102024910.31486-3-kaitao.cheng@linux.dev
+Fixes: 161df60e9e89 ("mm, hwpoison, hugetlb: support saving mechanism of raw error pages")
+Fixes: d2d786714080 ("mm/hugetlb: enable bootmem allocation from CMA areas")
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Closes: https://sashiko.dev/#/bug/linux-5363eb09-9c3c-4f8b-9f3c-a998a8c4b258
+Suggested-by: David Hildenbrand <david@kernel.org>
+Suggested-by: Muchun Song <muchun.song@linux.dev>
+Suggested-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Chris Down <chris@chrisdown.name>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+---
+ mm/hugetlb.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index ff9dbfbc7a961..35a06b8c37d76 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1443,6 +1443,12 @@ void add_hugetlb_folio(struct hstate *h, struct folio *folio,
+ 
+ 	lockdep_assert_held(&hugetlb_lock);
+ 
++	/* Callers must clear transient flags before returning to the pool. */
++	VM_WARN_ON_ONCE_FOLIO((unsigned long)folio->private &
++			     ~(BIT(HPG_vmemmap_optimized) |
++			       BIT(HPG_raw_hwp_unreliable) |
++			       BIT(HPG_cma)), folio);
++
+ 	INIT_LIST_HEAD(&folio->lru);
+ 	h->nr_huge_pages++;
+ 	h->nr_huge_pages_node[nid]++;
+@@ -1453,9 +1459,6 @@ void add_hugetlb_folio(struct hstate *h, struct folio *folio,
+ 	}
+ 
+ 	__folio_set_hugetlb(folio);
+-	/* Clear all folio->private flags except hugetlb_vmemmap_optimized. */
+-	folio->private = NULL;
+-	folio_set_hugetlb_vmemmap_optimized(folio);
+ 
+ 	arch_clear_hugetlb_flags(folio);
+ 	enqueue_hugetlb_folio(h, folio);
+@@ -1743,6 +1746,7 @@ void free_huge_folio(struct folio *folio)
+ 		h->resv_huge_pages++;
+ 
+ 	if (folio_test_hugetlb_temporary(folio)) {
++		folio_clear_hugetlb_temporary(folio);
+ 		remove_hugetlb_folio(h, folio, false);
+ 		spin_unlock_irqrestore(&hugetlb_lock, flags);
+ 		update_and_free_hugetlb_folio(h, folio, true);
+-- 
+2.47.3
+

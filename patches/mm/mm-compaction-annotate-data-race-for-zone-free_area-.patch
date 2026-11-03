@@ -1,5 +1,5 @@
 From: Hui Zhu <zhuhui@kylinos.cn>
-Date: Fri, 30 Oct 2026 10:55:07 +0800
+Date: Mon, 2 Nov 2026 16:19:18 +0800
 Subject: [PATCH] mm/compaction: annotate data race for
  zone->free_area[order].nr_free
 
@@ -46,54 +46,56 @@ instrumented and the report is of unknown origin.
 
 The race is benign: a stale zero only skips the order for this round, and
 a stale non-zero just finds an empty MIGRATE_MOVABLE freelist under the
-lock.  Annotate both reads with data_race(), following commit
-af1c31acc853 ("mm/vmstat: annotate data race for zone->free_area[order].nr_free").
+lock.  Annotate both reads with data_race(), following commit af1c31acc853
+("mm/vmstat: annotate data race for zone->free_area[order].nr_free"), and
+say at each site why both stale directions are harmless.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261030025507.115248-1-hui.zhu@linux.dev
+Link: https://lore.kernel.org/20261102081919.80625-1-hui.zhu@linux.dev
 Fixes: 70b44595eafe ("mm, compaction: use free lists to quickly locate a migration source")
 Fixes: 5a811889de10 ("mm, compaction: use free lists to quickly locate a migration target")
 Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Dev Jain <dev.jain@arm.com>
 Acked-by: Zi Yan <ziy@nvidia.com>
-Cc: <stable+noautosel@kernel.org> # KCSAN annotation only, no functional change
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Brendan Jackman <brendan.jackman@linux.dev>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
-Cc: Hui Zhu <hui.zhu@linux.dev>
+Cc: <stable+noautosel@kernel.org> # KCSAN annotation only, no functional change
 ---
- mm/compaction.c | 12 ++++++++++--
- 1 file changed, 10 insertions(+), 2 deletions(-)
+ mm/compaction.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/mm/compaction.c b/mm/compaction.c
-index f1b2060eb2016..499ec7ceaa3ed 100644
+index f1b2060eb2016..426563acf7acf 100644
 --- a/mm/compaction.c
 +++ b/mm/compaction.c
-@@ -1601,7 +1601,11 @@ static void fast_isolate_freepages(struct compact_control *cc)
+@@ -1601,7 +1601,12 @@ static void fast_isolate_freepages(struct compact_control *cc)
  		unsigned int order_scanned = 0;
  		unsigned long high_pfn = 0;
  
 -		if (!area->nr_free)
 +		/*
-+		 * Access to nr_free is lockless as it is only a hint; a stale
-+		 * value is harmless. Use data_race to avoid KCSAN warning.
++		 * Opportunistic lockless check.  A false non-zero is fine, we
++		 * inspect the freelist under the lock.  A false zero is fine,
++		 * we just miss this order.
 +		 */
 +		if (!data_race(area->nr_free))
  			continue;
  
  		spin_lock_irqsave(&cc->zone->lock, flags);
-@@ -2031,7 +2035,11 @@ static unsigned long fast_find_migrateblock(struct compact_control *cc)
+@@ -2031,7 +2036,12 @@ static unsigned long fast_find_migrateblock(struct compact_control *cc)
  		unsigned long flags;
  		struct page *freepage;
  
 -		if (!area->nr_free)
 +		/*
-+		 * Access to nr_free is lockless as it is only a hint; a stale
-+		 * value is harmless. Use data_race to avoid KCSAN warning.
++		 * Opportunistic lockless check.  A false non-zero is fine, we
++		 * inspect the freelist under the lock.  A false zero is fine,
++		 * we just miss this order.
 +		 */
 +		if (!data_race(area->nr_free))
  			continue;

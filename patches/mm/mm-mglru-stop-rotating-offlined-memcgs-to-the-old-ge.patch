@@ -1,0 +1,185 @@
+From: "T.J. Mercier" <tjmercier@google.com>
+Date: Tue, 27 Oct 2026 18:06:06 -0700
+Subject: [PATCH] mm/mglru: stop rotating offlined memcgs to the old generation
+
+lru_gen_offline_memcg() moves an offlining memcg to the head of the old
+generation of the memcg LRU (MEMCG_LRU_OLD), so that global reclaim
+visits it first and evicts the folios it left behind.
+
+Since commit f1cf8d2f36dc ("mm: memcontrol: eliminate the problem of
+dying memory cgroup for LRU folios"), those folios are reparented to the
+parent before lru_gen_offline_memcg() runs, and nothing can be added
+back to the offlined memcg's lruvec afterwards. Putting an empty
+offlined memcg at the head of the old generation no longer serves any
+purpose and only delays reclaim from the memcgs that still have memory
+due to additional shrink_many() iteration.
+
+Remove lru_gen_offline_memcg(), so that an offlined memcg is rotated
+like any other memcg below the reclaimable size threshold until
+lru_gen_release_memcg() takes it off the memcg LRU. MEMCG_LRU_OLD has no
+other user, so remove the op and update the memcg LRU comment as well.
+
+Link: https://lore.kernel.org/20261028010611.3929937-3-tjmercier@google.com
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Kairui Song <kasong@tencent.com>
+Acked-by: Balbir Singh <balbirs@nvidia.com>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Kairui Song <ryncsn@gmail.com>
+---
+ Documentation/mm/multigen_lru.rst |  4 +---
+ include/linux/mmzone.h            | 14 +++-----------
+ mm/memcontrol.c                   |  1 -
+ mm/vmscan.c                       | 20 +-------------------
+ 4 files changed, 5 insertions(+), 34 deletions(-)
+
+diff --git a/Documentation/mm/multigen_lru.rst b/Documentation/mm/multigen_lru.rst
+index 52ed5092022f1..b532ce9613718 100644
+--- a/Documentation/mm/multigen_lru.rst
++++ b/Documentation/mm/multigen_lru.rst
+@@ -234,9 +234,7 @@ the active/inactive LRU (of folios):
+ 1. It has the young and the old (generations), i.e., the counterparts
+    to the active and the inactive;
+ 2. The increment of ``max_seq`` triggers promotion, i.e., the
+-   counterpart to activation;
+-3. Other events trigger similar operations, e.g., offlining an memcg
+-   triggers demotion, i.e., the counterpart to deactivation.
++   counterpart to activation.
+ 
+ In terms of global reclaim, it has two distinct features:
+ 
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 8bb136b3cbebc..6e2984282c0ae 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -626,12 +626,10 @@ struct lru_gen_mm_walk {
+  * per-node memcg generation counter, whose reminder (mod MEMCG_NR_GENS) indexes
+  * the old generation, is incremented when all its bins become empty.
+  *
+- * There are three operations:
++ * There are two operations:
+  * 1. MEMCG_LRU_TAIL, which moves a memcg to the tail of a random bin in its
+  *    current generation (old or young) and updates its "seg" to "tail";
+- * 2. MEMCG_LRU_OLD, which moves a memcg to the head of a random bin in the old
+- *    generation, updates its "gen" to "old" and resets its "seg" to "default";
+- * 3. MEMCG_LRU_YOUNG, which moves a memcg to the tail of a random bin in the
++ * 2. MEMCG_LRU_YOUNG, which moves a memcg to the tail of a random bin in the
+  *    young generation, updates its "gen" to "young" and resets its "seg" to
+  *    "default".
+  *
+@@ -643,8 +641,7 @@ struct lru_gen_mm_walk {
+  * 3. The second attempt to reclaim a memcg below reclaimable size threshold,
+  *    which triggers MEMCG_LRU_YOUNG;
+  * 4. Attempting to reclaim a memcg below min, which triggers MEMCG_LRU_YOUNG;
+- * 5. Finishing the aging on the eviction path, which triggers MEMCG_LRU_YOUNG;
+- * 6. Offlining a memcg, which triggers MEMCG_LRU_OLD.
++ * 5. Finishing the aging on the eviction path, which triggers MEMCG_LRU_YOUNG.
+  *
+  * Notes:
+  * 1. Memcg LRU only applies to global reclaim, and the round-robin incrementing
+@@ -675,7 +672,6 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr);
+ void lru_gen_init_memcg(struct mem_cgroup *memcg);
+ void lru_gen_exit_memcg(struct mem_cgroup *memcg);
+ void lru_gen_online_memcg(struct mem_cgroup *memcg);
+-void lru_gen_offline_memcg(struct mem_cgroup *memcg);
+ void lru_gen_release_memcg(struct mem_cgroup *memcg);
+ void max_lru_gen_memcg(struct mem_cgroup *memcg, int nid);
+ bool recheck_lru_gen_max_memcg(struct mem_cgroup *memcg, int nid);
+@@ -709,10 +705,6 @@ static inline void lru_gen_online_memcg(struct mem_cgroup *memcg)
+ {
+ }
+ 
+-static inline void lru_gen_offline_memcg(struct mem_cgroup *memcg)
+-{
+-}
+-
+ static inline void lru_gen_release_memcg(struct mem_cgroup *memcg)
+ {
+ }
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index ac6c43ea8c5a6..bf4219f86aca4 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4503,7 +4503,6 @@ static void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
+ 	memcg_reparent_objcgs(memcg);
+ 	reparent_shrinker_deferred(memcg);
+ 	wb_memcg_offline(memcg);
+-	lru_gen_offline_memcg(memcg);
+ 
+ 	drain_all_stock(memcg);
+ 
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index c16d2cf57a0de..7db6be53f3a92 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4519,7 +4519,6 @@ bool lru_gen_look_around(struct page_vma_mapped_walk *pvmw, unsigned int nr)
+ enum {
+ 	MEMCG_LRU_NOP,
+ 	MEMCG_LRU_TAIL,
+-	MEMCG_LRU_OLD,
+ 	MEMCG_LRU_YOUNG,
+ };
+ 
+@@ -4541,8 +4540,6 @@ static void lru_gen_rotate_memcg(struct lruvec *lruvec, int op)
+ 	/* see the comment on MEMCG_NR_GENS */
+ 	if (op == MEMCG_LRU_TAIL)
+ 		seg = MEMCG_LRU_TAIL;
+-	else if (op == MEMCG_LRU_OLD)
+-		new = get_memcg_gen(pgdat->memcg_lru.seq);
+ 	else if (op == MEMCG_LRU_YOUNG)
+ 		new = get_memcg_gen(pgdat->memcg_lru.seq + 1);
+ 	else
+@@ -4552,11 +4549,7 @@ static void lru_gen_rotate_memcg(struct lruvec *lruvec, int op)
+ 	WRITE_ONCE(lruvec->lrugen.gen, new);
+ 
+ 	hlist_nulls_del_rcu(&lruvec->lrugen.list);
+-
+-	if (op == MEMCG_LRU_OLD)
+-		hlist_nulls_add_head_rcu(&lruvec->lrugen.list, &pgdat->memcg_lru.fifo[new][bin]);
+-	else
+-		hlist_nulls_add_tail_rcu(&lruvec->lrugen.list, &pgdat->memcg_lru.fifo[new][bin]);
++	hlist_nulls_add_tail_rcu(&lruvec->lrugen.list, &pgdat->memcg_lru.fifo[new][bin]);
+ 
+ 	pgdat->memcg_lru.nr_memcgs[old]--;
+ 	pgdat->memcg_lru.nr_memcgs[new]++;
+@@ -4594,17 +4587,6 @@ void lru_gen_online_memcg(struct mem_cgroup *memcg)
+ 	}
+ }
+ 
+-void lru_gen_offline_memcg(struct mem_cgroup *memcg)
+-{
+-	int nid;
+-
+-	for_each_node(nid) {
+-		struct lruvec *lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
+-
+-		lru_gen_rotate_memcg(lruvec, MEMCG_LRU_OLD);
+-	}
+-}
+-
+ void lru_gen_release_memcg(struct mem_cgroup *memcg)
+ {
+ 	int gen;
+-- 
+2.47.3
+

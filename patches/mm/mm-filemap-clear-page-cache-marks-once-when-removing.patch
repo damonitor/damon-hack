@@ -1,0 +1,47 @@
+From: Qiliang Yuan <odys.yuan@gmail.com>
+Date: Mon, 2 Nov 2026 19:43:37 -0500
+Subject: [PATCH] mm/filemap: clear page cache marks once when removing a folio
+
+xas_store() clears the marks of an entry before it replaces the entry with
+NULL.
+
+page_cache_delete() calls xas_init_marks() after xas_store() whether it
+stored a shadow entry or NULL, so a folio removed without a shadow, as
+POSIX_FADV_DONTNEED and drop_caches do, has its marks cleared twice.  With
+4K folios that is about 6% of the time it takes to drop clean page cache.
+
+Call xas_init_marks() only after storing a shadow entry, whose marks
+xas_store() leaves alone.  Dropping 8 GiB of 4K folios, median of five
+runs, averaged over two boots of each kernel, in a 32 vCPU VM:
+
+                          before    after
+  POSIX_FADV_DONTNEED    1517 ms  1423 ms
+  drop_caches            1515 ms  1422 ms
+
+Link: https://lore.kernel.org/20261102-bug-mm-filemap-init-marks-once-v2-1-985753b11173@gmail.com
+Signed-off-by: Qiliang Yuan <odys.yuan@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ mm/filemap.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 1df7769071403..996f51af940a6 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -140,7 +140,9 @@ static void page_cache_delete(struct address_space *mapping,
+ 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+ 
+ 	xas_store(&xas, shadow);
+-	xas_init_marks(&xas);
++	/* If xas_store() didn't clear marks, do it now */
++	if (shadow)
++		xas_init_marks(&xas);
+ 
+ 	folio->mapping = NULL;
+ 	/* Leave folio->index set: truncation lookup relies upon it */
+-- 
+2.47.3
+

@@ -17,22 +17,33 @@ with mem_cgroup_lruvec().
 
 This patch (of 2):
 
-Andrew Morton noted that get_lruvec() has the same pattern as
-lru_gen_shrink_node(): when memcg is disabled on the command line
-(cgroup_disable=memory), it returns &pgdat->__lruvec directly instead of
-going through mem_cgroup_lruvec(), which initializes lruvec->pgdat.
+The patch was initially developed to address a possible NULL reference
+[1].
 
-In practice all callers of get_lruvec() run after kswapd_init() has
-already initialized pgdat->__lruvec.pgdat on every N_MEMORY node, so
-this is not a runtime bug. Have get_lruvec() delegate to
-mem_cgroup_lruvec() directly.
+Andrew Morton reported that get_lruvec() has the same problem as
+lru_gen_shrink_node(): when memcg is disabled on the command line
+(cgroup_disable=memory), it returns &pgdat->__lruvec directly and so
+bypasses the initialization of lruvec->pgdat.  The MGLRU debugfs interface
+calls get_lruvec(), then dereferences the pgdat pointer in
+lru_gen_seq_show() and other paths, so these can hit the same NULL
+dereference.
+
+In practice, we found that this cannot happen, as all callers of
+get_lruvec() run after kswapd_init() has initialized pgdat->__lruvec.pgdat
+on every N_MEMORY node.  Therefore, this is not a runtime bug.
+
+However, it would still be good to clean up get_lruvec() by removing the
+MGLRU-specific code and having it delegate directly to
+mem_cgroup_lruvec().
 
 Link: https://lore.kernel.org/20261026202313.63122-1-sidchintamaneni@gmail.com
 Link: https://lore.kernel.org/20261026202313.63122-2-sidchintamaneni@gmail.com
+Link: https://lore.kernel.org/linux-mm/20261017050928.128582-2-sidchintamaneni@gmail.com/ [1]
 Signed-off-by: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Signed-off-by: Hardik Garg <hargar@linux.microsoft.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
 Cc: Johannes Weiner <hannes@cmpxchg.org>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Michal Hocko <mhocko@kernel.org>
@@ -40,7 +51,6 @@ Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Shakeel Butt <shakeel.butt@linux.dev>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Kairui Song <kasong@tencent.com>
-Cc: Barry Song <baohua@kernel.org>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Wei Xu <weixugc@google.com>

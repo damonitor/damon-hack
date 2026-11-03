@@ -1,0 +1,170 @@
+From: "T.J. Mercier" <tjmercier@google.com>
+Date: Tue, 27 Oct 2026 18:06:05 -0700
+Subject: [PATCH] mm/vmscan: remove redundant !mem_cgroup_online() checks
+
+Patch series "mm/vmscan: remove obsolete offlined memcg reclaim handling".
+
+Since commit f1cf8d2f36dc ("mm: memcontrol: eliminate the problem of
+dying memory cgroup for LRU folios") and commit 0e0ac326c511 ("memcg:
+move LRU size accounting on reparenting instead of copying it"), LRU
+folios and their size accounting are reparented to the parent memcg
+before a memcg is offlined, leaving the offlined memcg's lruvec
+permanently empty.
+
+This series removes the remaining reclaim special-casing for offlined
+memcgs that assumed they could still hold LRU folios:
+    1. Remove redundant !mem_cgroup_online() checks in vmscan.c
+    2. Stop rotating offlined memcgs to the head of the old generation
+       (MEMCG_LRU_OLD) in MGLRU.
+
+
+This patch (of 2):
+
+Since commit f1cf8d2f36dc ("mm: memcontrol: eliminate the problem of
+dying memory cgroup for LRU folios") and commit 0e0ac326c511 ("memcg:
+move LRU size accounting on reparenting instead of copying it"),
+mem_cgroup_css_offline() reparents all LRU folios to the parent memcg
+and zeroes the child's lrugen->nr_pages and lru_zone_size before the
+memcg is offlined. Nothing can repopulate the offlined memcg's lruvec
+afterwards. A folio that is off the LRU during reparenting looks up its
+lruvec through its objcg, which now points to the parent so it is put
+back on the parent's LRU.
+
+As a result, lruvec_lru_size() and lruvec_evictable_size() are always 0
+when !mem_cgroup_online(memcg) is true, making the offlined memcg special
+cases in get_scan_count(), lruvec_is_sizable(), and shrink_one() dead
+code. Remove them.
+
+With the get_nr_to_scan() special case removed, an offlined memcg that
+still has stale effective protection now has
+apply_proportional_protection() applied like get_scan_count() does, so
+the MGLRU and traditional LRU behavior is now the same.
+
+Link: https://lore.kernel.org/20261028010611.3929937-1-tjmercier@google.com
+Link: https://lore.kernel.org/20261028010611.3929937-2-tjmercier@google.com
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Kairui Song <kasong@tencent.com>
+Acked-by: Balbir Singh <balbirs@nvidia.com>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Kairui Song <ryncsn@gmail.com>
+---
+ include/linux/mmzone.h |  8 ++++----
+ mm/vmscan.c            | 28 +++++-----------------------
+ 2 files changed, 9 insertions(+), 27 deletions(-)
+
+diff --git a/include/linux/mmzone.h b/include/linux/mmzone.h
+index 8618e95439836..8bb136b3cbebc 100644
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -638,10 +638,10 @@ struct lru_gen_mm_walk {
+  * The events that trigger the above operations are:
+  * 1. The first attempt to reclaim a memcg below low, which triggers
+  *    MEMCG_LRU_TAIL;
+- * 2. The first attempt to reclaim a memcg offlined or below reclaimable size
+- *    threshold, which triggers MEMCG_LRU_TAIL;
+- * 3. The second attempt to reclaim a memcg offlined or below reclaimable size
+- *    threshold, which triggers MEMCG_LRU_YOUNG;
++ * 2. The first attempt to reclaim a memcg below reclaimable size threshold,
++ *    which triggers MEMCG_LRU_TAIL;
++ * 3. The second attempt to reclaim a memcg below reclaimable size threshold,
++ *    which triggers MEMCG_LRU_YOUNG;
+  * 4. Attempting to reclaim a memcg below min, which triggers MEMCG_LRU_YOUNG;
+  * 5. Finishing the aging on the eviction path, which triggers MEMCG_LRU_YOUNG;
+  * 6. Offlining a memcg, which triggers MEMCG_LRU_OLD.
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 7ddef3b488b3d..c16d2cf57a0de 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2755,13 +2755,6 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 		scan = apply_proportional_protection(memcg, sc, lruvec_size);
+ 		scan >>= sc->priority;
+ 
+-		/*
+-		 * If the cgroup's already been deleted, make sure to
+-		 * scrape out the remaining cache.
+-		 */
+-		if (!scan && !mem_cgroup_online(memcg))
+-			scan = min(lruvec_size, SWAP_CLUSTER_MAX);
+-
+ 		switch (scan_balance) {
+ 		case SCAN_EQUAL:
+ 			/* Scan lists relative to size */
+@@ -2770,14 +2763,8 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
+ 			/*
+ 			 * Scan types proportional to swappiness and
+ 			 * their relative recent reclaim efficiency.
+-			 * Make sure we don't miss the last page on
+-			 * the offlined memory cgroups because of a
+-			 * round-off error.
+ 			 */
+-			scan = mem_cgroup_online(memcg) ?
+-			       div64_u64(scan * fraction[file], denominator) :
+-			       DIV64_U64_ROUND_UP(scan * fraction[file],
+-						  denominator);
++			scan = div64_u64(scan * fraction[file], denominator);
+ 			break;
+ 		case SCAN_FILE:
+ 		case SCAN_ANON:
+@@ -4336,12 +4323,11 @@ static bool lruvec_is_sizable(struct lruvec *lruvec, struct scan_control *sc)
+ {
+ 	unsigned long total;
+ 	int swappiness = get_swappiness(lruvec, sc);
+-	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 
+ 	total = lruvec_evictable_size(lruvec, swappiness);
+ 
+ 	/* whether the size is big enough to be helpful */
+-	return mem_cgroup_online(memcg) ? (total >> sc->priority) : total;
++	return total >> sc->priority;
+ }
+ 
+ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc,
+@@ -5180,10 +5166,6 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc,
+ 
+ 	evictable = lruvec_evictable_size(lruvec, swappiness);
+ 
+-	/* try to scrape all its memory if this memcg was deleted */
+-	if (!mem_cgroup_online(memcg))
+-		return evictable;
+-
+ 	nr_to_scan = apply_proportional_protection(memcg, sc, evictable);
+ 	nr_to_scan >>= sc->priority;
+ 
+@@ -5306,13 +5288,13 @@ static int shrink_one(struct lruvec *lruvec, struct scan_control *sc)
+ 
+ 	flush_reclaim_state(sc);
+ 
+-	if (need_rotate && mem_cgroup_online(memcg))
++	if (need_rotate)
+ 		return MEMCG_LRU_YOUNG;
+ 
+-	if (!need_rotate && lruvec_is_sizable(lruvec, sc))
++	if (lruvec_is_sizable(lruvec, sc))
+ 		return 0;
+ 
+-	/* one retry if offlined or too small */
++	/* one retry if too small */
+ 	return READ_ONCE(lruvec->lrugen.seg) != MEMCG_LRU_TAIL ?
+ 	       MEMCG_LRU_TAIL : MEMCG_LRU_YOUNG;
+ }
+-- 
+2.47.3
+
