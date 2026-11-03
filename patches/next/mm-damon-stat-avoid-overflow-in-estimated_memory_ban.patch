@@ -1,0 +1,82 @@
+From: Wang Guangke <gkwang@linx-info.com>
+Date: Tue, 3 Nov 2026 11:40:34 +0800
+Subject: [PATCH] mm/damon/stat: avoid overflow in estimated_memory_bandwidth
+ calculation
+
+estimated_memory_bandwidth is calculated by access_bytes *
+USEC_PER_MSEC * MSEC_PER_SEC (= USEC_PER_SEC) / aggr_interval,
+and users read it via
+/sys/module/damon_stat/parameters/estimated_memory_bandwidth.
+
+On 32-bit systems, access_bytes * USEC_PER_SEC overflows unsigned
+long once access_bytes exceeds about 4294 (U32_MAX / USEC_PER_SEC),
+so users get a wrong value.
+
+Fix it by doing the calculation in 64-bit and splitting the division
+into quotient and remainder.
+
+The issue was reproduced on a 32-bit system (qemu-system-i386): the
+parameter estimated_memory_bandwidth reported 362 instead of the
+expected 1926150; with the fix, the value matches the expectation.
+
+/* TODO: move below to commentary */
+Changes from v2
+- v2: https://lore.kernel.org/20261103034034.7978-1-gkwang@linx-info.com
+- Collect R-b: from SJ.
+Changes from v1lx:
+- v1: https://lore.kernel.org/all/20261101180001.167198-1-gkwang@linx-info.com
+- Clarify the issue and its impact on users.
+- Add Cc: stable@.
+- Rename variable bytes_per_interval to bytes_per_us.
+- Use USEC_PER_SEC instead of 'USEC_PER_MSEC * MSEC_PER_SEC'.
+
+Fixes: fabdd1e911da ("mm/damon/stat: calculate and expose estimated memory bandwidth")
+Cc: <stable@vger.kernel.org>
+Signed-off-by: Wang Guangke <gkwang@linx-info.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/stat.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index eccd372810d04..6e05a2b067f29 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -32,8 +32,8 @@ static bool enabled __read_mostly = IS_ENABLED(
+ module_param_cb(enabled, &enabled_param_ops, NULL, 0600);
+ MODULE_PARM_DESC(enabled, "Enable of disable DAMON_STAT");
+ 
+-static unsigned long estimated_memory_bandwidth __read_mostly;
+-module_param(estimated_memory_bandwidth, ulong, 0400);
++static u64 estimated_memory_bandwidth __read_mostly;
++module_param(estimated_memory_bandwidth, ullong, 0400);
+ MODULE_PARM_DESC(estimated_memory_bandwidth,
+ 		"Estimated memory bandwidth usage in bytes per second");
+ 
+@@ -55,15 +55,18 @@ static void damon_stat_set_estimated_memory_bandwidth(struct damon_ctx *c)
+ {
+ 	struct damon_target *t;
+ 	struct damon_region *r;
+-	unsigned long access_bytes = 0;
++	u64 access_bytes = 0;
++	u64 remainder, bytes_per_us;
+ 
+ 	damon_for_each_target(t, c) {
+ 		damon_for_each_region(r, t)
+-			access_bytes += (r->ar.end - r->ar.start) *
++			access_bytes += (u64)(r->ar.end - r->ar.start) *
+ 				r->nr_accesses;
+ 	}
+-	estimated_memory_bandwidth = access_bytes * USEC_PER_MSEC *
+-		MSEC_PER_SEC / c->attrs.aggr_interval;
++	bytes_per_us = div64_u64_rem(access_bytes,
++			c->attrs.aggr_interval, &remainder);
++	estimated_memory_bandwidth = bytes_per_us * USEC_PER_SEC +
++		div64_u64(remainder * USEC_PER_SEC, c->attrs.aggr_interval);
+ }
+ 
+ static int damon_stat_idletime(const struct damon_region *r)
+-- 
+2.47.3
+
