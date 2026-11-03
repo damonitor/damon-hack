@@ -1,0 +1,52 @@
+From: "Jose Fernandez (Anthropic)" <jose.fernandez@linux.dev>
+Date: Sat, 31 Oct 2026 04:33:59 +0000
+Subject: [PATCH] mm/filemap: stop fault-around when the walk steps back
+
+filemap_map_pages() can dereference a PTE pointer outside the page table
+it locked.  KASAN has reported this as a use-after-free read [1].  The
+same path can also write out of bounds.  When the stray entry reads as
+none, the fault-around loop maps a page there with set_pte_range().
+
+Its fault-around loop walks the page cache and moves vmf->pte by the
+change in index.  A lower index moves it back.  xas_find() can step back
+to a lower index when a multi-index entry is split during the walk.
+
+[1] fixes xas_find(), but the loop still relies on the walk never stepping
+back.  Stop the fault-around when the walk steps back.  ->fault() maps the
+faulting page if the loop did not.
+
+Link: https://lore.kernel.org/20261031-jf-mm-filemap-map-pages-lower-bound-v2-1-21029744e589@linux.dev
+Link: https://lore.kernel.org/20260904121301.200049-1-krystianmkaniewski@gmail.com [1]
+Fixes: 6b24ca4a1a8d ("mm: Use multi-index entries in the page cache")
+Signed-off-by: Jose Fernandez (Anthropic) <jose.fernandez@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Krystian Kaniewski <krystianmkaniewski@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/filemap.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index b74bc1e5015c6..1df7769071403 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -3968,6 +3968,13 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
+ 		unsigned long end;
+ 		vm_fault_t map_ret;
+ 
++		/* A lower index could move vmf->pte out of its page table. */
++		if (unlikely(xas.xa_index < last_pgoff)) {
++			folio_unlock(folio);
++			folio_put(folio);
++			break;
++		}
++
+ 		addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT;
+ 		vmf->pte += xas.xa_index - last_pgoff;
+ 		last_pgoff = xas.xa_index;
+-- 
+2.47.3
+

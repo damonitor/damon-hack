@@ -1,0 +1,189 @@
+From: Alexandre Ghiti <alex@ghiti.fr>
+Date: Mon, 2 Nov 2026 15:48:22 +0100
+Subject: [PATCH] mm: bypass swap readahead for zswap
+
+Commit 0bcac06f27d7 ("mm, swap: skip swapcache for swapin of synchronous
+device") made SWP_SYNCHRONOUS_IO devices (e.g.  zram) skip swap readahead.
+
+zswap is the same kind of in-memory, synchronous backend as zram, not a
+swap device flagged SWP_SYNCHRONOUS_IO so it still goes through
+swapin_readahead().
+
+Here are the results from bypassing readahead for zswap too: it was
+measured with a kernel build (make -j16) in a memcg, zswap=zstd, shrinker
+off, on Sapphire Rapids and 3 iterations.
+
+  768M memcg (sustained swap thrash):
+    metric                 mm-new    + bypass    delta
+    build time (s)          405.0       341.7    -15.6%
+    zswap-in (GB)            79.5        53.0     -33%
+    zswap-out (GB)          144.8       115.6     -20%
+    swap readahead (pages)  6.79M       0.45M     -93%
+    swap_ra hit (%)          72.1        89.9     +18pp
+
+  1G memcg (light pressure, build not memory-bound):
+    metric                 mm-new    + bypass    delta
+    build time (s)          177.7       176.0    ~same (no regression)
+    zswap-in (GB)            10.2         7.5     -26%
+    zswap-out (GB)           27.7        25.1      -9%
+    swap readahead (pages)  1.07M       0.08M     -93%
+    swap_ra hit (%)          68.6        87.2     +19pp
+
+Similar gains were observed on an AMD EPYC 7D13 host.
+
+All the results above use the default page-cluster=3 and
+vma_ra_enabled=true.  Setting page-cluster to 0 gives the same gain on a
+zswap-only system, but page-cluster is global: it also disables readahead
+for the asynchronous swap backends that other tenants of the same host may
+use.
+
+The gain is from no longer prefetching pages that are pointless for an
+in-memory backend: readahead inflates anon residency and thrashes the page
+cache (file pages get evicted and re-read), lengthens each fault by
+synchronously (de)compressing a cluster of neighbours, and adds
+compression traffic when those extra pages are reclaimed.
+
+Bypassing swap readahead for zswap therefore makes sense.
+
+Link: https://lore.kernel.org/20261102144835.304017-1-alex@ghiti.fr
+Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Usama Arif <usama.arif@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: <ryncsn@gmail.com>
+Cc: <chrisl@kernel.org>
+---
+ include/linux/zswap.h |  6 ++++++
+ mm/memory.c           |  4 ++--
+ mm/swap.h             | 25 +++++++++++++++++++++++++
+ mm/zswap.c            |  5 ++++-
+ 4 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/zswap.h b/include/linux/zswap.h
+index df6cafbe95dc0..94746fb71bb65 100644
+--- a/include/linux/zswap.h
++++ b/include/linux/zswap.h
+@@ -35,6 +35,7 @@ void zswap_lruvec_state_init(struct lruvec *lruvec);
+ void zswap_folio_swapin(struct folio *folio);
+ bool zswap_is_enabled(void);
+ bool zswap_never_enabled(void);
++bool zswap_is_present(swp_entry_t entry, unsigned int nr);
+ #else
+ 
+ struct zswap_lruvec_state {};
+@@ -73,6 +74,11 @@ static inline bool zswap_never_enabled(void)
+ 	return true;
+ }
+ 
++static inline bool zswap_is_present(swp_entry_t entry, unsigned int nr)
++{
++	return false;
++}
++
+ #endif
+ 
+ #endif /* _LINUX_ZSWAP_H */
+diff --git a/mm/memory.c b/mm/memory.c
+index 5aec0dbc17be2..0c9ed04528d88 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -5034,8 +5034,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 	if (folio)
+ 		swap_update_readahead(folio, vma, vmf->address);
+ 	if (!folio) {
+-		/* Swapin bypasses readahead for SWP_SYNCHRONOUS_IO devices */
+-		if (data_race(si->flags & SWP_SYNCHRONOUS_IO))
++		/* Swapin bypasses readahead for SWP_SYNCHRONOUS_IO devices and zswap */
++		if (swap_entry_synchronous(si, entry))
+ 			folio = swapin_sync(entry, GFP_HIGHUSER_MOVABLE,
+ 					    thp_swapin_suitable_orders(vmf) | BIT(0),
+ 					    vmf, NULL, 0);
+diff --git a/mm/swap.h b/mm/swap.h
+index d5bf21f517dce..b8181bd056ee2 100644
+--- a/mm/swap.h
++++ b/mm/swap.h
+@@ -94,6 +94,7 @@ static inline int mem_cgroup_swappiness(const struct mem_cgroup *memcg)
+ 
+ #ifdef CONFIG_SWAP
+ #include <linux/swapops.h> /* for swp_offset */
++#include <linux/zswap.h> /* for zswap_is_present */
+ #include <linux/blk_types.h> /* for bio_end_io_t */
+ 
+ static inline unsigned int swp_cluster_offset(swp_entry_t entry)
+@@ -336,6 +337,24 @@ struct folio *swapin_sync(swp_entry_t entry, gfp_t flag, unsigned long orders,
+ void swap_update_readahead(struct folio *folio, struct vm_area_struct *vma,
+ 			   unsigned long addr);
+ 
++/**
++ * swap_entry_synchronous - check if @entry is read synchronously
++ * @si: the swap device of @entry
++ * @entry: the swap entry
++ *
++ * SWP_SYNCHRONOUS_IO devices and zswap complete a read in the faulting
++ * context, so swap readahead has no asynchronous I/O to overlap.
++ *
++ * Context: The caller must hold a reference on @si. The answer is a hint: the
++ * entry can be written back from zswap or freed concurrently.
++ */
++static inline bool swap_entry_synchronous(struct swap_info_struct *si,
++					  swp_entry_t entry)
++{
++	return data_race(si->flags & SWP_SYNCHRONOUS_IO) ||
++	       zswap_is_present(entry, 1);
++}
++
+ #else /* CONFIG_SWAP */
+ 
+ static inline struct swap_cluster_info *swap_cluster_get_and_lock(
+@@ -423,6 +442,12 @@ static inline void swap_update_readahead(struct folio *folio,
+ {
+ }
+ 
++static inline bool swap_entry_synchronous(struct swap_info_struct *si,
++					  swp_entry_t entry)
++{
++	return false;
++}
++
+ static inline int swap_writeout(struct swap_io_ctx *ctx, struct folio *folio)
+ {
+ 	return 0;
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 7660f19ed5bf5..37d217860a6b2 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -1695,12 +1695,15 @@ bool zswap_store(struct folio *folio)
+  * change under it.
+  * Return: true if at least one slot in the range is in zswap.
+  */
+-static bool zswap_is_present(swp_entry_t entry, unsigned int nr)
++bool zswap_is_present(swp_entry_t entry, unsigned int nr)
+ {
+ 	pgoff_t offset = swp_offset(entry);
+ 	struct xarray *tree = swap_zswap_tree(entry);
+ 	unsigned long index = offset;
+ 
++	if (zswap_never_enabled() || xa_empty(tree))
++		return false;
++
+ 	/*
+ 	 * A pinned range is at most SWAPFILE_CLUSTER slots and is aligned to
+ 	 * its own size, so one tree covers all of it and a single lookup is
+-- 
+2.47.3
+
