@@ -33,18 +33,22 @@ mkdir -p "$summary_dir"
 # save brief summary of review status.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
-	--filter allow subsystem DAMON > "${summary_dir}/summary"
+	--filter allow subsystem DAMON \
+	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
+	> "${summary_dir}/summary"
 
 # save the summary with full patches list.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON \
+	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--full_commits_list > "${summary_dir}/commits_list"
 
 # save the summary for patches not authored by SJ but not reviewed by SJ.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter reject not subsystem DAMON \
+	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--filter reject author "SeongJae Park <sj@kernel.org>" \
 	--filter reject author "SJ Park <sj@kernel.org>" \
 	--filter reject reviewer "SeongJae Park <sj@kernel.org>" \
@@ -55,6 +59,7 @@ mkdir -p "$summary_dir"
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
 	--filter allow subsystem DAMON \
+	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--diff_old "$old_info" --list_changed_commits \
 	> "${summary_dir}/changes_from_last_update"
 
