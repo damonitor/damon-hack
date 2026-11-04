@@ -1,0 +1,113 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 4 Nov 2026 10:35:00 +0800
+Subject: [PATCH] mm: hugetlb_vmemmap: unify VMEMMAP_{SPLIT,REMAP}_NO_TLB_FLUSH
+
+VMEMMAP_SPLIT_NO_TLB_FLUSH and VMEMMAP_REMAP_NO_TLB_FLUSH do not describe
+fully independent choices.  A split-only walk can defer the PMD-split
+flush to a later global flush, and a remap-only walk can defer the final
+remap flush.  However, when a PMD split is followed by PTE remapping, the
+split flush must happen before the PTEs are changed, because stale
+large-page translations must not overlap with new small-page translations
+that map different physical pages.
+
+Replace the two flags with a single VMEMMAP_DEFER_TLB_FLUSH flag.  The new
+name reflects that only safely batchable flushes are deferred.  Keep
+split-only walks able to defer the flush, but force the split flush
+whenever a remap_pte callback is present.  Callers that batch HVO work can
+still defer the final remap flush and issue their own global flush.
+
+Current callers keep the same flushing behavior.
+
+Link: https://lore.kernel.org/20261104023510.260766-3-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: James Houghton <jthoughton@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+---
+ mm/hugetlb_vmemmap.c | 23 +++++++++++++----------
+ 1 file changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index 4b73d6ec8dcea..63e899cfaac3a 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -42,10 +42,8 @@ struct vmemmap_remap_walk {
+ 	struct list_head	*vmemmap_pages;
+ 
+ 
+-/* Skip the TLB flush when we split the PMD */
+-#define VMEMMAP_SPLIT_NO_TLB_FLUSH	BIT(0)
+-/* Skip the TLB flush when we remap the PTE */
+-#define VMEMMAP_REMAP_NO_TLB_FLUSH	BIT(1)
++/* Defer safely batchable TLB flushes to the caller. */
++#define VMEMMAP_DEFER_TLB_FLUSH	BIT(0)
+ 	unsigned long		flags;
+ };
+ 
+@@ -85,7 +83,12 @@ static int vmemmap_split_pmd(pmd_t *pmd, struct page *head, unsigned long start,
+ 		/* Make pte visible before pmd. See comment in pmd_install(). */
+ 		smp_wmb();
+ 		pmd_populate_kernel(&init_mm, pmd, pgtable);
+-		if (!(walk->flags & VMEMMAP_SPLIT_NO_TLB_FLUSH))
++		/*
++		 * Modern MMUs allow overlapping TLB entries with different mapping
++		 * granularities only if they map the same physical address. So
++		 * remapping must not proceed without first flushing the TLB.
++		 */
++		if (walk->remap_pte || !(walk->flags & VMEMMAP_DEFER_TLB_FLUSH))
+ 			flush_tlb_kernel_range(start, start + PMD_SIZE);
+ 	} else {
+ 		pte_free_kernel(&init_mm, pgtable);
+@@ -166,7 +169,7 @@ static int vmemmap_remap_range(unsigned long start, unsigned long end,
+ 	if (ret)
+ 		return ret;
+ 
+-	if (walk->remap_pte && !(walk->flags & VMEMMAP_REMAP_NO_TLB_FLUSH))
++	if (walk->remap_pte && !(walk->flags & VMEMMAP_DEFER_TLB_FLUSH))
+ 		flush_tlb_kernel_range(start, end);
+ 
+ 	return 0;
+@@ -274,7 +277,7 @@ static int vmemmap_remap_split(unsigned long start, unsigned long end)
+ {
+ 	struct vmemmap_remap_walk walk = {
+ 		.remap_pte	= NULL,
+-		.flags		= VMEMMAP_SPLIT_NO_TLB_FLUSH,
++		.flags		= VMEMMAP_DEFER_TLB_FLUSH,
+ 	};
+ 
+ 	return vmemmap_remap_range(start, end, &walk);
+@@ -458,7 +461,7 @@ long hugetlb_vmemmap_restore_folios(const struct hstate *h,
+ 	struct folio *folio, *t_folio;
+ 	long restored = 0;
+ 	long ret = 0;
+-	unsigned long flags = VMEMMAP_REMAP_NO_TLB_FLUSH;
++	unsigned long flags = VMEMMAP_DEFER_TLB_FLUSH;
+ 
+ 	list_for_each_entry_safe(folio, t_folio, folio_list, lru) {
+ 		if (folio_test_hugetlb_vmemmap_optimized(folio)) {
+@@ -516,7 +519,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 
+ 	/*
+ 	 * Very Subtle
+-	 * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
++	 * If VMEMMAP_DEFER_TLB_FLUSH is set, TLB flushing is not performed
+ 	 * immediately after remapping.  As a result, subsequent accesses
+ 	 * and modifications to struct pages associated with the hugetlb
+ 	 * page could be to the OLD struct pages.  Set the vmemmap optimized
+@@ -595,7 +598,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 	struct folio *folio;
+ 	unsigned long nr_to_optimize = 0;
+ 	LIST_HEAD(vmemmap_pages);
+-	unsigned long flags = VMEMMAP_REMAP_NO_TLB_FLUSH;
++	unsigned long flags = VMEMMAP_DEFER_TLB_FLUSH;
+ 
+ 	if (list_empty(folio_list))
+ 		return;
+-- 
+2.47.3
+

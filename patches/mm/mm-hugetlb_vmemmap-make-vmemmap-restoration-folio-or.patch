@@ -1,0 +1,106 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 4 Nov 2026 10:35:08 +0800
+Subject: [PATCH] mm: hugetlb_vmemmap: make vmemmap restoration folio-oriented
+
+Like optimization, vmemmap restoration operates on one folio at a time,
+but the current interface exposes a raw address range and requires the
+HugeTLB caller to prepare part of the operation.  This splits the common
+mechanism across layers and obscures its natural unit of work.
+
+Make the folio the unit of vmemmap restoration and move the common
+mechanics behind a folio-oriented interface.  This keeps HugeTLB-specific
+eligibility and state in the caller and gives both directions of HVO
+consistent folio-level interfaces.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261104023510.260766-11-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: James Houghton <jthoughton@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+---
+ mm/hugetlb_vmemmap.c | 37 +++++++++++++------------------------
+ 1 file changed, 13 insertions(+), 24 deletions(-)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index 64967f18e3c33..e424cb0b1a780 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -363,28 +363,29 @@ static int vmemmap_optimize_folio(const struct folio *folio,
+ }
+ 
+ /**
+- * vmemmap_remap_alloc - remap the vmemmap virtual address range [@start, end)
+- *			 to the page which is from the @vmemmap_pages
+- *			 respectively.
+- * @start:	start address of the vmemmap virtual address range that we want
+- *		to remap.
+- * @end:	end address of the vmemmap virtual address range that we want to
+- *		remap.
+- * @flags:	modifications to vmemmap_remap_walk flags
++ * vmemmap_restore_folio - restore the vmemmap backing of a folio
++ * @folio:	folio whose vmemmap pages should be restored.
++ * @flags:	vmemmap remap control flags passed to vmemmap_remap_walk.
++ *
++ * Remap @folio's vmemmap so optimizable entries are restored from the shared
++ * tail page back to distinct backing pages allocated for @folio, while
++ * non-optimizable entries remain unchanged.
+  *
+  * Return: %0 on success, negative error code otherwise.
+  */
+-static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
+-			       unsigned long flags)
++static int vmemmap_restore_folio(const struct folio *folio, unsigned long flags)
+ {
+ 	LIST_HEAD(vmemmap_pages);
+-	int nid = page_to_nid((struct page *)start);
++	int nid = folio_nid(folio);
++	unsigned long start = (unsigned long)folio_page(folio, 0);
++	unsigned long end = start + folio_vmemmap_size(folio);
+ 	struct vmemmap_remap_walk walk = {
+ 		.remap_pte	= vmemmap_restore_pte,
+ 		.vmemmap_pages	= &vmemmap_pages,
+ 		.flags		= flags,
+ 	};
+ 
++	start += VMEMMAP_OPTIMIZATION_SIZE;
+ 	if (alloc_vmemmap_page_list(&vmemmap_pages, (end - start) / PAGE_SIZE, nid))
+ 		return -ENOMEM;
+ 
+@@ -402,7 +403,6 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+ 					   struct folio *folio, unsigned long flags)
+ {
+ 	int ret;
+-	unsigned long vmemmap_start, vmemmap_end;
+ 
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+ 	VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
+@@ -410,18 +410,7 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+ 	if (!folio_test_hugetlb_vmemmap_optimized(folio))
+ 		return 0;
+ 
+-	vmemmap_start	= (unsigned long)&folio->page;
+-	vmemmap_end	= vmemmap_start + hugetlb_vmemmap_size(h);
+-
+-	vmemmap_start	+= VMEMMAP_OPTIMIZATION_SIZE;
+-
+-	/*
+-	 * The pages which the vmemmap virtual address range [@vmemmap_start,
+-	 * @vmemmap_end) are mapped to are freed to the buddy allocator.
+-	 * When a HugeTLB page is freed to the buddy allocator, previously
+-	 * discarded vmemmap pages must be allocated and remapping.
+-	 */
+-	ret = vmemmap_remap_alloc(vmemmap_start, vmemmap_end, flags);
++	ret = vmemmap_restore_folio(folio, flags);
+ 	if (!ret)
+ 		folio_clear_hugetlb_vmemmap_optimized(folio);
+ 
+-- 
+2.47.3
+

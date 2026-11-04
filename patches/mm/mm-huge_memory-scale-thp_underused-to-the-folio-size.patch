@@ -1,0 +1,140 @@
+From: Joanne Koong <joannelkoong@gmail.com>
+Date: Tue, 3 Nov 2026 13:20:01 -0800
+Subject: [PATCH] mm/huge_memory: scale thp_underused() to the folio size
+
+Patch series "mm: split underused anonymous mTHP folios", v4.
+
+PMD-sized THPs that are mostly zero-filled are reclaimed under memory
+pressure by the deferred split shrinker, but this is not done for mTHP
+folios. At Meta we would like to deploy 2M THP=always on arm64 with 64k
+base pages, as 2M provides the contpte benefits while the PMD size there
+(512M) is too big to use. However, 2M THP=always causes memory regressions
+unless the unused portions of those folios can be broken down and
+reclaimed.
+
+This series lets the underused shrinker handle anonymous mTHP folios. It has
+four patches:
+
+Patch 1 makes thp_underused() folio-size-aware. It scales
+khugepaged/max_ptes_none to the folio size, so every folio tolerates the same
+fraction of zero-filled pages.
+
+Patch 2 stops queueing folios for underused splitting when
+khugepaged/max_ptes_none is at its default maximum, where the shrinker
+would never split them anyway. This applies to PMD-sized folios too,
+which are unconditionally queued today.
+
+Patch 3 keeps thp_underused_split_page counting only PMD-sized folios and
+adds a per-order split_underused counter, matching how thp_split_page and
+thp_deferred_split_page are handled.
+
+Patch 4 queues anonymous mTHP folios on the deferred split list, with a
+hard-coded 2M minimum folio size as suggested by Barry. PMD-sized folios are
+exempt from the minimum, since on s390 the PMD size is 1M.
+
+At the default khugepaged/max_ptes_none, no folio is queued for underused
+splitting. Once it's lowered, mTHP folios of at least 2M are queued along with
+PMD-sized folios.
+
+
+This patch (of 4):
+
+thp_underused() decides whether a large folio on the deferred split list
+is underused and should be split so that its zero-filled subpages can be
+reclaimed.
+
+Today it only ever runs on PMD-sized folios, so it assumes that the
+folio has HPAGE_PMD_NR pages and compares the zero-filled page count
+directly against khugepaged_max_ptes_none. A later patch will queue
+anonymous mTHP folios onto the deferred split list as well, at which
+point that assumption will no longer hold.
+
+Make thp_underused() folio-size-aware, and scale
+khugepaged_max_ptes_none proportionally to the number of pages in the
+folio (eg every folio tolerates the same fraction of zero-filled pages
+the user configured for a PMD-sized folio).
+
+khugepaged deliberately doesn't scale intermediate values when
+collapsing to mTHP orders (to avoid the memory footprint creeping up
+through repeated collapses), but if/when collapse later gains support
+for intermediate values, a folio that khugepaged collapses won't then be
+split right back by the shrinker (and vice versa) since both collapse
+and split would use the same threshold for a given folio size.
+
+There is no functional change for PMD-sized folios, as for those,
+nr_pages is HPAGE_PMD_NR.
+
+Link: https://lore.kernel.org/20261103212004.1356327-1-joannelkoong@gmail.com
+Link: https://lore.kernel.org/20261103212004.1356327-2-joannelkoong@gmail.com
+Signed-off-by: Joanne Koong <joannelkoong@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Usama Arif <usama.arif@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: AlexandreGhiti <alex@ghiti.fr>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ mm/huge_memory.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 14599d0fff013..3720c12bdb0dc 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -4625,25 +4625,33 @@ static unsigned long deferred_split_count(struct shrinker *shrink,
+ 
+ static bool thp_underused(struct folio *folio)
+ {
+-	int num_zero_pages = 0, num_filled_pages = 0;
+-	int i;
++	const unsigned long nr_pages = folio_nr_pages(folio);
++	unsigned long num_zero_pages = 0, num_filled_pages = 0;
++	unsigned long max_ptes_none = khugepaged_max_ptes_none;
++	unsigned long i;
+ 
+-	if (khugepaged_max_ptes_none == HPAGE_PMD_NR - 1)
++	if (max_ptes_none == HPAGE_PMD_NR - 1)
+ 		return false;
+ 
+ 	if (folio_contain_hwpoisoned_page(folio))
+ 		return false;
+ 
+-	for (i = 0; i < folio_nr_pages(folio); i++) {
++	/*
++	 * khugepaged_max_ptes_none is a number of pages out of HPAGE_PMD_NR.
++	 * Scale it to this folio's size.
++	 */
++	max_ptes_none = max_ptes_none * nr_pages / HPAGE_PMD_NR;
++
++	for (i = 0; i < nr_pages; i++) {
+ 		if (pages_identical(folio_page(folio, i), ZERO_PAGE(0))) {
+-			if (++num_zero_pages > khugepaged_max_ptes_none)
++			if (++num_zero_pages > max_ptes_none)
+ 				return true;
+ 		} else {
+ 			/*
+ 			 * Another path for early exit once the number
+ 			 * of non-zero filled pages exceeds threshold.
+ 			 */
+-			if (++num_filled_pages >= HPAGE_PMD_NR - khugepaged_max_ptes_none)
++			if (++num_filled_pages >= nr_pages - max_ptes_none)
+ 				return false;
+ 		}
+ 	}
+-- 
+2.47.3
+

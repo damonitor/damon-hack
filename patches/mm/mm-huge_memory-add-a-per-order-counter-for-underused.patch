@@ -1,0 +1,128 @@
+From: Joanne Koong <joannelkoong@gmail.com>
+Date: Tue, 3 Nov 2026 13:20:03 -0800
+Subject: [PATCH] mm/huge_memory: add a per-order counter for underused splits
+
+thp_underused_split_page counts every folio that the deferred split
+shrinker splits for being underused. Today that is only ever a
+PMD-sized folio, but a later patch queues anonymous mTHP folios for
+underused splitting too, at which point this counter would start
+counting mTHP splits as well.
+
+thp_underused_split_page could then end up larger than thp_split_page,
+and there would be no per-order count of underused splits. That doesn't
+match how the other THP split stats work. In /proc/vmstat,
+thp_split_page and thp_deferred_split_page only count PMD-sized folios.
+Splits of every size, PMD included, are counted per order in the split
+and split_deferred stats under hugepages-<size>/stats/.
+
+Do the same for underused splits. Only count PMD-sized folios in
+thp_underused_split_page, and add a per-order split_underused stat that
+counts underused splits of every size. The folio's order has to be read
+before splitting it, since the folio is no longer large once the split
+succeeds.
+
+There is no functional change to thp_underused_split_page yet, as only
+PMD-sized folios are split for being underused today.
+
+Link: https://lore.kernel.org/20261103212004.1356327-4-joannelkoong@gmail.com
+Signed-off-by: Joanne Koong <joannelkoong@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Kiryl Shutsemau <kas@kernel.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: AlexandreGhiti <alex@ghiti.fr>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ Documentation/admin-guide/mm/transhuge.rst |  6 ++++++
+ include/linux/huge_mm.h                    |  1 +
+ mm/huge_memory.c                           | 10 ++++++++--
+ 3 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/admin-guide/mm/transhuge.rst b/Documentation/admin-guide/mm/transhuge.rst
+index b187d618452f4..6f2d92a2a556b 100644
+--- a/Documentation/admin-guide/mm/transhuge.rst
++++ b/Documentation/admin-guide/mm/transhuge.rst
+@@ -719,6 +719,12 @@ split_deferred
+         it would free up some memory. Pages on split queue are going to
+         be split under memory pressure, if splitting is possible.
+ 
++split_underused
++	is incremented when a huge page on the split queue was split
++	because it was underused. This happens when the number of zero-filled
++	pages in the huge page is above a certain threshold scaled from
++	/sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none.
++
+ nr_anon
+        the number of anonymous THP we have in the whole system. These THPs
+        might be currently entirely mapped or have partially unmapped/unused
+diff --git a/include/linux/huge_mm.h b/include/linux/huge_mm.h
+index c745f7ad22987..421217aca4ed8 100644
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -142,6 +142,7 @@ enum mthp_stat_item {
+ 	MTHP_STAT_SPLIT,
+ 	MTHP_STAT_SPLIT_FAILED,
+ 	MTHP_STAT_SPLIT_DEFERRED,
++	MTHP_STAT_SPLIT_UNDERUSED,
+ 	MTHP_STAT_NR_ANON,
+ 	MTHP_STAT_NR_ANON_PARTIALLY_MAPPED,
+ 	MTHP_STAT_COLLAPSE_EXCEED_SWAP,
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 903bbe972011f..8f90fb609e575 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -822,6 +822,7 @@ DEFINE_MTHP_STAT_ATTR(shmem_fallback_charge, MTHP_STAT_SHMEM_FALLBACK_CHARGE);
+ DEFINE_MTHP_STAT_ATTR(split, MTHP_STAT_SPLIT);
+ DEFINE_MTHP_STAT_ATTR(split_failed, MTHP_STAT_SPLIT_FAILED);
+ DEFINE_MTHP_STAT_ATTR(split_deferred, MTHP_STAT_SPLIT_DEFERRED);
++DEFINE_MTHP_STAT_ATTR(split_underused, MTHP_STAT_SPLIT_UNDERUSED);
+ DEFINE_MTHP_STAT_ATTR(nr_anon, MTHP_STAT_NR_ANON);
+ DEFINE_MTHP_STAT_ATTR(nr_anon_partially_mapped, MTHP_STAT_NR_ANON_PARTIALLY_MAPPED);
+ DEFINE_MTHP_STAT_ATTR(collapse_exceed_swap_pte, MTHP_STAT_COLLAPSE_EXCEED_SWAP);
+@@ -842,6 +843,7 @@ static struct attribute *anon_stats_attrs[] = {
+ 	&swpout_fallback_attr.attr,
+ #endif
+ 	&split_deferred_attr.attr,
++	&split_underused_attr.attr,
+ 	&nr_anon_attr.attr,
+ 	&nr_anon_partially_mapped_attr.attr,
+ 	&collapse_exceed_swap_pte_attr.attr,
+@@ -4703,6 +4705,7 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
+ 					    deferred_split_isolate, &dispose);
+ 
+ 	list_for_each_entry_safe(folio, next, &dispose, _deferred_list) {
++		const unsigned int order = folio_order(folio);
+ 		bool did_split = false;
+ 		bool underused = false;
+ 
+@@ -4724,8 +4727,11 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
+ 			goto requeue;
+ 		if (!split_folio(folio)) {
+ 			did_split = true;
+-			if (underused)
+-				count_vm_event(THP_UNDERUSED_SPLIT_PAGE);
++			if (underused) {
++				if (is_pmd_order(order))
++					count_vm_event(THP_UNDERUSED_SPLIT_PAGE);
++				count_mthp_stat(order, MTHP_STAT_SPLIT_UNDERUSED);
++			}
+ 			split++;
+ 		}
+ 		folio_unlock(folio);
+-- 
+2.47.3
+

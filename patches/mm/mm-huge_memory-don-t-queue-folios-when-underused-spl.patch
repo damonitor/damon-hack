@@ -1,0 +1,112 @@
+From: Joanne Koong <joannelkoong@gmail.com>
+Date: Tue, 3 Nov 2026 13:20:02 -0800
+Subject: [PATCH] mm/huge_memory: don't queue folios when underused splitting
+ is inactive
+
+Every anonymous PMD-sized folio is put on the deferred split queue when
+it is first mapped, so that the shrinker can find it under memory
+pressure and split it if it turns out to be mostly zero-filled.
+
+With the default khugepaged/max_ptes_none this is wasted work. The
+default is HPAGE_PMD_NR - 1, which tells thp_underused() that any number
+of zero-filled pages is tolerable, which means the shrinker will never
+split any of these folios for being underused. They take the list_lru
+lock at fault time, inflate the object count the shrinker reports, and
+are then walked and dropped when they're first scanned.
+
+Skip the queueing when khugepaged/max_ptes_none is at its maximum, and
+factor that check out into thp_underused_never() so that
+deferred_split_folio() and thp_underused() share it. Since the default
+is the maximum, out of the box no folio is queued for underused
+splitting at all, PMD-sized ones included. Partially mapped folios are
+still queued as before.
+
+This also matters for a subsequent patch that adds anonymous mTHP folios
+to the deferred split list, as it keeps systems running the default from
+paying for that on every anonymous fault.
+
+Please note that the queue has always been best-effort. A folio that was
+queued before khugepaged/max_ptes_none is lowered gets dropped from the
+queue by the first scan that finds it's not underused, so changing the
+sysctl has never retroactively applied to folios that were already
+scanned. Requeueing eligible folios when the sysctl changes will be
+addressed in a separate patch.
+
+Link: https://lore.kernel.org/20261103212004.1356327-3-joannelkoong@gmail.com
+Signed-off-by: Joanne Koong <joannelkoong@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Johannes Weiner <hannes@cmpxchg.org>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: AlexandreGhiti <alex@ghiti.fr>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ mm/huge_memory.c | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 3720c12bdb0dc..903bbe972011f 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -4564,6 +4564,15 @@ bool __folio_unqueue_deferred_split(struct folio *folio)
+ 	return unqueued;	/* useful for debug warnings */
+ }
+ 
++/*
++ * At the sysctl maximum the user tolerates any number of zero-filled pages,
++ * so no folio is ever underused.
++ */
++static bool thp_underused_never(unsigned long max_ptes_none)
++{
++	return max_ptes_none == HPAGE_PMD_NR - 1;
++}
++
+ /* partially_mapped=false won't clear PG_partially_mapped folio flag */
+ void deferred_split_folio(struct folio *folio, bool partially_mapped)
+ {
+@@ -4579,8 +4588,17 @@ void deferred_split_folio(struct folio *folio, bool partially_mapped)
+ 	if (folio_order(folio) <= 1)
+ 		return;
+ 
+-	if (!partially_mapped && !split_underused_thp)
+-		return;
++	if (!partially_mapped) {
++		if (!split_underused_thp)
++			return;
++		/*
++		 * Nothing will ever split this folio for being underused, so
++		 * keep it off the queue entirely rather than paying for the
++		 * list_lru lock here and a shrinker scan later.
++		 */
++		if (thp_underused_never(khugepaged_max_ptes_none))
++			return;
++	}
+ 
+ 	/*
+ 	 * Exclude swapcache: originally to avoid a corrupt deferred split
+@@ -4630,7 +4648,7 @@ static bool thp_underused(struct folio *folio)
+ 	unsigned long max_ptes_none = khugepaged_max_ptes_none;
+ 	unsigned long i;
+ 
+-	if (max_ptes_none == HPAGE_PMD_NR - 1)
++	if (thp_underused_never(max_ptes_none))
+ 		return false;
+ 
+ 	if (folio_contain_hwpoisoned_page(folio))
+-- 
+2.47.3
+

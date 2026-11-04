@@ -1,0 +1,112 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 4 Nov 2026 10:35:03 +0800
+Subject: [PATCH] mm: hugetlb_vmemmap: unify writable vmemmap page preparation
+
+Installing a writable vmemmap page requires consuming a replacement page,
+copying the current contents into it and making the copy visible before
+publishing the new mapping.  HVO currently splits this sequence between
+the page-table walker and its caller depending on the remap path.
+
+Centralize the sequence in the walker so all writable replacements follow
+the same copy-and-publish protocol.  This keeps page preparation with the
+mapping update and removes path-specific handling from higher-level HVO
+code.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261104023510.260766-6-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: James Houghton <jthoughton@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+---
+ mm/hugetlb_vmemmap.c | 40 +++++++++++++++++-----------------------
+ 1 file changed, 17 insertions(+), 23 deletions(-)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index d3058e106795f..531150870aac9 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -199,6 +199,20 @@ static void free_vmemmap_page_list(struct list_head *list)
+ 		free_vmemmap_page(page);
+ }
+ 
++static struct page *vmemmap_dup_page_from_list(const struct page *src,
++		struct list_head *vmemmap_pages)
++{
++	struct page *dst = list_first_entry(vmemmap_pages, struct page, lru);
++
++	list_del(&dst->lru);
++	copy_page(page_address(dst), page_address(src));
++
++	/* Ensure updates to @dst page are visible before set_pte_at(). */
++	smp_wmb();
++
++	return dst;
++}
++
+ static void vmemmap_remap_pte(pte_t *pte, unsigned long addr,
+ 			      struct vmemmap_remap_walk *walk)
+ {
+@@ -211,16 +225,7 @@ static void vmemmap_remap_pte(pte_t *pte, unsigned long addr,
+ 
+ 		VM_WARN_ON_ONCE(!PageHead((const struct page *)addr));
+ 
+-		head = list_first_entry(walk->vmemmap_pages, struct page, lru);
+-		list_del(&head->lru);
+-
+-		/*
+-		 * Makes sure that preceding stores to the page contents from
+-		 * vmemmap_remap_free() become visible before the set_pte_at()
+-		 * write.
+-		 */
+-		smp_wmb();
+-
++		head = vmemmap_dup_page_from_list(page, walk->vmemmap_pages);
+ 		entry = mk_pte(head, PAGE_KERNEL);
+ 	} else {
+ 		VM_WARN_ON_ONCE(!PageTail((const struct page *)addr));
+@@ -253,15 +258,7 @@ static void vmemmap_restore_pte(pte_t *pte, unsigned long addr,
+ 
+ 	VM_WARN_ON_ONCE(PageHead((const struct page *)addr));
+ 
+-	dst = list_first_entry(walk->vmemmap_pages, struct page, lru);
+-	list_del(&dst->lru);
+-	copy_page(page_to_virt(dst), page_to_virt(src));
+-
+-	/*
+-	 * Makes sure that preceding stores to the page contents become visible
+-	 * before the set_pte_at() write.
+-	 */
+-	smp_wmb();
++	dst = vmemmap_dup_page_from_list(src, walk->vmemmap_pages);
+ 	set_pte_at(&init_mm, addr, pte, mk_pte(dst, PAGE_KERNEL));
+ }
+ 
+@@ -499,7 +496,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 					    unsigned long flags)
+ {
+ 	unsigned long vmemmap_start, vmemmap_end;
+-	struct page *vmemmap_head, *vmemmap_tail;
++	struct page *vmemmap_tail;
+ 	int nid, ret = 0;
+ 
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+@@ -531,9 +528,6 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 		goto out;
+ 	}
+ 
+-	vmemmap_head = list_first_entry(vmemmap_pages, struct page, lru);
+-	copy_page(page_to_virt(vmemmap_head), folio);
+-
+ 	vmemmap_start	= (unsigned long)&folio->page;
+ 	vmemmap_end	= vmemmap_start + hugetlb_vmemmap_size(h);
+ 
+-- 
+2.47.3
+

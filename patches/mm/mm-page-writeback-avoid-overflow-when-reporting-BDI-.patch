@@ -1,0 +1,46 @@
+From: Hungyu Lin <dennylin0707@gmail.com>
+Date: Tue, 3 Nov 2026 19:36:26 +0000
+Subject: [PATCH] mm/page-writeback: avoid overflow when reporting BDI byte
+ limits
+
+bdi_get_bytes() multiplies unsigned long operands before assigning the
+result to u64.  On 32-bit kernels, the intermediate product wraps and
+min_bytes and max_bytes report incorrect limits.  For example, with
+vm.dirty_bytes set to 104857600 and max_ratio set to 100, max_bytes
+reports 268 instead of 104857600.
+
+Convert the page count to bytes in u64 and use mul_u64_u32_div() to avoid
+overflow in the subsequent multiplication.  This also handles large dirty
+limits on systems with larger pages.  Combining the two divisions keeps
+the existing rounding behavior.
+
+Link: https://lore.kernel.org/20261103193627.71959-1-dennylin0707@gmail.com
+Fixes: 00df7d51263b ("mm: add bdi_get_max_bytes() function")
+Signed-off-by: Hungyu Lin <dennylin0707@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Stefan Roesch <shr@devkernel.io>
+Cc: <stable@vger.kernel.org>
+---
+ mm/page-writeback.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index b56f2c91b0f29..235e88d72e67c 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -665,7 +665,8 @@ static u64 bdi_get_bytes(unsigned int ratio)
+ 	u64 bytes;
+ 
+ 	global_dirty_limits(&background_thresh, &dirty_thresh);
+-	bytes = (dirty_thresh * PAGE_SIZE * ratio) / BDI_RATIO_SCALE / 100;
++	bytes = mul_u64_u32_div((u64)dirty_thresh << PAGE_SHIFT, ratio,
++				100 * BDI_RATIO_SCALE);
+ 
+ 	return bytes;
+ }
+-- 
+2.47.3
+
