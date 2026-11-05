@@ -1,0 +1,78 @@
+From: Abhishek Bapat <abhishekbapat@google.com>
+Date: Wed, 4 Nov 2026 19:03:38 +0000
+Subject: [PATCH] alloc_tag: add a flags field to allocinfo_filter
+
+struct allocinfo_filter uses a whole __u64 to hold the single boolean
+used by the accuracy filter. Adding another boolean criterion the same
+way would grow struct allocinfo_get_at, which changes the
+ALLOCINFO_IOC_GET_AT ioctl number and breaks the UAPI.
+
+Add a `flags` field that shares storage with `inaccurate` through an
+anonymous union, and use bit 0, ALLOCINFO_FILTER_FLAG_INACCURATE, for
+the accuracy criterion. New boolean criteria can take the remaining
+bits without changing the struct layout.
+
+Keeping `inaccurate` in the union means userspace built against the
+older API still compiles, and the values 0 and 1 keep their meaning.
+Previously any non-zero value selected inaccurate tags; now only bit 0
+is checked, so a value such as 2 selects accurate tags instead.
+
+Link: https://lore.kernel.org/64ce5ba6eedf0950c22d1416b794e83afbab8ea8.1793818636.git.abhishekbapat@google.com
+Signed-off-by: Abhishek Bapat <abhishekbapat@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Hao Ge <hao.ge@linux.dev>
+---
+ include/uapi/linux/alloc_tag.h | 16 ++++++++++++++--
+ mm/alloc_tag.c                 |  2 +-
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/include/uapi/linux/alloc_tag.h b/include/uapi/linux/alloc_tag.h
+index dafcba2f7e2c1..2fc843bb06bcb 100644
+--- a/include/uapi/linux/alloc_tag.h
++++ b/include/uapi/linux/alloc_tag.h
+@@ -68,13 +68,25 @@ enum {
+ #define ALLOCINFO_FILTER_MASKS \
+ 	((1 << (__ALLOCINFO_FILTER_LAST + 1)) - 1)
+ 
++#define ALLOCINFO_FILTER_FLAG_INACCURATE	(1ULL << 0)
++
+ struct allocinfo_filter {
+ 	__u64 mask; /* bitmask of the filter fields used */
+ 	struct allocinfo_tag fields;
+ 	__u64 min_size;
+ 	__u64 max_size;
+-	/* filter criteria only; see allocinfo_counter.accurate for actual accuracy */
+-	__u64 inaccurate;
++	/*
++	 * Filter criteria only; see allocinfo_counter for the actual state.
++	 * Set ALLOCINFO_FILTER_FLAG_* bits in flags for the criteria selected
++	 * in mask. inaccurate is kept as an alias of flags so that userspace
++	 * built against the older API still compiles. Note that only
++	 * ALLOCINFO_FILTER_FLAG_INACCURATE is checked, so a non-zero value
++	 * with bit 0 clear no longer selects inaccurate tags.
++	 */
++	union {
++		__u64 inaccurate;
++		__u64 flags;
++	};
+ };
+ 
+ struct allocinfo_get_at {
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index 9ff9dd04d6925..504c1a85050db 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -306,7 +306,7 @@ static bool matches_filter(struct codetag *ct, struct allocinfo_filter *filter,
+ 
+ 	if (filter->mask & ALLOCINFO_FILTER_MASK_INACCURATE) {
+ 		inaccurate = alloc_tag_is_inaccurate(ct_to_alloc_tag(ct));
+-		if (inaccurate != !!(filter->inaccurate))
++		if (inaccurate != !!(filter->flags & ALLOCINFO_FILTER_FLAG_INACCURATE))
+ 			return false;
+ 	}
+ 
+-- 
+2.47.3
+

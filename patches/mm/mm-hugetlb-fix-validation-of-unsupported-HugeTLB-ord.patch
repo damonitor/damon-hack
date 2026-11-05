@@ -1,0 +1,67 @@
+From: Muchun Song <muchun.song@linux.dev>
+Date: Wed, 4 Nov 2026 15:18:57 +0800
+Subject: [PATCH] mm/hugetlb: fix validation of unsupported HugeTLB orders
+
+Commit 7ce6048d3a7d ("loongarch: drop ranges for definition of
+ARCH_FORCE_MAX_ORDER") removed the ARCH_FORCE_MAX_ORDER ranges for
+LoongArch.  Besides dropping unreasonable upper limits, this allowed
+values below the architecture defaults.
+
+With 16KB pages, LoongArch defaults ARCH_FORCE_MAX_ORDER to 11, matching
+HUGETLB_PAGE_ORDER.  Forcing it to 10 while enabling HugeTLB permits
+order-11 HugeTLB folios even though MAX_FOLIO_ORDER is 10.  LoongArch does
+not select ARCH_HAS_GIGANTIC_PAGE, so this violates the generic MM
+assumption that folios cannot exceed MAX_PAGE_ORDER.
+
+This invalid configuration is accepted by Kconfig.  BUILD_BUG_ON_INVALID()
+does not reject it either because it only checks whether the expression is
+valid and never evaluates the comparison.  Detection is left to the
+runtime warning in hugetlb_add_hstate(), after earlier boot paths may
+already have used the invalid configuration.
+
+When an invalid HugeTLB order can be identified at build time, reject it
+there.  Otherwise, reject it at runtime before the mismatch propagates
+further.  Use MAYBE_BUILD_BUG_ON() so constant violations fail the build
+while dynamically determined orders are checked at runtime.
+
+Link: https://lore.kernel.org/20261104071858.757793-1-songmuchun@bytedance.com
+Fixes: 7ce6048d3a7d ("loongarch: drop ranges for definition of ARCH_FORCE_MAX_ORDER")
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://lore.kernel.org/sashiko-outbox-192874@kernel.org/
+Suggested-by: Huacai Chen <chenhuacai@kernel.org>
+Reviewed-by: Huacai Chen <chenhuacai@kernel.org>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: WANG Xuerui <kernel@xen0n.name>
+---
+ mm/hugetlb.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index c8c5a996e20ad..4eb7a8c1f7f64 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -4197,7 +4197,6 @@ static int __init hugetlb_init(void)
+ 
+ 	BUILD_BUG_ON(sizeof_field(struct page, private) * BITS_PER_BYTE <
+ 			__NR_HPAGEFLAGS);
+-	BUILD_BUG_ON_INVALID(HUGETLB_PAGE_ORDER > MAX_FOLIO_ORDER);
+ 
+ 	if (!hugepages_supported()) {
+ 		if (hugetlb_max_hstate || default_hstate_max_huge_pages)
+@@ -4205,6 +4204,8 @@ static int __init hugetlb_init(void)
+ 		return 0;
+ 	}
+ 
++	MAYBE_BUILD_BUG_ON(HUGETLB_PAGE_ORDER > MAX_FOLIO_ORDER);
++
+ 	/*
+ 	 * Make sure HPAGE_SIZE (HUGETLB_PAGE_ORDER) hstate exists.  Some
+ 	 * architectures depend on setup being done here.
+-- 
+2.47.3
+

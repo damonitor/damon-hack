@@ -8,67 +8,78 @@
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 0 -> 11 commits
-  - series: 0 (0) -> 2 (11)
-    - no role, nobody: 0 -> 1 commits
-    - no role, maintainer: 0 -> 9 commits
-    - maintainer, maintainer: 0 -> 1 commits
-  - changed commits
-    - series "mm/damon/core: iterate over installed probes instead of DAMON_MAX_PROBES", v5. (2)
-      - df7c7d739413 "mm/damon/core: use only installed probe in damon_merge_two_regions() (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102153753.97769-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261102153753.97769-2-sj@kernel.org
-      - 0e440f00676b "mm/damon/core: copy only installed probe in damon_split_region_at() (1/2)"
-        - Authored by a maintainer, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102153753.97769-3-sj@kernel.org
+- mm-unstable: 11 -> 22 commits
+  - series: 2 (11) -> 4 (22)
+    - no role, nobody: 1 -> 0 commits
+    - no role, maintainer: 9 -> 21 commits
+    - maintainer, maintainer: 1 -> 1 commits (no change)
+  - new commits
     - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
-      - ff27361d651b "mm/damon/core: remove unnecessary zero-initialization in damon_new_ctx() (0/9)"
+      - a16f56625cd2 "Docs/admin-guide/mm/damon/lru_sort: fix grammar and style (7/9)"
         - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261102150757.93058-2-sj@kernel.org
-      - 3bcff9eac122 "mm/damon/ops-common: align MMU notifier range when clearing PTE young bit (1/9)"
+        - Link: https://lore.kernel.org/20261104202959.128646-2-manuelebnerli@mailbox.org
+  - changed commits
+    - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
+      - d79220321af1 "mm/damon/{p,v}addr: skip folios already on the migration target node (4/9)"
         - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-3-sj@kernel.org
-      - e301a35303b3 "mm/damon/ops-common: align MMU notifier range when clearing PMD young bit (2/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-4-sj@kernel.org
-      - d4675703b470 "mm/damon/stat: avoid 32-bit overflow in idle percentiles (3/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-5-sj@kernel.org
-        - Link: https://lore.kernel.org/r/CANOyQmHad1vamnZT12M5yPrJ69==Pt1U0+MGw6u0MuNtr-DRCw@mail.gmail.com [1]
-        - Link: https://lore.kernel.org/179207592479.3.11595453180868898703@gmail.com
-      - 1e20cfdc5c3c "mm/damon/{p,v}addr: skip folios already on the migration target node (4/9)"
-        - Authored by no role player, reviewed by nobody
-        - branch: mm-new -> mm-unstable
+        - added "Reviewed-by: SJ Park <sj@kernel.org>"
         - Link: https://lore.kernel.org/20261102150757.93058-6-sj@kernel.org
-      - 841bbbaec221 "selftests/damon/sysfs.py: stop obsolete_target shells hanging the test (5/9)"
+    - series "Docs/admin-guide/mm/damon: minor fixes", v2. (3)
+      - 582c22c674d6 "Docs/admin-guide/mm/damon: fix various typos (0/3)"
         - Authored by no role player, reviewed by a maintainer
         - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-7-sj@kernel.org
-      - b6ec2463684a "mm/damon/reclaim: fix typo and grammar (6/9)"
+        - Link: https://lore.kernel.org/20261102152849.96057-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261102152849.96057-2-sj@kernel.org
+      - 8313e8bed881 "Docs/admin-guide/mm/damon/lru_sort: fix copy-paste mistakes (1/3)"
         - Authored by no role player, reviewed by a maintainer
         - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-8-sj@kernel.org
+        - Link: https://lore.kernel.org/20261102152849.96057-3-sj@kernel.org
+      - fdf98dc72d36 "Docs/admin-guide/mm/damon/usage: fix incorrect option syntax in perf example (2/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261102152849.96057-4-sj@kernel.org
+    - series "Docs: damon: fix grammar and typos", v2. (8)
+      - 431992818c8b "Docs/admin-guide/mm/damon/start: fix grammar (0/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261103005940.91432-2-sj@kernel.org
+      - ee7b0bd49b96 "Docs/admin-guide/mm/damon/stat: fix pronoun agreement (1/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-3-sj@kernel.org
+      - 2b6fdf97f8ef "Docs/admin-guide/mm/damon/usage: fix grammar (2/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-4-sj@kernel.org
+      - 18a1301e128e "Docs/admin-guide/mm/damon/lru_sort: fix remaining grammar (3/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-5-sj@kernel.org
+      - 239ff969f77f "Docs/mm/damon/design: fix grammar and typos (4/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-6-sj@kernel.org
+      - 6046e9ad56cb "Docs/mm/damon/api: fix verb form (5/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-7-sj@kernel.org
+      - 4d278c9afb40 "Docs/mm/damon/maintainer-profile: fix subject-verb agreement (6/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-8-sj@kernel.org
+      - 8b1e84bed548 "Docs/mm/damon/monitoring_intervals_tuning_example: fix grammar and typos (7/8)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261103005940.91432-9-sj@kernel.org
+  - dropped commits
+    - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
       - e576f9950ada "Docs/admin-guide/mm/damon/lru_sort: fix grammar and stlye (7/9)"
         - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
         - Link: https://lore.kernel.org/20261102150757.93058-9-sj@kernel.org
-      - 2ea76ffa06fa "Docs/admin-guide/mm/damon/reclaim: document how to disable watermarks (8/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102150757.93058-10-sj@kernel.org
-- mm-new: 22 -> 11 commits
-  - series: 4 (22) -> 2 (11)
-    - no role, nobody: 1 -> 0 commits
-    - no role, maintainer: 20 -> 11 commits
-    - maintainer, maintainer: 1 -> 0 commits
+- mm-new: 11 -> 0 commits
+  - series: 2 (11) -> 0 (0)
+    - no role, maintainer: 11 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

@@ -1,0 +1,81 @@
+From: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Date: Tue, 3 Nov 2026 11:28:35 +0100
+Subject: [PATCH] mm/userfaultfd: recheck WP registration in the hugetlb
+ UFFDIO_COPY retry
+
+Patch series "mm/userfaultfd: recheck WP registration in the hugetlb
+UFFDIO_COPY retry", v3.
+
+The urgent fixes made hugetlb_fault() tolerate uffd bits left in VMAs
+that are no longer registered for them, and asked for follow-ups that
+remove the sources [1]. This is one: a hugetlb UFFDIO_COPY_MODE_WP copy
+that has to fault in its source page doesn't recheck the WP registration
+before retrying, so re-registering the range without WP in that window
+leaves a uffd-wp PTE behind.
+
+Patch 1 adds the missing check. Patch 2 adds a uffd-unit-tests case for
+it, which fails on hugetlb without patch 1.
+
+The other source 6/10 of [1] mentions, UFFDIO_COPY in MODE_WP racing
+with UFFDIO_UNREGISTER [2], is closed by "mm/userfaultfd: write-lock the
+VMA before waking waiters when unregistering" [3].
+
+Based on mm-unstable.
+
+Tested on x86_64 in QEMU.
+
+
+This patch (of 2):
+
+mfill_atomic_hugetlb() drops its locks to copy the source page with page
+faults enabled and then looks the VMA up again. The retry doesn't check
+that the VMA is still registered for WP, so if the range is re-registered
+without WP in that window, a UFFDIO_COPY_MODE_WP copy installs a uffd-wp
+PTE in a VMA without VM_UFFD_WP.
+
+Recheck VM_UFFD_WP for UFFDIO_COPY_MODE_WP copies after looking the VMA
+up again, and fail with -EINVAL if it is gone.
+
+Link: https://lore.kernel.org/20261103102840.68903-1-azpijr@gmail.com
+Link: https://lore.kernel.org/20261103102840.68903-2-azpijr@gmail.com
+Link: https://lore.kernel.org/20261015-urgent_fixes-v1-0-42796911043b@kernel.org [1]
+Link: https://lore.kernel.org/20261015-urgent_fixes-v1-6-42796911043b@kernel.org [2]
+Link: https://lore.kernel.org/20261031-fixes_core-v3-23-d6437171ecc3@kernel.org [3] (in linux-next)
+Link: https://lore.kernel.org/sashiko-outbox-194303@kernel.org [4]
+Fixes: 6041c6917903 ("mm/hugetlb: take care of UFFDIO_COPY_MODE_WP")
+Signed-off-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: <stable@vger.kernel.org>
+---
+ mm/userfaultfd.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 1b7320d0a374c..8cff0f820ca51 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -810,6 +810,10 @@ static __always_inline ssize_t mfill_atomic_hugetlb(
+ 		if (vma_hpagesize != vma_kernel_pagesize(dst_vma))
+ 			goto out_unlock_vma;
+ 
++		/* The range may have been re-registered without WP meanwhile. */
++		if ((flags & MFILL_ATOMIC_WP) && !(dst_vma->vm_flags & VM_UFFD_WP))
++			goto out_unlock_vma;
++
+ 		/*
+ 		 * If memory mappings are changing because of non-cooperative
+ 		 * operation (e.g. mremap) running in parallel, bail out and
+-- 
+2.47.3
+

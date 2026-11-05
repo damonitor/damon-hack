@@ -1,0 +1,129 @@
+From: Chris Mason <mason@kernel.org>
+Date: Wed, 4 Nov 2026 00:18:15 +0800
+Subject: [PATCH] mm, swap: fix large swap-in across swap file extents
+
+A page fault can give an unprivileged process blocks of other users'
+files instead of its own swapped-out data. This affects systems with a
+swap file on a synchronous block device, such as brd or zram. For an
+anonymous mapping it also takes a huge page size below the PMD size
+(mTHP), such as 64 KiB, that is enabled for anonymous memory.
+
+A swap area is divided into slots of one page each. A swap file is a
+regular file, so adjacent swap slots can lie in two extents, far apart
+on disk. A folio is read from swap with a single bio that starts at the
+sector of the folio's first slot. So all slots of a large folio must be
+contiguous on disk.
+
+The swap allocator knows this: it only hands out a run of slots for a
+large folio if the swap area is a block device (SWP_BLKDEV).
+
+The swap-in path does not. On a synchronous device (SWP_SYNCHRONOUS_IO),
+one that always completes I/O in the submitter's context, do_swap_page()
+can read several swapped-out pages as one large folio (a large swap-in).
+thp_swapin_suitable_orders() makes that decision, and looks only at the
+swap offsets (the slot numbers) in the page table.
+
+Pages that were swapped out one at a time can end up in consecutive,
+aligned slots, and are then read as one large folio. If the extent of
+the first slot ends inside that folio, the rest of the folio is filled
+from the blocks that follow the extent on disk. These blocks can belong
+to other files.
+
+Reproduced with a fragmented swap file on brd and 64 KiB folios enabled.
+After single pages were swapped out, a fault returned blocks of a
+root-owned file with mode 0600.
+
+Fix this by allowing a large swap-in only when SWP_BLKDEV is set.
+
+Known gaps:
+- A swap file on zram, brd, pmem or btt is now read one page at a time,
+  even where its slots lie in one extent. Its swpin counters in
+  /sys/kernel/mm/transparent_hugepage/hugepages-*/stats stay at 0.
+- There could be devices with SWP_SYNCHRONOUS_IO but not
+  SWP_BLKDEV, so the new check would have to let that device pass.
+
+[kasong@tencent.com: simplify the note about the unmerged xswap patch]
+Link: https://lore.kernel.org/20261104-swap-fixes-v2-2-204be064be5b@tencent.com
+Fixes: 242d12c98174 ("mm: support large folios swap-in for sync io devices")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chuanhua Han <hanchuanhua@oppo.com>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: NeilBrown <neil@brown.name>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/memory.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index 44376321180b5..6fe0b7dab927c 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -4830,7 +4830,8 @@ static inline unsigned long thp_swap_suitable_orders(pgoff_t swp_offset,
+ 	return orders;
+ }
+ 
+-static unsigned long thp_swapin_suitable_orders(struct vm_fault *vmf)
++static unsigned long thp_swapin_suitable_orders(struct swap_info_struct *si,
++						struct vm_fault *vmf)
+ {
+ 	struct vm_area_struct *vma = vmf->vma;
+ 	unsigned long orders;
+@@ -4855,6 +4856,14 @@ static unsigned long thp_swapin_suitable_orders(struct vm_fault *vmf)
+ 	if (!zswap_never_enabled())
+ 		return 0;
+ 
++	/*
++	 * Neighbouring slots of a swap file can lie in two extents, and a folio
++	 * is read with one bio. The flag is set in swapon() and stays, so the
++	 * race is benign.
++	 */
++	if (!data_race(si->flags & SWP_BLKDEV))
++		return 0;
++
+ 	entry = softleaf_from_pte(vmf->orig_pte);
+ 	/*
+ 	 * Get a list of all the (large) orders below PMD_ORDER that are enabled
+@@ -4891,7 +4900,8 @@ static unsigned long thp_swapin_suitable_orders(struct vm_fault *vmf)
+ 	return orders;
+ }
+ #else /* !CONFIG_TRANSPARENT_HUGEPAGE */
+-static unsigned long thp_swapin_suitable_orders(struct vm_fault *vmf)
++static unsigned long thp_swapin_suitable_orders(struct swap_info_struct *si,
++						struct vm_fault *vmf)
+ {
+ 	return 0;
+ }
+@@ -5037,7 +5047,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 		/* Swapin bypasses readahead for SWP_SYNCHRONOUS_IO devices and zswap */
+ 		if (swap_entry_synchronous(si, entry))
+ 			folio = swapin_sync(entry, GFP_HIGHUSER_MOVABLE,
+-					    thp_swapin_suitable_orders(vmf) | BIT(0),
++					    thp_swapin_suitable_orders(si, vmf) | BIT(0),
+ 					    vmf, NULL, 0);
+ 		else
+ 			folio = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vmf);
+-- 
+2.47.3
+

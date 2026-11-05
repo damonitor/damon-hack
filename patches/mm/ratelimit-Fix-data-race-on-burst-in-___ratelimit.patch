@@ -1,0 +1,72 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Tue, 3 Nov 2026 04:29:54 -0800
+Subject: [PATCH] ratelimit: Fix data race on ->burst in ___ratelimit()
+
+I am seeing the following race on my debug kernels:
+
+  BUG: KCSAN: data-race in ___ratelimit / do_proc_int_conv
+
+  write (marked) to 0xffffffff83084544 of 4 bytes by task 186 on cpu 3:
+   do_proc_int_conv+0x94/0xa0
+   proc_vec+0x48a/0x8d0
+   proc_dointvec+0x16/0x20
+   proc_sys_call_handler+0x263/0x3b0
+   proc_sys_write+0x13/0x20
+   vfs_write+0x559/0x610
+   __x64_sys_pwrite64+0xce/0x110
+
+  read to 0xffffffff83084544 of 4 bytes by task 185 on cpu 1:
+   ___ratelimit+0x137/0x3b0
+   __printk_ratelimit+0x18/0x20
+
+  value changed: 0x00000001 -> 0x00000000
+
+This could be reproduced by flipping kernel.printk_ratelimit_burst
+between 0 and 1 while a kthread calls __printk_ratelimit() in a loop
+makes KCSAN report:
+
+___ratelimit() reads ->interval and ->burst once, with READ_ONCE(),
+because sysctl writes like the one above change them without taking
+rs->lock. Commit 6bae8ceb90ba ("ratelimit: Fix data-races in
+___ratelimit().") added those snapshots.
+
+Refill rs_n_left from the snapshot instead, which is also the value
+the function has already checked to be positive.
+
+Link: https://lore.kernel.org/20261103-ratelimit_race-v1-1-07486c49ec12@debian.org
+Fixes: cf8cfa8a9978 ("ratelimit: Reduce ___ratelimit() false-positive rate limiting")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Paul E. McKenney <paulmck@kernel.org>
+Cc: Petr Mladek <pmladek@suse.com>
+Cc: Kuniyuki Iwashima <kuniyu@google.com>
+---
+ lib/ratelimit.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/ratelimit.c b/lib/ratelimit.c
+index e2d65d3b1c354..d24864f12d871 100644
+--- a/lib/ratelimit.c
++++ b/lib/ratelimit.c
+@@ -67,7 +67,7 @@ int ___ratelimit(struct ratelimit_state *rs, const char *func)
+ 	if (!(rs->flags & RATELIMIT_INITIALIZED)) {
+ 		rs->begin = jiffies;
+ 		rs->flags |= RATELIMIT_INITIALIZED;
+-		atomic_set(&rs->rs_n_left, rs->burst);
++		atomic_set(&rs->rs_n_left, burst);
+ 	}
+ 
+ 	if (time_is_before_jiffies(rs->begin + interval)) {
+@@ -77,7 +77,7 @@ int ___ratelimit(struct ratelimit_state *rs, const char *func)
+ 		 * Reset rs_n_left ASAP to reduce false positives
+ 		 * in parallel calls, see above.
+ 		 */
+-		atomic_set(&rs->rs_n_left, rs->burst);
++		atomic_set(&rs->rs_n_left, burst);
+ 		rs->begin = jiffies;
+ 
+ 		if (!(rs->flags & RATELIMIT_MSG_ON_RELEASE)) {
+-- 
+2.47.3
+

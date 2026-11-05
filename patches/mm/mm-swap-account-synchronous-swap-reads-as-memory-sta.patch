@@ -1,0 +1,80 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Wed, 4 Nov 2026 00:18:16 +0800
+Subject: [PATCH] mm/swap: account synchronous swap reads as memory stall
+
+Swap-ins from SWP_SYNCHRONOUS_IO devices such as zram are no longer
+counted in PSI memory pressure or in the swapin and thrashing delays of
+delay accounting.  Refaults of the workingset from zram, the main input
+to userspace OOM handlers like lmkd and systemd-oomd on zram systems,
+become invisible in /proc/pressure/memory.
+
+swap_read_folio() opens the accounting window with
+psi_memstall_enter() and delayacct_swapin_start() and, per its comment,
+means to count the submission time.  For synchronous devices the
+submission is the entire read: swap_bdev_submit_read() does
+submit_bio_wait() and completes the folio.  Since reads are batched in
+a swap_iocb, swap_read_folio() only queues the folio with
+swap_add_folio(), and the bio is submitted later by swap_read_submit()
+in the caller, e.g. swapin_sync(), after the window has been closed.
+By then the folio is uptodate and unlocked, so the fault does not wait
+on the folio lock either and the read time is not counted anywhere.
+
+Fix by submitting synchronous reads from within swap_read_folio(), as
+was done before the batching, rather than from the caller.  This gives
+up batching of readahead for synchronous devices, which do their I/O
+inline anyway, in exchange for keeping the accounting simple and in one
+place.
+
+Link: https://lore.kernel.org/20261104-swap-fixes-v2-3-204be064be5b@tencent.com
+Fixes: dda8fb68b590 ("mm/swap: also use struct swap_iocb for block I/O")
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chuanhua Han <hanchuanhua@oppo.com>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: NeilBrown <neil@brown.name>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Kairui Song <ryncsn@gmail.com>
+---
+ mm/page_io.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/page_io.c b/mm/page_io.c
+index 65681eed9c80b..83ed0246ebfc6 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -500,6 +500,13 @@ void swap_read_folio(struct swap_io_ctx *ctx, struct folio *folio)
+ 	zswap_folio_swapin(folio);
+ 	swap_add_folio(ctx, folio, READ);
+ 
++	/*
++	 * Synchronous devices do the whole read at submission time, submit
++	 * it here so that it is accounted as memory stall and delay.
++	 */
++	if (synchronous)
++		swap_read_submit(ctx);
++
+ finish:
+ 	if (workingset) {
+ 		delayacct_thrashing_end(&in_thrashing);
+-- 
+2.47.3
+

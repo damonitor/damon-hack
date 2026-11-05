@@ -1,0 +1,247 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Wed, 4 Nov 2026 08:45:34 -0800
+Subject: [PATCH] mm: split out memory-failure declarations from internal.h
+
+mm/internal.h carries the memory failure declarations, but only seven of
+the 81 .c files that include it use them.
+
+Move memory failure declarations to a new mm/memory-failure.h and include
+that from those seven files that need them.
+
+Move the block as is, including take_page_off_buddy(),
+put_page_back_buddy() and page_mapped_in_vma(): they live in page_alloc.c
+and page_vma_mapped.c, but are built only for CONFIG_MEMORY_FAILURE and
+called only from memory-failure.c.
+
+Keep the declarations private to mm/.
+
+No functional change.
+
+Link: https://lore.kernel.org/20261104-memory-failure-split-v1-1-3b0a85f0b7e7@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Mike Rapoport <rppt@kernel.org>
+Link: https://lore.kernel.org/all/aumt-4kfGGtoXuh-@kernel.org/
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+---
+ MAINTAINERS          |  1 +
+ mm/hwpoison-inject.c |  1 +
+ mm/internal.h        | 29 -----------------------------
+ mm/ksm.c             |  1 +
+ mm/memory-failure.c  |  1 +
+ mm/memory-failure.h  | 36 ++++++++++++++++++++++++++++++++++++
+ mm/memory_hotplug.c  |  1 +
+ mm/page_alloc.c      |  1 +
+ mm/page_vma_mapped.c |  1 +
+ mm/vmscan.c          |  1 +
+ 10 files changed, 44 insertions(+), 29 deletions(-)
+ create mode 100644 mm/memory-failure.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index d85a8eb7ab32a..5027e5760c488 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -12415,6 +12415,7 @@ F:	include/linux/memory-failure.h
+ F:	include/trace/events/memory-failure.h
+ F:	mm/hwpoison-inject.c
+ F:	mm/memory-failure.c
++F:	mm/memory-failure.h
+ F:	tools/mm/memory-failure/
+ F:	tools/testing/selftests/mm/memory-failure.c
+ 
+diff --git a/mm/hwpoison-inject.c b/mm/hwpoison-inject.c
+index a11222572f978..07032ec63080e 100644
+--- a/mm/hwpoison-inject.c
++++ b/mm/hwpoison-inject.c
+@@ -10,6 +10,7 @@
+ #include <linux/page-flags.h>
+ #include <linux/memcontrol.h>
+ #include "internal.h"
++#include "memory-failure.h"
+ 
+ static u32 hwpoison_filter_enable;
+ static u32 hwpoison_filter_dev_major = ~0U;
+diff --git a/mm/internal.h b/mm/internal.h
+index 9b8864a8540aa..78a7f17b9934f 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1168,35 +1168,6 @@ static inline bool node_reclaim_enabled(void)
+ 	return node_reclaim_mode & (RECLAIM_ZONE|RECLAIM_WRITE|RECLAIM_UNMAP);
+ }
+ 
+-/*
+- * mm/memory-failure.c
+- */
+-#ifdef CONFIG_MEMORY_FAILURE
+-int unmap_poisoned_folio(struct folio *folio, unsigned long pfn, bool must_kill);
+-void shake_folio(struct folio *folio);
+-typedef int hwpoison_filter_func_t(struct page *p);
+-void hwpoison_filter_register(hwpoison_filter_func_t *filter);
+-void hwpoison_filter_unregister(void);
+-
+-#define MAGIC_HWPOISON	0x48575053U	/* HWPS */
+-void SetPageHWPoisonTakenOff(struct page *page);
+-void ClearPageHWPoisonTakenOff(struct page *page);
+-bool take_page_off_buddy(struct page *page);
+-bool put_page_back_buddy(struct page *page);
+-struct task_struct *task_early_kill(struct task_struct *tsk, int force_early);
+-void add_to_kill_ksm(struct task_struct *tsk, const struct page *p,
+-		     struct vm_area_struct *vma, struct list_head *to_kill,
+-		     unsigned long ksm_addr);
+-unsigned long page_mapped_in_vma(const struct page *page,
+-		struct vm_area_struct *vma);
+-
+-#else
+-static inline int unmap_poisoned_folio(struct folio *folio, unsigned long pfn, bool must_kill)
+-{
+-	return -EBUSY;
+-}
+-#endif
+-
+ extern unsigned long  __must_check vm_mmap_pgoff(struct file *, unsigned long,
+         unsigned long, unsigned long,
+         unsigned long, unsigned long);
+diff --git a/mm/ksm.c b/mm/ksm.c
+index d6f736a1aa2f9..340c65aa14e58 100644
+--- a/mm/ksm.c
++++ b/mm/ksm.c
+@@ -44,6 +44,7 @@
+ 
+ #include <asm/tlbflush.h>
+ #include "internal.h"
++#include "memory-failure.h"
+ #include "mm_slot.h"
+ 
+ #define CREATE_TRACE_POINTS
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index b215312f261b8..78f0a13349cb3 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -68,6 +68,7 @@
+ #include "swap.h"
+ #include "page_alloc.h"
+ #include "internal.h"
++#include "memory-failure.h"
+ 
+ static int sysctl_memory_failure_early_kill __read_mostly;
+ 
+diff --git a/mm/memory-failure.h b/mm/memory-failure.h
+new file mode 100644
+index 0000000000000..153aea6c610c0
+--- /dev/null
++++ b/mm/memory-failure.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * mm/ internal memory failure declarations
++ */
++#ifndef __MM_MEMORY_FAILURE_H
++#define __MM_MEMORY_FAILURE_H
++
++#include <linux/mm.h>
++
++#ifdef CONFIG_MEMORY_FAILURE
++int unmap_poisoned_folio(struct folio *folio, unsigned long pfn, bool must_kill);
++void shake_folio(struct folio *folio);
++typedef int hwpoison_filter_func_t(struct page *p);
++void hwpoison_filter_register(hwpoison_filter_func_t *filter);
++void hwpoison_filter_unregister(void);
++
++#define MAGIC_HWPOISON	0x48575053U	/* HWPS */
++void SetPageHWPoisonTakenOff(struct page *page);
++void ClearPageHWPoisonTakenOff(struct page *page);
++bool take_page_off_buddy(struct page *page);
++bool put_page_back_buddy(struct page *page);
++struct task_struct *task_early_kill(struct task_struct *tsk, int force_early);
++void add_to_kill_ksm(struct task_struct *tsk, const struct page *p,
++		     struct vm_area_struct *vma, struct list_head *to_kill,
++		     unsigned long ksm_addr);
++unsigned long page_mapped_in_vma(const struct page *page,
++		struct vm_area_struct *vma);
++
++#else
++static inline int unmap_poisoned_folio(struct folio *folio, unsigned long pfn, bool must_kill)
++{
++	return -EBUSY;
++}
++#endif
++
++#endif /* __MM_MEMORY_FAILURE_H */
+diff --git a/mm/memory_hotplug.c b/mm/memory_hotplug.c
+index c9cc42e54f05d..1bfd1f4daeb20 100644
+--- a/mm/memory_hotplug.c
++++ b/mm/memory_hotplug.c
+@@ -40,6 +40,7 @@
+ #include <asm/tlbflush.h>
+ 
+ #include "internal.h"
++#include "memory-failure.h"
+ #include "mm_init.h"
+ #include "page_alloc.h"
+ #include "shuffle.h"
+diff --git a/mm/page_alloc.c b/mm/page_alloc.c
+index 15ff5c1feef4f..5fc767c5f6a9e 100644
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -57,6 +57,7 @@
+ #include <linux/pgalloc_tag.h>
+ #include <asm/div64.h>
+ #include "internal.h"
++#include "memory-failure.h"
+ #include "mm_init.h"
+ #include "page_alloc.h"
+ #include "shuffle.h"
+diff --git a/mm/page_vma_mapped.c b/mm/page_vma_mapped.c
+index e6b6170c2f4f7..d45d52436f99a 100644
+--- a/mm/page_vma_mapped.c
++++ b/mm/page_vma_mapped.c
+@@ -6,6 +6,7 @@
+ #include <linux/leafops.h>
+ 
+ #include "internal.h"
++#include "memory-failure.h"
+ 
+ static inline bool not_found(struct page_vma_mapped_walk *pvmw)
+ {
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 7db6be53f3a92..7688bbe3a5ba6 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -67,6 +67,7 @@
+ #include <linux/sched/sysctl.h>
+ 
+ #include "internal.h"
++#include "memory-failure.h"
+ #include "page_alloc.h"
+ #include "swap.h"
+ 
+-- 
+2.47.3
+

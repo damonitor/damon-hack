@@ -1,0 +1,77 @@
+From: Umang Pokhriyal <umangpokhriyall@gmail.com>
+Date: Wed, 4 Nov 2026 15:04:57 +0530
+Subject: [PATCH] userfaultfd: validate the whole range before changing write
+ protection
+
+mwriteprotect_range() checks each VMA as it walks the range.  When a later
+VMA is not registered for write protection, or is a hugetlb VMA the range
+is not aligned to, the call fails after the earlier VMAs were already
+changed.  When unprotecting, userfaultfd_writeprotect() then skips
+wake_userfault(), so threads blocked on those pages are not woken although
+the pages are writable again.
+
+An unprivileged process can trigger this with a range that spans an
+unregistered VMA.  It hasn't been seen in practice; it was found while
+reviewing the userfaultfd range ioctls with an LLM.
+
+Validate the whole range first, as mrwprotect_range() already does.
+
+Link: https://lore.kernel.org/20261104093457.152245-1-umangpokhriyall@gmail.com
+Fixes: a1b92a3f1498 ("mm/userfaultfd: support WP on multiple VMAs")
+Signed-off-by: Umang Pokhriyal <umangpokhriyall@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/userfaultfd.c | 21 +++++++++++++--------
+ 1 file changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 38ffec6b516a1..b9b9b4a9be08c 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1105,21 +1105,26 @@ static int mwriteprotect_range(struct userfaultfd_ctx *ctx, unsigned long start,
+ 	if (atomic_read(&ctx->mmap_changing))
+ 		goto out_unlock;
+ 
++	/*
++	 * Validate every spanned VMA before changing any of them, so an
++	 * invalid range is rejected without changing part of it.
++	 */
+ 	err = -ENOENT;
+ 	for_each_vma_range(vmi, dst_vma, end) {
+-
+-		if (!userfaultfd_wp(dst_vma)) {
+-			err = -ENOENT;
+-			break;
+-		}
++		if (!userfaultfd_wp(dst_vma))
++			goto out_unlock;
+ 
+ 		if (vma_is_hugetlb(dst_vma)) {
+-			err = -EINVAL;
+ 			page_mask = vma_kernel_pagesize(dst_vma) - 1;
+-			if ((start & page_mask) || (len & page_mask))
+-				break;
++			if ((start & page_mask) || (len & page_mask)) {
++				err = -EINVAL;
++				goto out_unlock;
++			}
+ 		}
++	}
+ 
++	vma_iter_set(&vmi, start);
++	for_each_vma_range(vmi, dst_vma, end) {
+ 		_start = max(dst_vma->vm_start, start);
+ 		_end = min(dst_vma->vm_end, end);
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,49 @@
+From: Gu Bin <gubin@cmss.chinamobile.com>
+Date: Wed, 4 Nov 2026 14:48:37 +0800
+Subject: [PATCH] tools/laptop/dslm: fix inverted open() error check
+
+open() returns -1 on failure and a non-negative fd on success, but the
+check
+
+	if (!(fd = open(disk, O_RDONLY|O_NONBLOCK)))
+
+treats only fd == 0 as an error, which is wrong in both directions:
+
+  - on a real failure (fd == -1) the condition is false, so the
+    program continues with fd = -1: measure() runs check_powermode()
+    on the invalid fd, ioctl() fails with EBADF, and the tool reports
+    the drive state as "unknown" instead of printing the intended
+    "Can't open" message.
+  - when open() succeeds and returns fd 0 (e.g. stdin was closed, so
+    the lowest free descriptor is 0), the condition is true and the
+    tool wrongly prints "Can't open" and exits.
+
+Test with fd < 0 instead, which handles both cases correctly.
+
+Link: https://lore.kernel.org/20261104064839.1790-1-gubin@cmss.chinamobile.com
+Fixes: d49129accc21 ("Documentation/laptop/: split txt and source files")
+Signed-off-by: Gu Bin <gubin@cmss.chinamobile.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+---
+ tools/laptop/dslm/dslm.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/laptop/dslm/dslm.c b/tools/laptop/dslm/dslm.c
+index d5dd2d4b04d80..fe99565d384a4 100644
+--- a/tools/laptop/dslm/dslm.c
++++ b/tools/laptop/dslm/dslm.c
+@@ -144,7 +144,8 @@ int main(int argc, char **argv)
+     } else
+ 	usage();
+ 
+-    if (!(fd = open(disk, O_RDONLY|O_NONBLOCK))) {
++    fd = open(disk, O_RDONLY|O_NONBLOCK);
++    if (fd < 0) {
+ 	printf("Can't open %s, because: %s\n", disk, strerror(errno));
+ 	exit(-1);
+     }
+-- 
+2.47.3
+

@@ -1,0 +1,148 @@
+From: Ridong Chen <chenridong@xiaomi.com>
+Date: Wed, 4 Nov 2026 21:08:17 +0800
+Subject: [PATCH] mm/mglru: add tracepoint for aging
+
+Aging in MGLRU advances max_seq to create a new youngest generation.
+It is triggered from try_to_shrink_lruvec() when should_run_aging()
+finds that eviction is no longer possible, or that it would be better
+to age first at the current priority. There is currently no tracepoint
+on this path, so it cannot be observed when and why aging is needed.
+
+Add mm_mglru_aging, emitted in try_to_shrink_lruvec() right before
+try_to_inc_max_seq(), with the node id, memcg id, sc->priority,
+swappiness, max_seq, the anon and file min_seq, and the number of pages
+in each generation for both types, as computed by lruvec_gen_size().
+
+The reason for aging is not reported explicitly, as the logic in
+should_run_aging() may change, e.g. for imbalance-based aging. It can
+be derived from the generation window and the per-generation sizes,
+which are taken before aging, so the youngest generation is populated
+as well.
+
+The nr_anon/nr_file arrays are ordered by seq rather than by generation
+slot: entry i holds the generation max_seq - MAX_NR_GENS + 1 + i, i.e.
+they go from the oldest generation to the newest, the same order as the
+debugfs lru_gen file, so the output can be read directly without mapping
+slots back to seqs. The arrays are printed with __print_array(), so the
+output is hex and its length follows MAX_NR_GENS automatically.
+
+Only the lruvec, sc and swappiness are passed in; everything else,
+including max_seq, is read in TP_fast_assign(), so try_to_shrink_lruvec()
+does no extra work when the event is disabled. Reading max_seq there
+rather than using the caller's copy keeps the window consistent with
+the per-generation sizes read right after it, should another reclaimer
+age the lruvec in between.
+
+The event marks the aging decision, not its result: the following
+try_to_inc_max_seq() may find that aging is already in progress or
+done by another reclaimer, so concurrent reclaimers can each emit it
+for the same max_seq. Whether max_seq was advanced can be seen from the
+following mm_mglru_scan_folios.
+
+Link: https://lore.kernel.org/20261104130817.849089-8-ridong.chen@linux.dev
+Signed-off-by: Ridong Chen <chenridong@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Steven Rostedt <rostedt@goodmis.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Mathieu Desnoyers <mathieu.desnoyers@efficios.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+---
+ mm/trace_vmscan.h | 52 +++++++++++++++++++++++++++++++++++++++++++++++
+ mm/vmscan.c       |  1 +
+ 2 files changed, 53 insertions(+)
+
+diff --git a/mm/trace_vmscan.h b/mm/trace_vmscan.h
+index 8148b82244226..565c564283644 100644
+--- a/mm/trace_vmscan.h
++++ b/mm/trace_vmscan.h
+@@ -456,6 +456,58 @@ TRACE_EVENT(mm_mglru_scan_folios,
+ 		__entry->min_seq)
+ );
+ 
++TRACE_EVENT(mm_mglru_aging,
++
++	TP_PROTO(struct lruvec *lruvec, struct scan_control *sc, int swappiness),
++
++	TP_ARGS(lruvec, sc, swappiness),
++
++	TP_STRUCT__entry(
++		__field(u64, memcg_id)
++		__field(unsigned long, max_seq)
++		__field(unsigned long, anon_min_seq)
++		__field(unsigned long, file_min_seq)
++		__array(unsigned long, nr_anon, MAX_NR_GENS)
++		__array(unsigned long, nr_file, MAX_NR_GENS)
++		__field(int, nid)
++		__field(int, priority)
++		__field(int, swappiness)
++	),
++
++	TP_fast_assign(
++		struct lru_gen_folio *lrugen = &lruvec->lrugen;
++		unsigned long max_seq = READ_ONCE(lrugen->max_seq);
++		int i;
++
++		__entry->memcg_id = mem_cgroup_id(lruvec_memcg(lruvec));
++		__entry->max_seq = max_seq;
++		__entry->anon_min_seq = READ_ONCE(lrugen->min_seq[LRU_GEN_ANON]);
++		__entry->file_min_seq = READ_ONCE(lrugen->min_seq[LRU_GEN_FILE]);
++		/* from the oldest generation to the newest, as debugfs lru_gen does */
++		for (i = 0; i < MAX_NR_GENS; i++) {
++			unsigned long seq = max_seq - MAX_NR_GENS + 1 + i;
++
++			__entry->nr_anon[i] =
++				lruvec_gen_size(lrugen, LRU_GEN_ANON, seq);
++			__entry->nr_file[i] =
++				lruvec_gen_size(lrugen, LRU_GEN_FILE, seq);
++		}
++		__entry->nid = lruvec_pgdat(lruvec)->node_id;
++		__entry->priority = sc->priority;
++		__entry->swappiness = swappiness;
++	),
++
++	TP_printk("nid=%d memcg_id=%llu priority=%d swappiness=%d max_seq=%lu anon_min_seq=%lu file_min_seq=%lu nr_anon=%s nr_file=%s",
++		__entry->nid,
++		__entry->memcg_id,
++		__entry->priority,
++		__entry->swappiness,
++		__entry->max_seq,
++		__entry->anon_min_seq,
++		__entry->file_min_seq,
++		__print_array(__entry->nr_anon, MAX_NR_GENS, sizeof(unsigned long)),
++		__print_array(__entry->nr_file, MAX_NR_GENS, sizeof(unsigned long)))
++);
+ #endif /* CONFIG_LRU_GEN */
+ 
+ TRACE_EVENT(mm_vmscan_write_folio,
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index d1cadc508542f..071a6eaef1a1a 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5099,6 +5099,7 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+ 		}
+ 
+ 		if (should_run_aging(lruvec, max_seq, sc, swappiness)) {
++			trace_mm_mglru_aging(lruvec, sc, swappiness);
+ 			if (try_to_inc_max_seq(lruvec, max_seq, swappiness, false))
+ 				need_rotate = true;
+ 			should_age = true;
+-- 
+2.47.3
+

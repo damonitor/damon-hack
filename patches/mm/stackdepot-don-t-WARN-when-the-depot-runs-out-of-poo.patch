@@ -1,0 +1,72 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Tue, 3 Nov 2026 03:01:24 -0800
+Subject: [PATCH] stackdepot: don't WARN when the depot runs out of pools
+
+depot_init_pool() emits WARN_ONCE() when the depot runs out of pools.  It
+runs with the raw pool_lock held and IRQs disabled, and
+stack_depot_save_flags() wraps that section in printk_deferred_enter() so
+that it does not print to the consoles with the lock held.
+
+That deferral only applies to legacy consoles.  ON nbcon WARN() puts the
+CPU in emergency mode, and in emergency mode printk() flushes all pending
+records to the nbcon consoles from the calling context.  With a slow
+serial console (pl011 is an nbcon console) and a backlog of messages, that
+flush can outlast the hard lockup threshold, all of it with pool_lock held
+and IRQs disabled, while every other CPU that needs to save a new stack
+trace spins on pool_lock.
+
+This was hit on an arm64 host running a KASAN and kmemleak enabled
+linux-next kernel under stress-ng:
+
+   Stack depot reached limit capacity
+   WARNING: lib/stackdepot.c:302 at stack_depot_save_flags+0x6b0/0x6b8, CPU#56: stress-ng-dev/3466160
+   smp: csd: Detected non-responsive CSD lock (#1) on CPU#66, waiting 5000000030 ns for CPU#19 do_nothing+0x0/0x18(0x0).
+   smp: csd: Detected non-responsive CSD lock (#2) on CPU#4, waiting 5000000030 ns for CPU#61 ipi_mb+0x0/0x18(0x0).
+   watchdog: CPU53: Watchdog detected hard LOCKUP on cpu 54
+   Kernel panic - not syncing: Hard LOCKUP
+
+The rest of the WARN splat never made it to the log: CPU 56 was still
+flushing the console backlog from the "WARNING:" line when the hard lockup
+detector fired.
+
+Running out of depot space is an expected condition under heavy debug
+load, not a kernel bug, so report it with pr_warn_once() instead.
+
+At normal priority the nbcon consoles are printed by the printer threads,
+and the legacy consoles honour printk_deferred.
+
+This also keeps a full depot from crashing machines running with
+panic_on_warn.
+
+Link: https://lore.kernel.org/20261103-stackdepot-full-warn-v1-1-41f1fc651b64@debian.org
+Fixes: cd11016e5f52 ("mm, kasan: stackdepot implementation. Enable stackdepot for SLAB")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Petr Mladek <pmladek@suse.com>
+Reviewed-by: John Ogness <john.ogness@linutronix.de>
+Reviewed-by: Marco Elver <elver@google.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Andrey Ryabinin <ryabinin.a.a@gmail.com>
+Cc: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+---
+ lib/stackdepot.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/stackdepot.c b/lib/stackdepot.c
+index 90c52f2e0d3f4..dea6338f73c1c 100644
+--- a/lib/stackdepot.c
++++ b/lib/stackdepot.c
+@@ -299,7 +299,7 @@ static bool depot_init_pool(void **prealloc)
+ 		/* Bail out if we reached the pool limit. */
+ 		WARN_ON_ONCE(pools_num > stack_max_pools); /* should never happen */
+ 		WARN_ON_ONCE(!new_pool); /* to avoid unnecessary pre-allocation */
+-		WARN_ONCE(1, "Stack depot reached limit capacity");
++		pr_warn_once("Stack depot reached limit capacity\n");
+ 		return false;
+ 	}
+ 
+-- 
+2.47.3
+

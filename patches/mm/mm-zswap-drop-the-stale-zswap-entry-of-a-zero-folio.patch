@@ -1,0 +1,125 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Wed, 4 Nov 2026 00:18:14 +0800
+Subject: [PATCH] mm/zswap: drop the stale zswap entry of a zero folio
+
+Patch series "mm/swap, zswap: fix stale zswap data and swap-in bugs", v2.
+
+There are some bug fixes found by AI and collected by David, mostly
+originally from Anthropic.  After filtering and dropping a few that are
+already being patched up by the community [1] [2], these are the 3 we
+kept.  The accounting fix is in two patches now, the second one from
+Johannes to cover asynchronous devices too.
+
+Patches 1 and 2 are marked for stable, they affect v6.12 and later.
+Patches 3 and 4 only affect v7.3 and later, so they are not marked for
+stable.
+
+The zswap bug in patch 1 can return stale data instead of the zeroes that
+were written, so it is data corruption and seems critical.  The extent
+fix in patch 2 is more urgent than it might look, as it can also read in
+unexpected data, but the setup could be really rare.
+
+For the extent fix, in the long term we might actually want to detect
+extent contiguity and allow mTHP swap-in for single-extent swap files.
+We already disable mTHP allocation for swap files, so the current fix is
+trivial. It seems the most minimal and correct one for now.
+Optimization and cleanups can come later.
+
+Patch 3 gives up readahead batching for synchronous devices, as its
+
+
+This patch (of 4):
+
+A folio can stay in the swap cache after zswap_store() has stored it,
+when a swapin fault gets a reference on it before reclaim can remove it.
+do_swap_page() maps an exclusive folio writable and, for a read fault,
+keeps it in the swap cache, so it can be modified and swapped out again
+to the same slot. zswap_store() handles this, it replaces the old entry,
+or drops it if the store fails or zswap got disabled, "otherwise,
+writeback could overwrite the new data in the swapfile".
+
+swap_writeout() does not get as far as zswap_store() if the folio is
+zero-filled now. It only sets the zero flag of the slot, and the zswap
+entry with the previous contents stays in the tree and on the LRU:
+
+  reclaim            fault              zswap shrinker
+  zswap_store(D1)
+                     swap cache hit,
+                     map, write zeroes
+  swap_writeout()
+    zero flag set
+  folio reclaimed
+                                        zswap_writeback_entry()
+                                          swap_cache_alloc_folio()
+                                          decompress D1, uptodate
+                     swap cache hit:
+                     maps D1
+
+Swapin looks at the zero flag first, but only when it has to read the
+folio. The folio that zswap writeback leaves in the swap cache is up to
+date as far as anybody can tell, so the process gets its old data back
+instead of the zeroes it has written, until that folio is reclaimed.
+
+Invalidate the zswap entries in the zero-filled case as well. The folio
+is locked and in the swap cache, which keeps zswap writeback away.
+
+[kasong@tencent.com: fix zswap_invalidate() arguments]
+Link: https://lore.kernel.org/20261104-swap-fixes-v2-0-204be064be5b@tencent.com
+Link: https://lore.kernel.org/20261104-swap-fixes-v2-1-204be064be5b@tencent.com
+Fixes: 0ca0c24e3211 ("mm: store zero pages to be swapped out in a bitmap")
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Yosry Ahmed <yosry@kernel.org>
+Cc: Chris Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Usama Arif <usamaarif642@gmail.com>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Chuanhua Han <hanchuanhua@oppo.com>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: NeilBrown <neil@brown.name>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/page_io.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/mm/page_io.c b/mm/page_io.c
+index c6824fcd483e0..65681eed9c80b 100644
+--- a/mm/page_io.c
++++ b/mm/page_io.c
+@@ -224,7 +224,17 @@ int swap_writeout(struct swap_io_ctx *ctx, struct folio *folio)
+ 	 * acquired internally by swap_zeromap_folio_set/clear.
+ 	 */
+ 	if (is_folio_zero_filled(folio)) {
++		swp_entry_t entry = folio->swap;
++
+ 		swap_zeromap_folio_set(folio);
++
++		/*
++		 * The folio may have been stored in zswap before and dirtied
++		 * again while it stayed in the swap cache. Drop the old copy,
++		 * or zswap writeback would bring it back into the swap cache.
++		 */
++		zswap_invalidate(swp_type(entry), swp_offset(entry),
++				 folio_nr_pages(folio));
+ 		goto out_unlock;
+ 	}
+ 
+-- 
+2.47.3
+
