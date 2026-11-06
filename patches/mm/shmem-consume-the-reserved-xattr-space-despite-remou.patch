@@ -1,0 +1,51 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Thu, 5 Nov 2026 08:08:06 -0800
+Subject: [PATCH] shmem: consume the reserved xattr space despite remount
+
+Creating a tmpfs inode can trigger WARN_ON(ispace) in shmem_initxattrs()
+when a concurrent remount sets nr_inodes=0.  With panic_on_warn enabled,
+this warning can panic the machine.
+
+shmem_initxattrs() reserves space for the security xattrs while inode
+limits are enabled.  It later tests max_inodes again before consuming that
+reservation for each installed xattr.  If remount disables the limit
+between those steps, successfully installed xattrs leave a nonzero
+reservation behind.
+
+Use the remaining reservation, rather than the current mount policy, to
+decide whether to subtract the installed xattr's space.  This also leaves
+the failure path with only the unconsumed reservation to refund.
+
+An initially unlimited filesystem cannot acquire an inode limit through
+remount: shmem_reconfigure() rejects that transition.
+
+Link: https://lore.kernel.org/20261105082717.c459bb33778fcf27e5675082@linux-foundation.org
+Fixes: 076e5cef28e27 ("simple_xattr: change interface to pass struct simple_xattrs")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+4324f771847cecb27c54@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=4324f771847cecb27c54
+Tested-by: syzbot+4324f771847cecb27c54@syzkaller.appspotmail.com
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Miklos Szeredi <mszeredi@redhat.com>
+Cc: Christian Brauner <brauner@kernel.org>
+---
+ mm/shmem.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 459328149ce53..f8484730bd448 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -4451,7 +4451,7 @@ static int shmem_initxattrs(struct inode *inode,
+ 		if (simple_xattr_add(&sbinfo->xa_cache, &info->xattrs, new_xattr))
+ 			break;
+ 
+-		if (sbinfo->max_inodes)
++		if (ispace)
+ 			ispace -= simple_xattr_space(new_xattr->name, new_xattr->size);
+ 		retain_and_null_ptr(new_xattr);
+ 	}
+-- 
+2.47.3
+

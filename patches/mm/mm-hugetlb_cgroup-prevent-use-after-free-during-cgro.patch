@@ -1,0 +1,133 @@
+From: Daehyeon Ko <4ncienth@gmail.com>
+Date: Thu, 22 Oct 2026 11:21:46 +0900
+Subject: [PATCH] mm/hugetlb_cgroup: prevent use-after-free during cgroup
+ offlining
+
+A normal hugetlb charge obtains the current task's hugetlb cgroup with
+css_tryget(), charges its page counter, and drops the CSS reference before
+the folio is committed under hugetlb_lock.
+
+The task can be migrated while the allocation is in progress.  If the old
+CSS is then offlined, its final active-folio scan can finish before the
+charge becomes visible.  The allocation can subsequently charge that dying
+CSS and commit its pointer to the folio.  Once the CSS is freed, uncharging
+the folio accesses the freed hugetlb_cgroup, including its page counter and
+per-node usage.
+
+Keep the reference acquired by the charge until commit or cancellation.  At
+commit time, while holding hugetlb_lock, move an uncommitted charge out of
+each dying CSS to the first live ancestor.  The hierarchical charge already
+includes every ancestor, so moving it only requires canceling each dying
+CSS's local count.
+
+This orders commit against the offline active-folio scan: either the scan
+runs after commit and reparents the folio, or commit observes the dying CSS
+after the scan and selects a live ancestor.  The retained reference also
+keeps the originally selected hugetlb_cgroup alive through this decision.
+Reservation charges retain their existing CSS lifetime and are not
+reparented.
+
+On an unmodified v7.3 kernel with a 128-page 2 MiB pool, a
+capability-free uid 1000 allocator racing administrator rmdir reproduced
+KASAN writes to a freed hugetlb_cgroup in three of three boots.  Controller
+disable reproduced the same fault.  With this change, 5,000 rmdir rounds
+with over 1 million successful faults and 2,000 controller-disable rounds
+with over 1.6 million successful faults completed without KASAN, LOCKDEP,
+page-counter, or refcount reports.
+
+AI-assisted source review was used to identify the race and to help draft
+the reproducer and fix.  The interleaving and the resulting allocation,
+free, and use-after-free stacks were verified with tracefs and KASAN.
+
+Link: https://lore.kernel.org/20261022022146.506005-1-4ncienth@gmail.com
+Link: https://lore.kernel.org/20261106060347.637480-1-4ncienth@gmail.com
+Fixes: da1def55919f ("hugetlb/cgroup: add support for cgroup removal")
+Signed-off-by: Daehyeon Ko <4ncienth@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/hugetlb_cgroup.c | 34 ++++++++++++++++++++++++++--------
+ 1 file changed, 26 insertions(+), 8 deletions(-)
+
+diff --git a/mm/hugetlb_cgroup.c b/mm/hugetlb_cgroup.c
+index 3fb41311e4c7d..6921b18572666 100644
+--- a/mm/hugetlb_cgroup.c
++++ b/mm/hugetlb_cgroup.c
+@@ -310,11 +310,10 @@ static int __hugetlb_cgroup_charge_cgroup(int idx, unsigned long nr_pages,
+ 		css_put(&h_cg->css);
+ 		goto done;
+ 	}
+-	/* Reservations take a reference to the css because they do not get
+-	 * reparented.
++	/*
++	 * Hold the CSS reference until commit. Reservations keep it longer
++	 * because they are not reparented.
+ 	 */
+-	if (!rsvd)
+-		css_put(&h_cg->css);
+ done:
+ 	*ptr = h_cg;
+ 	return ret;
+@@ -337,9 +336,26 @@ static void __hugetlb_cgroup_commit_charge(int idx, unsigned long nr_pages,
+ 					   struct hugetlb_cgroup *h_cg,
+ 					   struct folio *folio, bool rsvd)
+ {
++	struct hugetlb_cgroup *charged_h_cg = h_cg;
++
+ 	if (hugetlb_cgroup_disabled() || !h_cg)
+-		return;
++		goto out;
+ 	lockdep_assert_held(&hugetlb_lock);
++
++	/*
++	 * A task can be migrated after selecting h_cg. Once offlining starts,
++	 * redirect the uncommitted charge to a live ancestor. hugetlb_lock
++	 * serializes this decision with the offline scan, which reparents
++	 * earlier commits.
++	 */
++	if (!rsvd) {
++		while (css_is_dying(&h_cg->css)) {
++			page_counter_cancel(&h_cg->hugepage[idx], nr_pages);
++			/* The root CSS never dies. */
++			h_cg = parent_hugetlb_cgroup(h_cg);
++		}
++	}
++
+ 	__set_hugetlb_cgroup(folio, h_cg, rsvd);
+ 	if (!rsvd) {
+ 		unsigned long usage =
+@@ -352,6 +368,9 @@ static void __hugetlb_cgroup_commit_charge(int idx, unsigned long nr_pages,
+ 		WRITE_ONCE(h_cg->nodeinfo[folio_nid(folio)]->usage[idx],
+ 			   usage + nr_pages);
+ 	}
++out:
++	if (!rsvd && charged_h_cg)
++		css_put(&charged_h_cg->css);
+ }
+ 
+ void hugetlb_cgroup_commit_charge(int idx, unsigned long nr_pages,
+@@ -419,15 +438,14 @@ static void __hugetlb_cgroup_uncharge_cgroup(int idx, unsigned long nr_pages,
+ 					     struct hugetlb_cgroup *h_cg,
+ 					     bool rsvd)
+ {
+-	if (hugetlb_cgroup_disabled() || !h_cg)
++	if (!h_cg)
+ 		return;
+ 
+ 	page_counter_uncharge(__hugetlb_cgroup_counter_from_cgroup(h_cg, idx,
+ 								   rsvd),
+ 			      nr_pages);
+ 
+-	if (rsvd)
+-		css_put(&h_cg->css);
++	css_put(&h_cg->css);
+ }
+ 
+ void hugetlb_cgroup_uncharge_cgroup(int idx, unsigned long nr_pages,
+-- 
+2.47.3
+

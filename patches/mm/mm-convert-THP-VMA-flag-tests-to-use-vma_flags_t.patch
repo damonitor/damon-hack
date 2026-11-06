@@ -1,0 +1,242 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 5 Nov 2026 21:30:56 +0000
+Subject: [PATCH] mm: convert THP VMA flag tests to use vma_flags_t
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace use of the legacy vm_flags_t flags with vma_flags_t values where
+VMA flags are tested directly in the THP and khugepaged logic.
+
+The thp_vma_allowable_orders() family of functions, hugepage_madvise() and
+khugepaged_enter_vma() continue to take legacy flags for the time being.
+
+Also update BUG_ON()'s to VM_WARN_ON_ONCE() while here.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-5-0d3cd15ab75f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Namhyung Kim <namhyung@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+Cc: Jiri Olsa <jolsa@kernel.org>
+Cc: Ian Rogers <irogers@google.com>
+Cc: Adrian Hunter <adrian.hunter@intel.com>
+Cc: James Clark <james.clark@linaro.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: John Johansen <john.johansen@canonical.com>
+Cc: Georgia Garcia <georgia.garcia@canonical.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: James Morris <jmorris@namei.org>
+Cc: Serge E. Hallyn <serge@hallyn.com>
+Cc: Mimi Zohar <zohar@linux.ibm.com>
+Cc: Roberto Sassu <roberto.sassu@huawei.com>
+Cc: Dmitry Kasatkin <dmitry.kasatkin@gmail.com>
+Cc: Eric Snowberg <eric.snowberg@oracle.com>
+Cc: Fan Wu <wufan@kernel.org>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+---
+ mm/huge_memory.c | 32 ++++++++++++++++----------------
+ mm/khugepaged.c  |  8 +++++---
+ 2 files changed, 21 insertions(+), 19 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index cda3c886ec533..672af2ac66398 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1259,7 +1259,7 @@ __setup("thp_anon=", setup_thp_anon);
+ 
+ pmd_t maybe_pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma)
+ {
+-	if (likely(vma->vm_flags & VM_WRITE))
++	if (likely(vma_test(vma, VMA_WRITE_BIT)))
+ 		pmd = pmd_mkwrite(pmd, vma);
+ 	return pmd;
+ }
+@@ -1519,7 +1519,7 @@ vm_fault_t do_huge_pmd_device_private(struct vm_fault *vmf)
+  */
+ gfp_t vma_thp_gfp_mask(struct vm_area_struct *vma)
+ {
+-	const bool vma_madvised = vma && (vma->vm_flags & VM_HUGEPAGE);
++	const bool vma_madvised = vma && vma_test(vma, VMA_HUGEPAGE_BIT);
+ 
+ 	/* Always do synchronous compaction */
+ 	if (test_bit(TRANSPARENT_HUGEPAGE_DEFRAG_DIRECT_FLAG, &transparent_hugepage_flags))
+@@ -1718,10 +1718,9 @@ vm_fault_t vmf_insert_pfn_pmd(struct vm_fault *vmf, unsigned long pfn,
+ 	 * but we need to be consistent with PTEs and architectures that
+ 	 * can't support a 'special' bit.
+ 	 */
+-	BUG_ON(!(vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)));
+-	BUG_ON((vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)) ==
+-						(VM_PFNMAP|VM_MIXEDMAP));
+-	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
++	VM_WARN_ON_ONCE(!vma_test_any(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT));
++	VM_WARN_ON_ONCE(vma_test_all(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT));
++	VM_WARN_ON_ONCE(vma_test(vma, VMA_PFNMAP_BIT) && vma_is_cow_mapping(vma));
+ 
+ 	if (unlikely(is_huge_zero_pfn(pfn)))
+ 		return VM_FAULT_SIGBUS;
+@@ -1752,7 +1751,7 @@ EXPORT_SYMBOL_GPL(vmf_insert_folio_pmd);
+ #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+ static pud_t maybe_pud_mkwrite(pud_t pud, struct vm_area_struct *vma)
+ {
+-	if (likely(vma->vm_flags & VM_WRITE))
++	if (likely(vma_test(vma, VMA_WRITE_BIT)))
+ 		pud = pud_mkwrite(pud);
+ 	return pud;
+ }
+@@ -1829,10 +1828,9 @@ vm_fault_t vmf_insert_pfn_pud(struct vm_fault *vmf, unsigned long pfn,
+ 	 * but we need to be consistent with PTEs and architectures that
+ 	 * can't support a 'special' bit.
+ 	 */
+-	BUG_ON(!(vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)));
+-	BUG_ON((vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP)) ==
+-						(VM_PFNMAP|VM_MIXEDMAP));
+-	BUG_ON((vma->vm_flags & VM_PFNMAP) && vma_is_cow_mapping(vma));
++	VM_WARN_ON_ONCE(!vma_test_any(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT));
++	VM_WARN_ON_ONCE(vma_test_all(vma, VMA_PFNMAP_BIT, VMA_MIXEDMAP_BIT));
++	VM_WARN_ON_ONCE(vma_test(vma, VMA_PFNMAP_BIT) && vma_is_cow_mapping(vma));
+ 
+ 	pfnmap_setup_cachemode_pfn(pfn, &pgprot);
+ 
+@@ -2264,7 +2262,7 @@ static inline bool can_change_pmd_writable(struct vm_area_struct *vma,
+ {
+ 	struct page *page;
+ 
+-	if (WARN_ON_ONCE(!(vma->vm_flags & VM_WRITE)))
++	if (WARN_ON_ONCE(!vma_test(vma, VMA_WRITE_BIT)))
+ 		return false;
+ 
+ 	/* Don't touch entries that are not even readable (NUMA hinting). */
+@@ -2279,7 +2277,7 @@ static inline bool can_change_pmd_writable(struct vm_area_struct *vma,
+ 	if (userfaultfd_huge_pmd_wp(vma, pmd))
+ 		return false;
+ 
+-	if (!(vma->vm_flags & VM_SHARED)) {
++	if (!vma_test(vma, VMA_SHARED_BIT)) {
+ 		/* See can_change_pte_writable(). */
+ 		page = vm_normal_page_pmd(vma, addr, pmd);
+ 		return page && PageAnon(page) && PageAnonExclusive(page);
+@@ -3568,7 +3566,8 @@ static bool __discard_anon_folio_pmd_locked(struct vm_area_struct *vma,
+ 
+ 	if (pmd_dirty(orig_pmd))
+ 		folio_set_dirty(folio);
+-	if (folio_test_dirty(folio) && !(vma->vm_flags & VM_DROPPABLE)) {
++	if (folio_test_dirty(folio) &&
++	    !vma_test_single_mask(vma, VMA_DROPPABLE)) {
+ 		folio_set_swapbacked(folio);
+ 		return false;
+ 	}
+@@ -3600,7 +3599,8 @@ static bool __discard_anon_folio_pmd_locked(struct vm_area_struct *vma,
+ 	 */
+ 	if (pmd_dirty(orig_pmd))
+ 		folio_set_dirty(folio);
+-	if (folio_test_dirty(folio) && !(vma->vm_flags & VM_DROPPABLE)) {
++	if (folio_test_dirty(folio) &&
++	    !vma_test_single_mask(vma, VMA_DROPPABLE)) {
+ 		folio_set_swapbacked(folio);
+ 		set_pmd_at(mm, addr, pmdp, orig_pmd);
+ 		return false;
+@@ -3614,7 +3614,7 @@ static bool __discard_anon_folio_pmd_locked(struct vm_area_struct *vma,
+ 	folio_remove_rmap_pmd(folio, pmd_page(orig_pmd), vma);
+ 	zap_deposited_table(mm, pmdp);
+ 	add_mm_counter(mm, MM_ANONPAGES, -HPAGE_PMD_NR);
+-	if (vma->vm_flags & VM_LOCKED)
++	if (vma_test(vma, VMA_LOCKED_BIT))
+ 		mlock_drain_local();
+ 	folio_put(folio);
+ 
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 40fad28c52f6f..f1165fff6feb3 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -640,7 +640,8 @@ static enum scan_result __collapse_huge_page_isolate(struct vm_area_struct *vma,
+ 		 * If the vma has the VM_DROPPABLE flag, the collapse will
+ 		 * preserve the lazyfree property without needing to skip.
+ 		 */
+-		if (cc->policy.anon_skip_lazyfree && !(vma->vm_flags & VM_DROPPABLE) &&
++		if (cc->policy.anon_skip_lazyfree &&
++		    !vma_test_single_mask(vma, VMA_DROPPABLE) &&
+ 		    folio_test_lazyfree(folio) && !pte_dirty(pteval)) {
+ 			result = SCAN_PAGE_LAZYFREE;
+ 			goto out;
+@@ -1683,7 +1684,8 @@ static enum scan_result collapse_scan_anon(struct vm_area_struct *vma,
+ 		 * If the vma has the VM_DROPPABLE flag, the collapse will
+ 		 * preserve the lazyfree property without needing to skip.
+ 		 */
+-		if (cc->policy.anon_skip_lazyfree && !(vma->vm_flags & VM_DROPPABLE) &&
++		if (cc->policy.anon_skip_lazyfree &&
++		    !vma_test_single_mask(vma, VMA_DROPPABLE) &&
+ 		    folio_test_lazyfree(folio) && !pte_dirty(pteval)) {
+ 			result = SCAN_PAGE_LAZYFREE;
+ 			failed_pfn = folio_pfn(folio);
+@@ -1954,7 +1956,7 @@ static enum scan_result try_collapse_pte_mapped_thp(struct mm_struct *mm, unsign
+ 	 * So page lock of folio does not protect from it, so we must not drop
+ 	 * ptl before pgt_pmd is removed, so uffd private needs pml taken now.
+ 	 */
+-	if (userfaultfd_armed(vma) && !(vma->vm_flags & VM_SHARED))
++	if (userfaultfd_armed(vma) && !vma_test(vma, VMA_SHARED_BIT))
+ 		pml = pmd_lock(mm, pmd);
+ 
+ 	start_pte = pte_offset_map_rw_nolock(mm, pmd, haddr, &pgt_pmd, &ptl);
+-- 
+2.47.3
+

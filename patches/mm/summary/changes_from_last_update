@@ -8,78 +8,35 @@
     - maintainer, no role : 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 11 -> 22 commits
-  - series: 2 (11) -> 4 (22)
-    - no role, nobody: 1 -> 0 commits
-    - no role, maintainer: 9 -> 21 commits
+- mm-unstable: 22 -> 22 commits (no change)
+  - series: 4 (22) -> 4 (22) (no change)
+    - no role, maintainer: 21 -> 21 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
+- mm-new: 0 -> 5 commits
+  - series: 0 (0) -> 1 (5)
+    - no role, nobody: 0 -> 1 commits
+    - maintainer, no role : 0 -> 4 commits
   - new commits
-    - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
-      - a16f56625cd2 "Docs/admin-guide/mm/damon/lru_sort: fix grammar and style (7/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261104202959.128646-2-manuelebnerli@mailbox.org
-  - changed commits
-    - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
-      - d79220321af1 "mm/damon/{p,v}addr: skip folios already on the migration target node (4/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - added "Reviewed-by: SJ Park <sj@kernel.org>"
-        - Link: https://lore.kernel.org/20261102150757.93058-6-sj@kernel.org
-    - series "Docs/admin-guide/mm/damon: minor fixes", v2. (3)
-      - 582c22c674d6 "Docs/admin-guide/mm/damon: fix various typos (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102152849.96057-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261102152849.96057-2-sj@kernel.org
-      - 8313e8bed881 "Docs/admin-guide/mm/damon/lru_sort: fix copy-paste mistakes (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102152849.96057-3-sj@kernel.org
-      - fdf98dc72d36 "Docs/admin-guide/mm/damon/usage: fix incorrect option syntax in perf example (2/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261102152849.96057-4-sj@kernel.org
-    - series "Docs: damon: fix grammar and typos", v2. (8)
-      - 431992818c8b "Docs/admin-guide/mm/damon/start: fix grammar (0/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261103005940.91432-2-sj@kernel.org
-      - ee7b0bd49b96 "Docs/admin-guide/mm/damon/stat: fix pronoun agreement (1/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-3-sj@kernel.org
-      - 2b6fdf97f8ef "Docs/admin-guide/mm/damon/usage: fix grammar (2/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-4-sj@kernel.org
-      - 18a1301e128e "Docs/admin-guide/mm/damon/lru_sort: fix remaining grammar (3/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-5-sj@kernel.org
-      - 239ff969f77f "Docs/mm/damon/design: fix grammar and typos (4/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-6-sj@kernel.org
-      - 6046e9ad56cb "Docs/mm/damon/api: fix verb form (5/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-7-sj@kernel.org
-      - 4d278c9afb40 "Docs/mm/damon/maintainer-profile: fix subject-verb agreement (6/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-8-sj@kernel.org
-      - 8b1e84bed548 "Docs/mm/damon/monitoring_intervals_tuning_example: fix grammar and typos (7/8)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261103005940.91432-9-sj@kernel.org
-  - dropped commits
-    - series "mm/damon: various fixes and cleanup of code, test, and docs". (9)
-      - e576f9950ada "Docs/admin-guide/mm/damon/lru_sort: fix grammar and stlye (7/9)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261102150757.93058-9-sj@kernel.org
-- mm-new: 11 -> 0 commits
-  - series: 2 (11) -> 0 (0)
-    - no role, maintainer: 11 -> 0 commits
+    - series "mm: continue vma_flags_t conversion". (13)
+      - 7d8c3b9f8daa "mm: convert miscellaneous VMA flag tests to use vma_flags_t (8/13)"
+        - Authored by no role player, reviewed by nobody
+        - Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-8-0d3cd15ab75f@kernel.org
+    - series "mm/damon: introduce age_ms damos core filter type". (4)
+      - e7e934472ade "mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS (0/4)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20261106020559.98352-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261106020559.98352-2-sj@kernel.org
+        - Link: https://github.com/sjp38/masim [1]
+        - Link: https://github.com/damonitor/damo [2]
+      - 13e0dd6d8e2c "mm/damon/sysfs-schemes: support DAMOS_FILTER_TYPE_AGE_MS (1/4)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20261106020559.98352-3-sj@kernel.org
+      - 32285676e3fe "Docs/mm/damon/design: update for age_ms damos core filter type (2/4)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20261106020559.98352-4-sj@kernel.org
+      - 3867b0004e64 "Docs/admin-guide/mm/damon/usage: update for age_ms damos core filter (3/4)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20261106020559.98352-5-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

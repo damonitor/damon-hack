@@ -1,0 +1,269 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Thu, 5 Nov 2026 21:30:52 +0000
+Subject: [PATCH] mm/gup: convert GUP code to use vma_flags_t
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm: continue vma_flags_t conversion".
+
+Continue the conversion of legacy vm_flags_t flags to the new vma_flags_t
+bitmap type.
+
+Do some more core mm conversion (we really should be the first to
+completely move to the new scheme :), but also update some mm-adjacent and
+otherwise straightforward cases - /proc/$pid/maps and friends, the coredump
+VMA dump size logic, uprobes, perf and LSM mmap/mprotect hooks.
+
+This series only makes strictly mechanical changes to keep things gentle
+during this very busy cycle.
+
+No functional change intended.
+
+Build tested on x86-64 (allmodconfig, each patch individually), i386,
+arm64, riscv nommu and ppc64le.
+
+
+This patch (of 13):
+
+Replace use of the legacy vm_flags_t flags with vma_flags_t values
+throughout the GUP logic, both for the MMU and nommu variants.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-0-0d3cd15ab75f@kernel.org
+Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-1-0d3cd15ab75f@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: John Hubbard <jhubbard@nvidia.com>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: Rakie Kim <rakie.kim@sk.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Arnaldo Carvalho de Melo <acme@kernel.org>
+Cc: Namhyung Kim <namhyung@kernel.org>
+Cc: Mark Rutland <mark.rutland@arm.com>
+Cc: Alexander Shishkin <alexander.shishkin@linux.intel.com>
+Cc: Jiri Olsa <jolsa@kernel.org>
+Cc: Ian Rogers <irogers@google.com>
+Cc: Adrian Hunter <adrian.hunter@intel.com>
+Cc: James Clark <james.clark@linaro.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Oleg Nesterov <oleg@redhat.com>
+Cc: John Johansen <john.johansen@canonical.com>
+Cc: Georgia Garcia <georgia.garcia@canonical.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: James Morris <jmorris@namei.org>
+Cc: Serge E. Hallyn <serge@hallyn.com>
+Cc: Mimi Zohar <zohar@linux.ibm.com>
+Cc: Roberto Sassu <roberto.sassu@huawei.com>
+Cc: Dmitry Kasatkin <dmitry.kasatkin@gmail.com>
+Cc: Eric Snowberg <eric.snowberg@oracle.com>
+Cc: Fan Wu <wufan@kernel.org>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+---
+ mm/gup.c | 45 ++++++++++++++++++++++++---------------------
+ 1 file changed, 24 insertions(+), 21 deletions(-)
+
+diff --git a/mm/gup.c b/mm/gup.c
+index 7d43ce717b246..dc232117b1cea 100644
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -590,15 +590,15 @@ static inline bool can_follow_write_common(struct page *page,
+ 		return false;
+ 
+ 	/* But FOLL_FORCE has no effect on shared mappings */
+-	if (vma->vm_flags & (VM_MAYSHARE | VM_SHARED))
++	if (vma_test_any(vma, VMA_MAYSHARE_BIT, VMA_SHARED_BIT))
+ 		return false;
+ 
+ 	/* ... or read-only private ones */
+-	if (!(vma->vm_flags & VM_MAYWRITE))
++	if (!vma_test(vma, VMA_MAYWRITE_BIT))
+ 		return false;
+ 
+ 	/* ... or already writable ones that just need to take a write fault */
+-	if (vma->vm_flags & VM_WRITE)
++	if (vma_test(vma, VMA_WRITE_BIT))
+ 		return false;
+ 
+ 	/*
+@@ -1199,12 +1199,11 @@ static bool writable_file_mapping_allowed(struct vm_area_struct *vma,
+ 
+ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ {
+-	vm_flags_t vm_flags = vma->vm_flags;
+ 	int write = (gup_flags & FOLL_WRITE);
+ 	int foreign = (gup_flags & FOLL_REMOTE);
+ 	bool vma_anon = vma_is_anonymous(vma);
+ 
+-	if (vm_flags & (VM_IO | VM_PFNMAP))
++	if (vma_test_any(vma, VMA_IO_BIT, VMA_PFNMAP_BIT))
+ 		return -EFAULT;
+ 
+ 	if ((gup_flags & FOLL_ANON) && !vma_anon)
+@@ -1224,7 +1223,8 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 		    !writable_file_mapping_allowed(vma, gup_flags))
+ 			return -EFAULT;
+ 
+-		if (!(vm_flags & VM_WRITE) || (vm_flags & VM_SHADOW_STACK)) {
++		if (!vma_test(vma, VMA_WRITE_BIT) ||
++		    vma_test_single_mask(vma, VMA_SHADOW_STACK)) {
+ 			if (!(gup_flags & FOLL_FORCE))
+ 				return -EFAULT;
+ 			/*
+@@ -1239,14 +1239,14 @@ static int check_vma_flags(struct vm_area_struct *vma, unsigned long gup_flags)
+ 			if (!vma_is_cow_mapping(vma))
+ 				return -EFAULT;
+ 		}
+-	} else if (!(vm_flags & VM_READ)) {
++	} else if (!vma_test(vma, VMA_READ_BIT)) {
+ 		if (!(gup_flags & FOLL_FORCE))
+ 			return -EFAULT;
+ 		/*
+ 		 * Is there actually any vma we can reach here which does not
+ 		 * have VM_MAYREAD set?
+ 		 */
+-		if (!(vm_flags & VM_MAYREAD))
++		if (!vma_test(vma, VMA_MAYREAD_BIT))
+ 			return -EFAULT;
+ 	}
+ 	/*
+@@ -1277,7 +1277,7 @@ static struct vm_area_struct *gup_vma_lookup(struct mm_struct *mm,
+ 		return vma;
+ 
+ 	/* Only warn for half-way relevant accesses */
+-	if (!(vma->vm_flags & VM_GROWSDOWN))
++	if (!vma_test(vma, VMA_GROWSDOWN_BIT))
+ 		return NULL;
+ 	if (vma->vm_start - addr > 65536)
+ 		return NULL;
+@@ -1514,9 +1514,8 @@ static bool vma_permits_fault(struct vm_area_struct *vma,
+ {
+ 	bool write   = !!(fault_flags & FAULT_FLAG_WRITE);
+ 	bool foreign = !!(fault_flags & FAULT_FLAG_REMOTE);
+-	vm_flags_t vm_flags = write ? VM_WRITE : VM_READ;
+ 
+-	if (!(vm_flags & vma->vm_flags))
++	if (!vma_test(vma, write ? VMA_WRITE_BIT : VMA_READ_BIT))
+ 		return false;
+ 
+ 	/*
+@@ -1829,7 +1828,7 @@ long populate_vma_page_range(struct vm_area_struct *vma,
+ 	 * Rightly or wrongly, the VM_LOCKONFAULT case has never used
+ 	 * faultin_page() to break COW, so it has no work to do here.
+ 	 */
+-	if (vma->vm_flags & VM_LOCKONFAULT)
++	if (vma_test(vma, VMA_LOCKONFAULT_BIT))
+ 		return nr_pages;
+ 
+ 	/* ... similarly, we've never faulted in PROT_NONE pages */
+@@ -1849,7 +1848,7 @@ long populate_vma_page_range(struct vm_area_struct *vma,
+ 	 * Otherwise, do a read fault, and use FOLL_FORCE in case it's not
+ 	 * readable (ie write-only or executable).
+ 	 */
+-	if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) == VM_WRITE)
++	if (vma_test(vma, VMA_WRITE_BIT) && !vma_test(vma, VMA_SHARED_BIT))
+ 		gup_flags |= FOLL_WRITE;
+ 	else
+ 		gup_flags |= FOLL_FORCE;
+@@ -1955,7 +1954,7 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
+ 		 * range with the first VMA. Also, skip undesirable VMA types.
+ 		 */
+ 		nend = min(end, vma->vm_end);
+-		if (vma->vm_flags & (VM_IO | VM_PFNMAP))
++		if (vma_test_any(vma, VMA_IO_BIT, VMA_PFNMAP_BIT))
+ 			continue;
+ 		if (nstart < vma->vm_start)
+ 			nstart = vma->vm_start;
+@@ -1986,7 +1985,7 @@ static long __get_user_pages_locked(struct mm_struct *mm, unsigned long start,
+ {
+ 	struct vm_area_struct *vma;
+ 	bool must_unlock = false;
+-	vm_flags_t vm_flags;
++	vma_flags_t vma_flags;
+ 	int ret, err = -EFAULT;
+ 	long i;
+ 
+@@ -2011,10 +2010,14 @@ static long __get_user_pages_locked(struct mm_struct *mm, unsigned long start,
+ 	/* calculate required read or write permissions.
+ 	 * If FOLL_FORCE is set, we only require the "MAY" flags.
+ 	 */
+-	vm_flags  = (foll_flags & FOLL_WRITE) ?
+-			(VM_WRITE | VM_MAYWRITE) : (VM_READ | VM_MAYREAD);
+-	vm_flags &= (foll_flags & FOLL_FORCE) ?
+-			(VM_MAYREAD | VM_MAYWRITE) : (VM_READ | VM_WRITE);
++	if (foll_flags & FOLL_WRITE)
++		vma_flags = mk_vma_flags(VMA_WRITE_BIT, VMA_MAYWRITE_BIT);
++	else
++		vma_flags = mk_vma_flags(VMA_READ_BIT, VMA_MAYREAD_BIT);
++	if (foll_flags & FOLL_FORCE)
++		vma_flags_clear(&vma_flags, VMA_READ_BIT, VMA_WRITE_BIT);
++	else
++		vma_flags_clear(&vma_flags, VMA_MAYREAD_BIT, VMA_MAYWRITE_BIT);
+ 
+ 	for (i = 0; i < nr_pages; i++) {
+ 		vma = find_vma(mm, start);
+@@ -2022,8 +2025,8 @@ static long __get_user_pages_locked(struct mm_struct *mm, unsigned long start,
+ 			break;
+ 
+ 		/* protect what we can, including chardevs */
+-		if ((vma->vm_flags & (VM_IO | VM_PFNMAP)) ||
+-		    !(vm_flags & vma->vm_flags))
++		if (vma_test_any(vma, VMA_IO_BIT, VMA_PFNMAP_BIT) ||
++		    !vma_test_any_mask(vma, vma_flags))
+ 			break;
+ 
+ 		if (pages) {
+-- 
+2.47.3
+

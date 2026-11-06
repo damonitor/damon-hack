@@ -1,0 +1,197 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 5 Nov 2026 18:05:55 -0800
+Subject: [PATCH] mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS
+
+Patch series "mm/damon: introduce age_ms damos core filter type".
+
+DAMOS access pattern supports selecting regions to apply a given
+operation to, based on their age (access frequency stability).  The age
+is specified in the aggregation intervals unit.  The aggregation
+interval can be changed by users or intervals auto-tuning features.  If
+the intention is to specify the age in a deterministic way (e.g., 2
+minutes), it should be updated for each aggregation interval update.
+Doing so is cumbersome and challenging, particularly in the interval
+auto-tuning case.
+
+One straightforward solution is extending the DAMOS access pattern for
+specific deterministic time based age specification.  However, DAMOS
+core filter is a better option.  It is playing a similar role in a more
+flexible way.  It can be used for both accepting and rejecting regions
+based on if they matched or unmatched to a given criteria.  Multiple
+filters can also be combined for more flexible and detailed rules.
+
+Extend DAMOS core filter to support milliseconds unit based age
+criteria.
+
+Implement a new DAMOS core filter type, DAMOS_FILTER_TYPE_AGE_MS, in
+core layer and expose to DAMON API, via patch 1.  Add the support of the
+feature on DAMON sysfs ABI with patch 2.  Update the design and usage
+documents to explain the new features with patches 3 and 4,
+respectively.
+
+Reviewer notes (no need to be in git history).
+
+Test
+====
+
+Confirmed the age_ms filter is working using masim [1] and DAMON
+user-space tool [2]'s DAMOS filter-based snapshot feature, like below.
+
+Start masim.
+
+    $ ./masim.py run --config_file ./configs/stairs-500mb.cfg \
+            --quiet --repeat 10 &
+
+Start DAMON for access monitoring.
+
+    $ sudo ./damo start --probe \
+            --probe_prep set_pgidle --probe_filter allow pgidle_unset
+
+Monitoring results without an age_ms filter shows regions of any age.
+
+    $ sudo ./damo report attrs --style idle-time-percentiles
+    # total recency percentiles
+    <percentile> <idle time>
+      0     0 ns  |                    |
+      1     0 ns  |                    |
+     25   100 ms  |                    |
+     50  3.300 s  |****************    |
+     75      4 s  |******************* |
+     99  4.100 s  |********************|
+    100  4.100 s  |********************|
+    memory bw estimate: 66.628 GiB per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+With an age_ms DAMOS filter applied for snapshotting, shows regions of
+given age range.
+
+For [0, 2s range]
+
+    $ sudo ./damo report attrs --style idle-time-percentiles \
+            --snapshot_damos_filter allow age_ms 0 2s
+    # total recency percentiles
+    <percentile> <idle time>
+      0     0 ns  |                    |
+      1     0 ns  |                    |
+     25     0 ns  |                    |
+     50     0 ns  |                    |
+     75   100 ms  |*                   |
+     99   200 ms  |**                  |
+    100  1.600 s  |********************|
+    memory bw estimate: 100.311 GiB per second  df-passed: 0 B per second
+    total size: 7.797 GiB  df-passed 0 B
+    scheme stats
+    tried 0 times (0 B)
+    applied 0 times (0 B)
+    0 B passed filters
+    quota exceeded 0 times
+    0 B
+    tried 0 snapshots (max 0)
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+
+This patch (of 4):
+
+There is no way to specify DAMOS target regions with a deterministic
+time based age range.  Extend DAMOS core filter to specify target
+regions with age in milliseconds.  Introduce new damos_filter_type,
+DAMOS_FILTER_TYPE_AGE_MS in DAMON API, and implement support of the type
+in the core layer.
+
+Convert the age in aggregation intervals to milliseconds and use it when
+the filter is evaluated.  Reuse damos_filter->range_{min,max} to save
+the age range.
+
+Link: https://lore.kernel.org/20261106020559.98352-1-sj@kernel.org
+Link: https://lore.kernel.org/20261106020559.98352-2-sj@kernel.org
+Link: https://github.com/sjp38/masim [1]
+Link: https://github.com/damonitor/damo [2]
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Aveline Noir <jm5905938@gmail.com>
+---
+ include/linux/damon.h | 16 ++++++++++------
+ mm/damon/core.c       | 10 +++++++++-
+ 2 files changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index 380f9cf6ddd82..1302ffb6f0bcb 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -394,13 +394,16 @@ struct damos_stat {
+  * @DAMOS_FILTER_TYPE_ADDR:	Address range.
+  * @DAMOS_FILTER_TYPE_TARGET:	Data Access Monitoring target.
+  * @DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:	probe_hits weighted sum range.
++ * @DAMOS_FILTER_TYPE_AGE_MS:	Region age range in milliseconds.
+  *
+- * All types except &DAMOS_FILTER_TYPE_ADDR, &DAMOS_FILTER_TYPE_TARGET and
+- * &DAMOS_FILTER_TYPE_PROBE_HITS_WSUM are handled by the underlying &struct
+- * damon_operations as a part of scheme action trying, and therefore accounted
+- * as 'tried'.  In contrast, &DAMOS_FILTER_TYPE_ADDR, &DAMOS_FILTER_TYPE_TARGET
+- * and &DAMOS_FILTER_TYPE_PROBE_HITS_WSUM filters are handled by the core layer
+- * before trying of the action, and therefore not accounted as 'tried'.
++ * All types except &DAMOS_FILTER_TYPE_ADDR, &DAMOS_FILTER_TYPE_TARGET,
++ * &DAMOS_FILTER_TYPE_PROBE_HITS_WSUM and &DAMOS_FILTER_TYPE_AGE_MS are handled
++ * by the underlying &struct damon_operations as a part of scheme action
++ * trying, and therefore accounted as 'tried'.  In contrast,
++ * &DAMOS_FILTER_TYPE_ADDR, &DAMOS_FILTER_TYPE_TARGET,
++ * &DAMOS_FILTER_TYPE_PROBE_HITS_WSUM and &DAMOS_FILTER_TYPE_AGE_MS filters are
++ * handled by the core layer before trying of the action, and therefore not
++ * accounted as 'tried'.
+  *
+  * Support for the operations-handled filters depends on the running
+  * &struct damon_operations.
+@@ -415,6 +418,7 @@ enum damos_filter_type {
+ 	DAMOS_FILTER_TYPE_ADDR,
+ 	DAMOS_FILTER_TYPE_TARGET,
+ 	DAMOS_FILTER_TYPE_PROBE_HITS_WSUM,
++	DAMOS_FILTER_TYPE_AGE_MS,
+ };
+ 
+ /**
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index d36823f4d0928..0a056949604f9 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -659,6 +659,7 @@ bool damos_filter_for_ops(enum damos_filter_type type)
+ 	case DAMOS_FILTER_TYPE_ADDR:
+ 	case DAMOS_FILTER_TYPE_TARGET:
+ 	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
++	case DAMOS_FILTER_TYPE_AGE_MS:
+ 		return false;
+ 	default:
+ 		break;
+@@ -1336,6 +1337,7 @@ static int damos_commit_filter_arg(
+ 		dst->sz_range = src->sz_range;
+ 		break;
+ 	case DAMOS_FILTER_TYPE_PROBE_HITS_WSUM:
++	case DAMOS_FILTER_TYPE_AGE_MS:
+ 		if (src->range_max < src->range_min)
+ 			return -EINVAL;
+ 		dst->range_min = src->range_min;
+@@ -2552,7 +2554,7 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 	bool matched = false;
+ 	struct damon_target *ti;
+ 	int target_idx = 0;
+-	unsigned long start, end, wsum;
++	unsigned long start, end, wsum, age_ms;
+ 
+ 	*err = 0;
+ 	switch (filter->type) {
+@@ -2594,6 +2596,12 @@ static bool damos_filter_match(struct damon_ctx *ctx, struct damon_target *t,
+ 		matched = filter->range_min <= wsum &&
+ 			wsum <= filter->range_max;
+ 		break;
++	case DAMOS_FILTER_TYPE_AGE_MS:
++		age_ms = div_u64((u64)r->age * ctx->attrs.aggr_interval,
++				USEC_PER_MSEC);
++		matched = filter->range_min <= age_ms &&
++			age_ms <= filter->range_max;
++		break;
+ 	default:
+ 		return false;
+ 	}
+-- 
+2.47.3
+

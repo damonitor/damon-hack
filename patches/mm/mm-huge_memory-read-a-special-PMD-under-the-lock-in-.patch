@@ -1,0 +1,126 @@
+From: Konstantin Khorenko <khorenko@virtuozzo.com>
+Date: Wed, 4 Nov 2026 21:40:57 +0100
+Subject: [PATCH] mm/huge_memory: read a special PMD under the lock in
+ copy_huge_pmd()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+copy_huge_pmd() reads a special PMD without the page table lock and
+copies that value to the child. The mmap write lock held by fork does
+not stop unmap_mapping_range(): it zaps under i_mmap_rwsem and the PMD
+lock.
+
+The zap visits the parent VMA before the child's, as dup_mmap() links
+the child right after the parent in i_mmap. If it clears the parent PMD
+after fork has read it, and passes the child before fork copies it, the
+child keeps a mapping the driver has revoked, for example:
+
+- vfio-pci: the child reaches the BAR after the device memory was
+  disabled or the device was reset, instead of getting SIGBUS;
+- panthor: the child maps the pages of an evicted buffer object after
+  the driver has released them.
+
+The same branch deposits no page table under the copy. ppc64 in hash
+mode keeps the hash slot array of every huge PMD in that table, so the
+child dereferences a NULL table on the first hash fault, in
+__hash_page_thp(), and on the zap, in hash__pmdp_huge_get_and_clear().
+
+Take the locks first and let vm_normal_page_pmd() tell a PFN mapping
+from a folio under them, as copy_present_ptes() does with
+vm_normal_page(). The zap clears the parent PMD under the same lock, so
+either fork finds it none and skips it, or the copy is in place before
+the zap reaches the child.
+
+The copy of a PFN mapping then goes through the same tail as a folio:
+
+- it gets a page table where the architecture needs one;
+- in a shared mapping it is marked clean in the child, as a PTE is;
+- in a CoW mapping, which only VM_MIXEDMAP allows, both sides are write
+  protected instead of a warning being printed.
+
+Link: https://lore.kernel.org/20261104-b4-prep-vstor-149847-copy_huge_pmd-recheck-special-pmd-v5-3-c56d0d26f970@virtuozzo.com
+Fixes: bc02afbd4d73 ("mm/fork: accept huge pfnmap entries")
+Fixes: d1503aa9ab80 ("powerpc/64s: Add support for huge pfnmaps")
+Signed-off-by: Konstantin Khorenko <khorenko@virtuozzo.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://sashiko.dev/#/patchset/20261014-b4-prep-vstor-149847-copy_huge_pmd-recheck-special-pmd-v1-1-d225c60bc316@virtuozzo.com?part=1
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Alex Williamson <alex@shazbot.org>
+Cc: Loïc Molinari <loic.molinari@collabora.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: <stable@vger.kernel.org>
+---
+ mm/huge_memory.c | 24 +++---------------------
+ 1 file changed, 3 insertions(+), 21 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index e69017ab03681..8172c70215ee0 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -1961,25 +1961,6 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+ 	int ret = -ENOMEM;
+ 	bool writable;
+ 
+-	pmd = pmdp_get_lockless(src_pmd);
+-	if (unlikely(pmd_present(pmd) && pmd_special(pmd) &&
+-		     !is_huge_zero_pmd(pmd))) {
+-		dst_ptl = pmd_lock(dst_mm, dst_pmd);
+-		src_ptl = pmd_lockptr(src_mm, src_pmd);
+-		spin_lock_nested(src_ptl, SINGLE_DEPTH_NESTING);
+-		/*
+-		 * No need to recheck the pmd, it can't change with write
+-		 * mmap lock held here.
+-		 *
+-		 * Meanwhile, making sure it's not a CoW VMA with writable
+-		 * mapping, otherwise it means either the anon page wrongly
+-		 * applied special bit, or we made the PRIVATE mapping be
+-		 * able to wrongly write to the backend MMIO.
+-		 */
+-		VM_WARN_ON_ONCE(vma_is_cow_mapping(src_vma) && pmd_write(pmd));
+-		goto set_pmd;
+-	}
+-
+ 	if (vma_is_anonymous(dst_vma) || arch_needs_pgtable_deposit()) {
+ 		pgtable = pte_alloc_one(dst_mm);
+ 		if (unlikely(!pgtable))
+@@ -2021,7 +2002,9 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+ 		goto copy_pmd;
+ 	}
+ 
+-	src_page = pmd_page(pmd);
++	src_page = vm_normal_page_pmd(src_vma, addr, pmd);
++	if (!src_page)
++		goto copy_pmd;
+ 	VM_BUG_ON_PAGE(!PageHead(src_page), src_page);
+ 	src_folio = page_folio(src_page);
+ 
+@@ -2061,7 +2044,6 @@ int copy_huge_pmd(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+ 	}
+ 	if (src_vma->vm_flags & VM_SHARED)
+ 		pmd = pmd_mkclean(pmd);
+-set_pmd:
+ 	pmd = pmd_mkold(pmd);
+ 	set_pmd_at(dst_mm, addr, dst_pmd, pmd);
+ 
+-- 
+2.47.3
+

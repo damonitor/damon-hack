@@ -1,0 +1,108 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Thu, 5 Nov 2026 14:02:04 +0000
+Subject: [PATCH] selftests/mm: test a partial mremap() of hugetlb memory
+
+hugetlb-mremap only moves whole mappings, so it did not catch the
+reservation leak of a partial move.
+
+Map four private huge pages without touching them, move the second one,
+unmap everything, and check that the number of reserved huge pages is back
+where it was.
+
+Link: https://lore.kernel.org/20261105-b4-mremap-pre-split-v3-2-f8789de76849@toxicpanda.com
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+  https://lore.kernel.org/20261105185943.3d6f4b34fbdbba8599bc7360@linux-foundation.org
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Sarthak Sharma <sarthak.sharma@arm.com>
+---
+ tools/testing/selftests/mm/hugetlb-mremap.c | 52 ++++++++++++++++++++-
+ 1 file changed, 50 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/hugetlb-mremap.c b/tools/testing/selftests/mm/hugetlb-mremap.c
+index d5a4cef51ad35..ac71acd887ade 100644
+--- a/tools/testing/selftests/mm/hugetlb-mremap.c
++++ b/tools/testing/selftests/mm/hugetlb-mremap.c
+@@ -100,6 +100,51 @@ static void register_region_with_uffd(char *addr, size_t len)
+ 	ksft_print_msg("Registered memory at address %p with userfaultfd\n", addr);
+ }
+ 
++/*
++ * Move one page out of the middle of a private mapping that has not been
++ * touched, so that every page of it still holds its reservation.  Once all of
++ * it is unmapped, all of the reservations have to be back in the pool.
++ */
++static void test_partial_move(unsigned long hugepage_size)
++{
++	const int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
++	const int prot = PROT_READ | PROT_WRITE;
++	const unsigned long nr = 4;
++	unsigned long resv = hugetlb_nr_resv_pages(hugepage_size);
++	unsigned long resv_after;
++	char *src, *dst, *addr;
++
++	/* The pages of the test before this one can still be in use. */
++	if (!hugetlb_setup_default(resv + nr + 1)) {
++		ksft_test_result_skip("Partial move: not enough free huge pages\n");
++		return;
++	}
++
++	src = mmap(NULL, nr * hugepage_size, prot, flags, -1, 0);
++	if (src == MAP_FAILED)
++		ksft_exit_fail_msg("mmap src: %s\n", strerror(errno));
++
++	/* The destination has to be hugetlb-backed, mremap() replaces it. */
++	dst = mmap(NULL, hugepage_size, prot, flags, -1, 0);
++	if (dst == MAP_FAILED)
++		ksft_exit_fail_msg("mmap dst: %s\n", strerror(errno));
++
++	addr = mremap(src + hugepage_size, hugepage_size, hugepage_size,
++		      MREMAP_MAYMOVE | MREMAP_FIXED, dst);
++	if (addr == MAP_FAILED)
++		ksft_exit_fail_msg("partial mremap: %s\n", strerror(errno));
++
++	munmap(addr, hugepage_size);
++	munmap(src, nr * hugepage_size);
++
++	resv_after = hugetlb_nr_resv_pages(hugepage_size);
++	if (resv_after != resv)
++		ksft_print_msg("Reserved huge pages: %lu before, %lu after\n",
++			       resv, resv_after);
++	ksft_test_result(resv_after == resv,
++			 "Partial move returns all reservations\n");
++}
++
+ int main(int argc, char *argv[])
+ {
+ 	unsigned long hugepage_size;
+@@ -107,7 +152,7 @@ int main(int argc, char *argv[])
+ 	size_t length = 0;
+ 
+ 	ksft_print_header();
+-	ksft_set_plan(1);
++	ksft_set_plan(2);
+ 
+ 	if (argc >= 2 && !strcmp(argv[1], "-h"))
+ 		ksft_exit_fail_msg("Usage: %s [length_in_MB]\n", argv[0]);
+@@ -175,5 +220,8 @@ int main(int argc, char *argv[])
+ 	close(fd);
+ 
+ 	ksft_test_result(!ret, "Read same data\n");
+-	ksft_exit(!ret);
++
++	test_partial_move(hugepage_size);
++
++	ksft_finished();
+ }
+-- 
+2.47.3
+

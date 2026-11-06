@@ -1,0 +1,140 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Thu, 5 Nov 2026 14:02:03 +0000
+Subject: [PATCH] mm/mremap: fix hugetlb reservation leak on partial move
+
+Patch series "mm/mremap: fix accounting on a partial move", v3.
+
+This fixes a hugetlb reservation leak and two Committed_AS bugs in
+mremap().
+
+If you move part of a private hugetlb mapping we take the reservation map
+away from the whole old VMA before the part that's moving is split off, so
+the parts that stay never give their reservations back.  The first patch
+splits hugetlb VMAs ahead of the move, the way Lorenzo did for the mlock()
++ MREMAP_DONTUNMAP case, and it's tagged for stable.  The second is a
+selftest for it.
+
+The next two fix the accounting for when the unmap at the end of a move
+fails, we either charged memory that was never accounted or lost track of
+the charge for the whole VMA.  There's also a test for an old size of 0,
+which nothing covered.
+
+Everything that isn't hugetlb still splits at the end of the move.
+
+
+This patch (of 5):
+
+Moving a part of a private hugetlb mapping with mremap() leaks the huge
+page reservations of the parts that stay.  They are not returned when the
+mapping is unmapped, when the process exits or when the pool is resized.
+
+fixup_hugetlb_reservations() takes the reservation map away from the old
+VMA while that VMA still spans its whole range, because the moved part is
+only split off by the unmap at the end of the move.  hugetlb_vm_op_close()
+then finds no map in the parts that remain and returns nothing for them:
+
+    mmap() of 4 pages, MAP_PRIVATE | MAP_HUGETLB    HugePages_Rsvd: 4
+    mremap() of the second page to a new address    HugePages_Rsvd: 4
+    munmap() of all of it                           HugePages_Rsvd: 3
+
+The source is unmapped in this case, so the number of VMAs ends up where
+it did before and the check against sysctl_max_map_count stays as it is.
+
+Fix by splitting a hugetlb VMA in prep_move_vma() before a part of it is
+moved, as commit 597e4b9ab48a ("mm/mremap: fix locked_vm leak by splitting
+VMA for MREMAP_DONTUNMAP") does for an mlock()'d VMA.  A backport needs
+that commit, which is tagged for stable itself.
+
+Link: https://lore.kernel.org/20261105-b4-mremap-pre-split-v3-0-f8789de76849@toxicpanda.com
+Link: https://lore.kernel.org/20261105-b4-mremap-pre-split-v3-1-f8789de76849@toxicpanda.com
+Fixes: 550a7d60bd5e ("mm, hugepages: add mremap() support for hugepage backed vma")
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+  https://lore.kernel.org/20261105185943.3d6f4b34fbdbba8599bc7360@linux-foundation.org
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Sarthak Sharma <sarthak.sharma@arm.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/mremap.c | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/mm/mremap.c b/mm/mremap.c
+index 5f4e7d1ce3b7b..ee7b171ea71bf 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -1038,7 +1038,7 @@ static void vrm_stat_account(struct vma_remap_struct *vrm,
+ }
+ 
+ static bool __check_map_count_against_split(struct mm_struct *mm,
+-					    bool pre_split,
++					    bool source_stays,
+ 					    bool before_unmaps)
+ {
+ 	const int sys_map_count = get_sysctl_max_map_count();
+@@ -1092,14 +1092,14 @@ static bool __check_map_count_against_split(struct mm_struct *mm,
+ 	 */
+ 	map_count += 2;
+ 
+-	/* If pre-split, the -1 observed above doesn't apply. */
+-	if (pre_split)
++	/* If the split off source stays, the -1 observed above doesn't apply. */
++	if (source_stays)
+ 		map_count++;
+ 
+ 	return map_count <= sys_map_count;
+ }
+ 
+-static bool needs_pre_split(struct vma_remap_struct *vrm)
++static bool split_source_stays(struct vma_remap_struct *vrm)
+ {
+ 	/*
+ 	 * An MREMAP_DONTUNMAP of a mlock()'d VMA needs to unlock the
+@@ -1109,11 +1109,23 @@ static bool needs_pre_split(struct vma_remap_struct *vrm)
+ 		vma_test(vrm->vma, VMA_LOCKED_BIT);
+ }
+ 
++static bool needs_pre_split(struct vma_remap_struct *vrm)
++{
++	/*
++	 * fixup_hugetlb_reservations() takes the reservations away from the
++	 * source VMA.  The parts of it that do not move have to keep theirs.
++	 */
++	if (vma_is_hugetlb(vrm->vma))
++		return true;
++
++	return split_source_stays(vrm);
++}
++
+ /* Do we violate the map count limit if we split VMAs when moving the VMA? */
+ static bool check_map_count_against_split(struct vma_remap_struct *vrm)
+ {
+ 	return __check_map_count_against_split(current->mm,
+-		needs_pre_split(vrm), /*before_unmaps=*/false);
++		split_source_stays(vrm), /*before_unmaps=*/false);
+ }
+ 
+ /* Do we violate the map count limit if we split VMAs prior to early unmaps? */
+@@ -1162,10 +1174,7 @@ static unsigned long prep_move_vma(struct vma_remap_struct *vrm)
+ 	if (err)
+ 		return err;
+ 
+-	/*
+-	 * To account mlock()'d pages correctly in the MREMAP_DONTUNMAP
+-	 * case perform any split ahead of time for an mlock()'d VMA.
+-	 */
++	/* Perform any split ahead of time if the source VMA has to be distinct. */
+ 	if (needs_pre_split(vrm)) {
+ 		VMA_ITERATOR(vmi, vma->vm_mm, old_addr);
+ 
+-- 
+2.47.3
+

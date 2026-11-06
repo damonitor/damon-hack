@@ -1,0 +1,85 @@
+From: Bradley Morgan <brads@mainlining.org>
+Date: Thu, 5 Nov 2026 00:31:29 +0000
+Subject: [PATCH] compat: make compat_sysinfo() scale far enough to actually
+ fit
+
+compat_sysinfo() checks whether totalram or totalswap is too big for the
+compat struct and scales the values down to fit, but the loop stops as
+soon as s.mem_unit reaches PAGE_SIZE.  That caps the compression at one
+page, 12 bits with 4K pages.  On a 64 bit kernel do_sysinfo() always hands
+it values in bytes with mem_unit == 1, its own overflow math runs on
+unsigned long so it does not bail until 16 EiB, so the loop runs its 12
+turns, the values come back out as a page count, and anything past 2^32
+pages still does not fit.  Storing that into the u32 field then just drops
+the top bits.
+
+So a 32 bit process on a box past 2^32 pages gets a wrapped number instead
+of a coarse one, with 4K pages that starts at 16 TiB:
+
+  ram      old                  new
+  8 TiB    2147483648 x 4096    unchanged
+  16 TiB   0 x 4096             2147483648 x 8192
+  17 TiB   268435456 x 4096     2281701376 x 8192
+  32 TiB   0 x 4096             2147483648 x 16384
+
+The 17 TiB row is the nasty one, a 32 bit process is told the box has 1
+TiB of ram.  Keep scaling until the values fit instead of until the unit
+reaches a page, the unit then says how coarse the number is, which is what
+mem_unit is for.
+
+Nothing that works today changes.  I ran both loops side by side over ram
+from 1 MiB to 2^56 with 4K and 64K pages, they disagree on exactly the
+inputs where the old one dropped bits and agree on every one it got right.
+
+Link: https://lore.kernel.org/20261105003129.3130709-4-brads@mainlining.org
+Signed-off-by: Bradley Morgan <brads@mainlining.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Arnd Bergmann <arnd@arndb.de>
+---
+ kernel/sys.c | 26 ++++++++++++--------------
+ 1 file changed, 12 insertions(+), 14 deletions(-)
+
+diff --git a/kernel/sys.c b/kernel/sys.c
+index 755bfa5ccd92c..7d84fa871581d 100644
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -3035,24 +3035,22 @@ COMPAT_SYSCALL_DEFINE1(sysinfo, struct compat_sysinfo __user *, info)
+ 	do_sysinfo(&s);
+ 
+ 	/* Check to see if any memory value is too large for 32-bit and scale
+-	 *  down if needed
++	 * down if needed.  Keep going until the values fit, not just until the
++	 * unit reaches a page.  The values halve each turn, so this ends.
+ 	 */
+ 	if (upper_32_bits(s.totalram) || upper_32_bits(s.totalswap)) {
+-		int bitcount = 0;
+-
+-		while (s.mem_unit < PAGE_SIZE) {
++		while (s.mem_unit < PAGE_SIZE || upper_32_bits(s.totalram) ||
++		       upper_32_bits(s.totalswap)) {
+ 			s.mem_unit <<= 1;
+-			bitcount++;
++			s.totalram >>= 1;
++			s.freeram >>= 1;
++			s.sharedram >>= 1;
++			s.bufferram >>= 1;
++			s.totalswap >>= 1;
++			s.freeswap >>= 1;
++			s.totalhigh >>= 1;
++			s.freehigh >>= 1;
+ 		}
+-
+-		s.totalram >>= bitcount;
+-		s.freeram >>= bitcount;
+-		s.sharedram >>= bitcount;
+-		s.bufferram >>= bitcount;
+-		s.totalswap >>= bitcount;
+-		s.freeswap >>= bitcount;
+-		s.totalhigh >>= bitcount;
+-		s.freehigh >>= bitcount;
+ 	}
+ 
+ 	memset(&s_32, 0, sizeof(s_32));
+-- 
+2.47.3
+
