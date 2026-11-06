@@ -29,9 +29,99 @@ feature on DAMON sysfs ABI with patch 2.  Update the design and usage
 documents to explain the new features with patches 3 and 4,
 respectively.
 
+Reviewer notes (no need to be in git history).
+
+Test
+====
+
+Confirmed the age_ms filter is working using masim [1] and DAMON
+user-space tool [2]'s DAMOS filter-based snapshot feature, like below.
+
+Start masim.
+
+    $ ./masim.py run --config_file ./configs/stairs-500mb.cfg \
+            --quiet --repeat 10 &
+
+Start DAMON for access monitoring.
+
+    $ sudo ./damo start --probe \
+            --probe_prep set_pgidle --probe_filter allow pgidle_unset
+
+Monitoring results without an age_ms filter shows regions of any age.
+
+    $ sudo ./damo report attrs --style idle-time-percentiles
+    # total recency percentiles
+    <percentile> <idle time>
+      0     0 ns  |                    |
+      1     0 ns  |                    |
+     25   100 ms  |                    |
+     50  3.300 s  |****************    |
+     75      4 s  |******************* |
+     99  4.100 s  |********************|
+    100  4.100 s  |********************|
+    memory bw estimate: 66.628 GiB per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+With age_ms DAMOS filter applied for snapshotting, shows regions of given age
+range.
+
+For [0, 2s range]
+
+    $ sudo ./damo report attrs --style idle-time-percentiles \
+            --snapshot_damos_filter allow age_ms 0 2s
+    # total recency percentiles
+    <percentile> <idle time>
+      0     0 ns  |                    |
+      1     0 ns  |                    |
+     25     0 ns  |                    |
+     50     0 ns  |                    |
+     75   100 ms  |*                   |
+     99   200 ms  |**                  |
+    100  1.600 s  |********************|
+    memory bw estimate: 100.311 GiB per second  df-passed: 0 B per second
+    total size: 7.797 GiB  df-passed 0 B
+    scheme stats
+    tried 0 times (0 B)
+    applied 0 times (0 B)
+    0 B passed filters
+    quota exceeded 0 times
+    0 B
+    tried 0 snapshots (max 0)
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+For [1s, 2s range]
+
+    $ sudo ./damo report attrs --style idle-time-percentiles \
+            --snapshot_damos_filter allow age_ms 1s 2s
+    # total recency percentiles
+    <percentile> <idle time>
+      0     0 ns  |                    |
+      1     0 ns  |                    |
+     25     0 ns  |                    |
+     50  1.100 s  |**********          |
+     75  1.800 s  |*****************   |
+     99  2.100 s  |********************|
+    100  2.100 s  |********************|
+    memory bw estimate: 381.562 MiB per second  df-passed: 0 B per second
+    total size: 7.543 MiB  df-passed 0 B
+    scheme stats
+    tried 0 times (0 B)
+    applied 0 times (0 B)
+    0 B passed filters
+    quota exceeded 0 times
+    0 B
+    tried 0 snapshots (max 0)
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+[1] https://github.com/sjp38/masim
+[2] https://github.com/damonitor/damo
+
 Changes from RFC v2
 - RFC v2: https://lore.kernel.org/20261105044425.87142-1-sj@kernel.org
+- Rebase to the latet mm-new.
 - Collect R-b: from Aveline.
+- Add test results to the cover letter.
 Changes from RFC
 - RFC: https://lore.kernel.org/20261104153645.82945-1-sj@kernel.org
 - Use div_u64() to avoid 32 bit overflow of age_ms in core.
