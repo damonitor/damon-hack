@@ -1,47 +1,7 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Wed, 4 Nov 2026 10:34:59 +0800
+Date: Sat, 7 Nov 2026 10:27:45 +0800
 Subject: [PATCH] mm: hugetlb_vmemmap: remove HugeTLB-specific vmemmap
  optimization macros
-
-Patch series "mm: Decouple folio-based vmemmap optimization from HugeTLB",
-v3.
-
-Hi,
-
-Section-based vmemmap optimization is implemented in sparse-vmemmap.c,
-while folio-based optimization currently lives in hugetlb_vmemmap.c.  The
-latter is tightly coupled to HugeTLB-specific state even though the
-underlying page-table remapping operates on one folio at a time.
-
-To make these interfaces easier to maintain, the folio-based remapping
-mechanics first need a boundary that is independent of HugeTLB-specific
-state and raw address ranges.  This will allow the mechanics to be moved
-into a common vmemmap optimization layer alongside the section-based
-interface.
-
-This series establishes that boundary through three folio-oriented
-operations, each with a distinct role:
-
-  - vmemmap_optimize_folio() optimizes the vmemmap backing of a folio;
-  - vmemmap_restore_folio() restores the vmemmap backing of a folio; and
-  - vmemmap_pteify_folio() converts the vmemmap backing of a folio to
-    PTE mappings.
-
-Together, these operations encapsulate the address-range calculation and
-remapping mechanics for a folio.  HugeTLB wrappers retain policy decisions
-such as eligibility, optimized state, batching and TLB flush handling.
-
-Patches 1-8 generalize the underlying vmemmap remapping infrastructure by
-removing HugeTLB-specific assumptions and simplifying remap control and
-resource handling.  Patches 9-12 then establish folio-oriented operations
-for optimization, restoration and PTE conversion.
-
-The implementation remains in hugetlb_vmemmap.c for now.  A follow-up can
-move the folio-based operations into the common vmemmap optimization layer
-once the interface boundary is in place.
-
-
-This patch (of 12):
 
 Vmemmap optimization is no longer HugeTLB-specific, so the remaining
 HugeTLB-local reserve macros are redundant.
@@ -49,18 +9,19 @@ HugeTLB-local reserve macros are redundant.
 Replace them with the generic definitions to remove duplication and keep
 the HugeTLB vmemmap code aligned with the common optimization macros.
 
-Link: https://lore.kernel.org/20261104023510.260766-1-songmuchun@bytedance.com
-Link: https://lore.kernel.org/20261104023510.260766-2-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-3-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Tested-by: Andrew Morton <akpm@linux-foundation.org>
-  Link: https://lore.kernel.org/20261103224659.2865b9ff27d09994949edd78@linux-foundation.org
 Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: James Houghton <jthoughton@google.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Yili Zhang <zhangyili01@baidu.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 ---
  include/linux/vmemmap-optimization.h |  4 ++--
@@ -107,7 +68,7 @@ index 779b1de33c78c..c8c5a996e20ad 100644
  
  		if (vmemmap_optimizable_order(pfn_to_section_compound_order(pfn)))
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index b8ce014ba6e6d..4b73d6ec8dcea 100644
+index 7fcc97b127737..e51f079f43e13 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
 @@ -408,7 +408,7 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
@@ -119,7 +80,7 @@ index b8ce014ba6e6d..4b73d6ec8dcea 100644
  
  	/*
  	 * The pages which the vmemmap virtual address range [@vmemmap_start,
-@@ -676,8 +676,8 @@ static int __init hugetlb_vmemmap_init(void)
+@@ -677,8 +677,8 @@ static int __init hugetlb_vmemmap_init(void)
  {
  	const struct hstate *h;
  

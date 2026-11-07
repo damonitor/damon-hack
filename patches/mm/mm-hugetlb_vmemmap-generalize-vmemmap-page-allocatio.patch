@@ -1,35 +1,35 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Wed, 4 Nov 2026 10:35:02 +0800
+Date: Sat, 7 Nov 2026 10:27:48 +0800
 Subject: [PATCH] mm: hugetlb_vmemmap: generalize vmemmap page allocation
 
-Vmemmap page allocation is currently tied to restoring a virtual range and
-assumes an empty destination list.  These constraints prevent it from
+Vmemmap page allocation is currently tied to restoring a virtual range
+and assumes an empty destination list.  These constraints prevent it from
 being reused when pages are requested independently of a vmemmap range or
 appended to an existing list.
 
 Generalize the allocator and give it an all-or-nothing list contract so
-the restore and optimization paths can share the same allocation policy.
-This also allows HVO head-page allocation to fail gracefully under memory
-pressure without triggering the OOM killer.
+the restore and optimization paths can share the same helper.
 
-Link: https://lore.kernel.org/20261104023510.260766-5-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-6-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
-Tested-by: Andrew Morton <akpm@linux-foundation.org>
-  Link: https://lore.kernel.org/20261103224659.2865b9ff27d09994949edd78@linux-foundation.org
 Reviewed-by: Oscar Salvador <osalvador@suse.de>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: James Houghton <jthoughton@google.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Yili Zhang <zhangyili01@baidu.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 ---
- mm/hugetlb_vmemmap.c | 31 ++++++++++++++-----------------
- 1 file changed, 14 insertions(+), 17 deletions(-)
+ mm/hugetlb_vmemmap.c | 41 ++++++++++++++++++++---------------------
+ 1 file changed, 20 insertions(+), 21 deletions(-)
 
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index 0e5b2b182d1bf..d3058e106795f 100644
+index beb420c57ddc5..290dd8f317388 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
 @@ -334,26 +334,24 @@ static int vmemmap_remap_free(unsigned long start, unsigned long end,
@@ -39,19 +39,19 @@ index 0e5b2b182d1bf..d3058e106795f 100644
 -static int alloc_vmemmap_page_list(unsigned long start, unsigned long end,
 -				   struct list_head *list)
 +static int alloc_vmemmap_page_list(struct list_head *head,
-+		unsigned int nr_pages, int nid)
++		unsigned int nr_pages, int nid, gfp_t gfp_mask)
  {
 -	gfp_t gfp_mask = GFP_KERNEL | __GFP_RETRY_MAYFAIL;
 -	unsigned long nr_pages = (end - start) >> PAGE_SHIFT;
 -	int nid = page_to_nid((struct page *)start);
-+	LIST_HEAD(new_pages);
  	struct page *page, *next;
 -	int i;
++	LIST_HEAD(new_pages);
  
 -	for (i = 0; i < nr_pages; i++) {
 -		page = alloc_pages_node(nid, gfp_mask, 0);
 +	for (unsigned int i = 0; i < nr_pages; i++) {
-+		page = alloc_pages_node(nid, GFP_KERNEL | __GFP_RETRY_MAYFAIL, 0);
++		page = alloc_pages_node(nid, gfp_mask | __GFP_RETRY_MAYFAIL, 0);
  		if (!page)
 -			goto out;
 -		list_add(&page->lru, list);
@@ -69,32 +69,48 @@ index 0e5b2b182d1bf..d3058e106795f 100644
  		__free_page(page);
  	return -ENOMEM;
  }
-@@ -374,13 +372,14 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
+@@ -373,6 +371,7 @@ static int alloc_vmemmap_page_list(unsigned long start, unsigned long end,
+ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
  			       unsigned long flags)
  {
++	int ret, nid = page_to_nid((struct page *)start);
  	LIST_HEAD(vmemmap_pages);
-+	int nid = page_to_nid((struct page *)start);
  	struct vmemmap_remap_walk walk = {
  		.remap_pte	= vmemmap_restore_pte,
- 		.vmemmap_pages	= &vmemmap_pages,
+@@ -380,8 +379,10 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
  		.flags		= flags,
  	};
  
 -	if (alloc_vmemmap_page_list(start, end, &vmemmap_pages))
-+	if (alloc_vmemmap_page_list(&vmemmap_pages, (end - start) / PAGE_SIZE, nid))
- 		return -ENOMEM;
+-		return -ENOMEM;
++	ret = alloc_vmemmap_page_list(&vmemmap_pages, (end - start) / PAGE_SIZE,
++				      nid, GFP_KERNEL);
++	if (ret)
++		return ret;
  
  	return vmemmap_remap_range(start, end, &walk);
-@@ -527,15 +526,13 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ }
+@@ -501,7 +502,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ {
+ 	unsigned long vmemmap_start, vmemmap_end;
+ 	struct page *vmemmap_head, *vmemmap_tail;
+-	gfp_t gfp_mask = GFP_KERNEL | __GFP_NOWARN | __GFP_RETRY_MAYFAIL;
++	gfp_t gfp_mask = GFP_KERNEL | __GFP_NOWARN;
+ 	int nid, ret = 0;
+ 
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+@@ -528,15 +529,13 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
  	 */
  	folio_set_hugetlb_vmemmap_optimized(folio);
  
--	vmemmap_head = alloc_pages_node(nid, GFP_KERNEL, 0);
+-	vmemmap_head = alloc_pages_node(nid, gfp_mask, 0);
 -	if (!vmemmap_head) {
-+	if (alloc_vmemmap_page_list(vmemmap_pages, VMEMMAP_OPTIMIZATION_PAGES, nid)) {
- 		ret = -ENOMEM;
+-		ret = -ENOMEM;
++	ret = alloc_vmemmap_page_list(vmemmap_pages, VMEMMAP_OPTIMIZATION_PAGES,
++				      nid, gfp_mask);
++	if (ret)
  		goto out;
- 	}
+-	}
  
 +	vmemmap_head = list_first_entry(vmemmap_pages, struct page, lru);
  	copy_page(page_to_virt(vmemmap_head), folio);

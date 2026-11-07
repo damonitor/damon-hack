@@ -1,12 +1,12 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Wed, 4 Nov 2026 10:35:10 +0800
+Date: Sat, 7 Nov 2026 10:27:56 +0800
 Subject: [PATCH] mm: hugetlb_vmemmap: make vmemmap PTE conversion
  folio-oriented
 
 Converting a folio's vmemmap mappings from PMDs to PTEs is a per-folio
 operation, but the current interface exposes a raw address range and
-hardcodes deferred TLB flushing.  This splits the common mechanism across
-layers and couples it to the HugeTLB batching policy.
+hardcodes deferred TLB flushing.  This splits the common mechanism
+across layers and couples it to the HugeTLB batching policy.
 
 Make the folio the unit of PTE conversion and let callers select the TLB
 flush policy through the folio-oriented interface.  This keeps
@@ -14,27 +14,29 @@ HugeTLB-specific eligibility and batching outside the common operation.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261104023510.260766-13-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-14-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Tested-by: Andrew Morton <akpm@linux-foundation.org>
-  Link: https://lore.kernel.org/20261103224659.2865b9ff27d09994949edd78@linux-foundation.org
 Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: James Houghton <jthoughton@google.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Yili Zhang <zhangyili01@baidu.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 ---
- mm/hugetlb_vmemmap.c | 40 +++++++++++++++++++---------------------
- 1 file changed, 19 insertions(+), 21 deletions(-)
+ mm/hugetlb_vmemmap.c | 37 ++++++++++++++++---------------------
+ 1 file changed, 16 insertions(+), 21 deletions(-)
 
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index 0dcbc2b72384b..17fac64d411fb 100644
+index b8c10671d53bc..ba8e11e399b24 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
-@@ -300,20 +300,26 @@ static inline int vmemmap_restore_range(unsigned long start, unsigned long end,
+@@ -300,19 +300,22 @@ static inline int vmemmap_restore_range(unsigned long start, unsigned long end,
  }
  
  /**
@@ -57,20 +59,16 @@ index 0dcbc2b72384b..17fac64d411fb 100644
 -static int vmemmap_remap_split(unsigned long start, unsigned long end)
 +static int vmemmap_pteify_folio(const struct folio *folio, unsigned long flags)
  {
++	unsigned long start = (unsigned long)folio_page(folio, 0);
++	unsigned long end = start + folio_vmemmap_size(folio);
  	struct vmemmap_remap_walk walk = {
 -		.remap_pte	= NULL,
 -		.flags		= VMEMMAP_DEFER_TLB_FLUSH,
 +		.flags		= flags,
  	};
-+	unsigned long start = (unsigned long)folio_page(folio, 0);
-+	unsigned long end = start + folio_vmemmap_size(folio);
-+
-+	if (!vmemmap_optimizable_order(folio_order(folio)))
-+		return -EOPNOTSUPP;
  
  	return vmemmap_remap_range(start, end, &walk);
- }
-@@ -532,21 +538,13 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
+@@ -537,21 +540,13 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
  	free_vmemmap_page_list(&vmemmap_pages);
  }
  
@@ -95,7 +93,7 @@ index 0dcbc2b72384b..17fac64d411fb 100644
  }
  
  void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list)
-@@ -571,7 +569,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+@@ -576,7 +571,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
  
  		nr_to_optimize++;
  

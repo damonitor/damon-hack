@@ -1,0 +1,90 @@
+From: =?UTF-8?q?Carlos=20L=C3=B3pez?= <clopez@suse.de>
+Date: Fri, 6 Nov 2026 17:46:39 +0100
+Subject: [PATCH] selftests/mm: pkeys: wait for the child in become_child()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+become_child() forks during test_pkey_alloc_exhaust() and has the parent
+exit, so that the remaining tests run in the child.  However, the test
+runner only waits for the original process, so it sees the test finish
+early with a success status while the remaining tests keep running in the
+background.  Failures after the first fork are thus not reported in the
+exit status, and the remaining tests overlap with the next selftest.
+
+Fix this by waiting for the child in the parent and exiting with its
+status.  A previous fix avoided waiting, arguing that the parents would
+keep holding their resources [1].  Particularly, the parent keeps the
+hugetlb reservation of its test memory, so the child runs out of hugetlb
+pages after a few iterations.  Avoid this by freeing the test memory
+before waiting.
+
+Link: https://lore.kernel.org/20261106164639.2959195-1-clopez@suse.de
+Link: https://lore.kernel.org/all/20240419115027.3848958-1-usama.anjum@collabora.com [1]
+Fixes: e1812933b17b ("x86/selftests/pkeys: Fork() to check for state being preserved")
+Signed-off-by: Carlos López <clopez@suse.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Kevin Brodsky <kevin.brodsky@arm.com>
+Cc: Hongfu Li <lihongfu@kylinos.cn>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+---
+ tools/testing/selftests/mm/protection_keys.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/protection_keys.c b/tools/testing/selftests/mm/protection_keys.c
+index b7882ab97683f..5dece144ab951 100644
+--- a/tools/testing/selftests/mm/protection_keys.c
++++ b/tools/testing/selftests/mm/protection_keys.c
+@@ -1009,9 +1009,10 @@ static void test_pkey_syscalls_bad_args(int *ptr, u16 pkey)
+ 	pkey_assert(err);
+ }
+ 
+-static void become_child(void)
++static void become_child(int *ptr)
+ {
+ 	pid_t forkret;
++	int status;
+ 
+ 	forkret = fork();
+ 	pkey_assert(forkret >= 0);
+@@ -1021,7 +1022,16 @@ static void become_child(void)
+ 		/* in the child */
+ 		return;
+ 	}
+-	_exit(0);
++
++	/*
++	 * Wait for the child to finish the tests and pass on its result.
++	 * Free the test memory first, as it may reserve pages from the
++	 * small hugetlb pool that the child needs.
++	 */
++	free_pkey_malloc(ptr);
++	if (waitpid(forkret, &status, 0) != forkret || !WIFEXITED(status))
++		_exit(KSFT_FAIL);
++	_exit(WEXITSTATUS(status));
+ }
+ 
+ /* Assumes that all pkeys other than 'pkey' are unallocated */
+@@ -1060,7 +1070,7 @@ static void test_pkey_alloc_exhaust(int *ptr, u16 pkey)
+ 		 * preserved across fork().
+ 		 */
+ 		if (i == NR_PKEYS*2)
+-			become_child();
++			become_child(ptr);
+ 	}
+ 
+ 	dprintf3("%s()::%d\n", __func__, __LINE__);
+-- 
+2.47.3
+

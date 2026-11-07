@@ -1,5 +1,5 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Wed, 4 Nov 2026 10:35:08 +0800
+Date: Sat, 7 Nov 2026 10:27:54 +0800
 Subject: [PATCH] mm: hugetlb_vmemmap: make vmemmap restoration folio-oriented
 
 Like optimization, vmemmap restoration operates on one folio at a time,
@@ -14,27 +14,29 @@ consistent folio-level interfaces.
 
 No functional change intended.
 
-Link: https://lore.kernel.org/20261104023510.260766-11-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-12-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
-Tested-by: Andrew Morton <akpm@linux-foundation.org>
-  Link: https://lore.kernel.org/20261103224659.2865b9ff27d09994949edd78@linux-foundation.org
 Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: James Houghton <jthoughton@google.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Yili Zhang <zhangyili01@baidu.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 ---
  mm/hugetlb_vmemmap.c | 37 +++++++++++++------------------------
  1 file changed, 13 insertions(+), 24 deletions(-)
 
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index 64967f18e3c33..e424cb0b1a780 100644
+index 148bd27bb327b..359e53302a67b 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
-@@ -363,28 +363,29 @@ static int vmemmap_optimize_folio(const struct folio *folio,
+@@ -366,21 +366,21 @@ static int vmemmap_optimize_folio(const struct folio *folio,
  }
  
  /**
@@ -60,22 +62,22 @@ index 64967f18e3c33..e424cb0b1a780 100644
 -			       unsigned long flags)
 +static int vmemmap_restore_folio(const struct folio *folio, unsigned long flags)
  {
- 	LIST_HEAD(vmemmap_pages);
--	int nid = page_to_nid((struct page *)start);
-+	int nid = folio_nid(folio);
+-	int ret, nid = page_to_nid((struct page *)start);
 +	unsigned long start = (unsigned long)folio_page(folio, 0);
 +	unsigned long end = start + folio_vmemmap_size(folio);
++	int ret, nid = folio_nid(folio);
+ 	LIST_HEAD(vmemmap_pages);
  	struct vmemmap_remap_walk walk = {
  		.remap_pte	= vmemmap_restore_pte,
- 		.vmemmap_pages	= &vmemmap_pages,
+@@ -388,6 +388,7 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
  		.flags		= flags,
  	};
  
 +	start += VMEMMAP_OPTIMIZATION_SIZE;
- 	if (alloc_vmemmap_page_list(&vmemmap_pages, (end - start) / PAGE_SIZE, nid))
- 		return -ENOMEM;
- 
-@@ -402,7 +403,6 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+ 	ret = alloc_vmemmap_page_list(&vmemmap_pages, (end - start) / PAGE_SIZE,
+ 				      nid, GFP_KERNEL);
+ 	if (ret)
+@@ -407,7 +408,6 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
  					   struct folio *folio, unsigned long flags)
  {
  	int ret;
@@ -83,7 +85,7 @@ index 64967f18e3c33..e424cb0b1a780 100644
  
  	VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
  	VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
-@@ -410,18 +410,7 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+@@ -415,18 +415,7 @@ static int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
  	if (!folio_test_hugetlb_vmemmap_optimized(folio))
  		return 0;
  

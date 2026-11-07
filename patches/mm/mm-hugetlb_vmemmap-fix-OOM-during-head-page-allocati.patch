@@ -1,0 +1,105 @@
+From: Yili Zhang <zhangyili01@baidu.com>
+Date: Sat, 7 Nov 2026 10:27:44 +0800
+Subject: [PATCH] mm: hugetlb_vmemmap: fix OOM during head page allocation
+
+Patch series "mm: Decouple folio-based vmemmap optimization from HugeTLB",
+v4.
+
+Section-based vmemmap optimization is implemented in sparse-vmemmap.c,
+while folio-based optimization currently lives in hugetlb_vmemmap.c.
+The latter is tightly coupled to HugeTLB-specific state even though the
+underlying page-table remapping operates on one folio at a time.
+
+To make these interfaces easier to maintain, the folio-based remapping
+mechanics first need a boundary that is independent of HugeTLB-specific
+state and raw address ranges. This will allow the mechanics to be moved
+into a common vmemmap optimization layer alongside the section-based
+interface.
+
+This series establishes that boundary through three folio-oriented
+operations, each with a distinct role:
+
+  - vmemmap_optimize_folio() optimizes the vmemmap backing of a folio;
+  - vmemmap_restore_folio() restores the vmemmap backing of a folio; and
+  - vmemmap_pteify_folio() converts the vmemmap backing of a folio to
+    PTE mappings.
+
+Together, these operations encapsulate the address-range calculation and
+remapping mechanics for a folio. HugeTLB wrappers retain policy decisions
+such as eligibility, optimized state, batching and TLB flush handling.
+
+Patch 1 is a standalone prerequisite fix for best-effort HVO head-page
+allocation. Patches 2-9 generalize the underlying vmemmap remapping
+infrastructure by removing HugeTLB-specific assumptions and simplifying
+remap control and resource handling. Patches 10-13 then establish
+folio-oriented operations for optimization, restoration and PTE
+conversion.
+
+The implementation remains in hugetlb_vmemmap.c for now. A follow-up can
+move the folio-based operations into the common vmemmap optimization layer
+once the interface boundary is in place.
+
+
+This patch (of 13):
+
+The head page used during HugeTLB vmemmap optimization is allocated with
+a bare GFP_KERNEL mask. When boot-time hugepage allocation drains free
+memory, parallel optimization workers can enter OOM handling before
+userspace exists, leaving the kernel with no killable process and causing
+a panic.
+
+hugetlb_pages_alloc_boot_node() invokes HVO on the folios accumulated so
+far when available memory reaches zero, allowing the released vmemmap pages
+to support further hugepage allocations. If allocating the HVO head page
+returns -ENOMEM, the bulk HVO path frees any vmemmap pages it has already
+accumulated and retries, while callers can continue with an unoptimized
+folio if the retry still fails. Therefore, neither an allocation warning
+nor OOM handling helps this best-effort allocation. Use GFP_KERNEL |
+__GFP_NOWARN | __GFP_RETRY_MAYFAIL to allow reclaim retries while avoiding
+both.
+
+Link: https://lore.kernel.org/20261107022756.77731-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-2-songmuchun@bytedance.com
+Fixes: c0b495b91a47 ("mm/hugetlb: refactor code around vmemmap_walk")
+Signed-off-by: Yili Zhang <zhangyili01@baidu.com>
+Signed-off-by: Muchun Song <muchun.song@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Co-developed-by: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: James Houghton <jthoughton@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
+Cc: Huacai Chen <chenhuacai@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/hugetlb_vmemmap.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index b8ce014ba6e6d..7fcc97b127737 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -501,6 +501,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ {
+ 	unsigned long vmemmap_start, vmemmap_end;
+ 	struct page *vmemmap_head, *vmemmap_tail;
++	gfp_t gfp_mask = GFP_KERNEL | __GFP_NOWARN | __GFP_RETRY_MAYFAIL;
+ 	int nid, ret = 0;
+ 
+ 	VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+@@ -527,7 +528,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+ 	 */
+ 	folio_set_hugetlb_vmemmap_optimized(folio);
+ 
+-	vmemmap_head = alloc_pages_node(nid, GFP_KERNEL, 0);
++	vmemmap_head = alloc_pages_node(nid, gfp_mask, 0);
+ 	if (!vmemmap_head) {
+ 		ret = -ENOMEM;
+ 		goto out;
+-- 
+2.47.3
+

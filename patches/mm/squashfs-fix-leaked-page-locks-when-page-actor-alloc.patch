@@ -1,0 +1,44 @@
+From: Nguyen Ngoc Thang <ngocthang2710.1999@gmail.com>
+Date: Sun, 27 Sep 2026 12:40:12 +0700
+Subject: [PATCH] squashfs: fix leaked page locks when page actor allocation
+ fails
+
+squashfs_readpage_block() grabs and locks the sibling pages of the target
+block before it allocates the page actor.  If that allocation fails it
+jumps to "out", which only frees the page array, so the locked pages are
+never unlocked or released.
+
+A later truncate_inode_pages_range() on the inode, e.g.  from evict() at
+umount, then waits forever on the leaked folio lock and the task hangs.
+
+Go through mark_errored instead, which unlocks and puts every page
+except the target, which the caller handles.
+
+Link: https://lore.kernel.org/20260927060541.45780-1-ngocthang2710.1999@gmail.com
+Fixes: f268eedddf35 ("squashfs: extend "page actor" to handle missing pages")
+Signed-off-by: Nguyen Ngoc Thang <ngocthang2710.1999@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+65b1e2d8f2d618a93e96@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=65b1e2d8f2d618a93e96
+Reviewed-by: Phillip Lougher <phillip@squashfs.org.uk>
+Cc: <stable@vger.kernel.org>
+---
+ fs/squashfs/file_direct.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/squashfs/file_direct.c b/fs/squashfs/file_direct.c
+index 2c3e809d6891b..177357443543f 100644
+--- a/fs/squashfs/file_direct.c
++++ b/fs/squashfs/file_direct.c
+@@ -70,7 +70,7 @@ int squashfs_readpage_block(struct folio *folio, u64 block, int bsize,
+ 	actor = squashfs_page_actor_init_special(msblk, page, pages, expected,
+ 						start_index << PAGE_SHIFT);
+ 	if (actor == NULL)
+-		goto out;
++		goto mark_errored;
+ 
+ 	/* Decompress directly into the page cache buffers */
+ 	res = squashfs_read_data(inode->i_sb, block, bsize, NULL, actor);
+-- 
+2.47.3
+

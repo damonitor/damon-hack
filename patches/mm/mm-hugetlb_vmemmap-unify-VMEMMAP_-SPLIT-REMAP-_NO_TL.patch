@@ -1,41 +1,43 @@
 From: Muchun Song <muchun.song@linux.dev>
-Date: Wed, 4 Nov 2026 10:35:00 +0800
+Date: Sat, 7 Nov 2026 10:27:46 +0800
 Subject: [PATCH] mm: hugetlb_vmemmap: unify VMEMMAP_{SPLIT,REMAP}_NO_TLB_FLUSH
 
-VMEMMAP_SPLIT_NO_TLB_FLUSH and VMEMMAP_REMAP_NO_TLB_FLUSH do not describe
-fully independent choices.  A split-only walk can defer the PMD-split
-flush to a later global flush, and a remap-only walk can defer the final
-remap flush.  However, when a PMD split is followed by PTE remapping, the
-split flush must happen before the PTEs are changed, because stale
-large-page translations must not overlap with new small-page translations
-that map different physical pages.
+VMEMMAP_SPLIT_NO_TLB_FLUSH and VMEMMAP_REMAP_NO_TLB_FLUSH do not
+describe fully independent choices. A split-only walk can defer the
+PMD-split flush to a later global flush, and a remap-only walk can
+defer the final remap flush. However, when a PMD split is followed
+by PTE remapping, the split flush must happen before the PTEs are
+changed, because stale large-page translations must not overlap with
+new small-page translations that map different physical pages.
 
-Replace the two flags with a single VMEMMAP_DEFER_TLB_FLUSH flag.  The new
-name reflects that only safely batchable flushes are deferred.  Keep
+Replace the two flags with a single VMEMMAP_DEFER_TLB_FLUSH flag. The
+new name reflects that only safely batchable flushes are deferred. Keep
 split-only walks able to defer the flush, but force the split flush
-whenever a remap_pte callback is present.  Callers that batch HVO work can
-still defer the final remap flush and issue their own global flush.
+whenever a remap_pte callback is present. Callers that batch HVO work
+can still defer the final remap flush and issue their own global flush.
 
 Current callers keep the same flushing behavior.
 
-Link: https://lore.kernel.org/20261104023510.260766-3-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261107022756.77731-4-songmuchun@bytedance.com
 Signed-off-by: Muchun Song <muchun.song@linux.dev>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
 Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
-Tested-by: Andrew Morton <akpm@linux-foundation.org>
-  Link: https://lore.kernel.org/20261103224659.2865b9ff27d09994949edd78@linux-foundation.org
 Reviewed-by: Oscar Salvador <osalvador@suse.de>
 Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: James Houghton <jthoughton@google.com>
 Cc: David Hildenbrand <david@kernel.org>
+Cc: Yili Zhang <zhangyili01@baidu.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
 Cc: Huacai Chen <chenhuacai@kernel.org>
 ---
  mm/hugetlb_vmemmap.c | 23 +++++++++++++----------
  1 file changed, 13 insertions(+), 10 deletions(-)
 
 diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
-index 4b73d6ec8dcea..63e899cfaac3a 100644
+index e51f079f43e13..c436db31c6c5f 100644
 --- a/mm/hugetlb_vmemmap.c
 +++ b/mm/hugetlb_vmemmap.c
 @@ -42,10 +42,8 @@ struct vmemmap_remap_walk {
@@ -92,7 +94,7 @@ index 4b73d6ec8dcea..63e899cfaac3a 100644
  
  	list_for_each_entry_safe(folio, t_folio, folio_list, lru) {
  		if (folio_test_hugetlb_vmemmap_optimized(folio)) {
-@@ -516,7 +519,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+@@ -517,7 +520,7 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
  
  	/*
  	 * Very Subtle
@@ -101,7 +103,7 @@ index 4b73d6ec8dcea..63e899cfaac3a 100644
  	 * immediately after remapping.  As a result, subsequent accesses
  	 * and modifications to struct pages associated with the hugetlb
  	 * page could be to the OLD struct pages.  Set the vmemmap optimized
-@@ -595,7 +598,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+@@ -596,7 +599,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
  	struct folio *folio;
  	unsigned long nr_to_optimize = 0;
  	LIST_HEAD(vmemmap_pages);
