@@ -2,16 +2,23 @@ From: Ruide Cao <caoruide123@gmail.com>
 Date: Mon, 11 May 2026 18:42:53 +0800
 Subject: [PATCH] ipc: sem: fix used_sems overflow in newary()
 
-newary() checks namespace-wide semaphore usage before creating a new
-array, but the current accounting uses a plain signed addition.
+newary() checks the namespace-wide semaphore limit using a signed
+addition of used_sems and nsems.  If that addition overflows, the
+comparison can fail to reject a request which exceeds sc_semmns.
 
-If the accumulated semaphore count overflows, the limit check can fail
-open and allow allocations past sc_semmns, breaking namespace semaphore
-resource enforcement and potentially leading to resource exhaustion.
+The default semaphore limits cannot trigger this overflow.  It requires
+raised limits and substantial existing allocations.  sem_alloc()
+separately bounds each array's allocation size, so a single enormous
+request is insufficient to demonstrate a successful quota bypass.
 
-Fix this by using check_add_overflow() before comparing the new total
-against sc_semmns, and reject overflow the same way as a true limit
-exceed.
+With enough memory, semget() can succeed instead of returning ENOSPC,
+allowing allocations beyond the namespace semaphore quota and
+increasing memory pressure.  The wrapped used_sems count can also cause
+SEM_INFO to report a negative semaphore usage count.
+
+Use check_add_overflow() before comparing the new total against
+sc_semmns, rejecting overflow with ENOSPC.  The existing writer lock
+covers both the check and the later accounting update.
 
 Link: https://lore.kernel.org/849fb1fdecd1cc241fd5b032602dbffa90f9dd93.1778477179.git.caoruide123@gmail.com
 Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
@@ -23,12 +30,12 @@ Reported-by: Yifan Wu <yifanwucs@gmail.com>
 Reported-by: Juefei Pu <tomapufckgml@gmail.com>
 Reported-by: Xin Liu <bird@lzu.edu.cn>
 Tested-by: Ren Wei <enjou1224z@gmail.com>
+Acked-by: Davidlohr Bueso <dave@stgolabs.net>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Arnd Bergmann <arnd@arndb.de>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Kees Cook <kees@kernel.org>
 Cc: Simon Schuster <schuster.simon@siemens-energy.com>
-Cc: Davidlohr Bueso <dave@stgolabs.net>
 Cc: Manfred Spraul <manfred@colorfullife.com>
 Cc: <stable@vger.kernel.org>
 ---

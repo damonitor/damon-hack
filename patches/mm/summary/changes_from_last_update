@@ -12,31 +12,18 @@
   - series: 4 (22) -> 4 (22) (no change)
     - no role, maintainer: 21 -> 21 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-- mm-new: 0 -> 5 commits
-  - series: 0 (0) -> 1 (5)
-    - no role, nobody: 0 -> 1 commits
-    - maintainer, no role : 0 -> 4 commits
-  - new commits
+- mm-new: 5 -> 5 commits (no change)
+  - series: 1 (5) -> 1 (5) (no change)
+    - no role, nobody: 1 -> 0 commits
+    - no role, no role : 0 -> 1 commits
+    - maintainer, no role : 4 -> 4 commits (no change)
+  - changed commits
     - series "mm: continue vma_flags_t conversion". (13)
-      - 7d8c3b9f8daa "mm: convert miscellaneous VMA flag tests to use vma_flags_t (8/13)"
-        - Authored by no role player, reviewed by nobody
+      - badd52dc5ac4 "mm: convert miscellaneous VMA flag tests to use vma_flags_t (9/13)"
+        - Authored by no role player, reviewed by no role player
+        - added "Reviewed-by: Lance Yang <lance.yang@linux.dev>"
+        - dropped "Cc: Lance Yang <lance.yang@linux.dev>"
         - Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-8-0d3cd15ab75f@kernel.org
-    - series "mm/damon: introduce age_ms damos core filter type". (4)
-      - e7e934472ade "mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS (0/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20261106020559.98352-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261106020559.98352-2-sj@kernel.org
-        - Link: https://github.com/sjp38/masim [1]
-        - Link: https://github.com/damonitor/damo [2]
-      - 13e0dd6d8e2c "mm/damon/sysfs-schemes: support DAMOS_FILTER_TYPE_AGE_MS (1/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20261106020559.98352-3-sj@kernel.org
-      - 32285676e3fe "Docs/mm/damon/design: update for age_ms damos core filter type (2/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20261106020559.98352-4-sj@kernel.org
-      - 3867b0004e64 "Docs/admin-guide/mm/damon/usage: update for age_ms damos core filter (3/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - Link: https://lore.kernel.org/20261106020559.98352-5-sj@kernel.org
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

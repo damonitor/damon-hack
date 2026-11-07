@@ -1,0 +1,66 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Fri, 6 Nov 2026 09:24:38 -0800
+Subject: [PATCH] mm/migrate_device: allocate deferred split sublists for new
+ huge folios
+
+migrate_vma_insert_huge_pmd_page() can populate an anonymous mapping
+with a newly charged large folio. Unlike the normal anonymous THP
+allocation paths, it does not allocate the charged memcg's deferred
+split sublist.
+
+If the memcg has no sublist, partially unmapping the folio makes
+deferred_split_folio() fall back to an ancestor's list. This warns
+because the fallback is intended for dying cgroups. If a subsequent
+normal THP allocation creates the missing sublist, freeing the earlier
+folio removes it from the ancestor's list while holding the child's
+lock and updating the child's count. The accounting is then wrong,
+and concurrent deferred split scanning can corrupt the list, leading
+to kernel crashes or hangs.
+
+The list_lru conversion added sublist allocation to anonymous faults,
+swapin and collapse, but missed this path, which creates new folios
+rather than merely transferring an existing charge during migration.
+
+Allocate the deferred split sublist after charging and before installing
+the PMD. On failure, use the existing abort path to clear the migration
+flags and leave the destination folio for migration finalization to
+release. Count this as an allocation fallback rather than a memcg
+charge failure.
+
+Fixes: fafaeceb89a5 ("mm: switch deferred split shrinker to list_lru")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Ada Smith <adasmithgt@gmail.com>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: <stable@kernel.org>
+---
+ mm/migrate_device.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/migrate_device.c b/mm/migrate_device.c
+index c26acbbd2e318..44ed366eef3a1 100644
+--- a/mm/migrate_device.c
++++ b/mm/migrate_device.c
+@@ -833,6 +833,13 @@ static int migrate_vma_insert_huge_pmd_page(struct migrate_vma *migrate,
+ 		goto abort;
+ 	}
+ 
++	/* The charged memcg needs its own sublist before deferred splitting. */
++	if (folio_memcg_alloc_deferred(folio)) {
++		count_vm_event(THP_FAULT_FALLBACK);
++		count_mthp_stat(HPAGE_PMD_ORDER, MTHP_STAT_ANON_FAULT_FALLBACK);
++		goto abort;
++	}
++
+ 	__folio_mark_uptodate(folio);
+ 
+ 	pgtable = pte_alloc_one(vma->vm_mm);
+-- 
+2.47.3
+
