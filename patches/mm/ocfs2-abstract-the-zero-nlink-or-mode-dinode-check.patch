@@ -1,0 +1,80 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:20:52 +0800
+Subject: [PATCH] ocfs2: abstract the zero nlink or mode dinode check
+
+ocfs2_validate_inode_block() open-codes the test for a dinode that has
+no links or no mode.  Fold the condition into a predicate so it reads
+like the neighbouring ocfs2_dinode_has_*() helpers, and so the filecheck
+variant can share it.
+
+Reuse ocfs2_read_links_count() rather than testing i_links_count and
+i_links_count_hi separately.  OCFS2_LINKS_HI_SHIFT is 16 and both fields
+are 16 bits wide, so the combined count is zero exactly when both raw
+fields are zero.
+
+The OCFS2_ORPHANED_FL carve-out moves into the predicate along with the
+rest of the condition, in the same early-return style as
+ocfs2_dinode_has_size_without_clusters().
+
+The return code and the log message stay at the call site: filecheck
+reports the same conditions with a different code and must not call
+ocfs2_error().
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-3-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 25 ++++++++++++++++---------
+ 1 file changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 371857673712e..209066321932e 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -67,6 +67,21 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ static int ocfs2_filecheck_repair_inode_block(struct super_block *sb,
+ 						      struct buffer_head *bh);
+ 
++static bool ocfs2_dinode_has_zero_nlink_or_mode(struct ocfs2_dinode *di)
++{
++	/*
++	 * An open-unlinked inode legitimately has a zero link count on disk:
++	 * ocfs2_unlink() drops the last link and ocfs2_orphan_add() sets
++	 * OCFS2_ORPHANED_FL, while OCFS2_VALID_FL is only cleared later by
++	 * ocfs2_remove_inode().  DIO orphans keep their link count, so they
++	 * need no exemption here.
++	 */
++	if (le32_to_cpu(di->i_flags) & OCFS2_ORPHANED_FL)
++		return false;
++
++	return !ocfs2_read_links_count(di) || !di->i_mode;
++}
++
+ static bool ocfs2_valid_inode_mode(umode_t mode)
+ {
+ 	return fs_umode_to_ftype(mode) != FT_UNKNOWN;
+@@ -1482,15 +1497,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	/*
+-	 * An open-unlinked inode legitimately has a zero link count on disk:
+-	 * ocfs2_unlink() drops the last link and ocfs2_orphan_add() sets
+-	 * OCFS2_ORPHANED_FL, while OCFS2_VALID_FL is only cleared later by
+-	 * ocfs2_remove_inode().  DIO orphans keep their link count, so they
+-	 * need no exemption here.
+-	 */
+-	if (!(le32_to_cpu(di->i_flags) & OCFS2_ORPHANED_FL) &&
+-	    ((!di->i_links_count && !di->i_links_count_hi) || !di->i_mode)) {
++	if (ocfs2_dinode_has_zero_nlink_or_mode(di)) {
+ 		mlog(ML_ERROR, "Invalid dinode #%llu: "
+ 			"Corrupt state (nlink = %u or mode = %u) detected!\n",
+ 		        (unsigned long long)bh->b_blocknr,
+-- 
+2.47.3
+

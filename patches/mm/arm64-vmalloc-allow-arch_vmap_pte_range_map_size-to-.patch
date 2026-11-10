@@ -1,0 +1,74 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Sat, 7 Nov 2026 21:49:48 +0800
+Subject: [PATCH] arm64/vmalloc: allow arch_vmap_pte_range_map_size() to batch
+ multiple CONT_PTE
+
+Allow arch_vmap_pte_range_map_size to batch across multiple CONT_PTE
+blocks, reducing both PTE setup and TLB flush iterations.
+
+Previously the function returned a single CONT_PTE_SIZE for an aligned
+range, so the caller mapped one CONT_PTE block per iteration. Now, for a
+CONT_PTE_SIZE-aligned range, it returns the largest CONT_PTE-aligned size
+that fits within both the remaining range and the caller's max_page_shift,
+so a single vmap_pte_set_huge() call installs several CONT_PTE blocks at
+once.
+
+Link: https://lore.kernel.org/20261107134953.748622-6-jiangwenxiaomi@gmail.com
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Wen Jiang <jiangwen6@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Tested-by: Leo Yan <leo.yan@arm.com>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Tested-by: Leo Yan <leo.yan@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Andrew Donnellan <andrew+kernel@donnellan.id.au>
+Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
+---
+ arch/arm64/include/asm/vmalloc.h | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/include/asm/vmalloc.h b/arch/arm64/include/asm/vmalloc.h
+index 4ec1acd3c1b34..c29704a19e276 100644
+--- a/arch/arm64/include/asm/vmalloc.h
++++ b/arch/arm64/include/asm/vmalloc.h
+@@ -23,10 +23,12 @@ static inline unsigned long arch_vmap_pte_range_map_size(unsigned long addr,
+ 						unsigned long end, u64 pfn,
+ 						unsigned int max_page_shift)
+ {
++	unsigned long size;
++
+ 	/*
+-	 * If the block is at least CONT_PTE_SIZE in size, and is naturally
+-	 * aligned in both virtual and physical space, then we can pte-map the
+-	 * block using the PTE_CONT bit for more efficient use of the TLB.
++	 * If the range is at least CONT_PTE_SIZE and naturally aligned in both
++	 * virtual and physical space, return the largest CONT_PTE-aligned size
++	 * that fits, for more efficient use of the TLB.
+ 	 */
+ 	if (max_page_shift < CONT_PTE_SHIFT)
+ 		return PAGE_SIZE;
+@@ -40,7 +42,9 @@ static inline unsigned long arch_vmap_pte_range_map_size(unsigned long addr,
+ 	if (!IS_ALIGNED(PFN_PHYS(pfn), CONT_PTE_SIZE))
+ 		return PAGE_SIZE;
+ 
+-	return CONT_PTE_SIZE;
++	size = min(end - addr, 1UL << max_page_shift);
++	size = round_down(size, CONT_PTE_SIZE);
++	return size;
+ }
+ 
+ #define arch_vmap_pte_range_unmap_size arch_vmap_pte_range_unmap_size
+-- 
+2.47.3
+

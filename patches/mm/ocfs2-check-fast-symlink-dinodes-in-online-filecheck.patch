@@ -1,0 +1,60 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:18 +0800
+Subject: [PATCH] ocfs2: check fast symlink dinodes in online filecheck
+
+Wire the fast symlink guard and its two sub-checks into the filecheck
+validator: an i_size beyond the space available for id2.i_symlink, and a
+target that is not NUL-terminated at i_size.
+
+ocfs2_dinode_has_unterminated_fast_symlink() bounds its own strnlen()
+against ocfs2_fast_symlink_chars(), so this caller does not have to rely
+on the size check having run first to stay inside the inode block.
+
+Link: https://lore.kernel.org/20261109122121.21473-29-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index e01c3078d974a..132864f860fac 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -2141,6 +2141,30 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 		}
+ 	}
+ 
++	if (ocfs2_dinode_is_fast_symlink(di)) {
++		int max_inline = ocfs2_fast_symlink_chars(sb);
++		u64 i_size = le64_to_cpu(di->i_size);
++
++		if (ocfs2_dinode_has_oversized_fast_symlink(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: fast symlink i_size %llu exceeds max %d\n",
++			     (unsigned long long)bh->b_blocknr,
++			     (unsigned long long)i_size,
++			     max_inline - 1);
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_unterminated_fast_symlink(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: fast symlink is not NUL-terminated at i_size %llu\n",
++			     (unsigned long long)bh->b_blocknr,
++			     (unsigned long long)i_size);
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++	}
++
+ bail:
+ 	return rc;
+ }
+-- 
+2.47.3
+

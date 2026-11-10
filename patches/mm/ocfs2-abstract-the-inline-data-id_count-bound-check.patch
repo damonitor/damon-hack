@@ -1,0 +1,63 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:01 +0800
+Subject: [PATCH] ocfs2: abstract the inline data id_count bound check
+
+Fold the id_count against ocfs2_max_inline_data_with_xattr() test into a
+predicate.
+
+The comparison stays signed.  ocfs2_max_inline_data_with_xattr() returns
+int and subtracts the unvalidated on-disk i_xattr_inline_size from the
+space available in the inode block, so it can go negative on small block
+sizes.  Caching it in an unsigned local would turn a negative maximum
+into a huge bound and silently accept the oversized id_count.  The
+message keeps its %d for the same reason.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-12-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 2aac1918562a6..259f44661f370 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -174,6 +174,19 @@ static bool ocfs2_dinode_has_inline_clusters(struct ocfs2_dinode *di)
+ 	return le32_to_cpu(di->i_clusters) != 0;
+ }
+ 
++static bool ocfs2_dinode_has_oversized_inline_data(struct super_block *sb,
++						   struct ocfs2_dinode *di)
++{
++	/*
++	 * The maximum is a signed int and can go negative, because
++	 * i_xattr_inline_size is itself unvalidated.  Keep the comparison
++	 * signed: an unsigned bound would turn a negative maximum into a
++	 * huge one and let the oversized id_count through.
++	 */
++	return le16_to_cpu(di->id2.i_data.id_count) >
++		ocfs2_max_inline_data_with_xattr(sb, di);
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1747,8 +1760,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 			goto bail;
+ 		}
+ 
+-		if (le16_to_cpu(data->id_count) >
+-		    ocfs2_max_inline_data_with_xattr(sb, di)) {
++		if (ocfs2_dinode_has_oversized_inline_data(sb, di)) {
+ 			rc = ocfs2_error(sb,
+ 					 "Invalid dinode #%llu: inline data id_count %u exceeds max %d\n",
+ 					 (unsigned long long)bh->b_blocknr,
+-- 
+2.47.3
+

@@ -1,0 +1,101 @@
+From: Alexandre Ghiti <alex@ghiti.fr>
+Date: Mon, 9 Nov 2026 15:18:32 -0800
+Subject: [PATCH] mm, swap: only prefer nonfull clusters on synchronous devices
+
+Commit 9a42aed48421 ("mm, swap: prefer nonfull over free clusters") made
+the allocator fill nonfull clusters before taking free ones on swap
+devices without discard.  Commit 3cedb745d354 ("mm: clarify the
+folio_free_swap() for do_swap_page()") frees the swap slot on an exclusive
+write fault.  Such faults now leave holes in formerly full clusters,
+putting those clusters back on the nonfull list.  Reclaim allocates slots
+one folio at a time, scattering a batch across the holes instead of
+producing mergeable writes.  Later swapin can also require more read
+requests.
+
+On a mysql/sysbench workload in a 256 MiB memcg swapping to an NVMe
+partition, 7.3 compared with the previous version produced 59% more device
+read requests and 27% more write requests per transaction.  Throughput was
+unchanged without iocost and fell 19% with iocost.
+
+Prefer free clusters first on nonsynchronous devices, preserving
+contiguous swap slots for merging I/O.  Keep nonfull-first on synchronous
+devices such as zram: they do not merge I/O, and filling holes saves free
+clusters for large folios.  Keep free-cluster preference on discard
+devices to spread writes.
+
+In the same workload, v2 reduced read requests per transaction by 14% and
+write requests by 48% against its base kernel.  Throughput was unchanged
+without iocost and improved 33% with iocost.  The RFC's batch-aware
+allocator also improved this workload, but this policy needs no batch
+information from reclaim.  Reverting the slot-freeing change would keep
+swap space pinned under dirty pages; a proposed 50% swap-usage cutoff for
+free-cluster preference was arbitrary and would stop helping as swap
+filled.
+
+The 7.0 to 7.2 kernels retained the swap slot after a write fault as a
+side effect of 4b34f1d82c65 ("mm, swap: free the swap cache after folio is
+mapped").  The observed regression requires both 9a42aed48421 and
+3cedb745d354; stable backports should target trees containing both.
+
+Link: https://lore.kernel.org/r/20261105155032.240457-1-alex@ghiti.fr
+Link: https://lore.kernel.org/r/20261105155032.240457-2-alex@ghiti.fr
+Link: https://lore.kernel.org/r/20261022145615.2184343-1-alex@ghiti.fr
+Link: https://lore.kernel.org/r/CAMgjq7BFbXEKEt9faj_rg5AStfLkpJ0j57EQOOJ+L3-w2xRvtg@mail.gmail.com
+Fixes: 9a42aed48421 ("mm, swap: prefer nonfull over free clusters")
+Signed-off-by: Alexandre Ghiti <alex@ghiti.fr>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Kairui Song <kasong@tencent.com>
+Acked-by: Kairui Song <kasong@tencent.com>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/swapfile.c | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index c2af13eb15b33..4a0afc8f9a07b 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -973,6 +973,17 @@ static bool __swap_cluster_alloc_entries(struct swap_info_struct *si,
+ 	return true;
+ }
+ 
++/*
++ * Prefer a new cluster over a nonfull one if the device needs discard, to
++ * spread out the writes, or if it is not synchronous, to keep the slots
++ * of a swapout batch contiguous so that its writes can be merged.
++ */
++static bool swap_prefer_free_cluster(struct swap_info_struct *si)
++{
++	return (si->flags & SWP_PAGE_DISCARD) ||
++	       !(si->flags & SWP_SYNCHRONOUS_IO);
++}
++
+ /* Try use a new cluster for current CPU and allocate from it. */
+ static unsigned int alloc_swap_scan_cluster(struct swap_info_struct *si,
+ 					    struct swap_cluster_info *ci,
+@@ -1143,11 +1154,7 @@ static unsigned long cluster_alloc_swap_entry(struct swap_info_struct *si,
+ 	}
+ 
+ new_cluster:
+-	/*
+-	 * If the device need discard, prefer new cluster over nonfull
+-	 * to spread out the writes.
+-	 */
+-	if (si->flags & SWP_PAGE_DISCARD) {
++	if (swap_prefer_free_cluster(si)) {
+ 		found = alloc_swap_scan_list(si, &si->free_clusters, folio, false);
+ 		if (found)
+ 			goto done;
+@@ -1159,7 +1166,7 @@ static unsigned long cluster_alloc_swap_entry(struct swap_info_struct *si,
+ 			goto done;
+ 	}
+ 
+-	if (!(si->flags & SWP_PAGE_DISCARD)) {
++	if (!swap_prefer_free_cluster(si)) {
+ 		found = alloc_swap_scan_list(si, &si->free_clusters, folio, false);
+ 		if (found)
+ 			goto done;
+-- 
+2.47.3
+

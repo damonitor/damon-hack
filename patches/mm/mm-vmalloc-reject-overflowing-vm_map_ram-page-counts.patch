@@ -1,0 +1,64 @@
+From: "Shubhang Kaushik (Ampere)" <sh@gentwo.org>
+Date: Thu, 22 Oct 2026 23:43:47 -0700
+Subject: [PATCH] mm/vmalloc: reject overflowing vm_map_ram page counts
+
+vm_map_ram() accepts a page count and must either map that many pages or
+fail.  It currently converts the count to a byte size with:
+
+        (unsigned long)count << PAGE_SHIFT
+
+On 32-bit kernels, this conversion overflows when count is greater than
+ULONG_MAX >> PAGE_SHIFT.  vm_map_ram() then allocates and maps only the
+wrapped byte size, but returns a non-NULL address to its caller.
+
+For example, with 4 KiB pages, a count of 1048577 wraps to PAGE_SIZE.
+vm_map_ram() therefore returns a mapping containing one page instead of
+the requested 1048577 pages.
+
+If a caller uses the successful result as a mapping of all requested
+pages, it can access beyond the allocated mapping.  Such an access can
+fault.  If the accessed virtual address is occupied by another vmalloc
+mapping, it can instead access and corrupt unrelated kernel memory.  In a
+userspace-reachable call path, this can result in a failed operation, a
+kernel oops or panic, or the effects of corrupted kernel data.
+
+Return NULL before allocating or mapping anything when count * PAGE_SIZE
+cannot be represented in an unsigned long.
+
+Link: https://lore.kernel.org/20261022-vmalloc-reject-overflow-v2-1-0db7a20c53f0@gentwo.org
+Fixes: db64fe02258f ("mm: rewrite vmap layer")
+Signed-off-by: Shubhang Kaushik (Ampere) <sh@gentwo.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Dev Jain <dev.jain@arm.com>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Shubhang Kaushik <shubhang@os.amperecomputing.com>
+Cc: Christoph Lameter (Ampere) <cl@gentwo.org>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/vmalloc.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 4871d17f73f45..093b8d5f7b0e5 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3160,10 +3160,13 @@ EXPORT_SYMBOL(vm_unmap_ram);
+  */
+ void *vm_map_ram(struct page **pages, unsigned int count, int node)
+ {
+-	unsigned long size = (unsigned long)count << PAGE_SHIFT;
++	unsigned long size;
+ 	unsigned long addr;
+ 	void *mem;
+ 
++	if (check_mul_overflow((unsigned long)count, PAGE_SIZE, &size))
++		return NULL;
++
+ 	if (likely(count <= VMAP_MAX_ALLOC)) {
+ 		mem = vb_alloc(size, GFP_KERNEL);
+ 		if (IS_ERR(mem))
+-- 
+2.47.3
+

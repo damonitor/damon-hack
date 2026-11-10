@@ -1,0 +1,183 @@
+From: Wen Jiang <jiangwen6@xiaomi.com>
+Date: Sat, 7 Nov 2026 21:49:44 +0800
+Subject: [PATCH] arm64/mm: add vmap_pte_set_huge() and vmap_pte_clear_huge()
+
+Patch series "mm/vmalloc: Speed up ioremap, vmalloc and vmap with
+contiguous memory", v12.
+
+This patchset accelerates ioremap, vmalloc, and vmap when the memory is
+physically fully or partially contiguous. Two techniques are used:
+
+1. Avoid page table rewalk when setting PTEs/PMDs for multiple memory
+   segments
+2. Use batched mappings wherever possible in both vmalloc and ARM64
+   layers
+
+Besides accelerating the mapping path, this also enables large
+mappings (PMD and cont-PTE) for vmap, which are currently not
+supported.
+
+Patches 1-4 decouple the PTE-level block mapping path from HugeTLB.
+Previously vmap_pte_range() installed cont-PTE mappings by reusing
+set_huge_pte_at() and huge_ptep_get_and_clear(), which are HugeTLB
+helpers gated by CONFIG_HUGETLB_PAGE. This made the feature silently
+unavailable on CONFIG_HUGETLB_PAGE=n kernels, and coupled mm/vmalloc.c
+to HugeTLB internals. Patches 1 and 2 add the arm64 and powerpc/8xx
+implementations of vmap_pte_set_huge()/vmap_pte_clear_huge().
+Patch 3 adds the generic fallbacks and converts mm/vmalloc.c over.
+Patch 4 then removes the now-dead init_mm special case from
+arm64's clear_flush().
+
+Patch 5 extends ARM64 arch_vmap_pte_range_map_size() to batch multiple
+CONT_PTE blocks in one call instead of one at a time.
+
+Patch 6 extracts a common helper vmap_set_ptes() that consolidates PTE
+mapping logic for the ioremap and vmalloc/vmap paths, handling both
+CONT_PTE and regular PTE mappings. This prepares for the next patch.
+
+Patch 7 extends the page table walk path to support page shifts other
+than PAGE_SHIFT and eliminates the page table rewalk for huge vmalloc
+mappings. The function is renamed from vmap_small_pages_range_noflush()
+to vmap_pages_range_noflush_walk().
+
+Patch 8 extracts vm_shift() to consolidate vmalloc mapping shift
+selection for reuse in the batching path.
+
+Patches 9-10 add huge vmap support for contiguous pages, including
+support for non-compound pages with pfn alignment verification.
+
+On the RK3588 8-core ARM64 SoC, with tasks pinned to a little core and
+the performance CPUfreq policy enabled, benchmark results:
+
+* ioremap(1 MB): 1.35x faster (3407 ns -> 2526 ns)
+* vmalloc(1 MB) mapping time (excluding allocation) with
+  VM_ALLOW_HUGE_VMAP: 1.42x faster (5.00 us -> 3.53 us)
+* vmap(100MB) with order-8 pages: 8.3x faster (1235 us -> 149 us)
+
+Many thanks to Xueyuan Chen for his testing efforts on RK3588 boards.
+
+Large vmap() mappings were also tested by Leo Yan with ARM trace buffer
+units, including TRBE and SPE. These units use the CPU page tables for
+address translation when writing trace data to DRAM, so using larger
+vmap() mapping granules can reduce TLB pressure on the trace writer.
+
+The TRBE test used a 1G CoreSight ETM AUX buffer. Across five runs on an
+isolated CPU, the average results were:
+
+* dtlb_walk:       68.4 -> 59.4 (-13.16%)
+* l1d_tlb_refill: 155.8 -> 119.6 (-23.23%)
+* l2d_tlb_refill: 161435.8 -> 495.0 (-99.69%)
+
+The SPE test used a 512M ARM SPE AUX buffer. Across five runs on an
+isolated CPU, the average results were:
+
+* dtlb_walk:       1710.4 -> 1315.6 (-23.08%)
+* l1d_tlb_refill: 16000.0 -> 15950.2 (-0.31%)
+* l2d_tlb_refill: 4796.0 -> 2931.2 (-38.88%)
+
+These results show that enabling larger vmap() mappings can materially
+reduce page table walks and TLB refills for large trace buffers.
+
+Many thanks to Leo Yan for his testing efforts on ARM trace buffers.
+
+
+This patch (of 10):
+
+vmap installs PTE-level block mappings (PTE_CONT on arm64) by reusing
+set_huge_pte_at() and huge_ptep_get_and_clear(), which are HugeTLB
+helpers gated by CONFIG_HUGETLB_PAGE. This makes the feature silently
+unavailable on CONFIG_HUGETLB_PAGE=n kernels and couples mm/vmalloc.c to
+HugeTLB internals it does not otherwise need.
+
+Add vmap_pte_set_huge()/vmap_pte_clear_huge() to arm64, joining the
+existing pmd_set_huge()/pud_set_huge() family in mm/mmu.c. They build on
+__set_ptes() and __get_and_clear_full_ptes() directly, so they do not
+depend on CONFIG_HUGETLB_PAGE.
+
+There is no caller yet: mm/vmalloc.c is converted later in this series,
+once the generic fallbacks are in place.
+
+Link: https://lore.kernel.org/20261107134953.748622-1-jiangwenxiaomi@gmail.com
+Link: https://lore.kernel.org/20261107134953.748622-2-jiangwenxiaomi@gmail.com
+Signed-off-by: Wen Jiang <jiangwen6@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Tested-by: Leo Yan <leo.yan@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Andrew Donnellan <andrew+kernel@donnellan.id.au>
+Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
+---
+ arch/arm64/include/asm/pgtable.h |  6 ++++++
+ arch/arm64/mm/mmu.c              | 27 +++++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index a474c9fb485ad..ce51c1b9be222 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -1927,6 +1927,12 @@ static inline void clear_young_dirty_ptes(struct vm_area_struct *vma,
+ 
+ #endif /* CONFIG_ARM64_CONTPTE */
+ 
++#define __HAVE_ARCH_VMAP_PTE_SET_HUGE
++void vmap_pte_set_huge(pte_t *ptep, unsigned long addr, phys_addr_t phys,
++		       pgprot_t prot, unsigned long size);
++#define __HAVE_ARCH_VMAP_PTE_CLEAR_HUGE
++pte_t vmap_pte_clear_huge(pte_t *ptep, unsigned long addr, unsigned long size);
++
+ #endif /* !__ASSEMBLER__ */
+ 
+ #endif /* __ASM_PGTABLE_H */
+diff --git a/arch/arm64/mm/mmu.c b/arch/arm64/mm/mmu.c
+index a6b5774005b69..a61464cf73673 100644
+--- a/arch/arm64/mm/mmu.c
++++ b/arch/arm64/mm/mmu.c
+@@ -1911,6 +1911,33 @@ int pmd_clear_huge(pmd_t *pmdp)
+ 	return 1;
+ }
+ 
++void vmap_pte_set_huge(pte_t *ptep, unsigned long addr, phys_addr_t phys,
++		       pgprot_t prot, unsigned long size)
++{
++	unsigned long pfn = __phys_to_pfn(phys);
++	pte_t pte = pte_mkcont(pfn_pte(pfn, prot));
++	unsigned int nr = size >> PAGE_SHIFT;
++
++	VM_WARN_ON(!IS_ALIGNED(size, CONT_PTE_SIZE));
++	VM_WARN_ON(!IS_ALIGNED(addr, CONT_PTE_SIZE));
++	VM_WARN_ON(!IS_ALIGNED(pfn, CONT_PTES));
++
++	/* For vmap, there is no valid -> valid transition */
++	VM_WARN_ON(pte_valid(__ptep_get(ptep)));
++
++	__set_ptes(&init_mm, addr, ptep, pte, nr);
++}
++
++pte_t vmap_pte_clear_huge(pte_t *ptep, unsigned long addr, unsigned long size)
++{
++	/* Kernel mappings only */
++	VM_WARN_ON(!IS_ALIGNED(size, CONT_PTE_SIZE));
++	VM_WARN_ON(!IS_ALIGNED(addr, CONT_PTE_SIZE));
++
++	return __get_and_clear_full_ptes(&init_mm, addr, ptep,
++					 size >> PAGE_SHIFT, 0);
++}
++
+ int pmd_free_pte_page(pmd_t *pmdp, unsigned long addr)
+ {
+ 	pte_t *table;
+-- 
+2.47.3
+

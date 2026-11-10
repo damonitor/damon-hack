@@ -1,0 +1,51 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:13 +0800
+Subject: [PATCH] ocfs2: check dinode nlink and mode in online filecheck
+
+The filecheck validator shares most of its conditions with
+ocfs2_validate_inode_block(), but skips the zero nlink or mode check.
+Wire it in using the predicate the two now share.
+
+Filecheck reports OCFS2_FILECHECK_ERR_INVALIDINO and logs with the
+Filecheck prefix rather than calling ocfs2_error(), which would escalate
+to ocfs2_handle_error() and could force the filesystem read-only while
+an administrator is only asking for a diagnosis.
+
+The check is placed after the ecc and signature gate so that the
+existing coupling is preserved: a bad signature still overrides a
+checksum failure with INVALIDINO, and every later check still runs only
+on an ecc-clean block.
+
+Link: https://lore.kernel.org/20261109122121.21473-24-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index ad40cd6baaa0d..6d2fb46e6c381 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -2020,6 +2020,15 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
++	if (ocfs2_dinode_has_zero_nlink_or_mode(di)) {
++		mlog(ML_ERROR,
++		     "Filecheck: invalid dinode #%llu: nlink = %u or mode = %u\n",
++		     (unsigned long long)bh->b_blocknr,
++		     ocfs2_read_links_count(di), le16_to_cpu(di->i_mode));
++		rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++		goto bail;
++	}
++
+ 	if (!ocfs2_valid_inode_mode(le16_to_cpu(di->i_mode))) {
+ 		mlog(ML_ERROR,
+ 		     "Filecheck: invalid dinode #%llu: mode 0%o has unknown file type\n",
+-- 
+2.47.3
+

@@ -1,0 +1,60 @@
+From: Hungyu Lin <dennylin0707@gmail.com>
+Date: Wed, 4 Nov 2026 07:10:02 +0000
+Subject: [PATCH] filemap: prefault writes starting beyond EOF
+
+Since prefaulting moved to the slow write path, a buffered write can reach
+->write_begin() and ->write_end() before discovering that its source
+buffer is unreadable.  Several filesystems can extend i_size in these
+callbacks even when no data was copied.  For example, a one-byte pwrite()
+at offset 4096 into an empty file can fail with EFAULT but leave a
+4096-byte file.
+
+Prefault the source before ->write_begin() when the write position is
+beyond EOF, and return EFAULT if no source bytes can be made readable.
+Overwrites and appends continue to skip this prefault.  Keep the existing
+slow-path faulting for forward progress after a failed atomic copy.
+
+This also leaves intentional zero-length ->write_end() calls used by
+generic_cont_expand_simple() unchanged.  As with the previous prefaulting
+behavior, a concurrent userspace unmap can still race with the later copy.
+
+Link: https://lore.kernel.org/20261104071002.49693-1-dennylin0707@gmail.com
+Fixes: 665575cff098 ("filemap: move prefaulting out of hot write path")
+Signed-off-by: Hungyu Lin <dennylin0707@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Kiryl Shutsemau <kas@kernel.org>
+Link: https://lore.kernel.org/all/at-XtWBQg3jv3H8Z@thinkstation/
+Reviewed-by: Jan Kara <jack@suse.cz>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: <stable@vger.kernel.org>
+---
+ mm/filemap.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 371a4bbd06876..e4bd4b1f56381 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -4396,6 +4396,16 @@ ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
+ 			break;
+ 		}
+ 
++		/*
++		 * Some filesystems can extend i_size even when nothing was copied.
++		 * Prefault writes beyond EOF to catch unreadable source buffers.
++		 */
++		if (unlikely(pos > i_size_read(mapping->host)) &&
++		    fault_in_iov_iter_readable(i, bytes) == bytes) {
++			status = -EFAULT;
++			break;
++		}
++
+ 		status = a_ops->write_begin(iocb, mapping, pos, bytes,
+ 						&folio, &fsdata);
+ 		if (unlikely(status < 0))
+-- 
+2.47.3
+

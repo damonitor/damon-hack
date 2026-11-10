@@ -1,0 +1,71 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Mon, 9 Nov 2026 10:16:11 +0800
+Subject: [PATCH] mm/mglru: fix a no-op lru_gen_clear_refs() call in
+ lru_lazyfree()
+
+lru_lazyfree() calls lru_gen_clear_refs() after lruvec_del_folio(), but
+lru_gen_del_folio() has already cleared LRU_GEN_MASK, so folio_lru_gen()
+returns -1 and lru_gen_clear_refs() exits at its "gen < 0" check without
+clearing the refs or PG_workingset.
+
+A MADV_FREE folio therefore keeps the state it had before madvise(2),
+even though madvise_free_pte_range() has already cleared the accessed and
+dirty bits of its PTEs.  lru_gen_folio_seq() places it one generation
+younger, and PG_workingset puts it in the last tier, so sort_folio()
+promotes and protects it instead of evicting it and charges it to
+lrugen->protected[], which read_ctrl_pos() uses to balance anon against
+file reclaim.  __folio_inc_gen() clears the refs but not PG_workingset,
+so this repeats every time the folio reaches the oldest generation.  If
+the folio is redirtied first, ttu_anon_lazyfree_folio() keeps it and
+lru_gen_eviction() packs the stale state into the shadow entry, so a
+later refault is promoted to the youngest generation.
+
+Call lru_gen_clear_refs() while the folio is still on the generation
+list, as deactivate_file_folio() and folio_deactivate() already do.  Its
+return value only says whether the folio is in the oldest generation,
+which lru_lazyfree() does not need because it re-adds the folio below.
+Keep folio_clear_referenced() unconditional: the classic LRU needs it,
+and it also covers the folios that lru_gen_clear_refs() skips.
+
+Link: https://lore.kernel.org/20261109021611.22247-1-hui.zhu@linux.dev
+Fixes: cc8ec7be78ff ("mm/mglru: optimize deactivation")
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/folio.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/mm/folio.c b/mm/folio.c
+index 35e242b48870b..ea3adb6a89d75 100644
+--- a/mm/folio.c
++++ b/mm/folio.c
+@@ -597,12 +597,10 @@ static void lru_lazyfree(struct lruvec *lruvec, struct folio *folio)
+ 	    folio_test_swapcache(folio) || folio_test_unevictable(folio))
+ 		return;
+ 
++	lru_gen_clear_refs(folio);
+ 	lruvec_del_folio(lruvec, folio);
+ 	folio_clear_active(folio);
+-	if (lru_gen_enabled())
+-		lru_gen_clear_refs(folio);
+-	else
+-		folio_clear_referenced(folio);
++	folio_clear_referenced(folio);
+ 	/*
+ 	 * Lazyfree folios are clean anonymous folios.  They have
+ 	 * the swapbacked flag cleared, to distinguish them from normal
+-- 
+2.47.3
+

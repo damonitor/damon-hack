@@ -1,0 +1,62 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:00 +0800
+Subject: [PATCH] ocfs2: abstract the inline data dinode guard and cluster
+ check
+
+Introduce ocfs2_dinode_has_inline_data() for the OCFS2_INLINE_DATA_FL
+test that selects the id2.i_data union arm, and
+ocfs2_dinode_has_inline_clusters() for the rule that an inline-data
+inode must not also have allocated clusters.
+
+The guard stays above the sub-checks: reading id_count or i_clusters
+against the wrong id2 arm would produce false positives on valid inodes.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-11-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 17d546a9245d8..2aac1918562a6 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -164,6 +164,16 @@ static bool ocfs2_dinode_has_size_without_clusters(struct super_block *sb,
+ 	return !ocfs2_sparse_alloc(OCFS2_SB(sb)) && S_ISREG(mode);
+ }
+ 
++static bool ocfs2_dinode_has_inline_data(struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->i_dyn_features) & OCFS2_INLINE_DATA_FL;
++}
++
++static bool ocfs2_dinode_has_inline_clusters(struct ocfs2_dinode *di)
++{
++	return le32_to_cpu(di->i_clusters) != 0;
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1726,10 +1736,10 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 	if (rc)
+ 		goto bail;
+ 
+-	if (le16_to_cpu(di->i_dyn_features) & OCFS2_INLINE_DATA_FL) {
++	if (ocfs2_dinode_has_inline_data(di)) {
+ 		struct ocfs2_inline_data *data = &di->id2.i_data;
+ 
+-		if (le32_to_cpu(di->i_clusters)) {
++		if (ocfs2_dinode_has_inline_clusters(di)) {
+ 			rc = ocfs2_error(sb,
+ 					 "Invalid dinode %llu: %u clusters\n",
+ 					 (unsigned long long)bh->b_blocknr,
+-- 
+2.47.3
+

@@ -1,0 +1,78 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Wed, 4 Nov 2026 20:56:37 +0100
+Subject: [PATCH] mm: free unused page table allocated by do_set_pmd()
+
+do_set_pmd() can allocate vmf->prealloc_pte on architectures that need a
+deposited page table, such as PowerPC with the hash MMU.  If the PMD is no
+longer empty when it takes the PMD lock, it returns VM_FAULT_FALLBACK
+without consuming that table.
+
+Since collapse_pte_mapped_thp() uses mmap_read_lock(), a concurrent
+userfaultfd operation can install a PTE table before taking the folio
+lock.  If that races with set_huge_pmd(), the unused preallocated table is
+lost when its local vm_fault goes out of scope.
+
+Track whether do_set_pmd() allocated the table and free it after dropping
+the PMD lock if it was not consumed.  Preserve any preallocated table
+supplied by the caller for PTE fallback.  Successful PMD installation
+consumes the table and clears the pointer.
+
+Returning without a preallocated table matches the existing behavior on
+architectures that do not need a deposited table.  All callers already
+handle that case.
+
+Link: https://lore.kernel.org/c13cdd25-7d7b-4059-a22d-af0a48fabaac@kernel.org
+Fixes: 1043173eb5eb ("mm/khugepaged: collapse_pte_mapped_thp() with mmap_read_lock()")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/memory.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mm/memory.c b/mm/memory.c
+index fe72e66c9c2ee..d477a4f986bc8 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -5694,6 +5694,7 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct folio *folio, struct page *pa
+ 	struct vm_area_struct *vma = vmf->vma;
+ 	bool write = vmf->flags & FAULT_FLAG_WRITE;
+ 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
++	bool pgtable_allocated = false;
+ 	pmd_t entry;
+ 	vm_fault_t ret = VM_FAULT_FALLBACK;
+ 
+@@ -5732,6 +5733,7 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct folio *folio, struct page *pa
+ 		vmf->prealloc_pte = pte_alloc_one(vma->vm_mm);
+ 		if (!vmf->prealloc_pte)
+ 			return VM_FAULT_OOM;
++		pgtable_allocated = true;
+ 	}
+ 
+ 	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
+@@ -5762,6 +5764,10 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct folio *folio, struct page *pa
+ 	count_vm_event(THP_FILE_MAPPED);
+ out:
+ 	spin_unlock(vmf->ptl);
++	if (pgtable_allocated && vmf->prealloc_pte) {
++		pte_free(vma->vm_mm, vmf->prealloc_pte);
++		vmf->prealloc_pte = NULL;
++	}
+ 	return ret;
+ }
+ #else
+-- 
+2.47.3
+

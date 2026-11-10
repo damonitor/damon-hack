@@ -1,0 +1,80 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Fri, 6 Nov 2026 18:05:20 +0800
+Subject: [PATCH] mm/hugetlb: fix NR_HUGETLB accounting for unused surplus
+ folios
+
+free_huge_folio() unconditionally decrements NR_HUGETLB, but freshly
+allocated surplus folios can be freed before the counter has been
+incremented.
+
+This happens when alloc_surplus_hugetlb_folio() rejects a fresh folio
+after its second surplus limit check. It also happens when
+gather_surplus_pages() frees folios because a reservation cannot be
+satisfied, or because concurrent pool changes leave excess folios
+after the reservation succeeds.
+
+These paths leave unmatched decrements, causing HugeTLB usage to be
+underreported and potentially underflowing the counter.
+
+Increment NR_HUGETLB before calling free_huge_folio() in both paths
+to balance its unconditional decrement.
+
+Link: https://lore.kernel.org/20261106100521.30099-4-kaitao.cheng@linux.dev
+Fixes: 05d4532b60e3 ("memcg/hugetlb: add hugeTLB counters to memcg")
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Closes: https://sashiko.dev/#/bug/linux-860a3b8f-0b07-4cd5-a122-aa2288463bee
+Acked-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Chris Down <chris@chrisdown.name>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
+---
+ mm/hugetlb.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 6dc362197659c..85faa8de4a4f8 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2133,6 +2133,8 @@ static struct folio *alloc_surplus_hugetlb_folio(struct hstate *h,
+ 	if (h->surplus_huge_pages >= h->nr_overcommit_huge_pages) {
+ 		folio_set_hugetlb_temporary(folio);
+ 		spin_unlock_irq(&hugetlb_lock);
++		/* Balance the NR_HUGETLB decrement in free_huge_folio(). */
++		lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
+ 		free_huge_folio(folio);
+ 		return NULL;
+ 	}
+@@ -2377,9 +2379,13 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 	/*
+ 	 * Free unnecessary surplus pages to the buddy allocator.
+ 	 * Pages have no ref count, call free_huge_folio directly.
++	 * These pages were not accounted in NR_HUGETLB, so balance the
++	 * decrement in free_huge_folio().
+ 	 */
+-	list_for_each_entry_safe(folio, tmp, &surplus_list, lru)
++	list_for_each_entry_safe(folio, tmp, &surplus_list, lru) {
++		lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
+ 		free_huge_folio(folio);
++	}
+ 	spin_lock_irq(&hugetlb_lock);
+ 
+ 	return ret;
+-- 
+2.47.3
+

@@ -1,0 +1,68 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:07 +0800
+Subject: [PATCH] ocfs2: abstract the chain list bits per cluster check
+
+Fold the cl_bpc test into a predicate that computes the expected bits per
+cluster itself, and drop the u16 bpc local from
+ocfs2_validate_inode_block().  No log message prints it, so keeping it at
+the call site would leave an unused variable.
+
+The two bitmap_blkno conditions are preserved: the global bitmap inode
+itself is exempt from the bits-per-cluster check.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-18-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 0ad86aaa9ab35..34129e25a6acf 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -244,6 +244,16 @@ static bool ocfs2_dinode_has_bad_chain_next_free(struct ocfs2_dinode *di)
+ 		le16_to_cpu(di->id2.i_chain.cl_count);
+ }
+ 
++static bool ocfs2_dinode_has_bad_chain_bpc(struct super_block *sb,
++					   struct ocfs2_dinode *di)
++{
++	u16 bpc = 1 << (OCFS2_SB(sb)->s_clustersize_bits - sb->s_blocksize_bits);
++
++	return OCFS2_SB(sb)->bitmap_blkno &&
++		OCFS2_SB(sb)->bitmap_blkno != le64_to_cpu(di->i_blkno) &&
++		le16_to_cpu(di->id2.i_chain.cl_bpc) != bpc;
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1860,8 +1870,6 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 
+ 	if (ocfs2_dinode_has_chain_list(di)) {
+ 		struct ocfs2_chain_list *cl = &di->id2.i_chain;
+-		u16 bpc = 1 << (OCFS2_SB(sb)->s_clustersize_bits -
+-				sb->s_blocksize_bits);
+ 
+ 		if (ocfs2_dinode_has_bad_chain_count(sb, di)) {
+ 			rc = ocfs2_error(sb, "Invalid dinode %llu: chain list count %u\n",
+@@ -1875,9 +1883,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 					 le16_to_cpu(cl->cl_next_free_rec));
+ 			goto bail;
+ 		}
+-		if (OCFS2_SB(sb)->bitmap_blkno &&
+-		    OCFS2_SB(sb)->bitmap_blkno != le64_to_cpu(di->i_blkno) &&
+-		    le16_to_cpu(cl->cl_bpc) != bpc) {
++		if (ocfs2_dinode_has_bad_chain_bpc(sb, di)) {
+ 			rc = ocfs2_error(sb, "Invalid dinode %llu: bits per cluster %u\n",
+ 					 (unsigned long long)bh->b_blocknr,
+ 					 le16_to_cpu(cl->cl_bpc));
+-- 
+2.47.3
+

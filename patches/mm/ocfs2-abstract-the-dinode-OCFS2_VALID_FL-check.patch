@@ -1,0 +1,73 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:20:54 +0800
+Subject: [PATCH] ocfs2: abstract the dinode OCFS2_VALID_FL check
+
+The test for a dinode without OCFS2_VALID_FL is open-coded three times,
+and the two spellings have already drifted apart: the normal validator
+uses le32_to_cpu(di->i_flags) & OCFS2_VALID_FL while filecheck and repair
+use di->i_flags & cpu_to_le32(OCFS2_VALID_FL).  Fold them into one
+predicate using the le32_to_cpu() form.
+
+Byteswapping is a bit permutation, so both spellings test the same
+on-disk bit on either endianness.  The BUG_ON() in ocfs2_populate_inode()
+is left alone; it asserts an invariant the validator has already
+established rather than validating on-disk state.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-5-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 587fcea59f5a1..8b4652002ae29 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -87,6 +87,11 @@ static bool ocfs2_dinode_has_wrong_blkno(struct ocfs2_dinode *di, u64 blkno)
+ 	return le64_to_cpu(di->i_blkno) != blkno;
+ }
+ 
++static bool ocfs2_dinode_has_no_valid_flag(struct ocfs2_dinode *di)
++{
++	return !(le32_to_cpu(di->i_flags) & OCFS2_VALID_FL);
++}
++
+ static bool ocfs2_valid_inode_mode(umode_t mode)
+ {
+ 	return fs_umode_to_ftype(mode) != FT_UNKNOWN;
+@@ -1530,7 +1535,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	if (!(le32_to_cpu(di->i_flags) & OCFS2_VALID_FL)) {
++	if (ocfs2_dinode_has_no_valid_flag(di)) {
+ 		rc = ocfs2_error(sb,
+ 				 "Invalid dinode #%llu: OCFS2_VALID_FL not set\n",
+ 				 (unsigned long long)bh->b_blocknr);
+@@ -1854,7 +1859,7 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	if (!(di->i_flags & cpu_to_le32(OCFS2_VALID_FL))) {
++	if (ocfs2_dinode_has_no_valid_flag(di)) {
+ 		mlog(ML_ERROR,
+ 		     "Filecheck: invalid dinode #%llu: OCFS2_VALID_FL "
+ 		     "not set\n",
+@@ -1943,7 +1948,7 @@ static int ocfs2_filecheck_repair_inode_block(struct super_block *sb,
+ 		return -OCFS2_FILECHECK_ERR_INVALIDINO;
+ 	}
+ 
+-	if (!(di->i_flags & cpu_to_le32(OCFS2_VALID_FL))) {
++	if (ocfs2_dinode_has_no_valid_flag(di)) {
+ 		/* Cannot just add VALID_FL flag back as a fix,
+ 		 * need more things to check here.
+ 		 */
+-- 
+2.47.3
+

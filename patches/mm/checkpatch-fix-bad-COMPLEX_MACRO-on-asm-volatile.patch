@@ -1,0 +1,67 @@
+From: =?UTF-8?q?Pierre-Cl=C3=A9ment=20Tosi?= <ptosi@google.com>
+Date: Sat, 7 Nov 2026 15:57:02 +0100
+Subject: [PATCH] checkpatch: fix bad COMPLEX_MACRO on asm volatile
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 42e152931deb ("checkpatch: exclude asm volatile from complex macro
+check") added a substitution converting "asm volatile" into "asm_volatile"
+so that macros expanding to an asm volatile statement would be treated
+like a single function call and excluded from the COMPLEX_MACRO error
+("Macros with complex values should be enclosed in parentheses").
+
+However, that substitution was placed after the loop that flattens
+parenthesized expressions into "1u" (originally "1").  For a macro without
+whitespace between "volatile" and "(", such as:
+
+    #define foo(x) asm volatile("..." : : "r" (x))
+
+flattening the parenthesized argument list first turns the statement into
+"asm volatile1u".  Because "1u" starts with a word character, the trailing
+word boundary (\b) in /\b_*asm_*\s+_*volatile_*\b/ no longer matches after
+"volatile", leaving the space between "asm" and "volatile1u" intact and
+causing the macro to still fail the single-lvalue check and trigger a
+false-positive COMPLEX_MACRO error.
+
+Move the "asm volatile" to "asm_volatile" substitution before the
+parenthesis-flattening loop so that "asm volatile(...)" is first rewritten
+to "asm_volatile(...)" and then flattened to "asm_volatile1u" as intended.
+
+Link: https://lore.kernel.org/20261107-checkpatch-asm-complex_macro-v1-1-9a7b3c69fc28@google.com
+Fixes: 42e152931deb ("checkpatch: exclude asm volatile from complex macro check")
+Signed-off-by: Pierre-Clément Tosi <ptosi@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Joe Perches <joe@perches.com>
+Cc: Andy Whitcroft <apw@canonical.com>
+---
+ scripts/checkpatch.pl | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/checkpatch.pl b/scripts/checkpatch.pl
+index bd63c4ed647c3..739fb96813cc5 100755
+--- a/scripts/checkpatch.pl
++++ b/scripts/checkpatch.pl
+@@ -6056,6 +6056,9 @@ sub process {
+ 			$dstat =~ s/^\s*//s;
+ 			$dstat =~ s/\s*$//s;
+ 
++			# Make asm volatile uses seem like a generic function
++			$dstat =~ s/\b_*asm_*\s+_*volatile_*\b/asm_volatile/g;
++
+ 			# Flatten any parentheses and braces
+ 			while ($dstat =~ s/\([^\(\)]*\)/1u/ ||
+ 			       $dstat =~ s/\{[^\{\}]*\}/1u/ ||
+@@ -6069,9 +6072,6 @@ sub process {
+ 			{
+ 			}
+ 
+-			# Make asm volatile uses seem like a generic function
+-			$dstat =~ s/\b_*asm_*\s+_*volatile_*\b/asm_volatile/g;
+-
+ 			my $exceptions = qr{
+ 				$Declare|
+ 				# named exceptions
+-- 
+2.47.3
+

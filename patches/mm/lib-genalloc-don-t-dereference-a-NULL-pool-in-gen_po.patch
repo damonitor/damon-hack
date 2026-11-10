@@ -1,0 +1,79 @@
+From: Amit Patole <amit.patole@gmail.com>
+Date: Fri, 6 Nov 2026 09:02:32 -0500
+Subject: [PATCH] lib/genalloc: don't dereference a NULL pool in
+ gen_pool_dma_[z]alloc()
+
+Patch series "lib/genalloc: fix a NULL pool check and add KUnit tests".
+
+genalloc has no unit tests, so patch 2 adds a KUnit suite.  Writing it
+turned up that gen_pool_dma_alloc() and gen_pool_dma_zalloc() crash on a
+NULL pool, while the other DMA helpers return NULL as gen_pool_dma_alloc()
+originally did.  Patch 1 restores the check; no in-tree caller passes a
+NULL pool, so it is not marked for stable.
+
+Tested on UML with a kunitconfig of CONFIG_KUNIT=y and
+CONFIG_GENALLOC_KUNIT_TEST=y: 12/12 pass with patch 1, and
+genalloc_dma_test crashes without it.
+
+
+This patch (of 2):
+
+gen_pool_dma_alloc() returned NULL for a NULL pool since it was added.
+Commit cf394fc5f715 ("lib/genalloc.c: Add algorithm, align and zeroed
+family of DMA allocators") moved that check into
+gen_pool_dma_alloc_algo(), but gen_pool_dma_alloc() now reads pool->algo
+and pool->data before calling it, so a NULL pool is dereferenced instead.
+gen_pool_dma_zalloc(), added by the same commit, has the same problem.
+The _algo() and _align() variants still return NULL.
+
+All in-tree callers check the pool before calling, so this is not known to
+be reachable today, but the four entry points disagree and the original
+behaviour is easy to restore.  Check for a NULL pool before dereferencing
+it.
+
+Found by a KUnit test for lib/genalloc.c, which crashed in
+gen_pool_dma_alloc(NULL, ...) on UML.  An AI coding assistant (Claude Opus
+5.5) was used to write that test and this change; with it the test passes.
+
+Link: https://lore.kernel.org/20261106-kunit-genalloc-v1-0-ba1ea397dfd8@gmail.com
+Link: https://lore.kernel.org/20261106-kunit-genalloc-v1-1-ba1ea397dfd8@gmail.com
+Fixes: cf394fc5f715 ("lib/genalloc.c: Add algorithm, align and zeroed family of DMA allocators")
+Signed-off-by: Amit Patole <amit.patole@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Fredrik Noring <noring@nocrew.org>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Brendan Higgins <brendan.higgins@linux.dev>
+Cc: David Gow <david@davidgow.net>
+Cc: Rae Moar <raemoar63@gmail.com>
+Cc: Fredrik Noring <fredrik.noring@gmail.com>
+---
+ lib/genalloc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/lib/genalloc.c b/lib/genalloc.c
+index 841f297838333..40ca25cd87c8d 100644
+--- a/lib/genalloc.c
++++ b/lib/genalloc.c
+@@ -340,6 +340,9 @@ EXPORT_SYMBOL(gen_pool_alloc_algo_owner);
+  */
+ void *gen_pool_dma_alloc(struct gen_pool *pool, size_t size, dma_addr_t *dma)
+ {
++	if (!pool)
++		return NULL;
++
+ 	return gen_pool_dma_alloc_algo(pool, size, dma, pool->algo, pool->data);
+ }
+ EXPORT_SYMBOL(gen_pool_dma_alloc);
+@@ -418,6 +421,9 @@ EXPORT_SYMBOL(gen_pool_dma_alloc_align);
+  */
+ void *gen_pool_dma_zalloc(struct gen_pool *pool, size_t size, dma_addr_t *dma)
+ {
++	if (!pool)
++		return NULL;
++
+ 	return gen_pool_dma_zalloc_algo(pool, size, dma, pool->algo, pool->data);
+ }
+ EXPORT_SYMBOL(gen_pool_dma_zalloc);
+-- 
+2.47.3
+

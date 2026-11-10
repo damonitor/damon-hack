@@ -1,0 +1,51 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:06 +0800
+Subject: [PATCH] ocfs2: abstract the chain list next free record check
+
+Fold the cl_next_free_rec against cl_count test into a predicate.
+
+ocfs2_claim_suballoc_bits() in suballoc.c open-codes a similar test that
+also rejects cl_next_free_rec == 0.  It is left alone because this
+predicate is not equivalent to it.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-17-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 71aded2c88f78..0ad86aaa9ab35 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -238,6 +238,12 @@ static bool ocfs2_dinode_has_bad_chain_count(struct super_block *sb,
+ 		ocfs2_chain_recs_per_inode(sb);
+ }
+ 
++static bool ocfs2_dinode_has_bad_chain_next_free(struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->id2.i_chain.cl_next_free_rec) >
++		le16_to_cpu(di->id2.i_chain.cl_count);
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1863,7 +1869,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 					 le16_to_cpu(cl->cl_count));
+ 			goto bail;
+ 		}
+-		if (le16_to_cpu(cl->cl_next_free_rec) > le16_to_cpu(cl->cl_count)) {
++		if (ocfs2_dinode_has_bad_chain_next_free(di)) {
+ 			rc = ocfs2_error(sb, "Invalid dinode %llu: chain list index %u\n",
+ 					 (unsigned long long)bh->b_blocknr,
+ 					 le16_to_cpu(cl->cl_next_free_rec));
+-- 
+2.47.3
+

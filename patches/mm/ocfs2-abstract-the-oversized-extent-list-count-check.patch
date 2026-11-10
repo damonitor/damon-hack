@@ -1,0 +1,65 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:10 +0800
+Subject: [PATCH] ocfs2: abstract the oversized extent list count check
+
+Fold the l_count against ocfs2_extent_recs_per_inode() test into a
+predicate.
+
+Move the rationale for using the no-xattr maximum into the predicate,
+next to the bound it explains, rather than leaving it at the call site
+where the bound is no longer computed.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-21-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 21 ++++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 551263f290bf9..8c4ea3d048d18 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -265,6 +265,19 @@ static bool ocfs2_dinode_has_zero_extent_count(struct ocfs2_dinode *di)
+ 	return le16_to_cpu(di->id2.i_list.l_count) == 0;
+ }
+ 
++static bool ocfs2_dinode_has_oversized_extent_count(struct super_block *sb,
++						    struct ocfs2_dinode *di)
++{
++	/*
++	 * The exact capacity depends on i_xattr_inline_size, another
++	 * unvalidated on-disk field. Inline xattrs only shrink the list, so
++	 * the no-xattr maximum is a safe upper bound that a valid l_count
++	 * never exceeds.
++	 */
++	return le16_to_cpu(di->id2.i_list.l_count) >
++		ocfs2_extent_recs_per_inode(sb);
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1919,13 +1932,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 					 (unsigned long long)bh->b_blocknr);
+ 			goto bail;
+ 		}
+-		/*
+-		 * The exact capacity depends on i_xattr_inline_size, another
+-		 * unvalidated on-disk field. Inline xattrs only shrink the
+-		 * list, so the no-xattr maximum is a safe upper bound that a
+-		 * valid l_count never exceeds.
+-		 */
+-		if (count > ocfs2_extent_recs_per_inode(sb)) {
++		if (ocfs2_dinode_has_oversized_extent_count(sb, di)) {
+ 			rc = ocfs2_error(sb,
+ 					 "Invalid dinode %llu: extent list l_count %u exceeds max %u\n",
+ 					 (unsigned long long)bh->b_blocknr, count,
+-- 
+2.47.3
+

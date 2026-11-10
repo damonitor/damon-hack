@@ -1,0 +1,72 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:21 +0800
+Subject: [PATCH] ocfs2: check extent list dinodes in online filecheck
+
+Wire the extent list guard and its three sub-checks into the filecheck
+validator: a zero l_count, an l_count beyond ocfs2_extent_recs_per_inode(),
+and an l_next_free_rec beyond l_count.
+
+This brings the filecheck validator to parity with
+ocfs2_validate_inode_block() for every dinode check except the inline
+xattr one.  ocfs2_validate_inode_xattr() calls ocfs2_error() through its
+helpers in xattr.c, so sharing it would mean threading a reporting flag
+down into that file; it is deliberately left out.
+
+The l_next_free_rec predicate is already used by the repair path, which
+fixes that field, so a repair of it now revalidates cleanly.
+
+Link: https://lore.kernel.org/20261109122121.21473-32-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 6a7dff8a6a054..8e5f7a240381b 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -2204,6 +2204,37 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
++	if (ocfs2_dinode_has_extents(di)) {
++		struct ocfs2_extent_list *el = &di->id2.i_list;
++		u16 count = le16_to_cpu(el->l_count);
++		u16 next_free = le16_to_cpu(el->l_next_free_rec);
++
++		if (ocfs2_dinode_has_zero_extent_count(di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: extent list l_count is zero\n",
++			     (unsigned long long)bh->b_blocknr);
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_oversized_extent_count(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: extent list l_count %u exceeds max %u\n",
++			     (unsigned long long)bh->b_blocknr, count,
++			     ocfs2_extent_recs_per_inode(sb));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_bad_extent_next_free(di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: extent list l_next_free_rec %u exceeds l_count %u\n",
++			     (unsigned long long)bh->b_blocknr, next_free, count);
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++	}
++
+ bail:
+ 	return rc;
+ }
+-- 
+2.47.3
+

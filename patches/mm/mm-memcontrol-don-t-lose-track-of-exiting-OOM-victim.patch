@@ -1,0 +1,83 @@
+From: Chris Down <chris@chrisdown.name>
+Date: Sun, 8 Nov 2026 00:41:37 -0800
+Subject: [PATCH] mm: memcontrol: don't lose track of exiting OOM victims
+
+When oom_evaluate_task() comes across a victim we've already killed, it
+backs off until the victim's mm has MMF_OOM_SKIP.  This gives the victim a
+chance to free some memory before we kill anything else.  However, since
+commit a72f73c4dd9b ("cgroup: Don't expose dead tasks in cgroup"),
+css_task_iter skips exiting tasks once signal->live reaches zero.  That
+happens before exit_mm(), so a single-threaded victim can disappear from
+the memcg scan while it still has all its memory.
+
+This can kill another process when the first kill would have been enough
+to recover, and we've seen it happen in production.  If the second victim
+is in a cgroup with memory.oom.group enabled, the extra kill can take down
+the whole workload.
+
+In tests I used a 64 MiB memcg with swap disabled.  I started a process
+that faults in 44 MiB of anonymous memory, submits a 4 KiB direct AIO read
+to null_blk, and goes to sleep.  I set null_blk to take 10 seconds to
+complete the read so the victim would have to wait for it in exit_aio().
+Two seconds after starting the first process, I started a second one that
+tries to fault in 40 MiB.
+
+The 40 MiB allocation hits memory.max partway through and triggers an OOM
+kill.  The OOM killer picks the first process, which has more resident
+memory.  With the read still pending, the victim blocks in exit_aio()
+before it can tear down its address space.
+
+memory.events showed oom_kill 2 in three runs.  In one of them the first
+process hadn't submitted the read yet when it was killed.  The slow read
+just makes the window easier to hit.
+
+The cgroup iterator hides these tasks so that cgroup.procs doesn't show
+processes that waitpid() may already have reaped.  That's fine for
+cgroup.procs, but the OOM scan needs to see a victim even after its last
+thread has started exiting.  We already have CSS_TASK_ITER_WITH_DEAD for
+sched_ext, so use it for mem_cgroup_scan_tasks() as well.
+
+With this applied, OOM selection backs off while the first victim still
+has memory to free.  The 40 MiB allocation completes and memory.events
+shows oom_kill 1 in three test runs.
+
+Link: https://lore.kernel.org/avA1wXhTMs9eY2NF@chrisdown.name
+Fixes: a72f73c4dd9b ("cgroup: Don't expose dead tasks in cgroup")
+Signed-off-by: Chris Down <chris@chrisdown.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Cc: Zhan Xusheng <zhanxusheng1024@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/memcontrol.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 84f4a8fd4d16f..cb7cfae9ce5a6 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1451,7 +1451,13 @@ void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
+ 		struct css_task_iter it;
+ 		struct task_struct *task;
+ 
+-		css_task_iter_start(&iter->css, CSS_TASK_ITER_PROCS, &it);
++		/*
++		 * An OOM victim can start exiting well before its mm is
++		 * torn down. Keep it visible so oom_evaluate_task() can
++		 * back off while there's still memory to free.
++		 */
++		css_task_iter_start(&iter->css, CSS_TASK_ITER_PROCS |
++				    CSS_TASK_ITER_WITH_DEAD, &it);
+ 		while (!ret && (task = css_task_iter_next(&it))) {
+ 			ret = fn(task, arg);
+ 			/* Avoid potential softlockup warning */
+-- 
+2.47.3
+

@@ -1,0 +1,75 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:17 +0800
+Subject: [PATCH] ocfs2: check inline data dinodes in online filecheck
+
+Wire the inline-data guard and its three sub-checks into the filecheck
+validator: allocated clusters on an inline inode, an id_count beyond the
+space available in the inode block, and an i_size beyond id_count.
+
+The size-without-clusters check now needs an explicit goto bail.  It
+previously fell through to the bail label because it was the last check;
+with checks following it, a later failure would overwrite its INVALIDINO
+code and report the wrong reason.
+
+The id_count maximum stays a signed int in the message.
+ocfs2_max_inline_data_with_xattr() subtracts the unvalidated
+i_xattr_inline_size and can go negative on small block sizes.
+
+Link: https://lore.kernel.org/20261109122121.21473-28-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 1ae42ac245cbf..e01c3078d974a 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -2105,6 +2105,40 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 			     (unsigned long long)bh->b_blocknr,
+ 			     (unsigned long long)le64_to_cpu(di->i_size));
+ 		rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++		goto bail;
++	}
++
++	if (ocfs2_dinode_has_inline_data(di)) {
++		struct ocfs2_inline_data *data = &di->id2.i_data;
++
++		if (ocfs2_dinode_has_inline_clusters(di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: %u clusters\n",
++			     (unsigned long long)bh->b_blocknr,
++			     le32_to_cpu(di->i_clusters));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_oversized_inline_data(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: inline data id_count %u exceeds max %d\n",
++			     (unsigned long long)bh->b_blocknr,
++			     le16_to_cpu(data->id_count),
++			     ocfs2_max_inline_data_with_xattr(sb, di));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_inline_size_over_count(di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: inline data i_size %llu exceeds id_count %u\n",
++			     (unsigned long long)bh->b_blocknr,
++			     (unsigned long long)le64_to_cpu(di->i_size),
++			     le16_to_cpu(data->id_count));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
+ 	}
+ 
+ bail:
+-- 
+2.47.3
+

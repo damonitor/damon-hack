@@ -1,0 +1,88 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:20:56 +0800
+Subject: [PATCH] ocfs2: abstract the dinode suballoc slot checks
+
+The suballoc slot validation is a nested if/else-if whose two arms carry
+different error messages.  Split it into two predicates so each message
+stays at its own call site without having to re-test the slot value to
+work out which arm fired.
+
+The arms were already mutually exclusive, so two sequential tests are
+equivalent to the if/else-if.
+
+Keep the OCFS2_INVALID_SLOT exclusion in the range predicate.
+OCFS2_INVALID_SLOT is 65535, which is greater than max_slots - 1, so
+without it every system inode mkfs.ocfs2 creates from the global
+allocator would be rejected.
+
+ocfs2_get_suballoc_slot_bit() in suballoc.c open-codes an identical range
+test, and is deliberately not converted.  The dinode validator pairs the
+range predicate with ocfs2_dinode_has_invalid_suballoc_slot(), which also
+rejects OCFS2_INVALID_SLOT on a non-system inode, so that pair is stricter
+than what ocfs2_get_suballoc_slot_bit() accepts.  The range predicate on
+its own is not stricter, it is the same test.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-7-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 31 ++++++++++++++++++++++---------
+ 1 file changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 6b78b3f3c5fa9..0929deb3e4b40 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -98,6 +98,19 @@ static bool ocfs2_dinode_has_wrong_fs_generation(struct super_block *sb,
+ 	return le32_to_cpu(di->i_fs_generation) != OCFS2_SB(sb)->fs_generation;
+ }
+ 
++static bool ocfs2_dinode_has_invalid_suballoc_slot(struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->i_suballoc_slot) == (u16)OCFS2_INVALID_SLOT &&
++		!(le32_to_cpu(di->i_flags) & OCFS2_SYSTEM_FL);
++}
++
++static bool ocfs2_dinode_has_out_of_range_suballoc_slot(struct super_block *sb,
++							struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->i_suballoc_slot) != (u16)OCFS2_INVALID_SLOT &&
++		(u32)le16_to_cpu(di->i_suballoc_slot) > OCFS2_SB(sb)->max_slots - 1;
++}
++
+ static bool ocfs2_valid_inode_mode(umode_t mode)
+ {
+ 	return fs_umode_to_ftype(mode) != FT_UNKNOWN;
+@@ -1564,15 +1577,15 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 	 * deleting it would pass the slot to get_local_system_inode() via
+ 	 * ocfs2_remove_inode() and trigger BUG_ON(slot == OCFS2_INVALID_SLOT).
+ 	 */
+-	if (le16_to_cpu(di->i_suballoc_slot) == (u16)OCFS2_INVALID_SLOT) {
+-		if (!(le32_to_cpu(di->i_flags) & OCFS2_SYSTEM_FL)) {
+-			rc = ocfs2_error(sb,
+-					 "Invalid dinode %llu: suballoc slot %u for non-system inode\n",
+-					 (unsigned long long)bh->b_blocknr,
+-					 le16_to_cpu(di->i_suballoc_slot));
+-			goto bail;
+-		}
+-	} else if ((u32)le16_to_cpu(di->i_suballoc_slot) > OCFS2_SB(sb)->max_slots - 1) {
++	if (ocfs2_dinode_has_invalid_suballoc_slot(di)) {
++		rc = ocfs2_error(sb,
++				 "Invalid dinode %llu: suballoc slot %u for non-system inode\n",
++				 (unsigned long long)bh->b_blocknr,
++				 le16_to_cpu(di->i_suballoc_slot));
++		goto bail;
++	}
++
++	if (ocfs2_dinode_has_out_of_range_suballoc_slot(sb, di)) {
+ 		rc = ocfs2_error(sb, "Invalid dinode %llu: suballoc slot %u\n",
+ 				 (unsigned long long)bh->b_blocknr,
+ 				 le16_to_cpu(di->i_suballoc_slot));
+-- 
+2.47.3
+

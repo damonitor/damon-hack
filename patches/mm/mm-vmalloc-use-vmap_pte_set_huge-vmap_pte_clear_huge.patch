@@ -1,0 +1,163 @@
+From: Wen Jiang <jiangwen6@xiaomi.com>
+Date: Sat, 7 Nov 2026 21:49:46 +0800
+Subject: [PATCH] mm/vmalloc: use vmap_pte_set_huge()/vmap_pte_clear_huge() for
+ PTE-level block mappings
+
+vmap installs PTE-level block mappings by reusing set_huge_pte_at() and
+huge_ptep_get_and_clear() under #ifdef CONFIG_HUGETLB_PAGE. This makes
+the feature silently unavailable on CONFIG_HUGETLB_PAGE=n kernels and
+couples mm/vmalloc.c to HugeTLB internals it does not otherwise need.
+
+Now that arm64 and powerpc/8xx provide vmap_pte_set_huge() and
+vmap_pte_clear_huge(), add the generic fallbacks next to the existing
+pmd/pud_set_huge() family and convert vmap_pte_range() and
+vunmap_pte_range() to the new helpers. The CONFIG_HUGETLB_PAGE guards
+around the block-mapping paths are dropped, so PTE-level block mappings
+now also work on CONFIG_HUGETLB_PAGE=n kernels, and mm/vmalloc.c no
+longer includes <linux/hugetlb.h>.
+
+The fallbacks exist only to keep the build working on architectures
+without PTE-level block mapping support. They are unreachable there:
+the callers only run when arch_vmap_pte_range_map_size() or
+arch_vmap_pte_range_unmap_size() return a size other than PAGE_SIZE,
+which requires an arch implementation. BUILD_BUG() makes that
+explicit rather than silently doing nothing.
+
+Link: https://lore.kernel.org/20261107134953.748622-4-jiangwenxiaomi@gmail.com
+Signed-off-by: Wen Jiang <jiangwen6@xiaomi.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Uladzislau Rezki (Sony) <urezki@gmail.com>
+Tested-by: Leo Yan <leo.yan@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Anshuman Khandual <anshuman.khandual@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Andrew Donnellan <andrew+kernel@donnellan.id.au>
+Cc: Wen Jiang <jiangwenxiaomi@gmail.com>
+---
+ include/linux/pgtable.h | 29 +++++++++++++++++++++++++++++
+ mm/vmalloc.c            | 19 ++++++-------------
+ 2 files changed, 35 insertions(+), 13 deletions(-)
+
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 780fe849ff8b7..7e62479db5df7 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -2204,6 +2204,35 @@ static inline int pmd_free_pte_page(pmd_t *pmd, unsigned long addr)
+ }
+ #endif	/* CONFIG_HAVE_ARCH_HUGE_VMAP */
+ 
++/*
++ * PTE-level block mappings for vmap.
++ *
++ * vmap_pte_set_huge() only has to be implemented by architectures whose
++ * arch_vmap_pte_range_map_size() can return a size other than PAGE_SIZE.
++ */
++#ifndef __HAVE_ARCH_VMAP_PTE_SET_HUGE
++static inline void vmap_pte_set_huge(pte_t *ptep, unsigned long addr,
++				     phys_addr_t phys, pgprot_t prot,
++				     unsigned long size)
++{
++	BUILD_BUG();
++}
++#endif
++
++/*
++ * Likewise, vmap_pte_clear_huge() only has to be implemented by architectures
++ * whose arch_vmap_pte_range_unmap_size() can return a size other than
++ * PAGE_SIZE.
++ */
++#ifndef __HAVE_ARCH_VMAP_PTE_CLEAR_HUGE
++static inline pte_t vmap_pte_clear_huge(pte_t *ptep, unsigned long addr,
++					unsigned long size)
++{
++	BUILD_BUG();
++	return __pte(0);
++}
++#endif
++
+ #ifndef __HAVE_ARCH_FLUSH_PMD_TLB_RANGE
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ /*
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 04067dac4cb9b..c0cb0dc191072 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -38,7 +38,6 @@
+ #include <linux/rbtree_augmented.h>
+ #include <linux/overflow.h>
+ #include <linux/pgtable.h>
+-#include <linux/hugetlb.h>
+ #include <linux/sched/mm.h>
+ #include <asm/tlbflush.h>
+ #include <asm/shmparam.h>
+@@ -100,7 +99,7 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+ 	pte_t *pte;
+ 	u64 pfn;
+ 	struct page *page;
+-	unsigned long size = PAGE_SIZE;
++	unsigned long size;
+ 
+ 	if (WARN_ON_ONCE(!PAGE_ALIGNED(end - addr)))
+ 		return -EINVAL;
+@@ -121,17 +120,12 @@ static int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+ 			BUG();
+ 		}
+ 
+-#ifdef CONFIG_HUGETLB_PAGE
+ 		size = arch_vmap_pte_range_map_size(addr, end, pfn, max_page_shift);
+ 		if (size != PAGE_SIZE) {
+-			pte_t entry = pfn_pte(pfn, prot);
+-
+-			entry = arch_make_huge_pte(entry, ilog2(size), 0);
+-			set_huge_pte_at(&init_mm, addr, pte, entry, size);
++			vmap_pte_set_huge(pte, addr, PFN_PHYS(pfn), prot, size);
+ 			pfn += PFN_DOWN(size);
+ 			continue;
+ 		}
+-#endif
+ 		set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot));
+ 		pfn++;
+ 	} while (pte += PFN_DOWN(size), addr += size, addr != end);
+@@ -391,25 +385,24 @@ static void vunmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+ {
+ 	pte_t *pte;
+ 	pte_t ptent;
+-	unsigned long size = PAGE_SIZE;
++	unsigned long size;
+ 
+ 	pte = pte_offset_kernel(pmd, addr);
+ 	lazy_mmu_mode_enable();
+ 
+ 	do {
+-#ifdef CONFIG_HUGETLB_PAGE
+ 		size = arch_vmap_pte_range_unmap_size(addr, pte);
+ 		if (size != PAGE_SIZE) {
+ 			if (WARN_ON(!IS_ALIGNED(addr, size))) {
+ 				addr = ALIGN_DOWN(addr, size);
+ 				pte = PTR_ALIGN_DOWN(pte, sizeof(*pte) * (size >> PAGE_SHIFT));
+ 			}
+-			ptent = huge_ptep_get_and_clear(&init_mm, addr, pte, size);
++			ptent = vmap_pte_clear_huge(pte, addr, size);
+ 			if (WARN_ON(end - addr < size))
+ 				size = end - addr;
+-		} else
+-#endif
++		} else {
+ 			ptent = ptep_get_and_clear(&init_mm, addr, pte);
++		}
+ 		WARN_ON(!pte_none(ptent) && !pte_present(ptent));
+ 	} while (pte += (size >> PAGE_SHIFT), addr += size, addr != end);
+ 
+-- 
+2.47.3
+

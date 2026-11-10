@@ -1,0 +1,67 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:19 +0800
+Subject: [PATCH] ocfs2: check chain list dinodes in online filecheck
+
+Wire the chain-list guard and its three sub-checks into the filecheck
+validator: cl_count against ocfs2_chain_recs_per_inode(),
+cl_next_free_rec against cl_count, and cl_bpc against the cluster to
+block size ratio.
+
+The bits-per-cluster predicate keeps the two bitmap_blkno conditions, so
+the global bitmap inode itself remains exempt.
+
+Link: https://lore.kernel.org/20261109122121.21473-30-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 132864f860fac..7e299b2dc8c0f 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -2165,6 +2165,37 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 		}
+ 	}
+ 
++	if (ocfs2_dinode_has_chain_list(di)) {
++		struct ocfs2_chain_list *cl = &di->id2.i_chain;
++
++		if (ocfs2_dinode_has_bad_chain_count(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: chain list count %u\n",
++			     (unsigned long long)bh->b_blocknr,
++			     le16_to_cpu(cl->cl_count));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_bad_chain_next_free(di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: chain list index %u\n",
++			     (unsigned long long)bh->b_blocknr,
++			     le16_to_cpu(cl->cl_next_free_rec));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++
++		if (ocfs2_dinode_has_bad_chain_bpc(sb, di)) {
++			mlog(ML_ERROR,
++			     "Filecheck: invalid dinode #%llu: bits per cluster %u\n",
++			     (unsigned long long)bh->b_blocknr,
++			     le16_to_cpu(cl->cl_bpc));
++			rc = -OCFS2_FILECHECK_ERR_INVALIDINO;
++			goto bail;
++		}
++	}
++
+ bail:
+ 	return rc;
+ }
+-- 
+2.47.3
+

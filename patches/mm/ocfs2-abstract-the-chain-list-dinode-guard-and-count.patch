@@ -1,0 +1,65 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:05 +0800
+Subject: [PATCH] ocfs2: abstract the chain list dinode guard and count check
+
+Introduce ocfs2_dinode_has_chain_list() for the OCFS2_CHAIN_FL test that
+selects the id2.i_chain union arm, and ocfs2_dinode_has_bad_chain_count()
+for the cl_count against ocfs2_chain_recs_per_inode() test.
+
+This mirrors the guard predicates already used for the inline-data and
+fast symlink groups, and ocfs2_dinode_has_extents() for the extent list
+group.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-16-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index dbb4563dbc703..71aded2c88f78 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -226,6 +226,18 @@ static bool ocfs2_dinode_has_unterminated_fast_symlink(struct super_block *sb,
+ 	return strnlen((char *)di->id2.i_symlink, i_size + 1) != i_size;
+ }
+ 
++static bool ocfs2_dinode_has_chain_list(struct ocfs2_dinode *di)
++{
++	return le32_to_cpu(di->i_flags) & OCFS2_CHAIN_FL;
++}
++
++static bool ocfs2_dinode_has_bad_chain_count(struct super_block *sb,
++					     struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->id2.i_chain.cl_count) !=
++		ocfs2_chain_recs_per_inode(sb);
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1840,12 +1852,12 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 		}
+ 	}
+ 
+-	if (le32_to_cpu(di->i_flags) & OCFS2_CHAIN_FL) {
++	if (ocfs2_dinode_has_chain_list(di)) {
+ 		struct ocfs2_chain_list *cl = &di->id2.i_chain;
+ 		u16 bpc = 1 << (OCFS2_SB(sb)->s_clustersize_bits -
+ 				sb->s_blocksize_bits);
+ 
+-		if (le16_to_cpu(cl->cl_count) != ocfs2_chain_recs_per_inode(sb)) {
++		if (ocfs2_dinode_has_bad_chain_count(sb, di)) {
+ 			rc = ocfs2_error(sb, "Invalid dinode %llu: chain list count %u\n",
+ 					 (unsigned long long)bh->b_blocknr,
+ 					 le16_to_cpu(cl->cl_count));
+-- 
+2.47.3
+

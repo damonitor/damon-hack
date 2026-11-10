@@ -1,0 +1,66 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:21:11 +0800
+Subject: [PATCH] ocfs2: abstract the extent list next free record check
+
+Fold the l_next_free_rec against l_count test into a predicate and use it
+in both ocfs2_validate_inode_block() and
+ocfs2_filecheck_repair_inode_block(), which open-coded the same
+comparison.  Repair keeps its ocfs2_dinode_has_extents() guard, which
+selects the id2.i_list union arm.
+
+This completes the split of ocfs2_validate_inode_block()'s open-coded
+conditions into ocfs2_dinode_has_*() predicates.  Every return code and
+log message stayed at its call site, so the normal validator still
+escalates through ocfs2_error() while filecheck reports its own
+OCFS2_FILECHECK_ERR_* codes without touching the error handling state.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-22-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 8c4ea3d048d18..9db147de1982c 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -278,6 +278,12 @@ static bool ocfs2_dinode_has_oversized_extent_count(struct super_block *sb,
+ 		ocfs2_extent_recs_per_inode(sb);
+ }
+ 
++static bool ocfs2_dinode_has_bad_extent_next_free(struct ocfs2_dinode *di)
++{
++	return le16_to_cpu(di->id2.i_list.l_next_free_rec) >
++		le16_to_cpu(di->id2.i_list.l_count);
++}
++
+ void ocfs2_set_inode_flags(struct inode *inode)
+ {
+ 	unsigned int flags = OCFS2_I(inode)->ip_attr;
+@@ -1939,7 +1945,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 					 ocfs2_extent_recs_per_inode(sb));
+ 			goto bail;
+ 		}
+-		if (next_free > count) {
++		if (ocfs2_dinode_has_bad_extent_next_free(di)) {
+ 			rc = ocfs2_error(sb,
+ 					 "Invalid dinode %llu: extent list l_next_free_rec %u exceeds l_count %u\n",
+ 					 (unsigned long long)bh->b_blocknr, next_free, count);
+@@ -2110,7 +2116,7 @@ static int ocfs2_filecheck_repair_inode_block(struct super_block *sb,
+ 	}
+ 
+ 	if (ocfs2_dinode_has_extents(di) &&
+-	    le16_to_cpu(di->id2.i_list.l_next_free_rec) > le16_to_cpu(di->id2.i_list.l_count)) {
++	    ocfs2_dinode_has_bad_extent_next_free(di)) {
+ 		di->id2.i_list.l_next_free_rec = di->id2.i_list.l_count;
+ 		changed = 1;
+ 		mlog(ML_ERROR,
+-- 
+2.47.3
+

@@ -2,23 +2,42 @@ From: Alexis Bouzigues <BouziguesAlexis@JohnDeere.com>
 Date: Tue, 13 Oct 2026 17:56:19 -0500
 Subject: [PATCH] mm: nommu: set MMF_OOM_SKIP in exit_mmap()
 
+On NOMMU, continued memory pressure can leave a parent livelocked in an
+allocation after its child has been OOM-killed and has exited.  The child
+has already freed its mappings, but until the parent collects it with
+waitpid(), it remains visible to the OOM killer as an existing victim.
+The OOM killer consequently defers selecting another victim, and the
+allocator keeps retrying without making progress.  A parent allocating
+before waiting for its child can therefore prevent the very waitpid()
+needed to end the retry loop.
+
+This was encountered while running a benchmark to measure memory
+reductions and reproduced with a small /init program on v7.3-rc7 under
+qemu-system-arm.  It has only been observed in benchmarks, not reported in
+a deployed application.  The relevant sequence is a parent allocating
+before collecting an exited child while memory pressure persists; freeing
+the child's memory alone need not relieve that pressure.
+
 Commit 212925802454 ("mm: oom: let oom_reap_task and exit_mmap run
-concurrently") moved setting MMF_OOM_SKIP from __mmput() into the MMU
-exit_mmap(), so it is no longer set when a NOMMU mm is torn down.
+concurrently") moved setting MMF_OOM_SKIP from the shared __mmput() into
+the MMU-only exit_mmap().  Losing the flag on NOMMU was a side effect: the
+problem is that an exited OOM victim is no longer hidden from the OOM
+killer, not coordination with the OOM reaper.  The OOM reaper is not built
+on NOMMU.  Here, collecting the child means waitpid().
 
-As a result, a NOMMU OOM victim that has exited and freed its memory keeps
-the OOM killer from selecting another victim until it is reaped.
+Set MMF_OOM_SKIP in the NOMMU exit_mmap() after the last delete_vma(),
+when the mappings have been freed.  This restores the previous NOMMU
+behavior and allows the OOM killer to consider another victim instead of
+waiting for an exited one.  It does not provide a general forward progress
+guarantee for the inherently fragile NOMMU OOM handling.
 
-Set MMF_OOM_SKIP in the NOMMU exit_mmap() once the VMAs are freed, as the
-MMU version does.
-
+[akpm@linux-foundation.org: chagelog updates per Michel]
 Link: https://lore.kernel.org/20261013-fix-nommu-exit-mmap-oom-skip-v1-1-cb957cdbfcc3@JohnDeere.com
 Link: https://lore.kernel.org/BY3PR05MB82607AF910C023253C48CD26A09D2@BY3PR05MB8260.namprd05.prod.outlook.com
 Fixes: 212925802454 ("mm: oom: let oom_reap_task and exit_mmap run concurrently")
 Signed-off-by: Alexis Bouzigues <BouziguesAlexis@JohnDeere.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Assisted-by: LLM
-Cc: Michal Hocko <mhocko@suse.com>
+Acked-by: Michal Hocko <mhocko@suse.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: "Garg, Shivank" <shivankg@amd.com>

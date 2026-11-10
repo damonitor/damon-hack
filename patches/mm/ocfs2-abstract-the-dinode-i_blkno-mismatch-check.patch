@@ -1,0 +1,70 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:20:53 +0800
+Subject: [PATCH] ocfs2: abstract the dinode i_blkno mismatch check
+
+The same i_blkno against b_blocknr comparison is open-coded in
+ocfs2_validate_inode_block(), ocfs2_filecheck_validate_inode_block() and
+ocfs2_filecheck_repair_inode_block().  Fold it into a shared predicate.
+
+Each call site keeps its own log message and return code: the normal
+validator escalates through ocfs2_error(), filecheck reports
+OCFS2_FILECHECK_ERR_BLOCKNO, and repair rewrites the field.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-4-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 209066321932e..587fcea59f5a1 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -82,6 +82,11 @@ static bool ocfs2_dinode_has_zero_nlink_or_mode(struct ocfs2_dinode *di)
+ 	return !ocfs2_read_links_count(di) || !di->i_mode;
+ }
+ 
++static bool ocfs2_dinode_has_wrong_blkno(struct ocfs2_dinode *di, u64 blkno)
++{
++	return le64_to_cpu(di->i_blkno) != blkno;
++}
++
+ static bool ocfs2_valid_inode_mode(umode_t mode)
+ {
+ 	return fs_umode_to_ftype(mode) != FT_UNKNOWN;
+@@ -1518,7 +1523,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	if (le64_to_cpu(di->i_blkno) != bh->b_blocknr) {
++	if (ocfs2_dinode_has_wrong_blkno(di, bh->b_blocknr)) {
+ 		rc = ocfs2_error(sb, "Invalid dinode #%llu: i_blkno is %llu\n",
+ 				 (unsigned long long)bh->b_blocknr,
+ 				 (unsigned long long)le64_to_cpu(di->i_blkno));
+@@ -1840,7 +1845,7 @@ static int ocfs2_filecheck_validate_inode_block(struct super_block *sb,
+ 	} else if (rc)
+ 		goto bail;
+ 
+-	if (le64_to_cpu(di->i_blkno) != bh->b_blocknr) {
++	if (ocfs2_dinode_has_wrong_blkno(di, bh->b_blocknr)) {
+ 		mlog(ML_ERROR,
+ 		     "Filecheck: invalid dinode #%llu: i_blkno is %llu\n",
+ 		     (unsigned long long)bh->b_blocknr,
+@@ -1945,7 +1950,7 @@ static int ocfs2_filecheck_repair_inode_block(struct super_block *sb,
+ 		return -OCFS2_FILECHECK_ERR_VALIDFLAG;
+ 	}
+ 
+-	if (le64_to_cpu(di->i_blkno) != bh->b_blocknr) {
++	if (ocfs2_dinode_has_wrong_blkno(di, bh->b_blocknr)) {
+ 		di->i_blkno = cpu_to_le64(bh->b_blocknr);
+ 		changed = 1;
+ 		mlog(ML_ERROR,
+-- 
+2.47.3
+

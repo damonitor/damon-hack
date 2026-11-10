@@ -1,0 +1,54 @@
+From: Avi Weiss <thnkslprpt@gmail.com>
+Date: Sun, 8 Nov 2026 10:54:57 +0200
+Subject: [PATCH] mm/page-writeback: avoid unnecessary strictlimit background
+ wakeups
+
+balance_dirty_pages() includes pages under writeback in gdtc->wb_dirty
+when checking the per-wb background threshold for strictlimit BDIs.
+However, wb_over_bg_thresh() only considers reclaimable dirty pages when
+deciding whether to start more background writeback.
+
+This can repeatedly wake the background worker even when there are too few
+dirty pages to write.  In a 15-second FUSE writeback test, background
+wakeup requests dropped from 2657 to 682 (74% drop), while writeback_start
+events remained nearly unchanged at 99 and 98.
+
+Check wb_over_bg_thresh() before starting background writeback through the
+strictlimit condition.  Leave the global background threshold check and
+the wakeup required for dirty throttling unchanged.
+
+Link: https://lore.kernel.org/20261108085456.2093096-2-thnkslprpt@gmail.com
+Fixes: 0437906841d0 ("mm: start background writeback based on per-wb threshold for strictlimit BDIs")
+Signed-off-by: Avi Weiss <thnkslprpt@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Joanne Koong <joannelkoong@gmail.com>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ mm/page-writeback.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/mm/page-writeback.c b/mm/page-writeback.c
+index b6bf2d6f4984e..5939f781fc540 100644
+--- a/mm/page-writeback.c
++++ b/mm/page-writeback.c
+@@ -1827,9 +1827,15 @@ static int balance_dirty_pages(struct bdi_writeback *wb,
+ 			balance_domain_limits(mdtc, strictlimit);
+ 		}
+ 
++		/*
++		 * gdtc->wb_dirty includes pages under writeback, so use it as
++		 * a cheap preliminary check before wb_over_bg_thresh() decides
++		 * whether background writeback is needed.
++		 */
+ 		if (!writeback_in_progress(wb) &&
+ 		    (nr_dirty > gdtc->bg_thresh ||
+-		     (strictlimit && gdtc->wb_dirty > gdtc->wb_bg_thresh)))
++		     (strictlimit && gdtc->wb_dirty > gdtc->wb_bg_thresh &&
++		      wb_over_bg_thresh(wb))))
+ 			wb_start_background_writeback(wb);
+ 
+ 		/*
+-- 
+2.47.3
+

@@ -1,0 +1,52 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Mon, 9 Nov 2026 20:20:58 +0800
+Subject: [PATCH] ocfs2: abstract the dinode orphaned slot check
+
+Fold the OCFS2_ORPHANED_FL guarded i_orphaned_slot range test into a
+predicate.  The flag test stays inside it: i_orphaned_slot is only
+meaningful when the inode is actually orphaned, so a bare range test
+would reject valid inodes whose orphaned slot field is stale.
+
+No functional change intended.
+
+Link: https://lore.kernel.org/20261109122121.21473-9-joseph.qi@linux.alibaba.com
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+---
+ fs/ocfs2/inode.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/inode.c b/fs/ocfs2/inode.c
+index 3be98328925dd..fd9613a958022 100644
+--- a/fs/ocfs2/inode.c
++++ b/fs/ocfs2/inode.c
+@@ -117,6 +117,13 @@ static bool ocfs2_dinode_has_bad_suballoc_bit(struct super_block *sb,
+ 	return le16_to_cpu(di->i_suballoc_bit) >= ocfs2_suballoc_bits_per_block(sb);
+ }
+ 
++static bool ocfs2_dinode_has_bad_orphaned_slot(struct super_block *sb,
++					       struct ocfs2_dinode *di)
++{
++	return (le32_to_cpu(di->i_flags) & OCFS2_ORPHANED_FL) &&
++		le16_to_cpu(di->i_orphaned_slot) >= OCFS2_SB(sb)->max_slots;
++}
++
+ static bool ocfs2_valid_inode_mode(umode_t mode)
+ {
+ 	return fs_umode_to_ftype(mode) != FT_UNKNOWN;
+@@ -1614,8 +1621,7 @@ int ocfs2_validate_inode_block(struct super_block *sb,
+ 		goto bail;
+ 	}
+ 
+-	if ((le32_to_cpu(di->i_flags) & OCFS2_ORPHANED_FL) &&
+-	    le16_to_cpu(di->i_orphaned_slot) >= OCFS2_SB(sb)->max_slots) {
++	if (ocfs2_dinode_has_bad_orphaned_slot(sb, di)) {
+ 		rc = ocfs2_error(sb, "Invalid dinode %llu: orphaned slot %u\n",
+ 				 (unsigned long long)bh->b_blocknr,
+ 				 le16_to_cpu(di->i_orphaned_slot));
+-- 
+2.47.3
+

@@ -1,0 +1,220 @@
+From: Kaitao Cheng <chengkaitao@kylinos.cn>
+Date: Fri, 6 Nov 2026 18:05:21 +0800
+Subject: [PATCH] mm/hugetlb: account NR_HUGETLB at folio state transitions
+
+NR_HUGETLB updates are spread across allocation entry points and freeing
+paths, mixing node accounting with memcg statistics.  This makes the
+accounting harder to follow and requires compensating updates when freeing
+unused surplus folios.
+
+Consolidate node accounting around folio state transitions.  Increment
+NR_HUGETLB when taking a folio from the free pool or allocating a fresh
+surplus or migration folio, and decrement it when returning the folio to
+the pool or removing it from use.
+
+Separate memcg statistics into mod_hugetlb_memcg_state(), updating them
+after a successful charge and before uncharging.  This keeps node
+accounting independent of memcg charging and removes redundant updates
+from the allocation entry points and surplus cleanup paths.
+
+Link: https://lore.kernel.org/20261106100521.30099-5-kaitao.cheng@linux.dev
+Signed-off-by: Kaitao Cheng <chengkaitao@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Muchun Song <muchun.song@linux.dev>
+Suggested-by: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Mani Tofigh <mt4022@columbia.edu>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Chris Down <chris@chrisdown.name>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
+---
+ mm/hugetlb.c    | 50 +++++++++++++++++++++++++++----------------------
+ mm/memcontrol.c |  6 +-----
+ 2 files changed, 29 insertions(+), 27 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 85faa8de4a4f8..e36219782053c 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1288,6 +1288,8 @@ static struct folio *dequeue_hugetlb_folio_node_exact(struct hstate *h,
+ 		folio_clear_hugetlb_freed(folio);
+ 		h->free_huge_pages--;
+ 		h->free_huge_pages_node[nid]--;
++		mod_node_page_state(folio_pgdat(folio), NR_HUGETLB,
++				    pages_per_huge_page(h));
+ 		return folio;
+ 	}
+ 
+@@ -1416,6 +1418,9 @@ void remove_hugetlb_folio(struct hstate *h, struct folio *folio,
+ 		folio_clear_hugetlb_freed(folio);
+ 		h->free_huge_pages--;
+ 		h->free_huge_pages_node[nid]--;
++	} else {
++		mod_node_page_state(folio_pgdat(folio), NR_HUGETLB,
++				    -(long)pages_per_huge_page(h));
+ 	}
+ 	if (adjust_surplus) {
+ 		h->surplus_huge_pages--;
+@@ -1693,6 +1698,17 @@ struct hstate *size_to_hstate(unsigned long size)
+ 	return NULL;
+ }
+ 
++static void mod_hugetlb_memcg_state(struct folio *folio, int nr_pages)
++{
++	struct mem_cgroup *memcg;
++
++	guard(rcu)();
++	memcg = folio_memcg(folio);
++	if (memcg)
++		mod_memcg_lruvec_state(mem_cgroup_lruvec(memcg, folio_pgdat(folio)),
++				       NR_HUGETLB, nr_pages);
++}
++
+ void free_huge_folio(struct folio *folio)
+ {
+ 	/*
+@@ -1740,7 +1756,7 @@ void free_huge_folio(struct folio *folio)
+ 				     pages_per_huge_page(h), folio);
+ 	hugetlb_cgroup_uncharge_folio_rsvd(hstate_index(h),
+ 					  pages_per_huge_page(h), folio);
+-	lruvec_stat_mod_folio(folio, NR_HUGETLB, -pages_per_huge_page(h));
++	mod_hugetlb_memcg_state(folio, -pages_per_huge_page(h));
+ 	mem_cgroup_uncharge(folio);
+ 	if (restore_reserve)
+ 		h->resv_huge_pages++;
+@@ -1756,6 +1772,8 @@ void free_huge_folio(struct folio *folio)
+ 		spin_unlock_irqrestore(&hugetlb_lock, flags);
+ 		update_and_free_hugetlb_folio(h, folio, true);
+ 	} else {
++		mod_node_page_state(folio_pgdat(folio), NR_HUGETLB,
++				    -(long)pages_per_huge_page(h));
+ 		arch_clear_hugetlb_flags(folio);
+ 		enqueue_hugetlb_folio(h, folio);
+ 		spin_unlock_irqrestore(&hugetlb_lock, flags);
+@@ -2123,6 +2141,9 @@ static struct folio *alloc_surplus_hugetlb_folio(struct hstate *h,
+ 	 */
+ 	account_new_hugetlb_folio(h, folio);
+ 
++	/* The overcommit recheck below can free this folio. */
++	mod_node_page_state(folio_pgdat(folio), NR_HUGETLB, pages_per_huge_page(h));
++
+ 	/*
+ 	 * We could have raced with the pool size change.
+ 	 * Double check that and simply deallocate the new page
+@@ -2133,8 +2154,6 @@ static struct folio *alloc_surplus_hugetlb_folio(struct hstate *h,
+ 	if (h->surplus_huge_pages >= h->nr_overcommit_huge_pages) {
+ 		folio_set_hugetlb_temporary(folio);
+ 		spin_unlock_irq(&hugetlb_lock);
+-		/* Balance the NR_HUGETLB decrement in free_huge_folio(). */
+-		lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
+ 		free_huge_folio(folio);
+ 		return NULL;
+ 	}
+@@ -2162,6 +2181,7 @@ static struct folio *alloc_migrate_hugetlb_folio(struct hstate *h, gfp_t gfp_mas
+ 
+ 	spin_lock_irq(&hugetlb_lock);
+ 	account_new_hugetlb_folio(h, folio);
++	mod_node_page_state(folio_pgdat(folio), NR_HUGETLB, pages_per_huge_page(h));
+ 	spin_unlock_irq(&hugetlb_lock);
+ 
+ 	/* fresh huge pages are frozen */
+@@ -2220,10 +2240,6 @@ struct folio *alloc_hugetlb_folio_reserve(struct hstate *h, int preferred_nid,
+ 
+ 	spin_unlock_irq(&hugetlb_lock);
+ 
+-	if (folio)
+-		lruvec_stat_mod_folio(folio, NR_HUGETLB,
+-				      folio_nr_pages(folio));
+-
+ 	return folio;
+ }
+ 
+@@ -2251,9 +2267,6 @@ struct folio *alloc_hugetlb_folio_nodemask(struct hstate *h, int preferred_nid,
+ 						    nmask);
+ 	}
+ 
+-	if (folio)
+-		lruvec_stat_mod_folio(folio, NR_HUGETLB, folio_nr_pages(folio));
+-
+ 	return folio;
+ }
+ 
+@@ -2371,6 +2384,8 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 		if ((--needed) < 0)
+ 			break;
+ 		/* Add the page to the hugetlb allocator */
++		mod_node_page_state(folio_pgdat(folio), NR_HUGETLB,
++				    -(long)pages_per_huge_page(h));
+ 		enqueue_hugetlb_folio(h, folio);
+ 	}
+ free:
+@@ -2379,13 +2394,9 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 	/*
+ 	 * Free unnecessary surplus pages to the buddy allocator.
+ 	 * Pages have no ref count, call free_huge_folio directly.
+-	 * These pages were not accounted in NR_HUGETLB, so balance the
+-	 * decrement in free_huge_folio().
+ 	 */
+-	list_for_each_entry_safe(folio, tmp, &surplus_list, lru) {
+-		lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
++	list_for_each_entry_safe(folio, tmp, &surplus_list, lru)
+ 		free_huge_folio(folio);
+-	}
+ 	spin_lock_irq(&hugetlb_lock);
+ 
+ 	return ret;
+@@ -2950,13 +2961,6 @@ struct folio *hugetlb_alloc_folio(struct hstate *h,
+ 
+ 	ret = mem_cgroup_charge_hugetlb(folio, mm,
+ 					gfp | __GFP_RETRY_MAYFAIL);
+-	/*
+-	 * Unconditionally increment NR_HUGETLB here because if
+-	 * mem_cgroup_charge_hugetlb failed, freeing the page will
+-	 * decrement NR_HUGETLB.
+-	 */
+-	lruvec_stat_mod_folio(folio, NR_HUGETLB, nr_pages);
+-
+ 	if (ret == -ENOMEM) {
+ 		folio_put(folio);
+ 		/*
+@@ -2971,6 +2975,8 @@ struct folio *hugetlb_alloc_folio(struct hstate *h,
+ 		return ERR_PTR(-ENOSPC);
+ 	}
+ 
++	mod_hugetlb_memcg_state(folio, nr_pages);
++
+ 	return folio;
+ 
+  err_uncharge_hugetlb_cgroup:
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index fe3c5049c1a15..ab43c730a0118 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5445,11 +5445,7 @@ int mem_cgroup_charge_hugetlb(struct folio *folio, struct mm_struct *mm,
+ 	struct mem_cgroup *memcg = get_mem_cgroup_from_mm(mm);
+ 	int ret = 0;
+ 
+-	/*
+-	 * Even memcg does not account for hugetlb, we still want to update
+-	 * system-level stats via lruvec_stat_mod_folio. Return 0, and skip
+-	 * charging the memcg.
+-	 */
++	/* Skip charging unless hugetlb accounting is enabled for cgroup v2. */
+ 	if (mem_cgroup_disabled() || !memcg_accounts_hugetlb() ||
+ 		!memcg || !cgroup_subsys_on_dfl(memory_cgrp_subsys))
+ 		goto out;
+-- 
+2.47.3
+
