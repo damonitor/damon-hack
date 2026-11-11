@@ -1,0 +1,72 @@
+From: Nhat Pham <nphamcs@gmail.com>
+Date: Tue, 10 Nov 2026 07:14:05 -0800
+Subject: [PATCH] mm: vmscan: allow writeout of swapcache folios without anon
+ mappings
+
+Patch series "mm: fix swapcache writeout and cluster table races", v2.
+
+Reviews of vswap and v1 of this series found bugs in existing swap code.
+Allow swapcache writeout without anon mappings, publish cluster tables
+with the allocator locks held, and leave tableless clusters to the
+allocator.
+
+
+This patch (of 3):
+
+Unfaulted zswap readahead folios can be dirty and in swapcache without
+an anonymous mapping. pageout() rejects them before swap_writeout(),
+so reclaim cannot write them out while their swap entries remain
+referenced.
+
+Allow swapcache folios through the filesystem folio check. They already
+have swap entries and can use the existing swap writeout path. Anonymous
+folios outside swapcache have no mapping and already return PAGE_KEEP.
+
+Link: https://lore.kernel.org/20261110151407.789960-1-nphamcs@gmail.com
+Link: https://lore.kernel.org/20261110151407.789960-2-nphamcs@gmail.com
+Fixes: 84798514db50 ("mm: Remove swap_writepage() and shmem_writepage()")
+Signed-off-by: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://lore.kernel.org/all/sashiko-outbox-181078@kernel.org/
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Christopher Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: <ryncsn@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/vmscan.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 6a1af9b92349f..877664642fa6b 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -714,7 +714,8 @@ static pageout_t pageout(struct swap_io_ctx *ctx, struct address_space *mapping,
+ 	 */
+ 	if (folio_ref_count(folio) != 1 + folio_nr_pages(folio) || !mapping)
+ 		return PAGE_KEEP;
+-	if (!shmem_mapping(mapping) && !folio_test_anon(folio))
++	/* Anonymous folios outside swapcache returned PAGE_KEEP above. */
++	if (!shmem_mapping(mapping) && !folio_test_swapcache(folio))
+ 		return PAGE_ACTIVATE;
+ 	if (!folio_clear_dirty_for_io(folio))
+ 		return PAGE_CLEAN;
+-- 
+2.47.3
+

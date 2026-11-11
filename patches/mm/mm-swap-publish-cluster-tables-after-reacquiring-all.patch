@@ -1,0 +1,260 @@
+From: Nhat Pham <nphamcs@gmail.com>
+Date: Tue, 10 Nov 2026 07:14:06 -0800
+Subject: [PATCH] mm/swap: publish cluster tables after reacquiring allocator
+ locks
+
+Under memory pressure, swap_cluster_populate() can publish a table
+while its locks are dropped for a sleeping allocation. A cached
+allocator can consume and free that table before the populating
+allocator resumes, leaving the resumed scan with a NULL table.
+
+    CPU0                           CPU1
+    alloc_swap_scan_list()
+      isolate_lock_cluster()
+        swap_cluster_populate()
+          drop local/global/ci locks
+          swap_cluster_alloc_table()
+            rcu_assign_pointer(ci->table, table)
+                                   folio_alloc_swap()
+                                     swap_alloc_fast()
+                                       alloc_swap_scan_cluster()
+                                         __swap_cluster_alloc_entries()
+                                     mem_cgroup_try_charge_swap()
+                                       return -ENOMEM
+                                     swap_cache_del_folio()
+                                       __swap_cache_del_folio()
+                                         __swap_cache_do_del_folio()
+                                           __swap_cluster_free_entries()
+                                             free_cluster()
+                                               __free_cluster()
+                                                 swap_cluster_free_table()
+          reacquire local/global/ci locks
+          return ci
+      alloc_swap_scan_cluster()
+        cluster_scan_range()
+          __swap_table_get()  /* NULL table */
+
+Keep the count table, cgroup table and zero bitmap private until
+swap_cluster_alloc_table() restores all allocator locks. Install them
+under the cluster lock and retain it through the scan. Initial bad-slot
+setup takes only the cluster lock because the device is unpublished.
+
+The allocator releases its locks before the sleeping allocation. A
+reclaimer that dropped ci->lock earlier can then resume and put the
+cluster back on the free list. Abandon installation if the list state
+changes or a table appears, freeing only private allocations. Restore
+locks on allocation failure too, so the caller can return a still-isolated
+cluster to its free list.
+
+Link: https://lore.kernel.org/20261110151407.789960-3-nphamcs@gmail.com
+Link: https://lore.kernel.org/all/sashiko-outbox-181086@kernel.org/
+Fixes: cdd77f84d966 ("mm, swap: consolidate cluster allocation helpers")
+Signed-off-by: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://lore.kernel.org/all/sashiko-outbox-181084@kernel.org/
+Suggested-by: Kairui Song <ryncsn@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Christopher Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/swapfile.c | 106 +++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 74 insertions(+), 32 deletions(-)
+
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 4a0afc8f9a07b..2810d39a6ac0f 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -449,15 +449,23 @@ static void swap_cluster_free_table(struct swap_cluster_info *ci)
+ 	swap_cluster_free_count_table(table);
+ }
+ 
+-static int swap_cluster_alloc_table(struct swap_cluster_info *ci, gfp_t gfp)
++/*
++ * Return with ci locked. An unlocked allocator also needs si's outer locks;
++ * initial bad-slot setup passes NULL because the device is not published.
++ */
++static int swap_cluster_alloc_table(struct swap_info_struct *si,
++				    struct swap_cluster_info *ci,
++				    gfp_t gfp, bool locked)
+ {
+ 	struct swap_table *table = NULL;
++#ifdef CONFIG_MEMCG
++	struct swap_memcg_table *memcg_table = NULL;
++#endif
++#if !SWAP_TABLE_HAS_ZEROFLAG
++	unsigned long *zero_bitmap = NULL;
++#endif
+ 	struct folio *folio;
+-
+-	/* The cluster must be empty and not on any list during allocation. */
+-	VM_WARN_ON_ONCE(ci->flags || !cluster_is_empty(ci));
+-	if (rcu_access_pointer(ci->table))
+-		return 0;
++	int ret = -ENOMEM;
+ 
+ 	if (SWP_TABLE_USE_PAGE) {
+ 		folio = folio_alloc(gfp | __GFP_ZERO, 0);
+@@ -467,27 +475,49 @@ static int swap_cluster_alloc_table(struct swap_cluster_info *ci, gfp_t gfp)
+ 		table = kmem_cache_zalloc(swap_table_cachep, gfp);
+ 	}
+ 	if (!table)
+-		return -ENOMEM;
++		goto lock;
+ 
+ #ifdef CONFIG_MEMCG
+ 	if (!mem_cgroup_disabled()) {
+-		VM_WARN_ON_ONCE(ci->memcg_table);
+-		ci->memcg_table = kzalloc_obj(*ci->memcg_table, gfp);
+-		if (!ci->memcg_table) {
+-			swap_cluster_free_count_table(table);
+-			return -ENOMEM;
+-		}
++		memcg_table = kzalloc_obj(*ci->memcg_table, gfp);
++		if (!memcg_table)
++			goto lock;
+ 	}
+ #endif
+ 
+ #if !SWAP_TABLE_HAS_ZEROFLAG
+-	VM_WARN_ON_ONCE(ci->zero_bitmap);
+-	ci->zero_bitmap = bitmap_zalloc(SWAPFILE_CLUSTER, gfp);
+-	if (!ci->zero_bitmap) {
+-		swap_cluster_free_table(ci);
+-		swap_cluster_free_count_table(table);
+-		return -ENOMEM;
++	zero_bitmap = bitmap_zalloc(SWAPFILE_CLUSTER, gfp);
++	if (!zero_bitmap)
++		goto lock;
++#endif
++	ret = 0;
++
++lock:
++	if (!locked) {
++		if (si) {
++			local_lock(&percpu_swap_cluster.lock);
++			if (!(si->flags & SWP_SOLIDSTATE))
++				spin_lock(&si->global_cluster_lock);
++		}
++		spin_lock(&ci->lock);
+ 	}
++	lockdep_assert_held(&ci->lock);
++
++	/* A stale reclaimer may have returned the cluster to the free list. */
++	if (ci->flags != CLUSTER_FLAG_NONE || cluster_table_is_alloced(ci))
++		ret = -EAGAIN;
++	if (ret)
++		goto free;
++
++	/* The cluster must be empty and not on any list during allocation. */
++	VM_WARN_ON_ONCE(!cluster_is_empty(ci));
++#ifdef CONFIG_MEMCG
++	VM_WARN_ON_ONCE(ci->memcg_table);
++	ci->memcg_table = memcg_table;
++#endif
++#if !SWAP_TABLE_HAS_ZEROFLAG
++	VM_WARN_ON_ONCE(ci->zero_bitmap);
++	ci->zero_bitmap = zero_bitmap;
+ #endif
+ 
+ 	/*
+@@ -496,6 +526,17 @@ static int swap_cluster_alloc_table(struct swap_cluster_info *ci, gfp_t gfp)
+ 	 */
+ 	rcu_assign_pointer(ci->table, table);
+ 	return 0;
++
++free:
++#ifdef CONFIG_MEMCG
++	kfree(memcg_table);
++#endif
++#if !SWAP_TABLE_HAS_ZEROFLAG
++	bitmap_free(zero_bitmap);
++#endif
++	if (table)
++		swap_cluster_free_count_table(table);
++	return ret;
+ }
+ 
+ /*
+@@ -546,8 +587,8 @@ swap_cluster_populate(struct swap_info_struct *si,
+ 		lockdep_assert_held(&si->global_cluster_lock);
+ 	lockdep_assert_held(&ci->lock);
+ 
+-	if (!swap_cluster_alloc_table(ci, __GFP_HIGH | __GFP_NOMEMALLOC |
+-					  __GFP_NOWARN))
++	if (!swap_cluster_alloc_table(si, ci, __GFP_HIGH | __GFP_NOMEMALLOC |
++					      __GFP_NOWARN, true))
+ 		return ci;
+ 
+ 	/*
+@@ -560,8 +601,8 @@ swap_cluster_populate(struct swap_info_struct *si,
+ 		spin_unlock(&si->global_cluster_lock);
+ 	local_unlock(&percpu_swap_cluster.lock);
+ 
+-	ret = swap_cluster_alloc_table(ci, __GFP_HIGH | __GFP_NOMEMALLOC |
+-					   GFP_KERNEL);
++	ret = swap_cluster_alloc_table(si, ci, __GFP_HIGH | __GFP_NOMEMALLOC |
++					     GFP_KERNEL, false);
+ 
+ 	/*
+ 	 * Back to atomic context. We might have migrated to a new CPU with a
+@@ -571,13 +612,9 @@ swap_cluster_populate(struct swap_info_struct *si,
+ 	 * could happen with ignoring the percpu cluster is fragmentation,
+ 	 * which is acceptable since this fallback and race is rare.
+ 	 */
+-	local_lock(&percpu_swap_cluster.lock);
+-	if (!(si->flags & SWP_SOLIDSTATE))
+-		spin_lock(&si->global_cluster_lock);
+-	spin_lock(&ci->lock);
+-
+ 	if (ret) {
+-		move_cluster(si, ci, &si->free_clusters, CLUSTER_FLAG_FREE);
++		if (ret != -EAGAIN)
++			move_cluster(si, ci, &si->free_clusters, CLUSTER_FLAG_FREE);
+ 		spin_unlock(&ci->lock);
+ 		return NULL;
+ 	}
+@@ -825,9 +862,13 @@ static int swap_cluster_setup_bad_slot(struct swap_info_struct *si,
+ 
+ 	ci = cluster_info + idx;
+ 	/* Need to allocate swap table first for initial bad slot marking. */
+-	if (!ci->count && swap_cluster_alloc_table(ci, GFP_KERNEL))
+-		return -ENOMEM;
+-	spin_lock(&ci->lock);
++	if (!ci->count) {
++		ret = swap_cluster_alloc_table(NULL, ci, GFP_KERNEL, false);
++		if (ret)
++			goto out;
++	} else {
++		spin_lock(&ci->lock);
++	}
+ 	/* Check for duplicated bad swap slots. */
+ 	if (__swap_table_xchg(ci, ci_off, SWP_TB_BAD) != SWP_TB_NULL) {
+ 		pr_warn("Duplicated bad slot offset %d\n", offset);
+@@ -835,6 +876,7 @@ static int swap_cluster_setup_bad_slot(struct swap_info_struct *si,
+ 	} else {
+ 		ci->count++;
+ 	}
++out:
+ 	spin_unlock(&ci->lock);
+ 
+ 	WARN_ON(ci->count > SWAPFILE_CLUSTER);
+-- 
+2.47.3
+

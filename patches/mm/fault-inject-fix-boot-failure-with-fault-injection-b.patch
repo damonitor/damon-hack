@@ -1,0 +1,54 @@
+From: Sang-Heon Jeon <ekffu200098@gmail.com>
+Date: Fri, 6 Nov 2026 01:01:58 +0900
+Subject: [PATCH] fault-inject: fix boot failure with fault injection boot
+ parameters
+
+Since commit e9bc360b105c ("fault-inject: use prandom where
+cryptographically secure randomness is not needed"), setup_fault_attr()
+calls prandom_init_once(), which calls kmalloc() and schedule_work().
+
+But setup_fault_attr() can be called from __setup handlers before slab and
+workqueues are initialized, so any fault injection boot parameter leads to
+boot failure.
+
+So use DO_ONCE_LITE() instead.
+
+Link: https://lore.kernel.org/20261105160209.1504867-1-ekffu200098@gmail.com
+Fixes: e9bc360b105c ("fault-inject: use prandom where cryptographically secure randomness is not needed")
+Signed-off-by: Sang-Heon Jeon <ekffu200098@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Akinobu Mita <akinobu.mita@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ lib/fault-inject.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/lib/fault-inject.c b/lib/fault-inject.c
+index 02916ef2761c6..9182d457baf55 100644
+--- a/lib/fault-inject.c
++++ b/lib/fault-inject.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ #include <linux/kernel.h>
+ #include <linux/init.h>
++#include <linux/once_lite.h>
+ #include <linux/prandom.h>
+ #include <linux/debugfs.h>
+ #include <linux/sched.h>
+@@ -50,7 +51,12 @@ int setup_fault_attr(struct fault_attr *attr, char *str)
+ 		return 0;
+ 	}
+ 
+-	prandom_init_once(&fault_rnd_state);
++	/*
++	 * __setup handlers run before slab and workqueues are initialized,
++	 * but prandom_init_once() calls kmalloc() and schedule_work(). So use
++	 * DO_ONCE_LITE() instead.
++	 */
++	DO_ONCE_LITE(prandom_seed_full_state, &fault_rnd_state);
+ 
+ 	attr->probability = probability;
+ 	attr->interval = interval;
+-- 
+2.47.3
+

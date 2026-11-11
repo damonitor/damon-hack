@@ -18,6 +18,8 @@ function validate_mm_anon_rmap().
 Finally, add a vma_assert_stabilised() to make it clear the required state
 of the VMA.
 
+[kas@kernel.org: reduce ifdeffery]
+  Link: https://lore.kernel.org/auhn01dpDzK47igy@thinkstation
 Link: https://lore.kernel.org/20261102-fix-validate_mm-v1-1-5c309614ef15@kernel.org
 Fixes: 38564710f443 ("mm: implement and use vma_has_anon_rmap(), silence KCSAN")
 Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
@@ -34,25 +36,43 @@ Cc: Kiryl Shutsemau <kas@kernel.org>
 Cc: David Hildenbrand <david@kernel.org>
 Cc: Lance Yang <lance.yang@linux.dev>
 ---
- mm/vma.c | 36 ++++++++++++++++++++++++------------
- 1 file changed, 24 insertions(+), 12 deletions(-)
+ include/linux/mm.h |  2 --
+ mm/vma.c           | 34 ++++++++++++++++++++++------------
+ 2 files changed, 22 insertions(+), 14 deletions(-)
 
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index cb993a1d07284..d57c61b928f47 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -4370,9 +4370,7 @@ anon_rmap_tree_iter_first(struct anon_vma *anon_vma,
+ struct anon_vma_chain *
+ anon_rmap_tree_iter_next(struct anon_vma_chain *avc,
+ 			 pgoff_t pgoff_start, pgoff_t pgoff_last);
+-#ifdef CONFIG_DEBUG_VM_RB
+ void anon_rmap_tree_verify(struct anon_vma_chain *avc);
+-#endif
+ 
+ #define anon_rmap_tree_foreach(avc, anon_vma, pgoff_start, pgoff_last)		 \
+ 	for (avc = anon_rmap_tree_iter_first(anon_vma, pgoff_start, pgoff_last); \
 diff --git a/mm/vma.c b/mm/vma.c
-index 7966d1c60eafb..17dbe3a1b8ba9 100644
+index 7966d1c60eafb..c82e9306b11ac 100644
 --- a/mm/vma.c
 +++ b/mm/vma.c
-@@ -676,6 +676,28 @@ static int dup_anon_vma(struct vm_area_struct *dst,
+@@ -676,6 +676,26 @@ static int dup_anon_vma(struct vm_area_struct *dst,
  }
  
  #ifdef CONFIG_DEBUG_VM_MAPLE_TREE
-+#ifdef CONFIG_DEBUG_VM_RB
 +static void validate_mm_anon_rmap(struct vm_area_struct *vma)
 +{
-+	struct anon_vma *anon_vma = READ_ONCE(vma->anon_vma);
++	struct anon_vma *anon_vma;
 +	struct anon_vma_chain *avc;
++
++	if (!IS_ENABLED(CONFIG_DEBUG_VM_RB))
++		return;
 +
 +	vma_assert_stabilised(vma);
 +
++	anon_vma = READ_ONCE(vma->anon_vma);
 +	if (!anon_vma)
 +		return;
 +
@@ -61,16 +81,11 @@ index 7966d1c60eafb..17dbe3a1b8ba9 100644
 +		anon_rmap_tree_verify(avc);
 +	anon_vma_unlock_read(anon_vma);
 +}
-+#else
-+static void validate_mm_anon_rmap(struct vm_area_struct *vma)
-+{
-+}
-+#endif
 +
  void validate_mm(struct mm_struct *mm)
  {
  	int bug = 0;
-@@ -685,10 +707,6 @@ void validate_mm(struct mm_struct *mm)
+@@ -685,10 +705,6 @@ void validate_mm(struct mm_struct *mm)
  
  	mt_validate(&mm->mm_mt);
  	for_each_vma(vmi, vma) {
@@ -81,7 +96,7 @@ index 7966d1c60eafb..17dbe3a1b8ba9 100644
  		unsigned long vmi_start, vmi_end;
  		bool warn = 0;
  
-@@ -709,14 +727,8 @@ void validate_mm(struct mm_struct *mm)
+@@ -709,14 +725,8 @@ void validate_mm(struct mm_struct *mm)
  			vma_iter_dump_tree(&vmi);
  		}
  

@@ -1,61 +1,37 @@
 - baseline: v7.4-rc1-914-gfa4ad798f6f68 -> v7.4-rc1-914-gfa4ad798f6f68 (no change)
-- mm-hotfixes-stable: 0 -> 0 commits (no change)
-  - series: 0 (0) -> 0 (0) (no change)
-- mm-hotfixes-unstable: 3 -> 4 commits
-  - series: 1 (3) -> 1 (3) (no change)
-    - no role, maintainer: 2 -> 3 commits
-    - maintainer, no role : 1 -> 1 commits (no change)
-  - new commits
-    - d8a7b5c7722c "mm/damon/stat: avoid overflow in estimated_memory_bandwidth calculation"
-      - Authored by no role player, reviewed by a maintainer
-      - Link: https://lore.kernel.org/20261110004816.100066-1-sj@kernel.org
+- mm-hotfixes-stable: 0 -> 3 commits
+  - series: 0 (0) -> 1 (3)
+    - no role, maintainer: 0 -> 2 commits
+    - maintainer, no role : 0 -> 1 commits
+  - changed commits
+    - series "mm/damon: fix watermark state, kunit pid leak and selftest fake pass". (3)
+      - 5fe092741502 "mm/damon/core: reset watermark wait state on each iteration (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20261102144627.88843-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261102144627.88843-2-sj@kernel.org
+      - 9d2cc214935a "mm/damon/tests/sysfs-kunit: fix leaked pid reference in add_targets test (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20261102144627.88843-3-sj@kernel.org
+      - c8c47f4072bd "selftests/damon/sysfs_memcg_path_leak: define ksft_skip (2/3)"
+        - Authored by a maintainer, reviewed by no role player
+        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
+        - Link: https://lore.kernel.org/20261102144627.88843-4-sj@kernel.org
+- mm-hotfixes-unstable: 4 -> 1 commits
+  - series: 1 (3) -> 0 (0)
+    - no role, maintainer: 3 -> 1 commits
+    - maintainer, no role : 1 -> 0 commits
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 23 -> 26 commits
-  - series: 4 (23) -> 5 (26)
-    - no role, no role : 1 -> 0 commits
+- mm-unstable: 26 -> 26 commits (no change)
+  - series: 5 (26) -> 5 (26) (no change)
     - no role, maintainer: 21 -> 21 commits (no change)
-    - maintainer, no role : 0 -> 4 commits
+    - maintainer, no role : 4 -> 4 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-  - changed commits
-    - series "mm/damon: introduce age_ms damos core filter type". (4)
-      - 520d584a46e4 "mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS (0/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261106020559.98352-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261106020559.98352-2-sj@kernel.org
-        - Link: https://github.com/sjp38/masim [1]
-        - Link: https://github.com/damonitor/damo [2]
-      - 87926c2e3385 "mm/damon/sysfs-schemes: support DAMOS_FILTER_TYPE_AGE_MS (1/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261106020559.98352-3-sj@kernel.org
-      - 7a124a585125 "Docs/mm/damon/design: update for age_ms damos core filter type (2/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261106020559.98352-4-sj@kernel.org
-      - a2a2f50ee496 "Docs/admin-guide/mm/damon/usage: update for age_ms damos core filter (3/4)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261106020559.98352-5-sj@kernel.org
-  - dropped commits
-    - series "mm: continue vma_flags_t conversion". (13)
-      - 604f3aa151bb "mm: convert miscellaneous VMA flag tests to use vma_flags_t (9/13)"
-        - Authored by no role player, reviewed by no role player
-        - Link: https://lore.kernel.org/20261105-late-2026-vma-flags-v1-8-0d3cd15ab75f@kernel.org
-- mm-new: 4 -> 2 commits
-  - series: 1 (4) -> 1 (2)
-    - no role, maintainer: 0 -> 2 commits
-    - maintainer, no role : 4 -> 0 commits
-  - new commits
-    - series "mm/damon: cleanup region iterator and damon_reclaim user doc". (2)
-      - 39d58dda4839 "mm/damon/core: use list_{next,prev}_entry() in damon_{next,prev}_region() (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261110010558.104905-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261110010558.104905-2-sj@kernel.org
-      - 2ff538cff5bf "Docs/admin-guide/mm/damon/reclaim: improve language (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261110010558.104905-3-sj@kernel.org
+- mm-new: 2 -> 2 commits (no change)
+  - series: 1 (2) -> 1 (2) (no change)
+    - no role, maintainer: 2 -> 2 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

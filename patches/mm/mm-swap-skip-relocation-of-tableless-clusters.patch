@@ -1,0 +1,91 @@
+From: Nhat Pham <nphamcs@gmail.com>
+Date: Tue, 10 Nov 2026 07:14:07 -0800
+Subject: [PATCH] mm/swap: skip relocation of tableless clusters
+
+A stale reclaimer can reach relocate_cluster() after another allocator
+re-isolates an emptied cluster and drops its locks to populate the table.
+The cluster has zero count, CLUSTER_FLAG_NONE and no table, so relocation
+can free it again and dereference NULL in the DEBUG_VM empty check.
+
+    CPU0                                    CPU1
+    Reclaimer                               Allocator
+    alloc_swap_scan_cluster()
+      cluster_reclaim_range()
+        spin_unlock(&ci->lock)
+        __try_to_reclaim_swap()
+          swap_cache_del_folio()
+            __swap_cache_del_folio()
+              __swap_cache_do_del_folio()
+                __swap_cluster_free_entries()
+                  free_cluster()
+                    __free_cluster()
+                      swap_cluster_free_table()
+            swap_cluster_unlock(ci)
+                                            isolate_lock_cluster()
+                                              swap_cluster_populate()
+                                                drop ci and outer locks
+                                                swap_cluster_alloc_table()
+        spin_lock(&ci->lock)
+      relocate_cluster()
+        free_cluster()
+          __free_cluster()
+            swap_cluster_assert_empty()
+              __swap_table_get()  /* NULL table */
+
+Leave tableless clusters to the allocator under ci->lock. This also stops
+a stale reclaimer from returning a cluster to the free list while table
+population is pending, avoiding the resulting FREE-to-NONE state cycle.
+The existing cluster lock serializes the table check and relocation with
+population.
+
+Link: https://lore.kernel.org/20261110151407.789960-4-nphamcs@gmail.com
+Fixes: 07adc4cf1ecd ("mm, swap: implement dynamic allocation of swap table")
+Signed-off-by: Nhat Pham <nphamcs@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://lore.kernel.org/all/sashiko-outbox-203018@kernel.org/
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Christopher Li <chrisl@kernel.org>
+Cc: Kemeng Shi <shikemeng@huaweicloud.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: <ryncsn@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/swapfile.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/mm/swapfile.c b/mm/swapfile.c
+index 2810d39a6ac0f..4451f178ce396 100644
+--- a/mm/swapfile.c
++++ b/mm/swapfile.c
+@@ -815,6 +815,13 @@ static void relocate_cluster(struct swap_info_struct *si,
+ 	if (cluster_is_discard(ci))
+ 		return;
+ 
++	/*
++	 * An allocator may still be preparing the table.
++	 * Leave the cluster to it.
++	 */
++	if (!cluster_table_is_alloced(ci))
++		return;
++
+ 	if (!ci->count) {
+ 		if (ci->flags != CLUSTER_FLAG_FREE)
+ 			free_cluster(si, ci);
+-- 
+2.47.3
+

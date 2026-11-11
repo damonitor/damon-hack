@@ -1,0 +1,59 @@
+From: Weilin Tong <tongweilin@linux.alibaba.com>
+Date: Wed, 4 Nov 2026 14:16:41 +0800
+Subject: [PATCH] tools/mm/thpmaps: handle carriage returns and non-UTF-8
+ filenames
+
+VMAList opens smaps with universal newline handling and strict decoding.
+A carriage return in a mapped filename can split a header into multiple
+records, while non-UTF-8 bytes cause UnicodeDecodeError.
+
+Read LF-terminated records and use surrogateescape to preserve filename
+bytes. Escape filename characters that stdout cannot encode to avoid
+UnicodeEncodeError when printing mapping names.
+
+Link: https://lore.kernel.org/20261104061641.1115805-1-tongweilin@linux.alibaba.com
+Fixes: 2444172cfde4 ("tools/mm: add thpmaps script to dump THP usage info")
+Signed-off-by: Weilin Tong <tongweilin@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Andrew Morton <akpm@linux-foundation.org>
+Link: https://lore.kernel.org/linux-mm/20261101211644.c63a2028bbede0f763f41f80@linux-foundation.org/
+Reviewed-by: Ryan Roberts <ryan.roberts@arm.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+---
+ tools/mm/thpmaps | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/tools/mm/thpmaps b/tools/mm/thpmaps
+index 803e0318f2fea..13bad737a6739 100644
+--- a/tools/mm/thpmaps
++++ b/tools/mm/thpmaps
+@@ -196,7 +196,8 @@ class VMAList:
+     # instance to receive VMAs.
+     def __init__(self, pid='self', stats=[]):
+         self.vmas = []
+-        with open(f'/proc/{pid}/smaps', 'r') as file:
++        with open(f'/proc/{pid}/smaps', 'r', newline='\n',
++                  errors='surrogateescape') as file:
+             for line in file:
+                 elements = line.split()
+                 if '-' in elements[0]:
+@@ -363,12 +364,14 @@ def cont_parse(vma, order, ranges, anons, heads):
+ def vma_print(vma, pid):
+     # Prints a VMA instance in a format similar to smaps. The main difference is
+     # that the pid is included as the first value.
++    name = vma.name.encode(sys.stdout.encoding, errors='backslashreplace')
++    name = name.decode(sys.stdout.encoding)
+     print("{:010d}: {:016x}-{:016x} {}{}{}{} {:08x} {:02x}:{:02x} {:08x} {}"
+         .format(
+             pid, vma.start, vma.end,
+             'r' if vma.read else '-', 'w' if vma.write else '-',
+             'x' if vma.execute else '-', 'p' if vma.private else 's',
+-            vma.pgoff, vma.major, vma.minor, vma.inode, vma.name
++            vma.pgoff, vma.major, vma.minor, vma.inode, name
+         ))
+ 
+ 
+-- 
+2.47.3
+
