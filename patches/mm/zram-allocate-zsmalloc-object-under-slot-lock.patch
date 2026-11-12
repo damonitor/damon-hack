@@ -1,0 +1,91 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 11 Nov 2026 15:46:29 +0900
+Subject: [PATCH] zram: allocate zsmalloc object under slot lock
+
+zram_write_page() and write_incompressible_page() allocate and write
+zsmalloc object first and take slot lock only to free the old slot data
+and set the new handle.  A subsequent patch makes zsmalloc store object
+location directly in zram table entry, so we need to free the slot before
+we allocate a new object for it.
+
+Free the slot and allocate the object under slot lock.  recompress_slot()
+already allocates objects under it, and GFP_NOIO reclaim cannot re-enter
+zram write path.
+
+mem_limit is checked before slot_free() (previous patch), so hitting the
+limit keeps the old slot data.  zs_malloc() can still fail after
+slot_free(), e.g.  when we write from reclaim (PF_MEMALLOC), which is
+swap-out, so the old slot data (if any) is stale anyway, or when the
+writer is an OOM victim that has no reserves left.  The slot is left empty
+then, matching standard block write-failure semantics.
+
+Link: https://lore.kernel.org/20261111064707.2568433-7-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ drivers/block/zram/zram_drv.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index a726389545383..55163b116bcc2 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2250,11 +2250,15 @@ static int write_incompressible_page(struct zram *zram, struct page *page,
+ 	struct zs_handle *handle;
+ 	void *src;
+ 
++	slot_lock(zram, index);
++	slot_free(zram, index);
+ 	handle = zs_malloc(zram->mem_pool, PAGE_SIZE,
+ 			   GFP_NOIO | __GFP_NOWARN |
+ 			   __GFP_HIGHMEM | __GFP_MOVABLE, page_to_nid(page));
+-	if (IS_ERR(handle))
++	if (IS_ERR(handle)) {
++		slot_unlock(zram, index);
+ 		return PTR_ERR(handle);
++	}
+ 
+ 	update_used_max(zram);
+ 
+@@ -2262,8 +2266,6 @@ static int write_incompressible_page(struct zram *zram, struct page *page,
+ 	zs_obj_write(zram->mem_pool, handle, src, PAGE_SIZE);
+ 	kunmap_local(src);
+ 
+-	slot_lock(zram, index);
+-	slot_free(zram, index);
+ 	set_slot_flag(zram, index, ZRAM_HUGE);
+ 	zram->table[index].handle = handle;
+ 	set_slot_size(zram, index, PAGE_SIZE);
+@@ -2315,11 +2317,14 @@ static int zram_write_page(struct zram *zram, struct page *page,
+ 		return write_incompressible_page(zram, page, index);
+ 	}
+ 
++	slot_lock(zram, index);
++	slot_free(zram, index);
+ 	handle = zs_malloc(zram->mem_pool, comp_len,
+ 			   GFP_NOIO | __GFP_NOWARN |
+ 			   __GFP_HIGHMEM | __GFP_MOVABLE, page_to_nid(page));
+ 	if (IS_ERR(handle)) {
+ 		zcomp_cstrm_put(zstrm);
++		slot_unlock(zram, index);
+ 		return PTR_ERR(handle);
+ 	}
+ 
+@@ -2328,8 +2333,6 @@ static int zram_write_page(struct zram *zram, struct page *page,
+ 	zs_obj_write(zram->mem_pool, handle, zstrm->buffer, comp_len);
+ 	zcomp_cstrm_put(zstrm);
+ 
+-	slot_lock(zram, index);
+-	slot_free(zram, index);
+ 	zram->table[index].handle = handle;
+ 	set_slot_size(zram, index, comp_len);
+ 	mark_slot_accessed(zram, index);
+-- 
+2.47.3
+

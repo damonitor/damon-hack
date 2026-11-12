@@ -1,0 +1,153 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Thu, 12 Nov 2026 07:25:59 +0800
+Subject: [PATCH] mm/mglru: restrict eviction accounting to eligible zones
+
+For both lruvec_evictable_size() and lru_gen_imbalanced(),
+only count eligible zones below sc->reclaim_idx. This
+avoids inflating the number of scanned pages and allows
+aging to proceed more promptly when eligible zones have
+few folios.
+
+Link: https://lore.kernel.org/20261111232603.9934-13-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <hui.zhu@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: <liuxiang.277@bytedance.com>
+Cc: <lyugaofei@xiaomi.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: wangzicheng <wangzicheng@honor.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hui Zhu <zhuhui@kylinos.cn>
+Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+---
+ mm/trace_vmscan.h |  4 ++--
+ mm/vmscan.c       | 18 +++++++++---------
+ mm/vmscan.h       |  5 +++--
+ 3 files changed, 14 insertions(+), 13 deletions(-)
+
+diff --git a/mm/trace_vmscan.h b/mm/trace_vmscan.h
+index 565c564283644..9dafdb5bd3ce8 100644
+--- a/mm/trace_vmscan.h
++++ b/mm/trace_vmscan.h
+@@ -488,9 +488,9 @@ TRACE_EVENT(mm_mglru_aging,
+ 			unsigned long seq = max_seq - MAX_NR_GENS + 1 + i;
+ 
+ 			__entry->nr_anon[i] =
+-				lruvec_gen_size(lrugen, LRU_GEN_ANON, seq);
++				lruvec_gen_size(lrugen, LRU_GEN_ANON, seq, MAX_NR_ZONES);
+ 			__entry->nr_file[i] =
+-				lruvec_gen_size(lrugen, LRU_GEN_FILE, seq);
++				lruvec_gen_size(lrugen, LRU_GEN_FILE, seq, MAX_NR_ZONES);
+ 		}
+ 		__entry->nid = lruvec_pgdat(lruvec)->node_id;
+ 		__entry->priority = sc->priority;
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index eed945c6398ec..409da2c4cb111 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4207,8 +4207,8 @@ static void set_initial_priority(struct pglist_data *pgdat, struct scan_control
+ 	sc->priority = clamp(priority, DEF_PRIORITY / 2, DEF_PRIORITY);
+ }
+ 
+-static void lruvec_evictable_size(struct lruvec *lruvec, int swappiness,
+-				  unsigned long nr[])
++static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc,
++				  int swappiness, unsigned long nr[])
+ {
+ 	int type;
+ 	unsigned long seq;
+@@ -4221,7 +4221,7 @@ static void lruvec_evictable_size(struct lruvec *lruvec, int swappiness,
+ 
+ 	for_each_evictable_type(type, swappiness) {
+ 		for (seq = min_seq[type]; seq <= max_seq; seq++)
+-			nr[type] += lruvec_gen_size(lrugen, type, seq);
++			nr[type] += lruvec_gen_size(lrugen, type, seq, sc->reclaim_idx + 1);
+ 	}
+ }
+ 
+@@ -4230,7 +4230,7 @@ static bool lruvec_is_sizable(struct lruvec *lruvec, struct scan_control *sc)
+ 	unsigned long total, sizes[ANON_AND_FILE];
+ 	int swappiness = get_swappiness(lruvec, sc);
+ 
+-	lruvec_evictable_size(lruvec, swappiness, sizes);
++	lruvec_evictable_size(lruvec, sc, swappiness, sizes);
+ 	total = sizes[LRU_GEN_ANON] + sizes[LRU_GEN_FILE];
+ 
+ 	/* whether the size is big enough to be helpful */
+@@ -5090,9 +5090,9 @@ static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
+ 	for_each_evictable_type(type, swappiness) {
+ 		unsigned long seq;
+ 
+-		youngest[type] = lruvec_gen_size(lrugen, type, max_seq);
++		youngest[type] = lruvec_gen_size(lrugen, type, max_seq, sc->reclaim_idx + 1);
+ 		for (seq = min_seq[type]; seq < max_seq; seq++)
+-			old[type] += lruvec_gen_size(lrugen, type, seq);
++			old[type] += lruvec_gen_size(lrugen, type, seq, sc->reclaim_idx + 1);
+ 	}
+ 
+ 	/* the vast majority of pages sit in the youngest gen */
+@@ -5145,7 +5145,7 @@ static void lru_gen_prepare_scan(struct lruvec *lruvec, struct scan_control *sc,
+ {
+ 	unsigned long total;
+ 
+-	lruvec_evictable_size(lruvec, swappiness, nr_to_scan);
++	lruvec_evictable_size(lruvec, sc, swappiness, nr_to_scan);
+ 	total = nr_to_scan[LRU_GEN_ANON] + nr_to_scan[LRU_GEN_FILE];
+ 
+ 	total = apply_proportional_protection(memcg, sc, total);
+@@ -5843,7 +5843,7 @@ static int lru_gen_seq_show(struct seq_file *m, void *v)
+ 			char mark = full && seq < min_seq[type] ? 'x' : ' ';
+ 
+ 			seq_printf(m, " %10lu%c",
+-				   lruvec_gen_size(lrugen, type, seq), mark);
++				   lruvec_gen_size(lrugen, type, seq, MAX_NR_ZONES), mark);
+ 		}
+ 
+ 		seq_putc(m, '\n');
+@@ -5896,7 +5896,7 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
+ 		if (sc->nr_reclaimed >= nr_to_reclaim)
+ 			return 0;
+ 
+-		lruvec_evictable_size(lruvec, swappiness, nr_to_scan);
++		lruvec_evictable_size(lruvec, sc, swappiness, nr_to_scan);
+ 		lru_gen_balance_scan(lruvec, swappiness,
+ 				     nr_to_reclaim - sc->nr_reclaimed, nr_to_scan);
+ 
+diff --git a/mm/vmscan.h b/mm/vmscan.h
+index c6b583fc74938..2599d7c614ace 100644
+--- a/mm/vmscan.h
++++ b/mm/vmscan.h
+@@ -119,12 +119,13 @@ struct scan_control {
+ #ifdef CONFIG_LRU_GEN
+ /* The number of pages of @type in the generation @seq, summed over all zones */
+ static inline unsigned long lruvec_gen_size(struct lru_gen_folio *lrugen,
+-					    int type, unsigned long seq)
++					    int type, unsigned long seq,
++					    int max_zone)
+ {
+ 	int gen = lru_gen_from_seq(seq);
+ 	unsigned long size = 0;
+ 
+-	for (int zone = 0; zone < MAX_NR_ZONES; zone++)
++	for (int zone = 0; zone < max_zone; zone++)
+ 		size += max(READ_ONCE(lrugen->nr_pages[gen][type][zone]), 0L);
+ 
+ 	return size;
+-- 
+2.47.3
+

@@ -1,0 +1,42 @@
+From: Weilin Tong <tongweilin@linux.alibaba.com>
+Date: Thu, 5 Nov 2026 17:52:49 +0800
+Subject: [PATCH] mm: kmemleak: serialize disable-time cleanup
+
+kmemleak_do_cleanup() drops scan_mutex before removing tracked objects
+without kmemleak_lock.  A concurrent clear command can therefore start
+another cleanup while the background cleanup is still running.
+
+Keep scan_mutex held until the background cleanup completes, serializing
+its lockless removals with explicit clearing and report readers.
+
+Link: https://lore.kernel.org/149d93f2cfe20d355f4d9882ce2bf99030217772.1793871596.git.tongweilin@linux.alibaba.com
+Fixes: 2abd839aa7e6 ("kmemleak: Do not corrupt the object_list during clean-up")
+Signed-off-by: Weilin Tong <tongweilin@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+---
+ mm/kmemleak.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index 1bca27787df62..e37014a8448aa 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -2532,12 +2532,13 @@ static void kmemleak_do_cleanup(struct work_struct *work)
+ 	 * function.
+ 	 */
+ 	kmemleak_free_enabled = 0;
+-	mutex_unlock(&scan_mutex);
+ 
++	/* Serialize the lockless cleanup with report readers. */
+ 	if (!kmemleak_found_leaks)
+ 		__kmemleak_do_cleanup();
+ 	else
+ 		pr_info("Kmemleak disabled without freeing internal data. Reclaim the memory with \"echo clear > /sys/kernel/debug/kmemleak\".\n");
++	mutex_unlock(&scan_mutex);
+ }
+ 
+ static DECLARE_WORK(cleanup_work, kmemleak_do_cleanup);
+-- 
+2.47.3
+

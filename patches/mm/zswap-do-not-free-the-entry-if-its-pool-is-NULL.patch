@@ -1,0 +1,48 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 11 Nov 2026 15:46:30 +0900
+Subject: [PATCH] zswap: do not free the entry if its pool is NULL
+
+zswap_entry_free() warns if the entry has no pool (which should never
+happen), skips zs_free() and then frees the entry.  A subsequent patch
+embeds zsmalloc handle into zswap_entry, so zsmalloc object will point to
+the entry, and we cannot free the entry while the object is still there.
+
+Bail out early and leak the entry, its cgroup charge and stats instead.
+
+Link: https://lore.kernel.org/20261111064707.2568433-8-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Yosry Ahmed <yosry@kernel.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ mm/zswap.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/mm/zswap.c b/mm/zswap.c
+index 1160bd34e289c..dc0400d7e1a33 100644
+--- a/mm/zswap.c
++++ b/mm/zswap.c
+@@ -787,10 +787,11 @@ static void zswap_entry_free(struct zswap_entry *entry)
+ 	struct zswap_pool *pool = zswap_entry_pool(entry);
+ 
+ 	zswap_lru_del(entry);
+-	if (!WARN_ON_ONCE(!pool)) {
+-		zs_free(pool->zs_pool, entry->handle);
+-		zswap_pool_put(pool);
+-	}
++	if (WARN_ON_ONCE(!pool))
++		return;
++
++	zs_free(pool->zs_pool, entry->handle);
++	zswap_pool_put(pool);
+ 	if (entry->objcg) {
+ 		obj_cgroup_uncharge_zswap(entry->objcg, entry->length);
+ 		obj_cgroup_put(entry->objcg);
+-- 
+2.47.3
+

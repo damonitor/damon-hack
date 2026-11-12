@@ -1,0 +1,80 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 11 Nov 2026 15:46:34 +0900
+Subject: [PATCH] zsmalloc: populate new zspage outside class->lock in
+ zs_store()
+
+A new zspage is not on class fullness lists and is not movable until
+zs_store() calls insert_zspage() and SetZsPageMovable(), so neither other
+zs_store() callers nor compaction and page migration can see it.  Nobody
+else has the handle yet either.
+
+So for a new zspage allocate the object and copy the data before we take
+class->lock, and don't take zspage read lock.  This makes class->lock
+critical section shorter and saves a zspage lock/unlock.
+
+Link: https://lore.kernel.org/20261111064707.2568433-12-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Yosry Ahmed <yosry@kernel.org>
+Reviewed-by: Yosry Ahmed <yosry@kernel.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ mm/zsmalloc.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 7f1cedd340810..4a6ec43f418b2 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -1323,8 +1323,12 @@ int zs_store(struct zs_pool *pool, struct zs_handle *handle, const void *src,
+ 		/* Now move the zspage to another fullness group, if required */
+ 		fix_fullness_group(class, zspage);
+ 		class_stat_add(class, ZS_OBJS_INUSE, 1);
++		zspage_read_lock(zspage);
++		spin_unlock(&class->lock);
+ 
+-		goto out;
++		obj_write(class, zspage, obj, src, size);
++		zspage_read_unlock(zspage);
++		return 0;
+ 	}
+ 
+ 	spin_unlock(&class->lock);
+@@ -1333,8 +1337,15 @@ int zs_store(struct zs_pool *pool, struct zs_handle *handle, const void *src,
+ 	if (!zspage)
+ 		return -ENOMEM;
+ 
+-	spin_lock(&class->lock);
++	/*
++	 * New zspage is not in class->fullness_list or movable yet, so we
++	 * can allocate the object and copy data before taking class->lock
++	 * and without zspage_read_lock().
++	 */
+ 	obj = obj_malloc(pool, zspage, handle);
++	obj_write(class, zspage, obj, src, size);
++
++	spin_lock(&class->lock);
+ 	newfg = get_fullness_group(class, zspage);
+ 	insert_zspage(class, zspage, newfg);
+ 	atomic_long_add(class->pages_per_zspage, &pool->pages_allocated);
+@@ -1343,13 +1354,8 @@ int zs_store(struct zs_pool *pool, struct zs_handle *handle, const void *src,
+ 
+ 	/* We completely set up zspage so mark them as movable */
+ 	SetZsPageMovable(pool, zspage);
+-out:
+-	zspage_read_lock(zspage);
+ 	spin_unlock(&class->lock);
+ 
+-	obj_write(class, zspage, obj, src, size);
+-	zspage_read_unlock(zspage);
+-
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(zs_store);
+-- 
+2.47.3
+

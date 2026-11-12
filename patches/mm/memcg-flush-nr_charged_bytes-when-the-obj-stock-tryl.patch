@@ -1,0 +1,52 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Wed, 11 Nov 2026 17:32:20 -0800
+Subject: [PATCH] memcg: flush nr_charged_bytes when the obj stock trylock
+ fails
+
+When interrupt code, such as an RCU callback in softirq, runs on top of a
+task that holds the obj stock lock, its trylock fails and the bytes go to
+objcg->nr_charged_bytes.  Nothing empties that counter while every CPU
+using the objcg keeps it in its stock, so it can grow without limit.
+
+Users see memory.current and the "kernel" field of memory.stat keep
+growing while the cgroup's real usage does not.  With memory.high or
+memory.max set, the cgroup is reclaimed, throttled or even OOM-killed for
+memory it does not use.  The counter is 32-bit, so after 4 GiB it wraps,
+and those 4 GiB stay charged to the cgroup and its ancestors until reboot,
+even after the cgroup is removed.
+
+Fix it by uncharging the whole pages in nr_charged_bytes whenever the
+trylock fails.
+
+Link: https://lore.kernel.org/20261112013220.4064478-1-shakeel.butt@linux.dev
+Fixes: 200577f69f29 ("memcg: objcg stock trylock without irq disabling")
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Acked-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/memcontrol.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index cb7cfae9ce5a6..afbb638e7e1cb 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3532,6 +3532,8 @@ static void __refill_obj_stock(struct obj_cgroup *objcg,
+ 	int i, slot = -1, empty_slot = -1;
+ 
+ 	if (!stock) {
++		nr_bytes += atomic_read(&objcg->nr_charged_bytes)
++			? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
+ 		nr_pages = nr_bytes >> PAGE_SHIFT;
+ 		nr_bytes = nr_bytes & (PAGE_SIZE - 1);
+ 		atomic_add(nr_bytes, &objcg->nr_charged_bytes);
+-- 
+2.47.3
+

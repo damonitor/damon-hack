@@ -1,0 +1,108 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 10 Nov 2026 16:57:44 +0000
+Subject: [PATCH] mm: only assert VMA locks if CONFIG_DEBUG_VM is set
+
+Similar to the mmap lock asserts, we have also asserted VMA locks
+regardless of whether or not the kernel is a debug build or not.
+
+Similarly, these are asserting basic assumptions about kernel code which
+should never assert in production code.
+
+Since all such bugs are generally asserted using VM_WARN_ON_ONCE() or
+similar, it creates an odd and inconsistent situation where some
+programmatic asserts are only checked under CONFIG_DEBUG_VM and some are
+always checked.
+
+Since the intent is the same as any VM_WARN_ON_ONCE() check, do not assert
+if CONFIG_DEBUG_VM is not set.
+
+Implement by updating vma_assert_attached() and vma_assert_detached() to
+use VM_WARN_ON_ONCE() rather than WARN_ON_ONCE(), and gating
+vma_assert_[write_]locked() and vma_assert_can_modify() on CONFIG_DEBUG_VM.
+
+nommu loses its CONFIG_LOCKDEP asserts if !CONFIG_DEBUG_VM in
+vma_assert_[write_]locked(), but this doesn't seem to be a problem.
+
+In addition, there were already inconsistencies - vma_assert_write_locked()
+uses VM_WARN_ON_ONCE_VMA() and performs no actions if CONFIG_DEBUG_VM is
+not set, and vma_assert_locked() looked up vma->vm_refcnt but also only
+asserted if CONFIG_DEBUG_VM was set.
+
+Therefore simply update these functions such that they're predicated on
+CONFIG_DEBUG_VM and update their kdoc descriptions accordingly.
+
+Link: https://lore.kernel.org/20261110-tame-vma-asserts-v1-2-be293ff499a7@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Liam R. Howlett (Google) <liam@infradead.org>
+Reviewed-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+---
+ include/linux/mmap_lock.h | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/include/linux/mmap_lock.h b/include/linux/mmap_lock.h
+index 9367430ee53cb..bada7a03ddf4b 100644
+--- a/include/linux/mmap_lock.h
++++ b/include/linux/mmap_lock.h
+@@ -354,9 +354,14 @@ int vma_start_write_killable(struct vm_area_struct *vma)
+ /**
+  * vma_assert_write_locked() - assert that @vma holds a VMA write lock.
+  * @vma: The VMA to assert.
++ *
++ * Assert only if CONFIG_DEBUG_VM is set.
+  */
+ static inline void vma_assert_write_locked(const struct vm_area_struct *vma)
+ {
++	if (!IS_ENABLED(CONFIG_DEBUG_VM))
++		return;
++
+ 	if (!IS_ENABLED(CONFIG_MMU)) {
+ 		mmap_assert_write_locked(vma->vm_mm);
+ 		return;
+@@ -369,11 +374,16 @@ static inline void vma_assert_write_locked(const struct vm_area_struct *vma)
+  * vma_assert_locked() - assert that @vma holds either a VMA read or a VMA write
+  * lock and is not detached.
+  * @vma: The VMA to assert.
++ *
++ * Assert only if CONFIG_DEBUG_VM is set.
+  */
+ static inline void vma_assert_locked(const struct vm_area_struct *vma)
+ {
+ 	unsigned int refcnt;
+ 
++	if (!IS_ENABLED(CONFIG_DEBUG_VM))
++		return;
++
+ 	if (!IS_ENABLED(CONFIG_MMU)) {
+ 		mmap_assert_locked(vma->vm_mm);
+ 		return;
+@@ -480,12 +490,12 @@ static inline void vma_assert_attached(struct vm_area_struct *vma)
+ 	if (!IS_ENABLED(CONFIG_MMU))
+ 		return;
+ 
+-	WARN_ON_ONCE(!vma_is_attached(vma));
++	VM_WARN_ON_ONCE(!vma_is_attached(vma));
+ }
+ 
+ static inline void vma_assert_detached(struct vm_area_struct *vma)
+ {
+-	WARN_ON_ONCE(vma_is_attached(vma));
++	VM_WARN_ON_ONCE(vma_is_attached(vma));
+ }
+ 
+ static inline void vma_mark_attached(struct vm_area_struct *vma)
+@@ -549,6 +559,9 @@ struct vm_area_struct *lock_next_vma(struct vma_rcu_iter *rvmi,
+ 
+ static inline void vma_assert_can_modify(struct vm_area_struct *vma)
+ {
++	if (!IS_ENABLED(CONFIG_DEBUG_VM))
++		return;
++
+ 	if (vma_is_attached(vma))
+ 		vma_assert_write_locked(vma);
+ }
+-- 
+2.47.3
+

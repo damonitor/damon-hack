@@ -1,0 +1,128 @@
+From: Hongfu Li <lihongfu@kylinos.cn>
+Date: Thu, 12 Nov 2026 10:15:33 +0800
+Subject: [PATCH] mm/hugetlb: charge hugetlb cgroup and memcg in
+ alloc_hugetlb_folio_reserve()
+
+alloc_hugetlb_folio_reserve() hands out a folio from the hugetlb pool and
+consumes a global reservation, but unlike the fault path it never charged
+the folio to the hugetlb cgroup or to the memcg.  Folios allocated for
+memfd_pin_folios() through memfd_alloc_folio() were therefore silently
+bypassing the accounting: they are never charged to the hugetlb cgroup
+usage counter (hugetlb.<size>.current or hugetlb.<size>.usage_in_bytes),
+so the limits (hugetlb.<size>.max or hugetlb.<size>.limit_in_bytes) are
+bypassed.  In cgroup v2, with memory_hugetlb_accounting enabled, these
+folios are also not accounted in memory.current and are not bounded by
+memory.max.
+
+Charge the folios to both the hugetlb cgroup and the memcg, just like
+hugetlb_alloc_folio() does.
+
+Test with a process that creates a hugetlb memfd and pins pages through
+UDMABUF_CREATE. The counters were read while the folio was still pinned:
+
+Before this patch:
+$ echo $$ > /sys/fs/cgroup/test/cgroup.procs
+$ ./memfd-alloc-folio 1 &
+$ cat /sys/fs/cgroup/test/hugetlb.2MB.current
+0
+$ cat /sys/fs/cgroup/test/memory.current
+1351680
+$
+
+After this patch:
+$ echo $$ > /sys/fs/cgroup/test/cgroup.procs
+$ ./memfd-alloc-folio 1 &
+$ cat /sys/fs/cgroup/test/hugetlb.2MB.current
+2097152
+$ cat /sys/fs/cgroup/test/memory.current
+3313664
+$
+
+memfd_pin_folios() can now fail because the memcg charge fails. Two
+tasks allocating concurrently against the same memory.max may see a
+spurious failure. That failure frees the folio, returns the global
+reservation, and undoes the hugetlb cgroup charge, so no accounting is
+left behind.
+
+Link: https://lore.kernel.org/20261112-for-alloc_hugetlb-1109-v3-1-7a144510a373@kylinos.cn
+Fixes: 89c1905d9c14 ("mm/gup: introduce memfd_pin_folios() for pinning memfd folios")
+Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: <stable@vger.kernel.org>
+---
+ mm/hugetlb.c | 33 ++++++++++++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index cb2de24affdc4..88c9aa7005335 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2223,12 +2223,19 @@ struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
+ struct folio *alloc_hugetlb_folio_reserve(struct hstate *h, int preferred_nid,
+ 		nodemask_t *nmask, gfp_t gfp_mask)
+ {
++	struct hugetlb_cgroup *h_cg = NULL;
++	size_t nr_pages = pages_per_huge_page(h);
+ 	struct folio *folio;
++	int idx = hstate_index(h);
++	int ret;
++
++	if (hugetlb_cgroup_charge_cgroup(idx, nr_pages, &h_cg))
++		return NULL;
+ 
+ 	spin_lock_irq(&hugetlb_lock);
+ 	if (!h->resv_huge_pages) {
+ 		spin_unlock_irq(&hugetlb_lock);
+-		return NULL;
++		goto err_uncharge_hugetlb_cgroup;
+ 	}
+ 
+ 	folio = dequeue_hugetlb_folio_nodemask(h, gfp_mask, preferred_nid,
+@@ -2236,11 +2243,31 @@ struct folio *alloc_hugetlb_folio_reserve(struct hstate *h, int preferred_nid,
+ 	if (folio) {
+ 		folio_set_hugetlb_restore_reserve(folio);
+ 		h->resv_huge_pages--;
+-	}
++		hugetlb_cgroup_commit_charge(idx, nr_pages, h_cg, folio);
+ 
++		spin_unlock_irq(&hugetlb_lock);
++
++		ret = mem_cgroup_charge_hugetlb(folio, current->mm,
++						gfp_mask | __GFP_RETRY_MAYFAIL);
++		if (ret == -ENOMEM) {
++			folio_put(folio);
++			/*
++			 * Skip uncharging hugetlb_cgroup since the charges
++			 * were committed to the folio and freeing the folio
++			 * would have cleared those up.
++			 */
++			return NULL;
++		}
++
++		mod_hugetlb_memcg_state(folio, nr_pages);
++
++		return folio;
++	}
+ 	spin_unlock_irq(&hugetlb_lock);
+ 
+-	return folio;
++err_uncharge_hugetlb_cgroup:
++	hugetlb_cgroup_uncharge_cgroup(idx, nr_pages, h_cg);
++	return NULL;
+ }
+ 
+ /* folio migration callback function */
+-- 
+2.47.3
+

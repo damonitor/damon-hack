@@ -1,0 +1,93 @@
+From: lyugaofei <lyugaofei@xiaomi.com>
+Date: Thu, 12 Nov 2026 07:26:01 +0800
+Subject: [PATCH] mm/mglru: avoid prolonged anon reclaim with swappiness=200
+
+It has been observed that swappiness=200 can significantly slow down
+reclaim on some machines, with some workloads running 3x slower
+under MGLRU than under CLRU.
+
+This is because swappiness=200 currently results in file_factor=0.
+Give file reclaim a small factor at lower priorities, for example,
+when sc->priority < DEF_PRIORITY / 2.
+
+Link: https://lore.kernel.org/20261111232603.9934-15-baohua@kernel.org
+Signed-off-by: lyugaofei <lyugaofei@xiaomi.com>
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Co-developed-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <hui.zhu@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: <liuxiang.277@bytedance.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: wangzicheng <wangzicheng@honor.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hui Zhu <zhuhui@kylinos.cn>
+Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+---
+ mm/vmscan.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 4509470c8dd0e..5946b3f22c122 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4895,8 +4895,8 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
+  * We don't calculate the scan cost, MGLRU uses lazy promotion, which will
+  * cancel the scan budget natually.
+  */
+-static void lru_gen_balance_scan(struct lruvec *lruvec, int swappiness,
+-		unsigned long total_scan, unsigned long nr[])
++static void lru_gen_balance_scan(struct lruvec *lruvec, struct scan_control *sc,
++		int swappiness, unsigned long total_scan, unsigned long nr[])
+ {
+ 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+ 	u64 refault_rate[ANON_AND_FILE], anon_factor, file_factor;
+@@ -4953,7 +4953,12 @@ static void lru_gen_balance_scan(struct lruvec *lruvec, int swappiness,
+ 	file_weight = nr[LRU_GEN_FILE] + nr[LRU_GEN_ANON] / size_bias;
+ 
+ 	anon_factor = (u64)swappiness * refault_rate[LRU_GEN_FILE] * anon_weight;
+-	file_factor = (u64)(MAX_SWAPPINESS - swappiness) * refault_rate[LRU_GEN_ANON] * file_weight;
++	if (swappiness == MAX_SWAPPINESS)
++		file_factor = sc->priority < DEF_PRIORITY / 2 ?
++			      refault_rate[LRU_GEN_ANON] * file_weight : 0;
++	else
++		file_factor = (u64)(MAX_SWAPPINESS - swappiness) *
++			      refault_rate[LRU_GEN_ANON] * file_weight;
+ 
+ 	/* Cross-multiply the ratio above. */
+ 	anon_scan = mul_u64_u64_div_u64(total_scan, anon_factor, anon_factor + file_factor);
+@@ -5150,7 +5155,7 @@ static void lru_gen_prepare_scan(struct lruvec *lruvec, struct scan_control *sc,
+ 
+ 	total = apply_proportional_protection(memcg, sc, total);
+ 	total >>= sc->priority;
+-	lru_gen_balance_scan(lruvec, swappiness, total, nr_to_scan);
++	lru_gen_balance_scan(lruvec, sc, swappiness, total, nr_to_scan);
+ }
+ 
+ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5897,7 +5902,7 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
+ 			return 0;
+ 
+ 		lruvec_evictable_size(lruvec, sc, swappiness, nr_to_scan);
+-		lru_gen_balance_scan(lruvec, swappiness,
++		lru_gen_balance_scan(lruvec, sc, swappiness,
+ 				     nr_to_reclaim - sc->nr_reclaimed, nr_to_scan);
+ 
+ 		if (!evict_folio_lists(nr_to_scan, lruvec, sc, swappiness, MAX_LRU_BATCH))
+-- 
+2.47.3
+

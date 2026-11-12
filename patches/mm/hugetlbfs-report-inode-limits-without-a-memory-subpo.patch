@@ -1,0 +1,47 @@
+From: Hungyu Lin <dennylin0707@gmail.com>
+Date: Wed, 11 Nov 2026 13:01:45 +0000
+Subject: [PATCH] hugetlbfs: report inode limits without a memory subpool
+
+A hugetlbfs mount can limit inodes with nr_inodes independently of size or
+min_size.  hugetlbfs_statfs() only fills f_files and f_ffree when a memory
+subpool exists, so an inode-only limit is enforced but its inode counts
+are reported as zero.
+
+For example, a fresh mount with nr_inodes=4 reports zero total and free
+inodes instead of 4 and 3.  This hides the inode limit from tools such as
+df -i, even when creating another file fails with ENOSPC.
+
+Report the inode counters when an inode limit is configured, independently
+of the memory subpool.  Preserve the existing zero and -1 results for
+unlimited inode counts.
+
+Link: https://lore.kernel.org/20261111130145.96534-1-dennylin0707@gmail.com
+Fixes: 74a8a65c5261 ("[PATCH] Fix hugetlbfs_statfs() reporting of block limits")
+Signed-off-by: Hungyu Lin <dennylin0707@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Aveline Noir <jm5905938@gmail.com>
+Tested-by: Aveline Noir <jm5905938@gmail.com>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+---
+ fs/hugetlbfs/inode.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/fs/hugetlbfs/inode.c b/fs/hugetlbfs/inode.c
+index 558007fa5e885..ca63a530a26a1 100644
+--- a/fs/hugetlbfs/inode.c
++++ b/fs/hugetlbfs/inode.c
+@@ -1121,6 +1121,8 @@ static int hugetlbfs_statfs(struct dentry *dentry, struct kstatfs *buf)
+ 				- sbinfo->spool->used_hpages;
+ 			buf->f_bavail = buf->f_bfree = free_pages;
+ 			spin_unlock_irq(&sbinfo->spool->lock);
++		}
++		if (sbinfo->spool || sbinfo->max_inodes >= 0) {
+ 			buf->f_files = sbinfo->max_inodes;
+ 			buf->f_ffree = sbinfo->free_inodes;
+ 		}
+-- 
+2.47.3
+

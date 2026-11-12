@@ -1,0 +1,92 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 11 Nov 2026 15:46:31 +0900
+Subject: [PATCH] zsmalloc: encode 1-based obj_idx so valid obj is never 0
+
+The next patch embeds struct zs_handle into zram and zswap entries, and a
+handle is considered allocated when its obj is not 0.  But obj can be 0:
+object 0 of a zspage whose first page is PFN 0 encodes to 0, and some
+platforms do give PFN 0 to the page allocator.
+
+Store obj_idx + 1 in obj, so that a valid obj is never 0, and adjust
+ZS_MIN_ALLOC_SIZE so that the largest index still fits.  Unlike a separate
+tag bit, this doesn't take any bits from obj.  zsmalloc did the same
+before handles moved to handle_cachep, see commit 67296874eb1c ("staging:
+zsmalloc: Ensure handle is never 0 on success").
+
+Link: https://lore.kernel.org/20261111064707.2568433-9-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ mm/zsmalloc.c | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 2385c1951ca74..9be538d0be22c 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -61,7 +61,8 @@
+  * Object location (<PFN>, <obj_idx>) is encoded as
+  * a single (unsigned long) handle value.
+  *
+- * Note that object index <obj_idx> starts from 0.
++ * Note that object index <obj_idx> starts from 0, and is encoded as
++ * <obj_idx> + 1 so that a valid encoded obj value is never 0.
+  *
+  * This is made more complicated by various memory models and PAE.
+  */
+@@ -169,9 +170,6 @@
+ static_assert(ZS_OBJ_IDX_BITS >= ZS_PAGES_PER_ZSPAGE_BITS,
+ 	      "zsmalloc: ZS_MIN_ALLOC_SIZE would exceed ZS_MAX_ALLOC_SIZE");
+ 
+-/* ZS_MIN_ALLOC_SIZE must be multiple of ZS_ALIGN */
+-#define ZS_MIN_ALLOC_SIZE \
+-	MAX(32, (ZS_MAX_PAGES_PER_ZSPAGE << PAGE_SHIFT >> ZS_OBJ_IDX_BITS))
+ /* each chunk includes extra space to keep handle */
+ #define ZS_MAX_ALLOC_SIZE	PAGE_SIZE
+ 
+@@ -189,6 +187,11 @@ static_assert(ZS_OBJ_IDX_BITS >= ZS_PAGES_PER_ZSPAGE_BITS,
+  *  (reason above)
+  */
+ #define ZS_SIZE_CLASS_DELTA	(PAGE_SIZE >> CLASS_BITS)
++#define _ZS_MIN_ALLOC_RAW \
++	DIV_ROUND_UP(ZS_MAX_PAGES_PER_ZSPAGE << PAGE_SHIFT, ZS_OBJ_IDX_MASK)
++#define ZS_MIN_ALLOC_SIZE \
++	MIN(ZS_MAX_ALLOC_SIZE, \
++	    MAX(32UL, ALIGN(_ZS_MIN_ALLOC_RAW, ZS_ALIGN)))
+ #define ZS_SIZE_CLASSES	(DIV_ROUND_UP(ZS_MAX_ALLOC_SIZE - ZS_MIN_ALLOC_SIZE, \
+ 				      ZS_SIZE_CLASS_DELTA) + 1)
+ 
+@@ -794,8 +797,10 @@ static struct zpdesc *get_next_zpdesc(struct zpdesc *zpdesc)
+ static void obj_to_location(unsigned long obj, struct zpdesc **zpdesc,
+ 				unsigned int *obj_idx)
+ {
++	VM_WARN_ON_ONCE(!(obj & ZS_OBJ_IDX_MASK));
++
+ 	*zpdesc = pfn_zpdesc(obj >> ZS_OBJ_PFN_SHIFT);
+-	*obj_idx = (obj & ZS_OBJ_IDX_MASK);
++	*obj_idx = (obj & ZS_OBJ_IDX_MASK) - 1;
+ }
+ 
+ static void obj_to_zpdesc(unsigned long obj, struct zpdesc **zpdesc)
+@@ -814,9 +819,11 @@ static unsigned long location_to_obj(struct zpdesc *zpdesc, unsigned int obj_idx
+ {
+ 	unsigned long obj;
+ 
++	VM_WARN_ON_ONCE(obj_idx + 1 > ZS_OBJ_IDX_MASK);
++
+ 	obj  = zpdesc_pfn(zpdesc) << ZS_OBJ_PFN_SHIFT;
+ 	obj |= (unsigned long)(class_idx & ZS_OBJ_CLASS_MASK) << ZS_OBJ_IDX_BITS;
+-	obj |= obj_idx & ZS_OBJ_IDX_MASK;
++	obj |= (obj_idx + 1) & ZS_OBJ_IDX_MASK;
+ 
+ 	return obj;
+ }
+-- 
+2.47.3
+

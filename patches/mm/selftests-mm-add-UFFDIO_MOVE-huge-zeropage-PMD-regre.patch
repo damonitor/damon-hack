@@ -1,0 +1,216 @@
+From: Chris Down <chris@chrisdown.name>
+Date: Tue, 10 Nov 2026 18:10:28 -0800
+Subject: [PATCH] selftests/mm: add UFFDIO_MOVE huge zeropage PMD regression
+ test
+
+The move-pmd test exercises UFFDIO_MOVE on anonymous THPs but does not
+cover the huge zeropage PMD path.
+
+Add a test that faults in a huge zeropage PMD, moves it in response to one
+missing fault, and checks that the destination still maps the huge
+zeropage.
+
+Link: https://lore.kernel.org/avPOlMOmUdjPe5NJ@chrisdown.name
+Signed-off-by: Chris Down <chris@chrisdown.name>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+---
+ tools/testing/selftests/mm/uffd-unit-tests.c | 98 ++++++++++++++++++++
+ tools/testing/selftests/mm/vm_util.c         | 29 ++++++
+ tools/testing/selftests/mm/vm_util.h         |  2 +
+ 3 files changed, 129 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/uffd-unit-tests.c b/tools/testing/selftests/mm/uffd-unit-tests.c
+index 5a862e8660560..77d0588a367e0 100644
+--- a/tools/testing/selftests/mm/uffd-unit-tests.c
++++ b/tools/testing/selftests/mm/uffd-unit-tests.c
+@@ -2132,6 +2132,97 @@ static void uffd_move_pmd_test(uffd_global_test_opts_t *gopts, uffd_test_args_t
+ 			      uffd_move_pmd_handle_fault);
+ }
+ 
++static void uffd_move_pmd_huge_zeropage_test(uffd_global_test_opts_t *gopts,
++					     uffd_test_args_t *targs)
++{
++	unsigned long pmd_size = read_pmd_pagesize();
++	unsigned long nr_pages_per_pmd;
++	unsigned long bytes = gopts->nr_pages * gopts->page_size;
++	char *orig_area_src = gopts->area_src, *orig_area_dst = gopts->area_dst;
++	char *aligned_src, *aligned_dst;
++	unsigned long src_offs, dst_offs, max_offs;
++	pthread_t uffd_mon;
++	struct uffd_args args = { 0 };
++	char c = '\0';
++	int pagemap_fd;
++
++	if (pmd_size <= gopts->page_size) {
++		uffd_test_skip("Could not detect PMD size");
++		return;
++	}
++	if (!detect_huge_zeropage()) {
++		uffd_test_skip("transparent huge zeropage disabled");
++		return;
++	}
++
++	nr_pages_per_pmd = pmd_size / gopts->page_size;
++	if (bytes < pmd_size) {
++		uffd_test_skip("not enough pages for one PMD-sized move");
++		return;
++	}
++
++	aligned_src = ALIGN_UP(orig_area_src, pmd_size);
++	aligned_dst = ALIGN_UP(orig_area_dst, pmd_size);
++	src_offs = (aligned_src - orig_area_src) / gopts->page_size;
++	dst_offs = (aligned_dst - orig_area_dst) / gopts->page_size;
++	max_offs = src_offs > dst_offs ? src_offs : dst_offs;
++	if (max_offs + nr_pages_per_pmd > gopts->nr_pages) {
++		uffd_test_skip("could not find aligned PMD-sized src/dst window");
++		return;
++	}
++
++	if (madvise(orig_area_dst, bytes, MADV_HUGEPAGE))
++		err("madvise(MADV_HUGEPAGE) failure");
++	if (madvise(orig_area_src, bytes, MADV_DONTFORK))
++		err("madvise(MADV_DONTFORK) failure");
++	if (madvise(aligned_src, pmd_size, MADV_DONTNEED))
++		err("madvise(MADV_DONTNEED) failure");
++
++	/* Fault in a PMD-sized huge zeropage mapping in the source. */
++	force_read_pages(aligned_src, nr_pages_per_pmd, gopts->page_size);
++
++	pagemap_fd = pagemap_open();
++	if (!pagemap_is_huge_zero(pagemap_fd, aligned_src)) {
++		close(pagemap_fd);
++		uffd_test_skip("could not fault in the huge zeropage");
++		return;
++	}
++	gopts->area_src = aligned_src;
++	gopts->area_dst = aligned_dst;
++
++	if (uffd_register(gopts->uffd, gopts->area_dst, pmd_size, true, false, false))
++		err("register failure");
++
++	args.gopts = gopts;
++	args.handle_fault = uffd_move_pmd_handle_fault;
++	if (pthread_create(&uffd_mon, NULL, uffd_poll_thread, &args))
++		err("uffd_poll_thread create");
++
++	/*
++	 * One fault on dst should trigger a single PMD-sized UFFDIO_MOVE from
++	 * the huge zeropage PMD we populated in the source.
++	 */
++	force_read_pages(gopts->area_dst, nr_pages_per_pmd, gopts->page_size);
++
++	if (write(gopts->pipefd[1], &c, sizeof(c)) != sizeof(c))
++		err("pipe write");
++	if (pthread_join(uffd_mon, NULL))
++		err("join() failed");
++
++	if (args.missing_faults != 1 || args.minor_faults != 0)
++		uffd_test_fail("stats check error");
++	else if (!pagemap_is_huge_zero(pagemap_fd, gopts->area_dst))
++		uffd_test_fail("moved destination is not a huge zeropage PMD");
++	else if (smaps_has_anon_huge_pages(gopts->area_dst))
++		uffd_test_fail("moved huge zeropage PMD counted as AnonHugePages");
++	else
++		uffd_test_pass();
++
++	gopts->area_src = orig_area_src;
++	gopts->area_dst = orig_area_dst;
++	close(pagemap_fd);
++}
++
+ static void uffd_move_pmd_split_test(uffd_global_test_opts_t *gopts, uffd_test_args_t *targs)
+ {
+ 	if (madvise(gopts->area_dst, gopts->nr_pages * gopts->page_size, MADV_NOHUGEPAGE))
+@@ -2524,6 +2615,13 @@ uffd_test_case_t uffd_tests[] = {
+ 		.uffd_feature_required = UFFD_FEATURE_MOVE,
+ 		.test_case_ops = &uffd_move_test_pmd_case_ops,
+ 	},
++	{
++		.name = "move-pmd-huge-zeropage",
++		.uffd_fn = uffd_move_pmd_huge_zeropage_test,
++		.mem_targets = MEM_ANON,
++		.uffd_feature_required = UFFD_FEATURE_MOVE,
++		.test_case_ops = &uffd_move_test_pmd_case_ops,
++	},
+ 	{
+ 		.name = "move-pmd-split",
+ 		.uffd_fn = uffd_move_pmd_split_test,
+diff --git a/tools/testing/selftests/mm/vm_util.c b/tools/testing/selftests/mm/vm_util.c
+index 8ef226107d788..b5485326fa0bc 100644
+--- a/tools/testing/selftests/mm/vm_util.c
++++ b/tools/testing/selftests/mm/vm_util.c
+@@ -124,6 +124,18 @@ bool pagemap_is_populated(int fd, char *start)
+ 				PAGE_IS_PRESENT | PAGE_IS_SWAPPED);
+ }
+ 
++bool pagemap_is_huge_zero(int fd, char *start)
++{
++	const uint64_t expected = PAGE_IS_PRESENT | PAGE_IS_PFNZERO | PAGE_IS_HUGE;
++	uint64_t categories;
++
++	if (!pagemap_scan_supported(fd, start))
++		return false;
++
++	categories = pagemap_scan_get_categories(fd, start);
++	return (categories & expected) == expected;
++}
++
+ unsigned long pagemap_get_pfn(int fd, char *start)
+ {
+ 	uint64_t entry = pagemap_get_entry(fd, start);
+@@ -374,6 +386,23 @@ char *__get_smap_entry(void *addr, const char *pattern, char *buf, size_t len)
+ 	return entry;
+ }
+ 
++bool smaps_has_anon_huge_pages(void *addr)
++{
++	char buf[MAX_LINE_LENGTH];
++	unsigned long anon_huge_kb;
++	char *entry, *end;
++
++	entry = __get_smap_entry(addr, "AnonHugePages:", buf, sizeof(buf));
++	if (!entry)
++		ksft_exit_fail_msg("could not find AnonHugePages\n");
++
++	anon_huge_kb = strtoul(entry, &end, 10);
++	if (end == entry)
++		ksft_exit_fail_msg("could not parse AnonHugePages\n");
++
++	return anon_huge_kb != 0;
++}
++
+ static bool check_large_folios(void *addr, size_t len, int nr_hpages,
+ 		uint64_t hpage_size)
+ {
+diff --git a/tools/testing/selftests/mm/vm_util.h b/tools/testing/selftests/mm/vm_util.h
+index ef8fe76d4c61f..f5982ae3546a9 100644
+--- a/tools/testing/selftests/mm/vm_util.h
++++ b/tools/testing/selftests/mm/vm_util.h
+@@ -102,12 +102,14 @@ uint64_t pagemap_get_entry(int fd, char *start);
+ bool pagemap_is_softdirty(int fd, char *start);
+ bool pagemap_is_swapped(int fd, char *start);
+ bool pagemap_is_populated(int fd, char *start);
++bool pagemap_is_huge_zero(int fd, char *start);
+ unsigned long pagemap_get_pfn(int fd, char *start);
+ void clear_softdirty(void);
+ bool check_for_pattern(FILE *fp, const char *pattern, char *buf, size_t len);
+ uint64_t pmd_psize(void);
+ uint64_t pmd_pshift(void);
+ unsigned long rss_anon(void);
++bool smaps_has_anon_huge_pages(void *addr);
+ bool check_huge_anon(void *addr, size_t len, int nr_hpages, uint64_t hpage_size);
+ bool check_huge_file(void *addr, size_t len, int nr_hpages, uint64_t hpage_size);
+ int64_t allocate_transhuge(void *ptr, int pagemap_fd);
+-- 
+2.47.3
+

@@ -1,0 +1,117 @@
+From: Bo Zhang <zhangbo56@xiaomi.com>
+Date: Thu, 12 Nov 2026 07:26:03 +0800
+Subject: [PATCH] mm/mglru: avoid scan anon while swapcache is low for GFP_NOIO
+ allocation
+
+With GFP_NOIO, we cannot reclaim anon folios unless they are in
+the swap cache. CLRU skips anon reclaim when the swap cache is
+very low by commit 74d9aa0d8e98 ("mm: vmscan: avoid anon scanning
+for GFP_NOIO with low swapcache"). Apply the same logic to MGLRU.
+
+The new scan-budget-based mechanism makes this straightforward to
+implement. Thanks also to Xiang Liu, who previously attempted to fix
+this before we had the scan-budget-based model [1].
+
+Link: https://lore.kernel.org/20261111232603.9934-17-baohua@kernel.org
+Link: https://lore.kernel.org/linux-mm/179248830836.1744016.8424217811286616919.noio-mglru-rfc-v2@bytedance.com/ [1]
+Signed-off-by: Bo Zhang <zhangbo56@xiaomi.com>
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Co-developed-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Reviewed-by: Kunwu Chan <chentao@kylinos.cn>
+Cc: Xiang Liu <liuxiang.277@bytedance.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <hui.zhu@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: <lyugaofei@xiaomi.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: wangzicheng <wangzicheng@honor.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Hui Zhu <zhuhui@kylinos.cn>
+Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
+---
+ mm/vmscan.c | 27 ++++++++++-----------------
+ 1 file changed, 10 insertions(+), 17 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 214fd2f08b2b5..25a224746c36d 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -272,13 +272,6 @@ static inline bool reclaimable_anon_is_low(struct mem_cgroup *memcg,
+ 	if (!sc || (sc->gfp_mask & __GFP_IO))
+ 		return false;
+ 
+-	/*
+-	 * FIXME: MGLRU doesn't fully respect can_reclaim_anon_pages() for the
+-	 * scanning type, so only apply this to the traditional LRU for now.
+-	 */
+-	if (lru_gen_enabled())
+-		return false;
+-
+ 	if (memcg) {
+ 		struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
+ 
+@@ -4213,6 +4206,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
+ 	int type;
+ 	unsigned long seq;
+ 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
++	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
++	int nid = lruvec_pgdat(lruvec)->node_id;
+ 	DEFINE_MAX_SEQ(lruvec);
+ 	DEFINE_MIN_SEQ(lruvec);
+ 
+@@ -4220,6 +4215,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
+ 	nr[LRU_GEN_FILE] = 0;
+ 
+ 	for_each_evictable_type(type, swappiness) {
++		if (type == LRU_GEN_ANON && !can_reclaim_anon_pages(memcg, nid, sc))
++			continue;
+ 		for (seq = min_seq[type]; seq <= max_seq; seq++)
+ 			nr[type] += lruvec_gen_size(lrugen, type, seq, sc->reclaim_idx + 1);
+ 	}
+@@ -4900,23 +4897,19 @@ static void lru_gen_balance_scan(struct lruvec *lruvec, struct scan_control *sc,
+ {
+ 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+ 	u64 refault_rate[ANON_AND_FILE], anon_factor, file_factor;
+-	u64 anon_scan, file_scan, total;
++	u64 anon_scan, file_scan;
+ 	u64 anon_weight, file_weight;
+ 	int size_bias;
+ 
+-	total = nr[LRU_GEN_ANON] + nr[LRU_GEN_FILE];
+-	if (!total)
+-		return;
+-
+-	if (swappiness <= MIN_SWAPPINESS) {
++	if (swappiness <= MIN_SWAPPINESS)
+ 		nr[LRU_GEN_ANON] = 0;
+-		nr[LRU_GEN_FILE] = min_t(u64, total_scan, nr[LRU_GEN_FILE]);
+-		return;
+-	}
+ 
+-	if (swappiness == SWAPPINESS_ANON_ONLY) {
++	if (swappiness == SWAPPINESS_ANON_ONLY)
+ 		nr[LRU_GEN_FILE] = 0;
++
++	if (!nr[LRU_GEN_ANON] || !nr[LRU_GEN_FILE]) {
+ 		nr[LRU_GEN_ANON] = min_t(u64, total_scan, nr[LRU_GEN_ANON]);
++		nr[LRU_GEN_FILE] = min_t(u64, total_scan, nr[LRU_GEN_FILE]);
+ 		return;
+ 	}
+ 
+-- 
+2.47.3
+

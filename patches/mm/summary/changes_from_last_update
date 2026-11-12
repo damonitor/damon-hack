@@ -1,27 +1,11 @@
 - baseline: v7.4-rc1-914-gfa4ad798f6f68 -> v7.4-rc1-914-gfa4ad798f6f68 (no change)
-- mm-hotfixes-stable: 0 -> 3 commits
-  - series: 0 (0) -> 1 (3)
-    - no role, maintainer: 0 -> 2 commits
-    - maintainer, no role : 0 -> 1 commits
-  - changed commits
-    - series "mm/damon: fix watermark state, kunit pid leak and selftest fake pass". (3)
-      - 5fe092741502 "mm/damon/core: reset watermark wait state on each iteration (0/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20261102144627.88843-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261102144627.88843-2-sj@kernel.org
-      - 9d2cc214935a "mm/damon/tests/sysfs-kunit: fix leaked pid reference in add_targets test (1/3)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20261102144627.88843-3-sj@kernel.org
-      - c8c47f4072bd "selftests/damon/sysfs_memcg_path_leak: define ksft_skip (2/3)"
-        - Authored by a maintainer, reviewed by no role player
-        - branch: mm-hotfixes-unstable -> mm-hotfixes-stable
-        - Link: https://lore.kernel.org/20261102144627.88843-4-sj@kernel.org
-- mm-hotfixes-unstable: 4 -> 1 commits
-  - series: 1 (3) -> 0 (0)
-    - no role, maintainer: 3 -> 1 commits
-    - maintainer, no role : 1 -> 0 commits
+- mm-hotfixes-stable: 3 -> 3 commits (no change)
+  - series: 1 (3) -> 1 (3) (no change)
+    - no role, maintainer: 2 -> 2 commits (no change)
+    - maintainer, no role : 1 -> 1 commits (no change)
+- mm-hotfixes-unstable: 1 -> 1 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
+    - no role, maintainer: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-unstable: 26 -> 26 commits (no change)

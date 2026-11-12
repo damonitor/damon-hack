@@ -1,0 +1,67 @@
+From: Florian Schmaus <florian.schmaus@codasip.com>
+Date: Mon, 2 Nov 2026 10:14:10 +0100
+Subject: [PATCH] test_maple_tree: test maple_range_64 node below the root in
+ RCU mode
+
+Commit baed735a956f ("maple_tree: fix maple_range_64 crashes in RCU mode")
+fixed mt_free_walk() taking the metadata in the last slot of a
+maple_range_64 node with 15 children for a child node.  The bug only
+affects nodes at least two levels above the leaves.  The test added along
+with the fix, check_range64_in_rcu(), uses a height 3 tree, in which the
+root is the only such node.
+
+The height 3 tree only exposes the bug because the same commit also
+removed mt_clear_meta(), which used to clear the metadata of the root.  On
+the code before that commit, the bug is only reachable below the root, and
+the height 3 tree is destroyed without a crash.  If the metadata of the
+root were cleared again, the existing test would no longer detect the bug.
+
+Add a height 4 tree in which a child of the root has 15 children and keeps
+its metadata in the last slot.  5191 insertions produce such a tree on a
+64-bit build.  Destroying it crashes without the mt_free_walk() fix, with
+or without mt_clear_meta().  For example, on the code before the fix, the
+userspace test harness reports:
+
+  lib/maple_tree.c:4755:27: runtime error: member access within
+  misaligned address 0x00000000000e for type 'struct maple_node'
+
+Link: https://lore.kernel.org/20261102-maple-tree-fix-slab-corruption-v2-1-d0037f04ecd6@codasip.com
+Signed-off-by: Florian Schmaus <florian.schmaus@codasip.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Liam R. Howlett (Google) <liam@infradead.org>
+Cc: Alice Ryhl <aliceryhl@google.com>
+Cc: Andrew Ballance <andrewjballance@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Dimitris Charisis <dchar@cslab.ece.ntua.gr>
+---
+ lib/test_maple_tree.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/lib/test_maple_tree.c b/lib/test_maple_tree.c
+index 10e5577ea0f19..48e08dda4952d 100644
+--- a/lib/test_maple_tree.c
++++ b/lib/test_maple_tree.c
+@@ -3738,6 +3738,19 @@ static noinline void __init check_range64_in_rcu(struct maple_tree *mt)
+ 
+ 	mtree_destroy(mt);
+ 	rcu_barrier();
++
++	nr_entries = 5191; /* Height 4. Root child has 15 children + metadata */
++
++	MT_BUG_ON(mt, !mtree_empty(mt));
++	mt_init_flags(mt, MT_FLAGS_USE_RCU);
++
++	for (i = 0; i < nr_entries; i++) {
++		MT_BUG_ON(mt, mtree_test_insert_range(mt, i*10, i*10 + 9,
++						      xa_mk_value(i)));
++	}
++
++	mtree_destroy(mt);
++	rcu_barrier();
+ }
+ 
+ /*
+-- 
+2.47.3
+

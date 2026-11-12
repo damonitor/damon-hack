@@ -1,0 +1,61 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Wed, 11 Nov 2026 15:46:24 +0900
+Subject: [PATCH] zram: drop stale comment in write_incompressible_page()
+
+Patch series "zsmalloc: redesign object alloc API", v3.
+
+Both zram and zswap already have per-entry structures that store zsmalloc
+handles, so allocating a separate handle_cachep object per stored page is
+redundant.  This series embeds struct zs_handle directly into zram and
+zswap entries and drops handle_cachep, saving 8 bytes and a slab
+alloc/free per stored object (2MB per 1GB of swapped out 4K pages).
+
+It also folds zs_malloc() and zs_obj_write() into zs_store() so we don't
+take pool->lock and look up object location again right after allocation.
+
+A simple zram test on a 24-vCPU VM
+==================================
+165 fewer kernel instructions and 0.7-1.8% fewer kernel cycles per write;
+lz4 single writer +2.3% IOPS / -2.6% average latency;
+24 writers +0.9-+1.0% IOPS; no regressions.
+Memory: 8 bytes less per stored page.
+
+
+This patch (of 11):
+
+zram doesn't do fast/slow-path handle allocation anymore, so
+the comment in write_incompressible_page() is stale.  Drop it.
+
+Link: https://lore.kernel.org/20261111064707.2568433-1-senozhatsky@chromium.org
+Link: https://lore.kernel.org/20261111064707.2568433-2-senozhatsky@chromium.org
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Richard Chang <richardycc@google.com>
+---
+ drivers/block/zram/zram_drv.c | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 9593c14a1f81a..67e9c46fa00a8 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -2260,11 +2260,6 @@ static int write_incompressible_page(struct zram *zram, struct page *page,
+ 	unsigned long handle;
+ 	void *src;
+ 
+-	/*
+-	 * This function is called from preemptible context so we don't need
+-	 * to do optimistic and fallback to pessimistic handle allocation,
+-	 * like we do for compressible pages.
+-	 */
+ 	handle = zs_malloc(zram->mem_pool, PAGE_SIZE,
+ 			   GFP_NOIO | __GFP_NOWARN |
+ 			   __GFP_HIGHMEM | __GFP_MOVABLE, page_to_nid(page));
+-- 
+2.47.3
+

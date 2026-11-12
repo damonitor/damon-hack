@@ -1,0 +1,85 @@
+From: Zhiyuan Zhang <zhiyuanzhang912@gmail.com>
+Date: Wed, 11 Nov 2026 02:34:44 +0000
+Subject: [PATCH] ocfs2: fix kernel BUG in ocfs2_page_mkwrite() when write_end
+ fails
+
+syzbot reported a kernel BUG in the ocfs2 write fault path:
+
+  (syz.0.17,5578,0):ocfs2_write_end_nolock:1945 ERROR: status = -30
+  kernel BUG at fs/ocfs2/mmap.c:106!
+  Call Trace:
+   do_page_mkwrite+0x147/0x310 mm/memory.c:3879
+   do_shared_fault mm/memory.c:6145 [inline]
+   handle_mm_fault+0x1a53/0x3750 mm/memory.c:6943
+
+__ocfs2_page_mkwrite() calls ocfs2_write_begin_nolock() and then
+ocfs2_write_end_nolock(), and uses BUG_ON() to assert that the latter
+returns the full length.  But ocfs2_write_end_nolock() can fail: since
+commit 7f27ec978b0e ("ocfs2: call ocfs2_journal_access_di() before
+ocfs2_journal_dirty() in ocfs2_write_end_nolock()") it gets journal
+access to the inode buffer again, because the handle may have been
+restarted since ocfs2_write_begin_nolock().  That fails with -EROFS or
+-EIO once the journal has been aborted or jbd2 has seen write errors
+on the device.  The syzbot reproducer gets there by shrinking the
+backing loop device to zero with LOOP_SET_STATUS while writing to a
+shared file mapping.
+
+Handle the failure instead of crashing.  ocfs2_write_end_nolock()
+leaves the mmap folio locked, because ocfs2_unlock_folios() skips it
+when w_target_locked is set so that it can be returned with
+VM_FAULT_LOCKED, and do_page_mkwrite() does not unlock it either when
+->page_mkwrite() returns an error.  So unlock it and fail the fault;
+the faulting task gets SIGBUS, like for the other errors in this
+function.
+
+For an mmap write ocfs2_write_end_nolock() returns either len or a
+negative errno: inline data has already been converted to extents by
+ocfs2_write_begin_nolock(), and copied is equal to len.
+
+The BUG matters for local mounts, where the filesystem is expected to
+go read-only and keep running after a journal abort.  On clustered
+mounts ocfs2_abort() panics the node anyway as soon as it notices the
+aborted journal.
+
+Link: https://lore.kernel.org/20261111023444.22688-1-zhiyuanzhang912@gmail.com
+Fixes: 7f27ec978b0e ("ocfs2: call ocfs2_journal_access_di() before ocfs2_journal_dirty() in ocfs2_write_end_nolock()")
+Signed-off-by: Zhiyuan Zhang <zhiyuanzhang912@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+42984127d45ad96219de@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=42984127d45ad96219de
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Reviewed-by: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: yangwenfang <vicky.yangwenfang@huawei.com>
+Cc: <stable@vger.kernel.org>
+---
+ fs/ocfs2/mmap.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/mmap.c b/fs/ocfs2/mmap.c
+index 6c570157caf16..1c03f45e8965d 100644
+--- a/fs/ocfs2/mmap.c
++++ b/fs/ocfs2/mmap.c
+@@ -103,7 +103,17 @@ static vm_fault_t __ocfs2_page_mkwrite(struct file *file,
+ 		goto out;
+ 	}
+ 	err = ocfs2_write_end_nolock(mapping, pos, len, len, fsdata);
+-	BUG_ON(err != len);
++	if (err != len) {
++		/*
++		 * ocfs2_write_end_nolock() keeps the mmap folio locked so
++		 * that it can be returned to the VM with VM_FAULT_LOCKED.
++		 * On failure nobody else will unlock it, so do it here.
++		 */
++		folio_unlock(locked_folio);
++		mlog_errno(err);
++		ret = vmf_error(err);
++		goto out;
++	}
+ 	ret = VM_FAULT_LOCKED;
+ out:
+ 	return ret;
+-- 
+2.47.3
+

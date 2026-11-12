@@ -1,0 +1,72 @@
+From: "Barry Song (Xiaomi)" <baohua@kernel.org>
+Date: Thu, 12 Nov 2026 07:26:02 +0800
+Subject: [PATCH] mm/mglru: make swappiness=1 file reclaim more aggressive
+
+In MGLRU, swappiness=200 favors anon reclaim, while swappiness=1
+favors file reclaim. Swappiness=0 allows only file reclaim, while
+swappiness=201 allows only anon reclaim. Thus, swappiness=1 and
+swappiness=200 are counterparts for file and anon reclaim,
+respectively.
+
+Before this patchset, get_type_to_scan() always returned
+LRU_GEN_ANON for swappiness=200 and LRU_GEN_FILE for swappiness=1.
+
+For swappiness=200, file_factor is set to 0 at higher reclaim
+priorities. Similarly, anon_factor is set to 0 for swappiness=1
+at higher reclaim priorities, making the two settings behave
+similarly, although the thresholds are slightly different.
+
+This allows file pages to be reclaimed more aggressively and
+benefits workloads that prioritize file reclaim by using
+swappiness=1.
+
+Link: https://lore.kernel.org/20261111232603.9934-16-baohua@kernel.org
+Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <hui.zhu@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Kunwu Chan <kunwu.chan@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: <liuxiang.277@bytedance.com>
+Cc: <lyugaofei@xiaomi.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: wangzicheng <wangzicheng@honor.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Bo Zhang <zhangbo56@xiaomi.com>
+Cc: Hui Zhu <zhuhui@kylinos.cn>
+Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+---
+ mm/vmscan.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 5946b3f22c122..214fd2f08b2b5 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4952,7 +4952,11 @@ static void lru_gen_balance_scan(struct lruvec *lruvec, struct scan_control *sc,
+ 	anon_weight = nr[LRU_GEN_ANON] + nr[LRU_GEN_FILE] / size_bias;
+ 	file_weight = nr[LRU_GEN_FILE] + nr[LRU_GEN_ANON] / size_bias;
+ 
+-	anon_factor = (u64)swappiness * refault_rate[LRU_GEN_FILE] * anon_weight;
++	if (swappiness == MIN_SWAPPINESS + 1)
++		anon_factor = sc->priority <= DEF_PRIORITY / 2 ?
++			      refault_rate[LRU_GEN_FILE] * anon_weight : 0;
++	else
++		anon_factor = (u64)swappiness * refault_rate[LRU_GEN_FILE] * anon_weight;
+ 	if (swappiness == MAX_SWAPPINESS)
+ 		file_factor = sc->priority < DEF_PRIORITY / 2 ?
+ 			      refault_rate[LRU_GEN_ANON] * file_weight : 0;
+-- 
+2.47.3
+
