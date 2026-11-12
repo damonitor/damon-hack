@@ -1,0 +1,78 @@
+From: SJ Park <sj@kernel.org>
+Date: Wed, 11 Nov 2026 12:47:06 -0800
+Subject: [PATCH] mm/damon/core: implement damon_submit_report()
+
+Also, modify queue struct.  Head is not needed.  We will read the queue
+in reverse, youngest first.  Hence only need to know the number of real
+reports in the buffer, until it is full.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 31 +++++++++++++++++++++++++++----
+ 1 file changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 0aba75a044ca5..6adcd27e08945 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2523,20 +2523,44 @@ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control)
+  */
+ struct damon_report_queue {
+ 	atomic_t lock;
+-	unsigned int head;
+ 	unsigned int tail;
+ 	unsigned int size;
++	unsigned int nr_reports;
+ 	struct damon_report *reports;
+ };
+ 
+ struct damon_report_queue damon_report_queue;
+ 
++/**
++ * damon_submit_report() - Enqueue a given report to DAMON internal buffer.
++ * @report:	The report to enqueue.
++ *
++ * This function can be called from any context including the NMI context.
++ */
+ int damon_submit_report(struct damon_report *report)
+ {
++	struct damon_report_queue *queue;
++	int lock_old_val;
++	unsigned int tail;
++
++	queue = &damon_report_queue;
++	report->jiffies = jiffies;
++	lock_old_val = atomic_cmpxchg(&queue->lock, 0, 1);
++	if (lock_old_val)
++		return -EBUSY;
++
++	tail = queue->tail;
++	if (tail == queue->size)
++		tail = 0;
++	queue->reports[tail] = *report;
++	queue->tail++;
++	if (queue->nr_reports < queue->size)
++		queue->nr_reports++;
++	/* cmpxchg is known to be faster than xchg */
++	atomic_cmpxchg(&queue->lock, 1, 0);
+ 	return 0;
+ }
+ 
+-
+ /**
+  * damon_report_access() - Report identified access events to DAMON.
+  * @report:	The reporting access information.
+@@ -4693,9 +4717,8 @@ static int __init damon_init(void)
+ 		return -ENOMEM;
+ 	}
+ 
+-	/* lock, head, tail are set to 0, since static variable */
+ 	damon_report_queue.size = 1000;
+-	damon_report_queu.reports = kmalloc_objs(*damon_report_queue.reports,
++	damon_report_queue.reports = kmalloc_objs(*damon_report_queue.reports,
+ 			1000, GFP_KERNEL);
+ 	if (!damon_report_queue.reports)
+ 		return -ENOMEM;
+-- 
+2.47.3
+
