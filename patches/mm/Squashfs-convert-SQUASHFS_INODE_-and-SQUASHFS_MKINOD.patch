@@ -1,0 +1,222 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:42 +0000
+Subject: [PATCH] Squashfs: convert SQUASHFS_INODE_* and SQUASHFS_MKINODE to
+ inline functions
+
+Convert old fashioned #define macros into inline functions.  This has
+the following improvements:
+
+1. Inline functions are typed, which makes the width and sigedness of
+   input and outputs explicit, which reduces errors.
+
+2. The inline functions enable more sanity checking to be added in
+   later commits.
+
+3. Inline functions are easier to read than #define macros, which
+   improves code comprehension.
+
+Link: https://lore.kernel.org/20261111234402.252354-3-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/inode.c            | 24 +++++++++++++-----------
+ fs/squashfs/namei.c            |  3 ++-
+ fs/squashfs/squashfs_fs.h      | 11 -----------
+ fs/squashfs/squashfs_helpers.h | 19 +++++++++++++++++++
+ fs/squashfs/super.c            |  3 ++-
+ 5 files changed, 36 insertions(+), 24 deletions(-)
+
+diff --git a/fs/squashfs/inode.c b/fs/squashfs/inode.c
+index 82b687414e65e..bc7c81d442f24 100644
+--- a/fs/squashfs/inode.c
++++ b/fs/squashfs/inode.c
+@@ -33,6 +33,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "xattr.h"
+ 
+@@ -108,8 +109,9 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ {
+ 	struct super_block *sb = inode->i_sb;
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+-	u64 block = SQUASHFS_INODE_BLK(ino) + msblk->inode_table;
+-	int err, type, offset = SQUASHFS_INODE_OFFSET(ino);
++	u64 block = squashfs_inode_blk(ino) + msblk->inode_table;
++	int offset = squashfs_inode_offset(ino);
++	int err, type;
+ 	union squashfs_inode squashfs_ino;
+ 	struct squashfs_base_inode *sqshb_ino = &squashfs_ino.base;
+ 	int xattr_id = SQUASHFS_INVALID_XATTR;
+@@ -128,8 +130,8 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 	if (err)
+ 		goto failed_read;
+ 
+-	block = SQUASHFS_INODE_BLK(ino) + msblk->inode_table;
+-	offset = SQUASHFS_INODE_OFFSET(ino);
++	block = squashfs_inode_blk(ino) + msblk->inode_table;
++	offset = squashfs_inode_offset(ino);
+ 
+ 	type = le16_to_cpu(sqshb_ino->inode_type);
+ 	switch (type) {
+@@ -181,7 +183,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		inode->i_data.a_ops = &squashfs_aops;
+ 
+ 		TRACE("File inode %x:%x, start_block %llx, block_list_start "
+-			"%llx, offset %x\n", SQUASHFS_INODE_BLK(ino),
++			"%llx, offset %x\n", squashfs_inode_blk(ino),
+ 			offset, squashfs_i(inode)->start, block, offset);
+ 		break;
+ 	}
+@@ -241,7 +243,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		inode->i_data.a_ops = &squashfs_aops;
+ 
+ 		TRACE("File inode %x:%x, start_block %llx, block_list_start "
+-			"%llx, offset %x\n", SQUASHFS_INODE_BLK(ino),
++			"%llx, offset %x\n", squashfs_inode_blk(ino),
+ 			offset, squashfs_i(inode)->start, block, offset);
+ 		break;
+ 	}
+@@ -264,7 +266,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		squashfs_i(inode)->parent = le32_to_cpu(sqsh_ino->parent_inode);
+ 
+ 		TRACE("Directory inode %x:%x, start_block %llx, offset %x\n",
+-				SQUASHFS_INODE_BLK(ino), offset,
++				squashfs_inode_blk(ino), offset,
+ 				squashfs_i(inode)->start,
+ 				le16_to_cpu(sqsh_ino->offset));
+ 		break;
+@@ -291,7 +293,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		squashfs_i(inode)->parent = le32_to_cpu(sqsh_ino->parent_inode);
+ 
+ 		TRACE("Long directory inode %x:%x, start_block %llx, offset "
+-				"%x\n", SQUASHFS_INODE_BLK(ino), offset,
++				"%x\n", squashfs_inode_blk(ino), offset,
+ 				squashfs_i(inode)->start,
+ 				le16_to_cpu(sqsh_ino->offset));
+ 		break;
+@@ -335,7 +337,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		}
+ 
+ 		TRACE("Symbolic link inode %x:%x, start_block %llx, offset "
+-				"%x\n", SQUASHFS_INODE_BLK(ino), offset,
++				"%x\n", squashfs_inode_blk(ino), offset,
+ 				block, offset);
+ 		break;
+ 	}
+@@ -359,7 +361,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		squashfs_i(inode)->parent = 0;
+ 
+ 		TRACE("Device inode %x:%x, rdev %x\n",
+-				SQUASHFS_INODE_BLK(ino), offset, rdev);
++				squashfs_inode_blk(ino), offset, rdev);
+ 		break;
+ 	}
+ 	case SQUASHFS_LBLKDEV_TYPE:
+@@ -384,7 +386,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		squashfs_i(inode)->parent = 0;
+ 
+ 		TRACE("Device inode %x:%x, rdev %x\n",
+-				SQUASHFS_INODE_BLK(ino), offset, rdev);
++				squashfs_inode_blk(ino), offset, rdev);
+ 		break;
+ 	}
+ 	case SQUASHFS_FIFO_TYPE:
+diff --git a/fs/squashfs/namei.c b/fs/squashfs/namei.c
+index 65aae7e2a859d..2260a3f05fde6 100644
+--- a/fs/squashfs/namei.c
++++ b/fs/squashfs/namei.c
+@@ -49,6 +49,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "xattr.h"
+ 
+@@ -197,7 +198,7 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 				off = le16_to_cpu(dire->offset);
+ 				ino_num = le32_to_cpu(dirh.inode_number) +
+ 					(short) le16_to_cpu(dire->inode_number);
+-				ino = SQUASHFS_MKINODE(blk, off);
++				ino = squashfs_mkinode(blk, off);
+ 
+ 				TRACE("calling squashfs_iget for directory "
+ 					"entry %s, inode  %x:%x, %d\n", name,
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index b406e52a83c26..6d993531a5df5 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -107,17 +107,6 @@ static inline int squashfs_block_size(__le32 raw)
+ 	return (size >> 25) ? -EIO : size;
+ }
+ 
+-/*
+- * Inode number ops.  Inodes consist of a compressed block number, and an
+- * uncompressed offset within that block
+- */
+-#define SQUASHFS_INODE_BLK(A)		((unsigned int) ((A) >> 16))
+-
+-#define SQUASHFS_INODE_OFFSET(A)	((unsigned int) ((A) & 0xffff))
+-
+-#define SQUASHFS_MKINODE(A, B)		((long long)(((long long) (A)\
+-					<< 16) + (B)))
+-
+ /* fragment and fragment table defines */
+ #define SQUASHFS_FRAGMENT_BYTES(A)	\
+ 				((A) * sizeof(struct squashfs_fragment_entry))
+diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
+index 94edc7f46ae47..afef13cd6dc03 100644
+--- a/fs/squashfs/squashfs_helpers.h
++++ b/fs/squashfs/squashfs_helpers.h
+@@ -32,4 +32,23 @@ static inline bool squashfs_compressed_block(s32 size)
+ {
+ 	return (size & SQUASHFS_COMPRESSED_BIT_BLOCK) == 0;
+ }
++
++/*
++ * Inode number ops.  Inodes consist of a compressed block number, and an
++ * uncompressed  offset within that block
++ */
++static inline u32 squashfs_inode_blk(s64 inode)
++{
++	return inode >> 16;
++}
++
++static inline u16 squashfs_inode_offset(s64 inode)
++{
++	return inode & 0xffff;
++}
++
++static inline s64 squashfs_mkinode(u32 start, u16 offset)
++{
++	return ((s64)start << 16) | offset;
++}
+ #endif
+diff --git a/fs/squashfs/super.c b/fs/squashfs/super.c
+index 5dabc5770f1b2..0e511dd29d587 100644
+--- a/fs/squashfs/super.c
++++ b/fs/squashfs/super.c
+@@ -33,6 +33,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "decompressor.h"
+ #include "xattr.h"
+@@ -286,7 +287,7 @@ static int squashfs_fill_super(struct super_block *sb, struct fs_context *fc)
+ 
+ 	/* Check the root inode for sanity */
+ 	root_inode = le64_to_cpu(sblk->root_inode);
+-	if (SQUASHFS_INODE_OFFSET(root_inode) > SQUASHFS_METADATA_SIZE)
++	if (squashfs_inode_offset(root_inode) > SQUASHFS_METADATA_SIZE)
+ 		goto insanity;
+ 
+ 	msblk->inode_table = le64_to_cpu(sblk->inode_table_start);
+-- 
+2.47.3
+

@@ -1,0 +1,84 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Tue, 10 Nov 2026 07:24:34 -0800
+Subject: [PATCH] reboot: halt when power off fails
+
+The reboot syscall calls do_exit(0) when kernel_power_off() returns.  That
+happens when no power off handler takes the machine down, since
+machine_power_off() returns to its caller on x86, arm, arm64 and sh.
+
+For example, an x86 kernel built with CONFIG_ACPI_REDUCED_HARDWARE_ONLY
+cannot power off QEMU's pc and q35 machines.  Their FADT is not
+hardware-reduced, so acpi_power_off() is still registered.  But the legacy
+sleep code is compiled out and the FADT has no sleep control register, so
+acpi_enter_sleep_state() returns AE_NOT_EXIST.
+
+On x86, arm and arm64, interrupts are disabled by then, and do_exit()
+warns. syzbot hit this on a GCE VM:
+
+  ACPI: PM: Preparing to enter system sleep state S5
+  kvm: exiting hardware virtualization
+  reboot: Power down
+  ------------[ cut here ]------------
+  irqs_disabled()
+  WARNING: kernel/exit.c:930 at do_exit+0x1cf7/0x2ae0 kernel/exit.c:930, CPU#0: init/6193
+  CPU: 0 UID: 0 PID: 6193 Comm: init Tainted: G             L      syzkaller #0 PREEMPT(full)
+  Call Trace:
+   <TASK>
+   __do_sys_reboot+0x36e/0x400 kernel/reboot.c:784
+   do_syscall_64+0x115/0x840 arch/x86/entry/syscall_64.c:94
+   entry_SYSCALL_64_after_hwframe+0x77/0x7f
+   </TASK>
+
+If the caller is init, do_exit() then panics. Exiting does not help
+the other callers either: the devices are already shut down, and the
+task still holds system_transition_mutex.
+
+Halt instead, as the syscall already does when no power off handler is
+registered, and as most other architectures do in machine_power_off().
+
+Use machine_halt() rather than kernel_halt(). kernel_power_off() has
+already run the shutdown sequence, and kernel_halt() would call the
+reboot notifiers again with interrupts disabled.
+
+Keep the fallback in the syscall.  hw_failure_emergency_action_func()
+relies on kernel_power_off() returning, so that it can try an emergency
+restart.
+
+Link: https://lore.kernel.org/20261110-reboot-make-task-dead-v1-1-af88a3f37bf7@debian.org
+Link: https://lore.kernel.org/all/20260713062332.21131-1-include@grrlz.net/
+Fixes: 001c28e57187 ("exit: Detect and fix irq disabled state in oops")
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+8fdf0d8e10bdde1c2e88@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=8fdf0d8e10bdde1c2e88
+Suggested-by: Oleg Nesterov <oleg@redhat.com>
+Link: https://lore.kernel.org/all/20250404152006.GF3720@redhat.com/
+Acked-by: Oleg Nesterov <oleg@redhat.com>
+Reviewed-by: Bradley Morgan <bradley.morgan@linux.dev>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Eric W. Biederman <ebiederm@xmission.com>
+Cc: Matthias Brugger <matthias.bgg@gmail.com>
+Cc: Konrad Dybcio <angelogioacchino.delregno@collabora.com>
+Cc: <stable@vger.kernel.org>
+---
+ kernel/reboot.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index 9a84401adde5a..bc71183d4ad87 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -791,6 +791,9 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 
+ 	case LINUX_REBOOT_CMD_POWER_OFF:
+ 		kernel_power_off();
++		pr_emerg("Power off failed: System halted instead\n");
++		/* kernel_power_off() already ran the shutdown, only halt. */
++		machine_halt();
+ 		do_exit(0);
+ 		break;
+ 
+-- 
+2.47.3
+

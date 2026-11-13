@@ -1,0 +1,63 @@
+From: "Adrian Huang (Lenovo)" <adrianhuang0701@gmail.com>
+Date: Thu, 12 Nov 2026 22:01:01 +0800
+Subject: [PATCH] fs/proc/task_mmu: advance seq_file position on interrupted
+ VMA lookup
+
+Commit 5631da56c9a8 ("fs/proc/task_mmu: read proc/pid/maps under per-vma
+lock") introduced the possibility of returning -EINTR from proc_get_vma()
+when the VMA lookup is interrupted.
+
+When this happens in m_next(), proc_get_vma() returns an error pointer
+without updating the position index.  Consequently, seq_read_iter()
+reports:
+
+  seq_file: buggy .next function m_next did not update position index
+
+The above buggy message is reproduced by the following command:
+
+  # stress-ng --vma 0 -t 60
+
+Update the position index when VMA lookup fails, as required by the
+seq_file interface.  Also save the original position in priv->last_pos so
+that subsequent iteration can restart from the correct address without
+skipping or repeating a VMA.
+
+Link: https://lore.kernel.org/20261112140101.647-1-adrianhuang0701@gmail.com
+Fixes: 5631da56c9a8 ("fs/proc/task_mmu: read proc/pid/maps under per-vma lock")
+Signed-off-by: Adrian Huang (Lenovo) <adrianhuang0701@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Adrian Huang <ahuang12@lenovo.com>
+---
+ fs/proc/task_mmu.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 22361607020d1..164b4efc5e093 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -221,6 +221,16 @@ static struct vm_area_struct *proc_get_vma(struct seq_file *m, loff_t *ppos)
+ 		if (PTR_ERR(vma) == -EAGAIN && fallback_to_mmap_lock(priv, *ppos))
+ 			goto retry;
+ 
++		/*
++		 * seq_file checks that the position advanced before it looks at
++		 * the returned pointer, so an error return that leaves *ppos
++		 * alone is reported as a buggy ->next. Advance it, and keep
++		 * last_pos at the pending position so m_start() would resume
++		 * the lookup from there.
++		 */
++		priv->last_pos = *ppos;
++		(*ppos)++;
++
+ 		return vma;
+ 	}
+ 
+-- 
+2.47.3
+

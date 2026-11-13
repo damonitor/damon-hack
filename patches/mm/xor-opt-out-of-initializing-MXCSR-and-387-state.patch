@@ -1,0 +1,88 @@
+From: Eric Biggers <ebiggers@kernel.org>
+Date: Wed, 11 Nov 2026 12:56:03 -0800
+Subject: [PATCH] xor: opt out of initializing MXCSR and 387 state
+
+The XOR code using "kernel-mode FPU" is integer code that does not use
+any MMX or x87 instructions.  (MMX optimized code previously existed but
+was recently removed.)  To the extent that float-domain instructions are
+used at all, they are only moves, shuffles, and XORs, none of which
+raises SIMD floating-point exceptions or depends on MXCSR.
+
+Therefore, there's no need to initialize MXCSR or the 387 FPU state.
+
+Opt out of this initialization by using kernel_fpu_begin_mask(0) instead
+of kernel_fpu_begin().  This eliminates an 'ldmxcsr' instruction in
+every kernel-mode FPU section, reducing overhead, which matters most for
+short input lengths.  On 32-bit kernels it also eliminates 'fninit'.
+
+This will make the RAID code consistent with the crypto and CRC code,
+which are also switching to kernel_fpu_begin_mask(0)
+(https://lore.kernel.org/linux-crypto/20261105005523.84925-1-ebiggers@kernel.org/).
+Another precedent for this optimization can be found in
+commit a58db7ad80e8 ("netfilter: nft_set_pipapo_avx2: Skip LDMXCSR, we
+don't need a valid MXCSR state").
+
+Link: https://lore.kernel.org/20261111205604.47547-3-ebiggers@kernel.org
+Signed-off-by: Eric Biggers <ebiggers@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Cc: Richard Weinberger <richard@nod.at>
+Cc: Anton Ivanov <anton.ivanov@cambridgegreys.com>
+Cc: Johannes Berg <johannes@sipsolutions.net>
+---
+ lib/raid/xor/x86/xor-avx.c    | 2 +-
+ lib/raid/xor/x86/xor-avx512.c | 2 +-
+ lib/raid/xor/x86/xor-sse.c    | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/lib/raid/xor/x86/xor-avx.c b/lib/raid/xor/x86/xor-avx.c
+index 95b21e7225e8d..d4154a761b408 100644
+--- a/lib/raid/xor/x86/xor-avx.c
++++ b/lib/raid/xor/x86/xor-avx.c
+@@ -145,7 +145,7 @@ DO_XOR_BLOCKS(avx_inner, xor_avx_2, xor_avx_3, xor_avx_4, xor_avx_5);
+ static void xor_gen_avx(void *dest, void **srcs, unsigned int src_cnt,
+ 			unsigned int bytes)
+ {
+-	kernel_fpu_begin();
++	kernel_fpu_begin_mask(0);
+ 	xor_gen_avx_inner(dest, srcs, src_cnt, bytes);
+ 	asm volatile("vzeroupper");
+ 	kernel_fpu_end();
+diff --git a/lib/raid/xor/x86/xor-avx512.c b/lib/raid/xor/x86/xor-avx512.c
+index c11d83441875c..1c7ce519660e4 100644
+--- a/lib/raid/xor/x86/xor-avx512.c
++++ b/lib/raid/xor/x86/xor-avx512.c
+@@ -110,7 +110,7 @@ DO_XOR_BLOCKS(avx512_inner, xor_avx512_2, xor_avx512_3, xor_avx512_4,
+ static void xor_gen_avx512(void *dest, void **srcs, unsigned int src_cnt,
+ 			   unsigned int bytes)
+ {
+-	kernel_fpu_begin();
++	kernel_fpu_begin_mask(0);
+ 	xor_gen_avx512_inner(dest, srcs, src_cnt, bytes);
+ 	asm volatile("vzeroupper");
+ 	kernel_fpu_end();
+diff --git a/lib/raid/xor/x86/xor-sse.c b/lib/raid/xor/x86/xor-sse.c
+index c6626ecae6ba5..725686c0c942f 100644
+--- a/lib/raid/xor/x86/xor-sse.c
++++ b/lib/raid/xor/x86/xor-sse.c
+@@ -432,7 +432,7 @@ DO_XOR_BLOCKS(sse_inner, xor_sse_2, xor_sse_3, xor_sse_4, xor_sse_5);
+ static void xor_gen_sse(void *dest, void **srcs, unsigned int src_cnt,
+ 			unsigned int bytes)
+ {
+-	kernel_fpu_begin();
++	kernel_fpu_begin_mask(0);
+ 	xor_gen_sse_inner(dest, srcs, src_cnt, bytes);
+ 	kernel_fpu_end();
+ }
+@@ -448,7 +448,7 @@ DO_XOR_BLOCKS(sse_pf64_inner, xor_sse_2_pf64, xor_sse_3_pf64, xor_sse_4_pf64,
+ static void xor_gen_sse_pf64(void *dest, void **srcs, unsigned int src_cnt,
+ 			unsigned int bytes)
+ {
+-	kernel_fpu_begin();
++	kernel_fpu_begin_mask(0);
+ 	xor_gen_sse_pf64_inner(dest, srcs, src_cnt, bytes);
+ 	kernel_fpu_end();
+ }
+-- 
+2.47.3
+

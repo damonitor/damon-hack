@@ -1,0 +1,103 @@
+From: Breno Leitao <leitao@debian.org>
+Date: Thu, 12 Nov 2026 03:48:01 -0800
+Subject: [PATCH] mm: kmemleak: drop kmemleak_lock in scan_block() when it is
+ contended
+
+kmemleak_lock is a damn hot lock, used on allocations, free, NET_RX, etc.
+It is also used on the scan, so, while scanning, most of the system is
+mostly waiting for the lock.
+
+On meta fleet, this is, by far, the most contented lock.  This is not a
+big deal, because very few hosts run with kmemleak enabled, but, I think
+we can do better here.
+
+scan_block() takes kmemleak_lock once per block and keeps it, with
+interrupts disabled, for up to MAX_SCAN_SIZE bytes: 512 words, each
+needing up to two object tree lookups. Every allocation and free in the
+system needs the same lock to insert or remove its object, so each of
+them can wait for a whole block.
+
+Keep taking the lock once per block, but in auto scan mode, check every
+64 words whether anybody is waiting for it and, if so, breathe (aka
+release it and take it again so that the waiters go first)
+
+Releasing the lock seems safe because it only keeps the object trees
+stable during each lookup, and scan_block() does not use an object found
+under it past the word being processed.
+
+Tested in an arm64 KVM guest with 48 vCPUs, KASAN and lockdep, running
+stress-ng sock, fork and dentry workers on 8 CPUs during five scans.
+The kmemleak_lock wait times of the other CPUs, from the lock_contended
+and lock_acquired tracepoints:
+
+                   average     p99     p99.9
+  no scan            3.7us    <16us    <32us
+  scan, before      15.8us   <256us   <512us
+  scan, after       11.7us    <64us   <256us
+
+The cost is a slower scan, as the scanner now queues behind the
+waiters: the five scans took 179s instead of 118s.
+
+This patch does not change interactive users (echo scan > kmemleak in
+debugfs), given current != scan_thread, and scan_breathe() will not be
+called.
+
+Link: https://lore.kernel.org/20261112-kmemleak-scan-lock-break-v1-1-95808108d03c@debian.org
+Signed-off-by: Breno Leitao <leitao@debian.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Vlad Poenaru <vlad.wing@gmail.com>
+Cc: Harry Yoo <harry@kernel.org>
+---
+ mm/kmemleak.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/mm/kmemleak.c b/mm/kmemleak.c
+index e37014a8448aa..d84c1e2c30478 100644
+--- a/mm/kmemleak.c
++++ b/mm/kmemleak.c
+@@ -112,6 +112,7 @@
+ #define SECS_FIRST_SCAN		60	/* delay before the first scan */
+ #define SECS_SCAN_WAIT		600	/* subsequent auto scanning delay */
+ #define MAX_SCAN_SIZE		4096	/* maximum size of a scanned block */
++#define SCAN_LOCK_BATCH		64	/* words between lock waiter checks */
+ 
+ #define BYTES_PER_POINTER	sizeof(void *)
+ 
+@@ -1539,6 +1540,18 @@ static int scan_should_stop(void)
+ 	return signal_pending(current);
+ }
+ 
++/*
++ * Release kmemleak_lock and take it again if anybody is waiting for it, so
++ * that allocations and frees do not have to wait for a whole block.
++ */
++static void scan_breathe(unsigned long *flags)
++{
++	if (raw_spin_is_contended(&kmemleak_lock)) {
++		raw_spin_unlock_irqrestore(&kmemleak_lock, *flags);
++		raw_spin_lock_irqsave(&kmemleak_lock, *flags);
++	}
++}
++
+ /*
+  * Scan a memory block (exclusive range) for valid pointers and add those
+  * found to the gray list. Return non-zero if the scan was interrupted.
+@@ -1561,6 +1574,14 @@ static int scan_block(void *_start, void *_end,
+ 			break;
+ 		}
+ 
++		/*
++		 * Only the background scan thread breathes, scans requested
++		 * through debugfs keep the lock and finish sooner.
++		 */
++		if (current == scan_thread && ptr != start &&
++		    !((ptr - start) % SCAN_LOCK_BATCH))
++			scan_breathe(&flags);
++
+ 		kasan_disable_current();
+ 		pointer = *(unsigned long *)kasan_reset_tag((void *)ptr);
+ 		kasan_enable_current();
+-- 
+2.47.3
+

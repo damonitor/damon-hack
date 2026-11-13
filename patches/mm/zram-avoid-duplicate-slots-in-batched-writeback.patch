@@ -1,0 +1,46 @@
+From: Xu Rao <raoxu@uniontech.com>
+Date: Tue, 10 Nov 2026 14:18:30 +0800
+Subject: [PATCH] zram: avoid duplicate slots in batched writeback
+
+The writeback interface accepts multiple page_index and page_indexes
+parameters in one operation.  Their ranges can overlap, but
+scan_slots_for_writeback() only excludes slots that are already being
+written back or marked as same-filled.
+
+A slot selected by an earlier range is placed on the post-processing list
+and marked with ZRAM_PP_SLOT.  Without checking that flag, an overlapping
+range can enqueue the same slot again and submit it for writeback more
+than once.
+
+Skip slots already marked ZRAM_PP_SLOT while holding the slot lock.  This
+keeps each slot in a writeback scan session represented by at most one
+post-processing entry and leaves the existing release and reuse paths
+unchanged.
+
+Link: https://lore.kernel.org/F24EF6333964B482+20261110061830.272091-1-raoxu@uniontech.com
+Signed-off-by: Xu Rao <raoxu@uniontech.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Jens Axboe <axboe@kernel.dk>
+---
+ drivers/block/zram/zram_drv.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 946b625761f8f..4f479d9051426 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -1217,6 +1217,9 @@ static void scan_slots_for_writeback(struct zram *zram, u32 mode,
+ 		if (!slot_allocated(zram, index))
+ 			goto next;
+ 
++		if (test_slot_flag(zram, index, ZRAM_PP_SLOT))
++			goto next;
++
+ 		if (test_slot_flag(zram, index, ZRAM_WB) ||
+ 		    test_slot_flag(zram, index, ZRAM_SAME))
+ 			goto next;
+-- 
+2.47.3
+

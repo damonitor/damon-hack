@@ -1,0 +1,125 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:43 +0000
+Subject: [PATCH] Squashfs: convert SQUASHFS_FRAGMENT_* to inline functions
+
+Convert old fashioned #define macros into inline functions.  This has
+the following improvements:
+
+1. Inline functions are typed, which makes the width and sigedness of
+   input and outputs explicit, which reduces errors.
+
+2. The inline functions enable more sanity checking to be added in
+   later commits.
+
+3. Inline functions are easier to read than #define macros, which
+   improves code comprehension.
+
+Link: https://lore.kernel.org/20261111234402.252354-4-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/fragment.c         |  7 ++++---
+ fs/squashfs/squashfs_fs.h      | 17 -----------------
+ fs/squashfs/squashfs_helpers.h | 27 +++++++++++++++++++++++++++
+ 3 files changed, 31 insertions(+), 20 deletions(-)
+
+diff --git a/fs/squashfs/fragment.c b/fs/squashfs/fragment.c
+index 49602b9a42e19..e945d045d55ec 100644
+--- a/fs/squashfs/fragment.c
++++ b/fs/squashfs/fragment.c
+@@ -26,6 +26,7 @@
+ 
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ 
+ /*
+@@ -42,8 +43,8 @@ int squashfs_frag_lookup(struct super_block *sb, unsigned int fragment,
+ 
+ 	if (fragment >= msblk->fragments)
+ 		return -EIO;
+-	block = SQUASHFS_FRAGMENT_INDEX(fragment);
+-	offset = SQUASHFS_FRAGMENT_INDEX_OFFSET(fragment);
++	block = squashfs_fragment_index(fragment);
++	offset = squashfs_fragment_index_offset(fragment);
+ 
+ 	start_block = le64_to_cpu(msblk->fragment_index[block]);
+ 
+@@ -63,7 +64,7 @@ int squashfs_frag_lookup(struct super_block *sb, unsigned int fragment,
+ __le64 *squashfs_read_fragment_index_table(struct super_block *sb,
+ 	u64 fragment_table_start, u64 next_table, unsigned int fragments)
+ {
+-	unsigned int length = SQUASHFS_FRAGMENT_INDEX_BYTES(fragments);
++	unsigned int length = squashfs_fragment_index_bytes(fragments);
+ 	__le64 *table;
+ 
+ 	/*
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index 6d993531a5df5..3dbd174b5f219 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -107,23 +107,6 @@ static inline int squashfs_block_size(__le32 raw)
+ 	return (size >> 25) ? -EIO : size;
+ }
+ 
+-/* fragment and fragment table defines */
+-#define SQUASHFS_FRAGMENT_BYTES(A)	\
+-				((A) * sizeof(struct squashfs_fragment_entry))
+-
+-#define SQUASHFS_FRAGMENT_INDEX(A)	(SQUASHFS_FRAGMENT_BYTES(A) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_FRAGMENT_INDEX_OFFSET(A)	(SQUASHFS_FRAGMENT_BYTES(A) % \
+-						SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_FRAGMENT_INDEXES(A)	((SQUASHFS_FRAGMENT_BYTES(A) + \
+-					SQUASHFS_METADATA_SIZE - 1) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_FRAGMENT_INDEX_BYTES(A)	(SQUASHFS_FRAGMENT_INDEXES(A) *\
+-						sizeof(u64))
+-
+ /* inode lookup table defines */
+ #define SQUASHFS_LOOKUP_BYTES(A)	((A) * sizeof(u64))
+ 
+diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
+index afef13cd6dc03..b99ca67c729a8 100644
+--- a/fs/squashfs/squashfs_helpers.h
++++ b/fs/squashfs/squashfs_helpers.h
+@@ -51,4 +51,31 @@ static inline s64 squashfs_mkinode(u32 start, u16 offset)
+ {
+ 	return ((s64)start << 16) | offset;
+ }
++
++/* fragment and fragment table defines */
++static inline s64 squashfs_fragment_bytes(u32 fragments)
++{
++	return fragments * sizeof(struct squashfs_fragment_entry);
++}
++
++static inline s32 squashfs_fragment_index(u32 fragments)
++{
++	return squashfs_fragment_bytes(fragments) / SQUASHFS_METADATA_SIZE;
++}
++
++static inline s16 squashfs_fragment_index_offset(u32 fragments)
++{
++	return squashfs_fragment_bytes(fragments) % SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_fragment_indexes(u32 fragments)
++{
++	return (squashfs_fragment_bytes(fragments) + (SQUASHFS_METADATA_SIZE - 1)) /
++		SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_fragment_index_bytes(u32 fragments)
++{
++	return squashfs_fragment_indexes(fragments) * sizeof(long long);
++}
+ #endif
+-- 
+2.47.3
+

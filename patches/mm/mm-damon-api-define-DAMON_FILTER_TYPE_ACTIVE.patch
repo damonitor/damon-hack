@@ -1,0 +1,114 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 12 Nov 2026 21:17:07 -0800
+Subject: [PATCH] mm/damon/api: define DAMON_FILTER_TYPE_ACTIVE
+
+Patch series "mm/damon: add lru-active probe filter type".
+
+The LRU-activeness of folios is useful information for understanding and
+optimizing the system.  DAMOS ops filter therefore supports filtering
+memory based on the information.  Using it, the information can be
+extracted in the folio granularity.  It is precise but expensive.  DAMON
+probe filter is the complementary way for getting the information in
+region granularity with much cheaper cost.  DAMON filter does not
+support LRU-activeness based filtering, though.  Add the support.
+
+Define new DAMON filter type, DAMON_FILTER_TYPE_ACTIVE, on core API
+(patch 1).  Add support for it on both vaddr and paddr operation set
+(patch 2).  Extend DAMON filter sysfs ABI to let users configure DAMON
+filters of the type using a new keyword, "active" (patch 3).  Finally,
+update the DAMON design document to explain the new type (patch 4).
+
+Test
+====
+
+Confirmed the functionality like below.
+
+First, start masim [1] to generate a ~476 MiB hot memory region.
+
+    $ ./masim.py run --config_file ./configs/stairs-500mb.cfg --repeat 10
+
+Second, start DAMON to monitor data access and active memory ratio of
+each region using DAMON user-space tool (damo) [2].
+
+    $ sudo ./damo start --target_pid $(pidof masim) \
+            --probe --probe_prep set_pgidle \
+                --probe_filter allow pgidle_unset \
+            --probe --probe_filter allow active \
+            --probe_weight 1 0
+
+Show the monitoring results.
+
+    $ sudo ./damo report attrs
+    heatmap: 00008[...]82222222222222222222222222222222222222222222222257777789999998888888874444445[...]8
+    # min/max temperatures: -1,580,000,000, 100,002,000, column size: 62.841 MiB
+    probes
+    - prep: set_pgidle, filter: allow pgidle_unset (weight: 1)
+    - allow active (weight: 0)
+    intervals: sample 5 ms aggr 100 ms (max probe hits 20)
+    #   size         address       age           probe_hits
+    0   253.047 MiB  85.984 TiB    15.800 s      0 0
+    1   4.000 KiB    127.984 TiB   15.400 s      0 20
+    2   120.000 KiB  127.984 TiB   15.300 s      0 0
+    3   1.450 GiB    127.407 TiB   11.300 s      0 0
+    4   498.738 MiB  127.409 TiB   11.200 s      0 0
+    5   500.273 MiB  127.409 TiB   11.100 s      0 0
+    6   502.055 MiB  127.409 TiB   10.900 s      0 0
+    7   461.926 MiB  127.411 TiB   6.500 s       0 0
+    8   351.754 MiB  127.410 TiB   1.600 s       0 0
+    9   497.930 MiB  127.411 TiB   0 ns          1 0
+    10  8.000 KiB    127.984 TiB   0 ns          6 0
+    11  476.340 MiB  127.410 TiB   1 s           20 0
+    memory bw estimate: 0 B per second
+    total size: 4.909 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+The second (idx 1) 4 KiB memory region is not accessed for 15 seconds
+and the page for the region is on an active LRU list.  The last 476.340
+MiB memory region is accessed for each sample for the last one second as
+expected.  And nearly all pages of the region are not on an active LRU
+list.
+
+
+This patch (of 4):
+
+Knowing which memory is on Active LRU lists is useful for understanding
+and optimally operating systems.  Extend the DAMON core layer to be
+ready for support of that.  For that, define a new damon_filter_type,
+DAMON_FILTER_TYPE_ACTIVE.  It has no additional arguments and therefore
+no additional change in the core layer is needed.  Testing if a given
+memory is on an LRU list for the type of filter should be implemented in
+the operation set layer.
+
+Link: https://lore.kernel.org/20261113051711.89274-1-sj@kernel.org
+Link: https://lore.kernel.org/20261113051711.89274-2-sj@kernel.org
+Link: https://github.com/sjp38/masim [1]
+Link: https://github.com/damonitor/damo [2]
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/damon.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index c32ef79c3acea..06bd92981af21 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -780,6 +780,7 @@ struct damon_prep {
+  * @DAMON_FILTER_TYPE_PGIDLE_UNSET:	Pgidle is unset.
+  * @DAMON_FILTER_TYPE_PGIDLE_SET:	Pgidle is set.
+  * @DAMON_FILTER_TYPE_HUGEPAGE_SIZE:	Page is part of a hugepage.
++ * @DAMON_FILTER_TYPE_ACTIVE:		LRU-active pages.
+  */
+ enum damon_filter_type {
+ 	DAMON_FILTER_TYPE_ANON,
+@@ -787,6 +788,7 @@ enum damon_filter_type {
+ 	DAMON_FILTER_TYPE_PGIDLE_UNSET,
+ 	DAMON_FILTER_TYPE_PGIDLE_SET,
+ 	DAMON_FILTER_TYPE_HUGEPAGE_SIZE,
++	DAMON_FILTER_TYPE_ACTIVE,
+ };
+ 
+ /**
+-- 
+2.47.3
+

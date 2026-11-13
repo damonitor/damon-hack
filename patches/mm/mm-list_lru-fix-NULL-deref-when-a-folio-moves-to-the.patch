@@ -1,0 +1,75 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Wed, 11 Nov 2026 22:12:31 -0800
+Subject: [PATCH] mm: list_lru: fix NULL deref when a folio moves to the root
+ memcg
+
+folio_memcg_list_lru_alloc() makes sure that a folio's memcg has its own
+lists in a list_lru, such as the THP deferred split queue.  It looks up
+the folio's memcg twice: a fast path under RCU checks if the lists exist,
+and a slow path takes a reference and allocates them.  The fast path
+returns early for the root memcg, which uses the global lists.  The slow
+path does not check for the root.
+
+The memcg can change between the two lookups: when a cgroup is removed,
+its folios are moved to the parent memcg.  If the folio is moved up to the
+root in between, the slow path gets the root, and __memcg_list_lru_alloc()
+dereferences the root's parent, which is NULL.
+
+Users see a NULL pointer dereference oops while a THP is allocated, such
+as in a page fault, in khugepaged or at swap-in.  tmpfs huge pages are
+affected too, and for them the oops can also happen in reclaim, for
+example in kswapd.  The task that hits the oops is killed, or the machine
+panics if panic_on_oops is set.
+
+The race is narrow: the folio has to be moved up to the root right between
+the two lookups.  For example, its cgroup is directly below the root and
+is removed, or has its memory controller disabled, at that moment.
+
+Fix it by checking memcg_list_lru_allocated() again in the slow path, like
+the fast path does.  It returns true for the root, which needs no lists of
+its own.
+
+Link: https://lore.kernel.org/20261112061231.2469026-1-shakeel.butt@linux.dev
+Fixes: ae64f07a6a40 ("mm: list_lru: introduce folio_memcg_list_lru_alloc()")
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Acked-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Harry Yoo (Meta) <harry@kernel.org>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: <stable@vger.kernel.org>
+---
+ mm/list_lru.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index d1d256822ccc7..ca8de3793166b 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -645,9 +645,16 @@ int folio_memcg_list_lru_alloc(struct folio *folio, struct list_lru *lru,
+ 	if (likely(res))
+ 		return 0;
+ 
+-	/* Allocation may block, pin the memcg */
++	/*
++	 * Allocation may block, so pin the memcg. If the folio's cgroup
++	 * was removed after the check above, the folio has moved up to a
++	 * parent memcg. That memcg may already have its lists, or may be
++	 * the root, which uses the global lists and has no parent. So
++	 * check again before allocating.
++	 */
+ 	memcg = get_mem_cgroup_from_folio(folio);
+-	res = __memcg_list_lru_alloc(memcg, lru, gfp);
++	if (!memcg_list_lru_allocated(memcg, lru))
++		res = __memcg_list_lru_alloc(memcg, lru, gfp);
+ 	mem_cgroup_put(memcg);
+ 	return res;
+ }
+-- 
+2.47.3
+

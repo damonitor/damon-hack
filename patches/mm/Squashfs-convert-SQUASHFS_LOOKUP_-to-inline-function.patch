@@ -1,0 +1,126 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:44 +0000
+Subject: [PATCH] Squashfs: convert SQUASHFS_LOOKUP_* to inline functions
+
+Convert old fashioned #define macros into inline functions.  This has
+the following improvements:
+
+1. Inline functions are typed, which makes the width and sigedness of
+   input and outputs explicit, which reduces errors.
+
+2. The inline functions enable more sanity checking to be added in
+   later commits.
+
+3. Inline functions are easier to read than #define macros, which
+   improves code comprehension.
+
+Link: https://lore.kernel.org/20261111234402.252354-5-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/export.c           |  9 +++++----
+ fs/squashfs/squashfs_fs.h      | 16 ----------------
+ fs/squashfs/squashfs_helpers.h | 27 +++++++++++++++++++++++++++
+ 3 files changed, 32 insertions(+), 20 deletions(-)
+
+diff --git a/fs/squashfs/export.c b/fs/squashfs/export.c
+index 62972f0ff8681..ad7cc882d7897 100644
+--- a/fs/squashfs/export.c
++++ b/fs/squashfs/export.c
+@@ -31,6 +31,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ 
+ /*
+@@ -39,8 +40,8 @@
+ static long long squashfs_inode_lookup(struct super_block *sb, int ino_num)
+ {
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+-	int blk = SQUASHFS_LOOKUP_BLOCK(ino_num - 1);
+-	int offset = SQUASHFS_LOOKUP_BLOCK_OFFSET(ino_num - 1);
++	int blk = squashfs_lookup_block(ino_num - 1);
++	int offset = squashfs_lookup_block_offset(ino_num - 1);
+ 	u64 start;
+ 	__le64 ino;
+ 	int err;
+@@ -115,8 +116,8 @@ static struct dentry *squashfs_get_parent(struct dentry *child)
+ __le64 *squashfs_read_inode_lookup_table(struct super_block *sb,
+ 		u64 lookup_table_start, u64 next_table, unsigned int inodes)
+ {
+-	unsigned int length = SQUASHFS_LOOKUP_BLOCK_BYTES(inodes);
+-	unsigned int indexes = SQUASHFS_LOOKUP_BLOCKS(inodes);
++	unsigned int length = squashfs_lookup_block_bytes(inodes);
++	unsigned int indexes = squashfs_lookup_blocks(inodes);
+ 	int n;
+ 	__le64 *table;
+ 	u64 start, end;
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index 3dbd174b5f219..89b998f57a2bb 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -107,22 +107,6 @@ static inline int squashfs_block_size(__le32 raw)
+ 	return (size >> 25) ? -EIO : size;
+ }
+ 
+-/* inode lookup table defines */
+-#define SQUASHFS_LOOKUP_BYTES(A)	((A) * sizeof(u64))
+-
+-#define SQUASHFS_LOOKUP_BLOCK(A)	(SQUASHFS_LOOKUP_BYTES(A) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_LOOKUP_BLOCK_OFFSET(A)	(SQUASHFS_LOOKUP_BYTES(A) % \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_LOOKUP_BLOCKS(A)	((SQUASHFS_LOOKUP_BYTES(A) + \
+-					SQUASHFS_METADATA_SIZE - 1) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_LOOKUP_BLOCK_BYTES(A)	(SQUASHFS_LOOKUP_BLOCKS(A) *\
+-					sizeof(u64))
+-
+ /* uid/gid lookup table defines */
+ #define SQUASHFS_ID_BYTES(A)		((A) * sizeof(unsigned int))
+ 
+diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
+index b99ca67c729a8..aafc75a3a435f 100644
+--- a/fs/squashfs/squashfs_helpers.h
++++ b/fs/squashfs/squashfs_helpers.h
+@@ -78,4 +78,31 @@ static inline s32 squashfs_fragment_index_bytes(u32 fragments)
+ {
+ 	return squashfs_fragment_indexes(fragments) * sizeof(long long);
+ }
++
++/* inode lookup table defines */
++static inline s64 squashfs_lookup_bytes(u32 inodes)
++{
++	return (s64) inodes * sizeof(s64);
++}
++
++static inline s32 squashfs_lookup_block(u32 inodes)
++{
++	return squashfs_lookup_bytes(inodes) / SQUASHFS_METADATA_SIZE;
++}
++
++static inline s16 squashfs_lookup_block_offset(u32 inodes)
++{
++	return squashfs_lookup_bytes(inodes) % SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_lookup_blocks(u32 inodes)
++{
++	return (squashfs_lookup_bytes(inodes) + (SQUASHFS_METADATA_SIZE - 1)) /
++		SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_lookup_block_bytes(u32 inodes)
++{
++	return squashfs_lookup_blocks(inodes) * sizeof(long long);
++}
+ #endif
+-- 
+2.47.3
+

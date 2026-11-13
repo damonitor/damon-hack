@@ -1,0 +1,195 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:46 +0000
+Subject: [PATCH] Squashfs: convert SQUASHFS_XATTR_* to inline functions
+
+Convert old fashioned #define macros into inline functions.  This has
+the following improvements:
+
+1. Inline functions are typed, which makes the width and sigedness of
+   input and outputs explicit, which reduces errors.
+
+2. The inline functions enable more sanity checking to be added in
+   later commits.
+
+3. Inline functions are easier to read than #define macros, which
+   improves code comprehension.
+
+Link: https://lore.kernel.org/20261111234402.252354-7-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/squashfs_fs.h      | 19 -----------------
+ fs/squashfs/squashfs_helpers.h | 37 ++++++++++++++++++++++++++++++++++
+ fs/squashfs/xattr.c            | 18 ++++++++---------
+ fs/squashfs/xattr_id.c         |  9 +++++----
+ 4 files changed, 51 insertions(+), 32 deletions(-)
+
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index 25dd89a2c6ad9..3e7d0730b2d9f 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -107,25 +107,6 @@ static inline int squashfs_block_size(__le32 raw)
+ 	return (size >> 25) ? -EIO : size;
+ }
+ 
+-/* xattr id lookup table defines */
+-#define SQUASHFS_XATTR_BYTES(A)		(((u64) (A)) * sizeof(struct squashfs_xattr_id))
+-
+-#define SQUASHFS_XATTR_BLOCK(A)		(SQUASHFS_XATTR_BYTES(A) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_XATTR_BLOCK_OFFSET(A)	(SQUASHFS_XATTR_BYTES(A) % \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_XATTR_BLOCKS(A)	((SQUASHFS_XATTR_BYTES(A) + \
+-					SQUASHFS_METADATA_SIZE - 1) / \
+-					SQUASHFS_METADATA_SIZE)
+-
+-#define SQUASHFS_XATTR_BLOCK_BYTES(A)	(SQUASHFS_XATTR_BLOCKS(A) *\
+-					sizeof(u64))
+-#define SQUASHFS_XATTR_BLK(A)		((unsigned int) ((A) >> 16))
+-
+-#define SQUASHFS_XATTR_OFFSET(A)	((unsigned int) ((A) & 0xffff))
+-
+ /* cached data constants for filesystem */
+ #define SQUASHFS_CACHED_BLKS		8
+ 
+diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
+index b9c517a506426..4088e598400f0 100644
+--- a/fs/squashfs/squashfs_helpers.h
++++ b/fs/squashfs/squashfs_helpers.h
+@@ -132,4 +132,41 @@ static inline s16 squashfs_id_block_bytes(u16 ids)
+ {
+ 	return squashfs_id_blocks(ids) * sizeof(long long);
+ }
++
++/* xattr id lookup table defines */
++static inline s64 squashfs_xattr_bytes(u32 xattrs)
++{
++	return (s64) xattrs * sizeof(struct squashfs_xattr_id);
++}
++
++static inline s32 squashfs_xattr_block(u32 xattrs)
++{
++	return squashfs_xattr_bytes(xattrs) / SQUASHFS_METADATA_SIZE;
++}
++
++static inline s16 squashfs_xattr_block_offset(u32 xattrs)
++{
++	return squashfs_xattr_bytes(xattrs) % SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_xattr_blocks(u32 xattrs)
++{
++	return (squashfs_xattr_bytes(xattrs) + SQUASHFS_METADATA_SIZE - 1) /
++		SQUASHFS_METADATA_SIZE;
++}
++
++static inline s32 squashfs_xattr_block_bytes(u32 xattrs)
++{
++	return squashfs_xattr_blocks(xattrs) * sizeof(long long);
++}
++
++static inline u32 squashfs_xattr_blk(s64 xattr)
++{
++	return xattr >> 16;
++}
++
++static inline s16 squashfs_xattr_offset(s64 xattr)
++{
++	return xattr & 0xffff;
++}
+ #endif
+diff --git a/fs/squashfs/xattr.c b/fs/squashfs/xattr.c
+index ce6608cabd49f..f9ef669544f8b 100644
+--- a/fs/squashfs/xattr.c
++++ b/fs/squashfs/xattr.c
+@@ -19,6 +19,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ 
+ static const struct xattr_handler *squashfs_xattr_handler(int);
+@@ -29,9 +30,9 @@ ssize_t squashfs_listxattr(struct dentry *d, char *buffer,
+ 	struct inode *inode = d_inode(d);
+ 	struct super_block *sb = inode->i_sb;
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+-	u64 start = SQUASHFS_XATTR_BLK(squashfs_i(inode)->xattr)
+-						 + msblk->xattr_table;
+-	int offset = SQUASHFS_XATTR_OFFSET(squashfs_i(inode)->xattr);
++	u64 start = squashfs_xattr_blk(squashfs_i(inode)->xattr)
++						+ msblk->xattr_table;
++	int offset = squashfs_xattr_offset(squashfs_i(inode)->xattr);
+ 	int count = squashfs_i(inode)->xattr_count;
+ 	size_t rest = buffer_size;
+ 	int err;
+@@ -107,14 +108,13 @@ static int squashfs_xattr_get(struct inode *inode, int name_index,
+ {
+ 	struct super_block *sb = inode->i_sb;
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+-	u64 start = SQUASHFS_XATTR_BLK(squashfs_i(inode)->xattr)
+-						 + msblk->xattr_table;
+-	int offset = SQUASHFS_XATTR_OFFSET(squashfs_i(inode)->xattr);
++	u64 start = squashfs_xattr_blk(squashfs_i(inode)->xattr)
++						+ msblk->xattr_table;
++	int offset = squashfs_xattr_offset(squashfs_i(inode)->xattr);
+ 	int count = squashfs_i(inode)->xattr_count;
+ 	int name_len = strlen(name);
+ 	int err, vsize;
+ 	char *target = kmalloc(name_len, GFP_KERNEL);
+-
+ 	if (target == NULL)
+ 		return  -ENOMEM;
+ 
+@@ -158,9 +158,9 @@ static int squashfs_xattr_get(struct inode *inode, int name_index,
+ 				if (err < 0)
+ 					goto failed;
+ 				xattr = le64_to_cpu(xattr_val);
+-				start = SQUASHFS_XATTR_BLK(xattr) +
++				start = squashfs_xattr_blk(xattr) +
+ 							msblk->xattr_table;
+-				offset = SQUASHFS_XATTR_OFFSET(xattr);
++				offset = squashfs_xattr_offset(xattr);
+ 			}
+ 			/* read xattr value */
+ 			err = squashfs_read_metadata(sb, &val, &start, &offset,
+diff --git a/fs/squashfs/xattr_id.c b/fs/squashfs/xattr_id.c
+index c8469c656e0dc..ff85247e2d808 100644
+--- a/fs/squashfs/xattr_id.c
++++ b/fs/squashfs/xattr_id.c
+@@ -19,6 +19,7 @@
+ 
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "xattr.h"
+ 
+@@ -29,8 +30,8 @@ int squashfs_xattr_lookup(struct super_block *sb, unsigned int index,
+ 		int *count, unsigned int *size, unsigned long long *xattr)
+ {
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+-	int block = SQUASHFS_XATTR_BLOCK(index);
+-	int offset = SQUASHFS_XATTR_BLOCK_OFFSET(index);
++	int block = squashfs_xattr_block(index);
++	int offset = squashfs_xattr_block_offset(index);
+ 	u64 start_block;
+ 	struct squashfs_xattr_id id;
+ 	int err;
+@@ -79,8 +80,8 @@ __le64 *squashfs_read_xattr_id_table(struct super_block *sb, u64 table_start,
+ 	if (*xattr_ids == 0)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	len = SQUASHFS_XATTR_BLOCK_BYTES(*xattr_ids);
+-	indexes = SQUASHFS_XATTR_BLOCKS(*xattr_ids);
++	len = squashfs_xattr_block_bytes(*xattr_ids);
++	indexes = squashfs_xattr_blocks(*xattr_ids);
+ 
+ 	/*
+ 	 * The computed size of the index table (len bytes) should exactly
+-- 
+2.47.3
+

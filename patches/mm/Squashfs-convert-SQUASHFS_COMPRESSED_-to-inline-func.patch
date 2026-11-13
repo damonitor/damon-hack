@@ -1,0 +1,231 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Wed, 11 Nov 2026 23:43:41 +0000
+Subject: [PATCH] Squashfs: convert SQUASHFS_COMPRESSED_* to inline functions
+
+Patch series "Squashfs: fix a lot of AI issues and AI style issues", v2.
+
+This large patch-set is inspired by the recent spate of AI generated
+code reports.  Four of the patches directly fix AI reported issues, and
+the rest have been found manually by a read-through and testing of the
+code.
+
+In all cases (except patches 17, 18 and 19) the patches deal with
+over-sights relating to variable overflow, arithmetic overflow, variable
+signedness or just lack of sanity checking of data read from disk.
+These can cause the code to fail, and which could be used as a potential
+exploit.
+
+Patches 17, 18, and 19 fix potential excessive memory use exploits.  The
+code in question was written in the early days when Squashfs filesystems
+were small, but with very large filesystems it could try to allocate
+memory in excess of 4 MiB, and up to 64 MiB.
+
+The patches can be broken down as follows:
+
+Patches 1 - 6 are preparatory patches.  They convert old fashioned
+#define macros into inline functions.  These being typed make widths and
+signedness explicit, and allow additional checking to be added in later
+patches.
+
+Patch 7 fixes an incorrect offset value in TRACE statements in
+squashfs_read_inode().  This new to this V2 patch-set.
+
+Patches 8 - 16 fix various issues relating to variable overflow,
+arithmetic overflow and add additional sanity checking to prevent these
+issues from occurring.
+
+Patches 17 - 19 remove the excessive allocation of memory by introducing
+caches, which limit the maximum usage to 4 pages.
+
+Patches 20 - 21 are new to this V2 patch-set.  They deal with some
+issues Sashiko reported in the original patch-set.
+
+Patch 22 is also new to this V2 patch-set.  It adds an additional belts
+and braces sanity check.
+
+Patches 8 - 20 have reproducers which show how the existing code faults
+can be exploited, in some cases which can allow a Squashfs filesystem
+to be tampered with to make files readable by unprivileged users.
+
+
+This patch (of 22):
+
+Convert old fashioned #define macros into inline functions.  This has
+the following improvements:
+
+1. Inline functions are typed, which makes the width and sigedness of
+   input and outputs explicit, which reduces errors.
+
+2. The inline functions enable more sanity checking to be added in
+   later commits.
+
+3. Inline functions are easier to read than #define macros, which
+   improves code comprehension.
+
+Link: https://lore.kernel.org/20261111234402.252354-1-phillip@squashfs.org.uk
+Link: https://lore.kernel.org/20261111234402.252354-2-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+---
+ fs/squashfs/block.c            | 11 ++++++-----
+ fs/squashfs/cache.c            |  1 +
+ fs/squashfs/file.c             |  3 ++-
+ fs/squashfs/squashfs_fs.h      | 17 -----------------
+ fs/squashfs/squashfs_helpers.h | 35 ++++++++++++++++++++++++++++++++++
+ 5 files changed, 44 insertions(+), 23 deletions(-)
+ create mode 100644 fs/squashfs/squashfs_helpers.h
+
+diff --git a/fs/squashfs/block.c b/fs/squashfs/block.c
+index 2d58501680269..20c3030b4f96c 100644
+--- a/fs/squashfs/block.c
++++ b/fs/squashfs/block.c
+@@ -23,6 +23,7 @@
+ 
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "decompressor.h"
+ #include "page_actor.h"
+@@ -292,7 +293,7 @@ int squashfs_read_data(struct super_block *sb, u64 index, int length,
+ {
+ 	struct squashfs_sb_info *msblk = sb->s_fs_info;
+ 	struct bio *bio = NULL;
+-	int compressed;
++	bool compressed;
+ 	int res;
+ 	int offset;
+ 
+@@ -300,8 +301,8 @@ int squashfs_read_data(struct super_block *sb, u64 index, int length,
+ 		/*
+ 		 * Datablock.
+ 		 */
+-		compressed = SQUASHFS_COMPRESSED_BLOCK(length);
+-		length = SQUASHFS_COMPRESSED_SIZE_BLOCK(length);
++		compressed = squashfs_compressed_block(length);
++		length = squashfs_compressed_size_block(length);
+ 		TRACE("Block @ 0x%llx, %scompressed size %d, src size %d\n",
+ 			index, compressed ? "" : "un", length, output->length);
+ 	} else {
+@@ -341,8 +342,8 @@ int squashfs_read_data(struct super_block *sb, u64 index, int length,
+ 		bio_uninit(bio);
+ 		kfree(bio);
+ 
+-		compressed = SQUASHFS_COMPRESSED(length);
+-		length = SQUASHFS_COMPRESSED_SIZE(length);
++		compressed = squashfs_compressed(length);
++		length = squashfs_compressed_size(length);
+ 		index += 2;
+ 
+ 		TRACE("Block @ 0x%llx, %scompressed size %d\n", index - 2,
+diff --git a/fs/squashfs/cache.c b/fs/squashfs/cache.c
+index c1a83bb0e519c..7cb16414cd23f 100644
+--- a/fs/squashfs/cache.c
++++ b/fs/squashfs/cache.c
+@@ -42,6 +42,7 @@
+ 
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "page_actor.h"
+ 
+diff --git a/fs/squashfs/file.c b/fs/squashfs/file.c
+index d83594ce91d23..ad6382cd22d3c 100644
+--- a/fs/squashfs/file.c
++++ b/fs/squashfs/file.c
+@@ -39,6 +39,7 @@
+ #include "squashfs_fs.h"
+ #include "squashfs_fs_sb.h"
+ #include "squashfs_fs_i.h"
++#include "squashfs_helpers.h"
+ #include "squashfs.h"
+ #include "page_actor.h"
+ 
+@@ -188,7 +189,7 @@ static long long read_indexes(struct super_block *sb, int n,
+ 				err = size;
+ 				goto failure;
+ 			}
+-			block += SQUASHFS_COMPRESSED_SIZE_BLOCK(size);
++			block += squashfs_compressed_size_block(size);
+ 		}
+ 		n -= blocks;
+ 	}
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index a955d9369749f..b406e52a83c26 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -101,22 +101,6 @@
+ #define SQUASHFS_XATTR_VALUE_OOL        256
+ #define SQUASHFS_XATTR_PREFIX_MASK      0xff
+ 
+-/* Flag whether block is compressed or uncompressed, bit is set if block is
+- * uncompressed */
+-#define SQUASHFS_COMPRESSED_BIT		(1 << 15)
+-
+-#define SQUASHFS_COMPRESSED_SIZE(B)	(((B) & ~SQUASHFS_COMPRESSED_BIT) ? \
+-		(B) & ~SQUASHFS_COMPRESSED_BIT :  SQUASHFS_COMPRESSED_BIT)
+-
+-#define SQUASHFS_COMPRESSED(B)		(!((B) & SQUASHFS_COMPRESSED_BIT))
+-
+-#define SQUASHFS_COMPRESSED_BIT_BLOCK	(1 << 24)
+-
+-#define SQUASHFS_COMPRESSED_SIZE_BLOCK(B)	((B) & \
+-						~SQUASHFS_COMPRESSED_BIT_BLOCK)
+-
+-#define SQUASHFS_COMPRESSED_BLOCK(B)	(!((B) & SQUASHFS_COMPRESSED_BIT_BLOCK))
+-
+ static inline int squashfs_block_size(__le32 raw)
+ {
+ 	u32 size = le32_to_cpu(raw);
+@@ -449,5 +433,4 @@ struct squashfs_xattr_id_table {
+ 	__le32			xattr_ids;
+ 	__le32			unused;
+ };
+-
+ #endif
+diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
+new file mode 100644
+index 0000000000000..94edc7f46ae47
+--- /dev/null
++++ b/fs/squashfs/squashfs_helpers.h
+@@ -0,0 +1,35 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef SQUASHFS_HELPERS_H
++#define SQUASHFS_HELPERS_H
++/*
++ * Copyright (c) 2026
++ * Phillip Lougher <phillip@squashfs.org.uk>
++ */
++
++/* Flag whether block is compressed or uncompressed, bit is set if block is
++ * uncompressed
++ */
++#define SQUASHFS_COMPRESSED_BIT		(1 << 15)
++
++static inline s16 squashfs_compressed_size(s16 size)
++{
++	return size & ~SQUASHFS_COMPRESSED_BIT;
++}
++
++static inline bool squashfs_compressed(s16 size)
++{
++	return (size & SQUASHFS_COMPRESSED_BIT) == 0;
++}
++
++#define SQUASHFS_COMPRESSED_BIT_BLOCK		(1 << 24)
++
++static inline s32 squashfs_compressed_size_block(s32 size)
++{
++	return size & ~SQUASHFS_COMPRESSED_BIT_BLOCK;
++}
++
++static inline bool squashfs_compressed_block(s32 size)
++{
++	return (size & SQUASHFS_COMPRESSED_BIT_BLOCK) == 0;
++}
++#endif
+-- 
+2.47.3
+
