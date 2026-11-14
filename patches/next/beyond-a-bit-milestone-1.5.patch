@@ -1,0 +1,151 @@
+From: SJ Park <sj@kernel.org>
+Date: Sat, 17 Oct 2026 13:00:24 -0700
+Subject: [PATCH] ==== beyond a-bit milestone 1.5 ====
+
+mm/damon: let users report their data attribute findings
+
+TL;DR
+=====
+
+Build a system for letting DAMON-external entities report their data
+attribute findings to DAMON.  Let users report their data attribute
+findings to DAMON using the report system.
+
+When DAMON Extension Becomes Challenging
+========================================
+
+DAMON's probe based data attributes monitoring system allows flexible
+extension of it for new types of information.  Such extensions are not
+always easy, though.  That's because DAMON is collecting the information
+on its own worker threads, kdamonds.  If the new information to extend
+for is not already stored in a data structure that kdamonds can read,
+the extension becomes difficult.
+
+For example, extending DAMON for hugepage size of the given memory was
+straightforward.  kdamonds can read that from folios.  Extending DAMON
+for accessors or writes-only accesses is challenging because there is no
+existing easy way to get that information from arbitrary threads like
+kdamonds.
+
+Extending DAMON for information that is not already available to
+kdamonds requires two works.  Finding DAMON-external kernel components
+that already have the information.  And modifying it to pass the
+information to DAMON.  Finding and modifying the components inherently
+need to be done for each of such extensions.  Building a universal way
+to report the information to DAMON could make it much easier.
+
+Modifying the component would be particularly challenging and even
+controversial depending on each case.  Some components wouldn't want to
+add a hacky change only for DAMON.  Having the universal report system
+that is well maintained will be useful at convincing the component, too.
+
+User Information
+================
+
+Users sometimes know some data attribute information more than what the
+kernel can know.  They could know frequently accessed data.  They could
+know that because they have access to the source code of the workload.
+They could know that using non-DAMON kernel features.  They could know
+that from some special tools and hardware.
+
+DAMON is not only for monitoring but also operations.  DAMON finds
+operation targets based on only its self monitoring results, though.
+Letting users report their data attribute information allows more
+flexible and effective control of the DAMON operations.  Users can make
+DAMON to find operation targets based on both its self monitoring and
+user-provided reports.
+
+DAMON is not providing such ways to let users report their information,
+though.
+
+Report System and User Report Support
+=====================================
+
+DAMON lacks efficient DAMON-external information report system and user
+report support.  Fill the gap.
+
+Introduce a system to report information from kdamond-external entities
+to DAMON.  Extend DAMON to monitor those reported information.  Build a
+user interface for letting users report their findings.
+
+Data Attribute Report System
+============================
+
+Introduce a system to report information from kdamond-external entities
+to DAMON.  The report system let any kernel components in any context
+including NMI context pass their data attribute finding to DAMON as a
+report.
+
+The system provides a data structure for such reports.  Using the report
+data structure, a flexible data attribute information for a given memory
+can be built.  The data structure also embeds a field for the type of
+the report.  The report producer can specify what data attribute type
+the report is providing, using the field.
+
+The system exposes an API function, damon_submit_report(), for
+submitting the report of the data type to DAMON.  The submit function
+can be called from any context including NMI context.
+
+DAMON Probe for Reports
+=======================
+
+Extend the DAMON probe filter to connect the report system with the
+existing monitoring part of DAMON.  Introduce a new DAMON probe filter
+type, report.  When the type is "report", it receives the report type
+argument.  Filters of the type match to a given memory if a report of
+the given type for the memory is made in the last sampling interval.
+Update DAMON sysfs ABI for probe filters setup to support the new filter
+type and the new argument for the report type.
+
+User Report Support
+===================
+
+Let users report their findings.  Introduce a report type for the users
+provided report.  Extend DAMON sysfs ABI to let users manually configure
+and submit such reports one by one.  Users can specify for what memory
+the report is made, with an arbitrary address range.
+
+Using the new support, users can control DAMON using their own
+information.  They can control DAMON using their information as only a
+source, or an additional source to existing ones.  For example, they can
+let DAMON do page table accessed-bit based access monitoring.  In
+addition to that, if they know some hot data that might not be found by
+the page table information, they can let DAMON know the hot data using
+the report system.
+
+Ongoing and Future Works
+========================
+
+This is a part of the "beyond page table accessed-bit DAMON extension"
+project milestone 2.  This patch series provides the initial and
+essential part of the data attribute report system.
+
+I will implement a cpu cycle sampling based extension based on the
+report system that is implemented by this series.  It is for providing
+accessor and type-aware access monitoring.  Using it, users will be able
+to monitor access for given CPUs, tasks and types (read and/or write) of
+accesses.
+
+While doing that, the report system will also be advanced in a way that
+can be used for reports that are not manually produced by the user but
+by the kernel or hardware itself.  That will be the completion of the
+second milestone of the parent project.  After that, people will be able
+to build more extensions including AMD IBS-like hardware based
+monitoring, using the advanced report system.
+
+Changes from RFC v0
+- RFC v0: https://lore.kernel.org/20261017195747.89961-1-sj@kernel.org
+- Implement the code.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ hkml_cv_bogus/hkml_cv_bogus_phjtixem | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 hkml_cv_bogus/hkml_cv_bogus_phjtixem
+
+diff --git a/hkml_cv_bogus/hkml_cv_bogus_phjtixem b/hkml_cv_bogus/hkml_cv_bogus_phjtixem
+new file mode 100644
+index 0000000000000..e69de29bb2d1d
+-- 
+2.47.3
+
