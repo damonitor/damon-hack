@@ -1,45 +1,37 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Thu, 12 Nov 2026 07:25:55 +0800
+Date: Sat, 14 Nov 2026 02:55:33 +0800
 Subject: [PATCH] mm/mglru: lift youngest gen protection for higher priority
 
-The forced protection of younger generations contradicts the
-goal of minimizing the I/O cost of reclaim. Under high memory
-pressure, MGLRU can repeatedly trigger premature OOMs, while
-the classic LRU does not.
+The forced protection of younger generations contradicts the goal of
+minimizing the I/O cost of reclaim.  Under high memory pressure, MGLRU can
+repeatedly trigger premature OOMs, while the classic LRU does not.
 
-The problem is that aging may fail to keep up with reclaim.
-When this happens, reclaimers may all abort prematurely
-because they see only empty generations or just two
-generations remaining.
+The problem is that aging may fail to keep up with reclaim.  When this
+happens, reclaimers may all abort prematurely because they see only empty
+generations or just two generations remaining.
 
-Proactive aging does not solve this problem either. The
-number of threads performing proactive aging is limited,
-while the number of concurrent reclaimers can be much
-larger. This is a fundamental limitation of MGLRU. One
-possible solution is to use an aging lock. However, the
-aging lock introduces significant jitter under heavy memory
-pressure and has been reported to cause noticeable lags
-on Android.
+Proactive aging does not solve this problem either.  The number of threads
+performing proactive aging is limited, while the number of concurrent
+reclaimers can be much larger.  This is a fundamental limitation of MGLRU.
+One possible solution is to use an aging lock.  However, the aging lock
+introduces significant jitter under heavy memory pressure and has been
+reported to cause noticeable lags on Android.
 
-Furthermore, the generation-based reclaim model can
-conflict with the goal of swappiness, which is to minimize
-I/O cost rather than blindly follow folio hotness.
+Furthermore, the generation-based reclaim model can conflict with the goal
+of swappiness, which is to minimize I/O cost rather than blindly follow
+folio hotness.  The previous commit allowed reclaimers running at
+non-default priorities to reclaim up to `lrugen->max_seq`, while
+reclaimers at the default priority could reclaim only up to
+`lrugen->min_seq`.
 
-The previous commit allowed reclaimers running at
-non-default priorities to reclaim up to `lrugen->max_seq`,
-while reclaimers at the default priority could reclaim only
-up to `lrugen->min_seq`.
+This patch further refines generation protection based on reclaim
+priority.  At the default priority, reclaimers can reclaim generations
+down to `lrugen->max_seq - MIN_NR_GENS`.  As reclaim priority increases,
+reclaimers are progressively allowed to reclaim younger generations.  With
+this graduated protection, premature OOMs are no longer observed, while
+swappiness is also respected.
 
-This patch further refines generation protection based on
-reclaim priority. At the default priority, reclaimers can
-reclaim generations down to `lrugen->min_seq - MIN_NR_GENS`.
-As reclaim priority increases, reclaimers are progressively
-allowed to reclaim younger generations.
-
-With this graduated protection, premature OOMs are no
-longer observed, while swappiness is also respected.
-
-Link: https://lore.kernel.org/20261111232603.9934-9-baohua@kernel.org
+Link: https://lore.kernel.org/20261113185541.70203-9-baohua@kernel.org
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
@@ -53,7 +45,7 @@ Cc: Liam R. Howlett <liam@infradead.org>
 Cc: wang lian <lianux.mm@gmail.com>
 Cc: <liuxiang.277@bytedance.com>
 Cc: <lyugaofei@xiaomi.com>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Ridong Chen <ridong.chen@linux.dev>
 Cc: Mike Rapoport <rppt@kernel.org>
@@ -67,15 +59,16 @@ Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Cc: Kunwu Chan <chentao@kylinos.cn>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
 ---
  mm/vmscan.c | 10 ++++++----
  1 file changed, 6 insertions(+), 4 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index c82392ec6c5f7..36fc5687ec49e 100644
+index 8a74e01c2390d..8e0972db35da1 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -4774,12 +4774,14 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4772,12 +4772,14 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	VM_WARN_ON_ONCE(!list_empty(list));
  
  	/*

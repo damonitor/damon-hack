@@ -1,18 +1,23 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Thu, 12 Nov 2026 07:25:58 +0800
+Date: Sat, 14 Nov 2026 02:55:36 +0800
 Subject: [PATCH] mm/mglru: run aging when one type has no populatable folios
 
-We may have scan budget remaining for anon or file
-but no folios in populatable generations to scan.
-In this case, `scan_folios()` may waste time scanning
-that type while the other type still has populatable
-folios.
+We may have scan budget remaining for anon or file but no folios in
+populatable generations to scan.  In this case, `scan_folios()` may waste
+time scanning that type while the other type still has populatable folios.
 
-Run aging in this case to make more folios
-populatable. This also helps respect the scan budget
-distribution determined by swappiness.
+Run aging in this case to make more folios populatable.  This also helps
+respect the scan budget distribution determined by swappiness.
 
-Link: https://lore.kernel.org/20261111232603.9934-12-baohua@kernel.org
+To avoid excessive aging, allow no-populatable aging only once per
+`try_to_shrink_lruvec()` invocation.
+
+With extreme swappiness values such as 1 and 200, reclaim initially
+focuses exclusively on the preferred type.  In this case, defer aging the
+lagging type until `sc->priority` reaches `DEF_PRIORITY / 2`.  This avoids
+unnecessary aging and has shown better performance in testing.
+
+Link: https://lore.kernel.org/20261113185541.70203-12-baohua@kernel.org
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
@@ -26,7 +31,7 @@ Cc: Liam R. Howlett <liam@infradead.org>
 Cc: wang lian <lianux.mm@gmail.com>
 Cc: <liuxiang.277@bytedance.com>
 Cc: <lyugaofei@xiaomi.com>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Ridong Chen <ridong.chen@linux.dev>
 Cc: Mike Rapoport <rppt@kernel.org>
@@ -38,15 +43,16 @@ Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
 ---
- mm/vmscan.c | 30 ++++++++++++++++++++++--------
- 1 file changed, 22 insertions(+), 8 deletions(-)
+ mm/vmscan.c | 49 ++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 38 insertions(+), 11 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 58749a04a1545..eed945c6398ec 100644
+index 59957fab915b7..9071f8889b5c4 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -5111,7 +5111,8 @@ static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
+@@ -5109,7 +5109,8 @@ static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
  }
  
  static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
@@ -56,7 +62,7 @@ index 58749a04a1545..eed945c6398ec 100644
  {
  	DEFINE_MIN_SEQ(lruvec);
  
-@@ -5123,6 +5124,13 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
+@@ -5121,6 +5122,13 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
  	if (sc->priority == DEF_PRIORITY)
  		return false;
  
@@ -70,13 +76,29 @@ index 58749a04a1545..eed945c6398ec 100644
  	/* better to run aging even though eviction is still possible */
  	if (evictable_min_seq(min_seq, swappiness) + MIN_NR_GENS == max_seq)
  		return true;
-@@ -5227,20 +5235,17 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5208,6 +5216,13 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+ 	bool need_rotate = false, should_age = false;
+ 	int swappiness = get_swappiness(lruvec, sc);
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
++	/*
++	 * Avoid aging the lagging type under extreme swappiness,
++	 * as reclaim of the unpreferred type is disabled until
++	 * DEF_PRIORITY / 2.
++	 */
++	bool allow_no_populatable_age = (sc->priority <= DEF_PRIORITY / 2) ||
++		(swappiness > MIN_SWAPPINESS + 1 && swappiness < MAX_SWAPPINESS);
+ 
+ 	/*
+ 	 * Proactive reclaim initiated by userspace for anonymous memory only.
+@@ -5225,22 +5240,19 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  	lru_gen_prepare_scan(lruvec, sc, memcg, swappiness, nr);
  
  	while (nr[LRU_GEN_ANON] > 0 || nr[LRU_GEN_FILE] > 0) {
+-		DEFINE_MAX_SEQ(lruvec);
 +		unsigned long orig_file, orig_anon;
- 		DEFINE_MAX_SEQ(lruvec);
++		unsigned long max_seq;
 +		bool no_populatable;
++		long scanned;
  
  		if (mem_cgroup_below_min(sc->target_mem_cgroup, memcg)) {
  			need_rotate = true;
@@ -90,23 +112,32 @@ index 58749a04a1545..eed945c6398ec 100644
 -			should_age = true;
 -		}
 -
+-		if (!evict_folio_lists(nr, lruvec, sc, swappiness, MIN_LRU_BATCH))
+-			break;
 +		orig_anon = nr[LRU_GEN_ANON];
 +		orig_file = nr[LRU_GEN_FILE];
- 		if (!evict_folio_lists(nr, lruvec, sc, swappiness, MIN_LRU_BATCH))
- 			break;
++		scanned = evict_folio_lists(nr, lruvec, sc, swappiness, MIN_LRU_BATCH);
  
-@@ -5254,6 +5259,15 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+ 		if (should_abort_scan(lruvec, sc))
+ 			break;
+@@ -5252,6 +5264,21 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  		if (root_reclaim(sc) && should_age)
  			break;
  
-+		no_populatable = (nr[LRU_GEN_ANON] && nr[LRU_GEN_ANON] == orig_anon) ||
-+				 (nr[LRU_GEN_FILE] && nr[LRU_GEN_FILE] == orig_file);
++		/* Limit no_populatable aging to once per try_to_shrink_lruvec() */
++		no_populatable = allow_no_populatable_age &&
++			((nr[LRU_GEN_ANON] && nr[LRU_GEN_ANON] == orig_anon) ||
++			(nr[LRU_GEN_FILE] && nr[LRU_GEN_FILE] == orig_file));
++		allow_no_populatable_age &= !no_populatable;
++		max_seq = READ_ONCE((lruvec)->lrugen.max_seq);
 +		if (should_run_aging(lruvec, max_seq, sc, swappiness, no_populatable)) {
 +			trace_mm_mglru_aging(lruvec, sc, swappiness);
 +			if (try_to_inc_max_seq(lruvec, max_seq, swappiness, false))
 +				need_rotate = true;
 +			should_age = true;
 +		}
++		if (!scanned)
++			break;
 +
  		cond_resched();
  	}

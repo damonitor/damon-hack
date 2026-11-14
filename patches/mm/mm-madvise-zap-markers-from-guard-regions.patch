@@ -1,0 +1,142 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Fri, 13 Nov 2026 21:04:45 +0000
+Subject: [PATCH] mm/madvise: zap markers from guard regions
+
+In order to establish guard regions, guard markers are installed in the
+page tables of a mapped VMA.
+
+However, problems arise when one tries to combine this with registering a
+VMA for userfaultfd, as such operations may themselves need to install page
+table markers such as uffd-wp.
+
+When the installation is attempted the guard marker prevents these markers
+being applied, which can lead to unexpected results (especially if the
+guard regions are later removed.)
+
+This is especially problematic because guard region installation causes the
+regions to be zapped first, meaning that the removal of userfaultfd-tracked
+ranges will not be logged in this case.
+
+Additionally, the uffd-wp page table marker will be propagated regardless
+for file-backed mappings as the zap being performed does not clear these
+markers.
+
+This is problematic, as it can cause repeated failure to install guard
+markers resulting in an infinite loop.
+
+Therefore, update guard region installation to invoke the zap with the
+ZAP_FLAG_DROP_MARKER flag applied.
+
+Both before and after this change, uffd remove events will not trigger on
+guard region installation, nor will write protect state be propagated after
+guard region removal.
+
+This makes sense as conceptually, guard regions mark a part of a VMA as
+effectively unmapped at the page table level, and removing the markers is
+like mapping the VMA again, over which operation uffd markers would in any
+case be lost.
+
+A survey of open source users indicates nobody is relying on installing
+guard regions in uffd-armed VMAs. Software including glibc, android,
+tcmalloc and CRIU were checked.
+
+This change means that any already established guard regions are removed on
+zap. These will be overwritten with the newly installed guard markers on
+success.
+
+However, if this fails for some reason (fatal signal likely the only
+reasonable cause), guard regions may remain removed, and concurrent faults
+may succeed in the interim in the range.
+
+Since the installation failing guarantees nothing about the range being
+installed into, and since success overwrites with guard markers, this isn't
+an issue.
+
+Since MADV_DONTNEED does something similar, abstract the zapping to
+zap_range() and call it from both places.
+
+Link: https://lore.kernel.org/20261113-disallow-uffd-guard-install-v2-1-9d0063c70542@kernel.org
+Fixes: f807123d578d ("mm: allow guard regions in file-backed and read-only mappings")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Tal Zussman <tz2294@columbia.edu>
+Closes: https://lore.kernel.org/all/20261111-uffd-state-fixes-v1-9-00713d368976@columbia.edu/
+Closes: https://lore.kernel.org/all/20261111-uffd-state-fixes-v1-10-00713d368976@columbia.edu/
+Closes: https://lore.kernel.org/all/20261111-uffd-state-fixes-v1-11-00713d368976@columbia.edu/
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: <stable@vger.kernel.org>
+---
+ mm/madvise.c | 28 +++++++++++++++++++---------
+ 1 file changed, 19 insertions(+), 9 deletions(-)
+
+diff --git a/mm/madvise.c b/mm/madvise.c
+index 0214efd2a014f..4f77285832079 100644
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -850,6 +850,19 @@ static int madvise_free_single_vma(struct madvise_behavior *madv_behavior)
+ 	return 0;
+ }
+ 
++static void zap_range(struct madvise_behavior *madv_behavior,
++		      zap_flags_t flags)
++{
++	const struct madvise_behavior_range *range = &madv_behavior->range;
++	struct zap_details details = {
++		.reclaim_pt = true,
++		.zap_flags = flags,
++	};
++
++	zap_vma_range_batched(madv_behavior->tlb, madv_behavior->vma,
++			      range->start, range->end - range->start, &details);
++}
++
+ /*
+  * Application no longer needs these pages.  If the pages are dirty,
+  * it's OK to just throw them away.  The app will be more careful about
+@@ -872,13 +885,7 @@ static int madvise_free_single_vma(struct madvise_behavior *madv_behavior)
+ static long madvise_dontneed_single_vma(struct madvise_behavior *madv_behavior)
+ 
+ {
+-	struct madvise_behavior_range *range = &madv_behavior->range;
+-	struct zap_details details = {
+-		.reclaim_pt = true,
+-	};
+-
+-	zap_vma_range_batched(madv_behavior->tlb, madv_behavior->vma,
+-			      range->start, range->end - range->start, &details);
++	zap_range(madv_behavior, 0);
+ 	return 0;
+ }
+ 
+@@ -1217,9 +1224,11 @@ static long madvise_guard_install(struct madvise_behavior *madv_behavior)
+ 
+ 		/*
+ 		 * OK some of the range have non-guard pages mapped, zap
+-		 * them. This leaves existing guard pages in place.
++		 * them. This also drops any PTE markers in the range,
++		 * including existing guard markers, which we reinstall on
++		 * the next attempt.
+ 		 */
+-		zap_vma_range(vma, range->start, range->end - range->start);
++		zap_range(madv_behavior, ZAP_FLAG_DROP_MARKER);
+ 	}
+ 
+ 	/*
+@@ -1845,6 +1854,7 @@ static bool madvise_batch_tlb_flush(int behavior)
+ 	case MADV_DONTNEED:
+ 	case MADV_DONTNEED_LOCKED:
+ 	case MADV_FREE:
++	case MADV_GUARD_INSTALL:
+ 		return true;
+ 	default:
+ 		return false;
+-- 
+2.47.3
+

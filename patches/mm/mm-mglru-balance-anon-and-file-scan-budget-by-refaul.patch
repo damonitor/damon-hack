@@ -1,5 +1,5 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Thu, 12 Nov 2026 07:25:54 +0800
+Date: Sat, 14 Nov 2026 02:55:32 +0800
 Subject: [PATCH] mm/mglru: balance anon and file scan budget by refault rate
 
 Replace get_type_to_scan() and isolate_folios(), which selected one
@@ -34,12 +34,24 @@ possible. The debugfs scan_control gets .priority = DEF_PRIORITY so
 eviction starts from the oldest gen and reports the default priority
 in the tracepoints.
 
-Link: https://lore.kernel.org/20261111232603.9934-8-baohua@kernel.org
+Note that we are already lenient with the debugfs proactive
+reclaim interface. We may reclaim one generation ahead even
+at `DEF_PRIORITY`, and with extreme swappiness values such
+as 1 and 200, we may not fall back to the other type.
+
+To address these cases and preserve the behavior of the
+previous model before scan-budget-based reclaim, we would
+need to add another flag to `scan_control`. However, this
+may not be worthwhile for a debugfs interface that is likely
+to be rarely used, especially given that we already have
+memory-level and node-level proactive reclaim interfaces.
+
+Link: https://lore.kernel.org/20261113185541.70203-8-baohua@kernel.org
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
-Signed-off-by: lyugaofei <lyugaofei@xiaomi.com>
+Signed-off-by: Gaofei Lyu <lyugaofei@xiaomi.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Co-developed-by: lyugaofei <lyugaofei@xiaomi.com>
+Co-developed-by: Gaofei Lyu <lyugaofei@xiaomi.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
@@ -49,7 +61,7 @@ Cc: Kunwu Chan <kunwu.chan@gmail.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: wang lian <lianux.mm@gmail.com>
 Cc: <liuxiang.277@bytedance.com>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Ridong Chen <ridong.chen@linux.dev>
 Cc: Mike Rapoport <rppt@kernel.org>
@@ -62,15 +74,16 @@ Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
 ---
- mm/vmscan.c | 218 +++++++++++++++++++++++++++++++++-------------------
- 1 file changed, 137 insertions(+), 81 deletions(-)
+ mm/vmscan.c | 219 +++++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 138 insertions(+), 81 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index d21b409d2afbd..c82392ec6c5f7 100644
+index 7a21890ebeff5..8a74e01c2390d 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -4865,79 +4865,110 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
+@@ -4863,79 +4863,110 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
  	return tier - 1;
  }
  
@@ -237,7 +250,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  {
  	LIST_HEAD(list);
  	LIST_HEAD(clean);
-@@ -4946,8 +4977,8 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4944,8 +4975,8 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	enum node_stat_item item;
  	struct reclaim_stat stat;
  	struct lru_gen_mm_walk *walk;
@@ -248,7 +261,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  	unsigned long total_reclaimed = 0;
  	bool skip_retry = false;
  	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
-@@ -4958,8 +4989,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4956,8 +4987,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	/* In case folio deletion left empty old gens, flush them */
  	try_to_inc_min_seq(lruvec, swappiness);
  
@@ -260,7 +273,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  	nr_isolated = isolated;
  	if (nr_isolated)
  		__mod_node_page_state(pgdat, NR_ISOLATED_ANON + type,
-@@ -4981,7 +5013,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4979,7 +5011,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	if (isolated)
  		handle_reclaim_writeback(isolated, pgdat, sc, &stat);
  	trace_mm_vmscan_lru_shrink_inactive(pgdat->node_id,
@@ -269,7 +282,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  			type ? LRU_INACTIVE_FILE : LRU_INACTIVE_ANON);
  
  	list_for_each_entry_safe_reverse(folio, next, &list, lru) {
-@@ -5058,18 +5090,18 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
+@@ -5056,18 +5088,18 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
  	return evictable_min_seq(min_seq, swappiness) + MIN_NR_GENS == max_seq;
  }
  
@@ -297,7 +310,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  }
  
  static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
-@@ -5102,6 +5134,30 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5100,6 +5132,30 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
  	return true;
  }
  
@@ -328,7 +341,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  /*
   * For future optimizations:
   * 1. Defer try_to_inc_max_seq() to workqueues to reduce latency for memcg
-@@ -5109,8 +5165,8 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5107,8 +5163,8 @@ static bool should_abort_scan(struct lruvec *lruvec, struct scan_control *sc)
   */
  static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  {
@@ -338,7 +351,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  	int swappiness = get_swappiness(lruvec, sc);
  	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
  
-@@ -5127,9 +5183,9 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5125,9 +5181,9 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  			return false;
  	}
  
@@ -351,7 +364,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  		DEFINE_MAX_SEQ(lruvec);
  
  		if (mem_cgroup_below_min(sc->target_mem_cgroup, memcg)) {
-@@ -5144,9 +5200,7 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5142,9 +5198,7 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  			should_age = true;
  		}
  
@@ -362,7 +375,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  			break;
  
  		if (should_abort_scan(lruvec, sc))
-@@ -5159,7 +5213,6 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+@@ -5157,7 +5211,6 @@ static bool try_to_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
  		if (root_reclaim(sc) && should_age)
  			break;
  
@@ -370,7 +383,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  		cond_resched();
  	}
  
-@@ -5771,8 +5824,8 @@ static int run_aging(struct lruvec *lruvec, unsigned long seq,
+@@ -5769,8 +5822,8 @@ static int run_aging(struct lruvec *lruvec, unsigned long seq,
  static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_control *sc,
  			int swappiness, unsigned long nr_to_reclaim)
  {
@@ -380,7 +393,7 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  
  	if (seq + MIN_NR_GENS > max_seq)
  		return -EINVAL;
-@@ -5788,8 +5841,11 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
+@@ -5786,8 +5839,11 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
  		if (sc->nr_reclaimed >= nr_to_reclaim)
  			return 0;
  
@@ -394,6 +407,14 @@ index d21b409d2afbd..c82392ec6c5f7 100644
  			return 0;
  
  		cond_resched();
+@@ -5850,6 +5906,7 @@ static ssize_t lru_gen_seq_write(struct file *file, const char __user *src,
+ 		.may_writepage = true,
+ 		.may_unmap = true,
+ 		.may_swap = true,
++		.priority = DEF_PRIORITY,
+ 		.reclaim_idx = MAX_NR_ZONES - 1,
+ 		.gfp_mask = GFP_KERNEL,
+ 		.proactive = true,
 -- 
 2.47.3
 

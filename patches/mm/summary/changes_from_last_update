@@ -8,43 +8,14 @@
     - no role, maintainer: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 26 -> 32 commits
-  - series: 5 (26) -> 7 (32)
-    - no role, maintainer: 21 -> 23 commits
-    - maintainer, nobody: 0 -> 4 commits
+- mm-unstable: 32 -> 32 commits (no change)
+  - series: 7 (32) -> 7 (32) (no change)
+    - no role, maintainer: 23 -> 23 commits (no change)
+    - maintainer, nobody: 4 -> 4 commits (no change)
     - maintainer, no role : 4 -> 4 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-  - new commits
-    - series "mm/damon: add lru-active probe filter type". (4)
-      - d1c3b5f1a2cf "mm/damon/api: define DAMON_FILTER_TYPE_ACTIVE (0/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20261113051711.89274-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261113051711.89274-2-sj@kernel.org
-        - Link: https://github.com/sjp38/masim [1]
-        - Link: https://github.com/damonitor/damo [2]
-      - fa7112ae0ce1 "mm/damon/ops-common: implement DAMON_FILTER_TYPE_ACTIVE operation (1/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20261113051711.89274-3-sj@kernel.org
-      - e948475b5af1 "mm/damon/sysfs: support LRU-activeness based DAMON filter setup (2/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20261113051711.89274-4-sj@kernel.org
-      - 1c0c134fcb9e "Docs/mm/damon/design: update for DAMON_FILTER_TYPE_ACTIVE (3/4)"
-        - Authored by a maintainer, reviewed by nobody
-        - Link: https://lore.kernel.org/20261113051711.89274-5-sj@kernel.org
-  - changed commits
-    - series "mm/damon: cleanup region iterator and damon_reclaim user doc". (2)
-      - d700ba30a951 "mm/damon/core: use list_{next,prev}_entry() in damon_{next,prev}_region() (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261110010558.104905-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261110010558.104905-2-sj@kernel.org
-      - 767fb55ca4a0 "Docs/admin-guide/mm/damon/reclaim: improve language (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261110010558.104905-3-sj@kernel.org
-- mm-new: 2 -> 0 commits
-  - series: 1 (2) -> 0 (0)
-    - no role, maintainer: 2 -> 0 commits
+- mm-new: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

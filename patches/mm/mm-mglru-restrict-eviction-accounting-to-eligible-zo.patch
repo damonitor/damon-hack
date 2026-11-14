@@ -1,16 +1,33 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Thu, 12 Nov 2026 07:25:59 +0800
+Date: Sat, 14 Nov 2026 02:55:37 +0800
 Subject: [PATCH] mm/mglru: restrict eviction accounting to eligible zones
 
-For both lruvec_evictable_size() and lru_gen_imbalanced(),
-only count eligible zones below sc->reclaim_idx. This
-avoids inflating the number of scanned pages and allows
-aging to proceed more promptly when eligible zones have
-few folios.
+For both lruvec_evictable_size() and lru_gen_imbalanced(), only count
+eligible zones up to sc->reclaim_idx.  This avoids overestimating the
+number of pages available for scanning and allows aging to proceed more
+promptly when eligible zones contain few folios.
 
-Link: https://lore.kernel.org/20261111232603.9934-13-baohua@kernel.org
+lru_gen_age_node() uses lruvec_is_reclaimable() to determine whether any
+memcg has generations old enough to reclaim under min_ttl.  If none are
+reclaimable, it may trigger OOM.  However, lruvec_is_reclaimable() also
+uses lruvec_is_sizable() to estimate the LRU size.
+
+Previously, lruvec_is_sizable() counted folios across all zones.  With
+accounting now restricted to zones up to sc->reclaim_idx, the estimated
+size may be significantly smaller, potentially leading to premature OOM.
+
+To avoid this, skip the sizing check when reclaim is restricted to zones
+below ZONE_NORMAL.  As in __alloc_pages_may_oom(), triggering OOM for
+low-zone allocations is generally pointless.
+
+Furthermore, defer the sizing check until reclaim reaches a very low
+sc->priority to reduce the risk of premature OOM.
+
+Link: https://lore.kernel.org/20261113185541.70203-13-baohua@kernel.org
+Signed-off-by: Bo Zhang <zhangbo56@xiaomi.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Co-developed-by: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Axel Rasmussen <axelrasmussen@google.com>
 Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
 Cc: Baoquan He <baoquan.he@linux.dev>
@@ -22,7 +39,7 @@ Cc: Liam R. Howlett <liam@infradead.org>
 Cc: wang lian <lianux.mm@gmail.com>
 Cc: <liuxiang.277@bytedance.com>
 Cc: <lyugaofei@xiaomi.com>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Ridong Chen <ridong.chen@linux.dev>
 Cc: Mike Rapoport <rppt@kernel.org>
@@ -31,14 +48,14 @@ Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: wangzicheng <wangzicheng@honor.com>
 Cc: Wei Xu <weixugc@google.com>
 Cc: Yuanchu Xie <yuanchu@google.com>
-Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
 ---
  mm/trace_vmscan.h |  4 ++--
- mm/vmscan.c       | 18 +++++++++---------
+ mm/vmscan.c       | 26 ++++++++++++++++----------
  mm/vmscan.h       |  5 +++--
- 3 files changed, 14 insertions(+), 13 deletions(-)
+ 3 files changed, 21 insertions(+), 14 deletions(-)
 
 diff --git a/mm/trace_vmscan.h b/mm/trace_vmscan.h
 index 565c564283644..9dafdb5bd3ce8 100644
@@ -57,10 +74,10 @@ index 565c564283644..9dafdb5bd3ce8 100644
  		__entry->nid = lruvec_pgdat(lruvec)->node_id;
  		__entry->priority = sc->priority;
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index eed945c6398ec..409da2c4cb111 100644
+index 9071f8889b5c4..6ed47089a3305 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -4207,8 +4207,8 @@ static void set_initial_priority(struct pglist_data *pgdat, struct scan_control
+@@ -4205,8 +4205,8 @@ static void set_initial_priority(struct pglist_data *pgdat, struct scan_control
  	sc->priority = clamp(priority, DEF_PRIORITY / 2, DEF_PRIORITY);
  }
  
@@ -71,7 +88,7 @@ index eed945c6398ec..409da2c4cb111 100644
  {
  	int type;
  	unsigned long seq;
-@@ -4221,7 +4221,7 @@ static void lruvec_evictable_size(struct lruvec *lruvec, int swappiness,
+@@ -4219,7 +4219,7 @@ static void lruvec_evictable_size(struct lruvec *lruvec, int swappiness,
  
  	for_each_evictable_type(type, swappiness) {
  		for (seq = min_seq[type]; seq <= max_seq; seq++)
@@ -80,7 +97,7 @@ index eed945c6398ec..409da2c4cb111 100644
  	}
  }
  
-@@ -4230,7 +4230,7 @@ static bool lruvec_is_sizable(struct lruvec *lruvec, struct scan_control *sc)
+@@ -4228,7 +4228,7 @@ static bool lruvec_is_sizable(struct lruvec *lruvec, struct scan_control *sc)
  	unsigned long total, sizes[ANON_AND_FILE];
  	int swappiness = get_swappiness(lruvec, sc);
  
@@ -89,7 +106,22 @@ index eed945c6398ec..409da2c4cb111 100644
  	total = sizes[LRU_GEN_ANON] + sizes[LRU_GEN_FILE];
  
  	/* whether the size is big enough to be helpful */
-@@ -5090,9 +5090,9 @@ static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
+@@ -4247,7 +4247,13 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
+ 	if (mem_cgroup_below_min(NULL, memcg))
+ 		return false;
+ 
+-	if (!lruvec_is_sizable(lruvec, sc))
++	/*
++	 * As in __alloc_pages_may_oom(), avoid triggering OOM for low-zone
++	 * allocations. Also, defer the LRU size check until reclaim reaches
++	 * a very low priority to avoid premature OOM.
++	 */
++	if (sc->priority <= 1 && sc->reclaim_idx >= ZONE_NORMAL &&
++	    !lruvec_is_sizable(lruvec, sc))
+ 		return false;
+ 
+ 	gen = lru_gen_from_seq(evictable_min_seq(min_seq, swappiness));
+@@ -5088,9 +5094,9 @@ static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
  	for_each_evictable_type(type, swappiness) {
  		unsigned long seq;
  
@@ -101,7 +133,7 @@ index eed945c6398ec..409da2c4cb111 100644
  	}
  
  	/* the vast majority of pages sit in the youngest gen */
-@@ -5145,7 +5145,7 @@ static void lru_gen_prepare_scan(struct lruvec *lruvec, struct scan_control *sc,
+@@ -5143,7 +5149,7 @@ static void lru_gen_prepare_scan(struct lruvec *lruvec, struct scan_control *sc,
  {
  	unsigned long total;
  
@@ -110,7 +142,7 @@ index eed945c6398ec..409da2c4cb111 100644
  	total = nr_to_scan[LRU_GEN_ANON] + nr_to_scan[LRU_GEN_FILE];
  
  	total = apply_proportional_protection(memcg, sc, total);
-@@ -5843,7 +5843,7 @@ static int lru_gen_seq_show(struct seq_file *m, void *v)
+@@ -5854,7 +5860,7 @@ static int lru_gen_seq_show(struct seq_file *m, void *v)
  			char mark = full && seq < min_seq[type] ? 'x' : ' ';
  
  			seq_printf(m, " %10lu%c",
@@ -119,7 +151,7 @@ index eed945c6398ec..409da2c4cb111 100644
  		}
  
  		seq_putc(m, '\n');
-@@ -5896,7 +5896,7 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
+@@ -5907,7 +5913,7 @@ static int run_eviction(struct lruvec *lruvec, unsigned long seq, struct scan_co
  		if (sc->nr_reclaimed >= nr_to_reclaim)
  			return 0;
  

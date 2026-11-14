@@ -1,31 +1,31 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Thu, 12 Nov 2026 07:25:56 +0800
+Date: Sat, 14 Nov 2026 02:55:34 +0800
 Subject: [PATCH] mm/mglru: avoid placing rejected folios below populated gen
 
-We used to scan only the oldest generation in scan_folios(). In
-evict_folios(), we checked whether
-lru_gen_folio_seq(lruvec, folio, false) == min_seq[type]. If so, the
-folio was marked active and moved to younger generations.
+We used to scan only the oldest generation in scan_folios().  In
+evict_folios(), we checked whether lru_gen_folio_seq(lruvec, folio, false)
+== min_seq[type].  If so, the folio was marked active and moved to younger
+generations.
 
-This was itself buggy, as folios in generation min_seq[type] - 1
-would not be marked active by folio_set_active(), potentially causing
-a cold/hot inversion.
+This was itself buggy, as folios in generation min_seq[type] - 1 would not
+be marked active by folio_set_active(), potentially causing a cold/hot
+inversion.
 
 Besides this issue, the old approach also differs from the current
-behavior, where we can scan fewer than two generations.
-Now that we can scan younger generations, including the youngest
-generation, this no longer prevents rejected folios from being placed
-in a generation below or at the populated generation. Such rejected
-folios would then be scanned again and again, resulting in extremely
-low `pg_steal/pg_scan` ratios. For example:
+behavior, where we can scan fewer than two generations.  Now that we can
+scan younger generations, including the youngest generation, this no
+longer prevents rejected folios from being placed in a generation below or
+at the populated generation.  Such rejected folios would then be scanned
+again and again, resulting in extremely low `pg_steal/pg_scan` ratios.
+For example:
   pgsteal_file: 2312605
   pgscan_file:  36465693
   reclamation efficiency: 6.34%
 
 We pass `scanned_seq` to `move_folios_to_lru()` and make sure we either
 promote the folio or place it in the youngest generation when the
-populated generation is already the youngest one.
-Also, folio_set_active() is no longer needed.
+populated generation is already the youngest one.  Also,
+folio_set_active() is no longer needed.
 
 With this change, the results become:
   pgsteal_file: 2683815
@@ -35,7 +35,7 @@ With this change, the results become:
 The sys time for building the kernel also decreased from 4m30.532s to
 3m50.188s while swappiness==1.
 
-Link: https://lore.kernel.org/20261111232603.9934-10-baohua@kernel.org
+Link: https://lore.kernel.org/20261113185541.70203-10-baohua@kernel.org
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Kunwu Chan <kunwu.chan@gmail.com>
@@ -49,7 +49,7 @@ Cc: Liam R. Howlett <liam@infradead.org>
 Cc: wang lian <lianux.mm@gmail.com>
 Cc: <liuxiang.277@bytedance.com>
 Cc: <lyugaofei@xiaomi.com>
-Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
 Cc: Qi Zheng <qi.zheng@linux.dev>
 Cc: Ridong Chen <ridong.chen@linux.dev>
 Cc: Mike Rapoport <rppt@kernel.org>
@@ -62,6 +62,7 @@ Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Cc: Kunwu Chan <chentao@kylinos.cn>
+Cc: Bo Zhang <zhangbo0325@gmail.com>
 ---
  include/linux/mm_inline.h | 22 +++++++++++++++++++++-
  mm/vmscan.c               | 24 ++++++++++++------------
@@ -122,7 +123,7 @@ index ab69b9930893f..f6f4bc9a704fe 100644
  {
  	return false;
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 36fc5687ec49e..c993d2fc21c53 100644
+index 8e0972db35da1..8bdc887489591 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -1865,7 +1865,8 @@ static bool too_many_isolated(struct pglist_data *pgdat, int file,
@@ -164,7 +165,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  
  	count_vm_events(PGDEACTIVATE, nr_deactivate);
  	count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
-@@ -4755,7 +4756,8 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
+@@ -4753,7 +4754,8 @@ static bool isolate_folio(struct lruvec *lruvec, struct folio *folio, struct sca
  
  static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  		       struct scan_control *sc, int type, int tier,
@@ -174,7 +175,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  {
  	enum node_stat_item item;
  	int zone_idx;
-@@ -4786,6 +4788,7 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4784,6 +4786,7 @@ static int scan_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  		seq = lrugen->max_seq;
  
  	seq = lruvec_populated_min_seq(lruvec, type, sc->reclaim_idx + 1, seq);
@@ -182,7 +183,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  	gen = lru_gen_from_seq(seq);
  	max_gen = lru_gen_from_seq(max_seq);
  
-@@ -4982,6 +4985,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4980,6 +4983,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	int tier, scanned, reclaimed;
  	int isolated = 0, nr_isolated = 0;
  	unsigned long total_reclaimed = 0;
@@ -190,7 +191,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  	bool skip_retry = false;
  	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
  	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-@@ -4993,7 +4997,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -4991,7 +4995,7 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  
  	tier = get_tier_idx(lruvec, type);
  	scanned = scan_folios(nr_to_scan, lruvec, sc,
@@ -199,7 +200,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  	nr_isolated = isolated;
  	if (nr_isolated)
  		__mod_node_page_state(pgdat, NR_ISOLATED_ANON + type,
-@@ -5019,8 +5023,6 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -5017,8 +5021,6 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  			type ? LRU_INACTIVE_FILE : LRU_INACTIVE_ANON);
  
  	list_for_each_entry_safe_reverse(folio, next, &list, lru) {
@@ -208,7 +209,7 @@ index 36fc5687ec49e..c993d2fc21c53 100644
  		/* move_folios_to_lru() culls unevictable folios via folio_putback_lru() */
  		if (!folio_evictable(folio))
  			continue;
-@@ -5039,11 +5041,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -5037,11 +5039,9 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  		 * so this effectively promotes them by at least one generation.
  		 */
  		folio_set_lru_refs(folio, 0);
