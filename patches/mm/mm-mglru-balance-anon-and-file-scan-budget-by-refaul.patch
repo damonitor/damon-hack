@@ -1,5 +1,5 @@
 From: Kairui Song <kasong@tencent.com>
-Date: Sat, 14 Nov 2026 02:55:32 +0800
+Date: Sun, 15 Nov 2026 04:07:54 +0800
 Subject: [PATCH] mm/mglru: balance anon and file scan budget by refault rate
 
 Replace get_type_to_scan() and isolate_folios(), which selected one
@@ -46,7 +46,7 @@ may not be worthwhile for a debugfs interface that is likely
 to be rarely used, especially given that we already have
 memory-level and node-level proactive reclaim interfaces.
 
-Link: https://lore.kernel.org/20261113185541.70203-8-baohua@kernel.org
+Link: https://lore.kernel.org/20261114200803.23129-8-baohua@kernel.org
 Signed-off-by: Kairui Song <kasong@tencent.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Gaofei Lyu <lyugaofei@xiaomi.com>
@@ -75,12 +75,15 @@ Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Cc: Bo Zhang <zhangbo0325@gmail.com>
+
+ mm/vmscan.c |  227 +++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 142 insertions(+), 85 deletions(-)
 ---
  mm/vmscan.c | 219 +++++++++++++++++++++++++++++++++-------------------
  1 file changed, 138 insertions(+), 81 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 7a21890ebeff5..8a74e01c2390d 100644
+index f7fbe91fedf32..18cf1c084e78d 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -4863,79 +4863,110 @@ static int get_tier_idx(struct lruvec *lruvec, int type)
@@ -110,8 +113,8 @@ index 7a21890ebeff5..8a74e01c2390d 100644
 + * r_file / r_anon: refault rate for file / anon.
 + * w_file / w_anon: LRU size weight of file / anon.
 + *
-+ * We don't calculate the scan cost, MGLRU uses lazy promotion, which will
-+ * cancel the scan budget natually.
++ * We don't calculate the scan cost. MGLRU uses lazy promotion, which will
++ * cancel the scan budget naturally.
 + */
 +static void lru_gen_balance_scan(struct lruvec *lruvec, int swappiness,
 +		unsigned long total_scan, unsigned long nr[])

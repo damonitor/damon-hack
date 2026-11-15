@@ -1,0 +1,70 @@
+From: Thorsten Blum <blum@kernel.org>
+Date: Sat, 14 Nov 2026 12:05:31 +0100
+Subject: [PATCH] init: remove strlcat() and sprintf() from do_one_initcall()
+
+In preparation for removing strlcat() from the kernel [1], format the
+warning directly in WARN().  This also removes the temporary 64-byte
+buffer and the sprintf() call while preserving the warning text.
+
+Link: https://lore.kernel.org/20261114110531.26138-2-blum@kernel.org
+Link: https://github.com/KSPP/linux/issues/370 [1]
+Signed-off-by: Thorsten Blum <blum@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Masami Hiramatsu <mhiramat@kernel.org>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Wilson Felipe Pereira <wfelipe@google.com>
+
+ init/main.c |   21 +++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+---
+ init/main.c | 21 +++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/init/main.c b/init/main.c
+index 30f2d11b7370e..8c995b256d308 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1409,7 +1409,8 @@ static inline void do_trace_initcall_level(const char *level)
+ int __init_or_module do_one_initcall(initcall_t fn)
+ {
+ 	int count = preempt_count();
+-	char msgbuf[64];
++	bool preempt_imbalanced;
++	bool irqs_left_disabled;
+ 	int ret;
+ 
+ 	if (initcall_blacklisted(fn))
+@@ -1419,17 +1420,17 @@ int __init_or_module do_one_initcall(initcall_t fn)
+ 	ret = fn();
+ 	do_trace_initcall_finish(fn, ret);
+ 
+-	msgbuf[0] = 0;
+-
+-	if (preempt_count() != count) {
+-		sprintf(msgbuf, "preemption imbalance ");
++	preempt_imbalanced = preempt_count() != count;
++	if (preempt_imbalanced)
+ 		preempt_count_set(count);
+-	}
+-	if (irqs_disabled()) {
+-		strlcat(msgbuf, "disabled interrupts ", sizeof(msgbuf));
++
++	irqs_left_disabled = irqs_disabled();
++	if (irqs_left_disabled)
+ 		local_irq_enable();
+-	}
+-	WARN(msgbuf[0], "initcall %pS returned with %s\n", fn, msgbuf);
++
++	WARN(preempt_imbalanced || irqs_left_disabled, "initcall %pS returned with %s%s\n", fn,
++	     preempt_imbalanced ? "preemption imbalance " : "",
++	     irqs_left_disabled ? "disabled interrupts " : "");
+ 
+ 	add_latent_entropy();
+ 	return ret;
+-- 
+2.47.3
+

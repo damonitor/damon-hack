@@ -1,18 +1,27 @@
 From: Bo Zhang <zhangbo56@xiaomi.com>
-Date: Sat, 14 Nov 2026 02:55:41 +0800
-Subject: [PATCH] mm/mglru: avoid scan anon while swapcache is low for GFP_NOIO
+Date: Sun, 15 Nov 2026 04:08:03 +0800
+Subject: [PATCH] mm/mglru: Avoid scan anon while swapcache is low for GFP_NOIO
  allocation
 
-With GFP_NOIO, we cannot reclaim anon folios unless they are in the swap
-cache.  CLRU skips anon reclaim when the swap cache is very low by commit
-74d9aa0d8e98 ("mm: vmscan: avoid anon scanning for GFP_NOIO with low
-swapcache").  Apply the same logic to MGLRU.
+With GFP_NOIO, we cannot reclaim anon folios unless they are in
+the swap cache. CLRU skips anon reclaim when the swap cache is
+very low by commit 74d9aa0d8e98 ("mm: vmscan: avoid anon scanning
+for GFP_NOIO with low swapcache"). Apply the same logic to MGLRU.
 
 The new scan-budget-based mechanism makes this straightforward to
-implement.  Thanks also to Xiang Liu, who previously attempted to fix this
-before we had the scan-budget-based model [1].
+implement. Thanks also to Xiang Liu, who previously attempted to fix
+this before we had the scan-budget-based model [1].
 
-Link: https://lore.kernel.org/20261113185541.70203-17-baohua@kernel.org
+One thing worth noting is that, for GFP_NOIO allocations, the
+lruvec size accounted for by lruvec_evictable_size() may be
+underestimated during lru_gen_age_node(), even though we count
+all zones for the min_ttl check.
+
+As explained in the commit message, the proper solution is to
+decouple the size check from min_ttl handling. We leave that
+improvement to a separate patch series.
+
+Link: https://lore.kernel.org/20261114200803.23129-17-baohua@kernel.org
 Link: https://lore.kernel.org/linux-mm/179248830836.1744016.8424217811286616919.noio-mglru-rfc-v2@bytedance.com/ [1]
 Signed-off-by: Bo Zhang <zhangbo56@xiaomi.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
@@ -42,12 +51,15 @@ Cc: Yuanchu Xie <yuanchu@google.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Cc: Bo Zhang <zhangbo0325@gmail.com>
+
+ mm/vmscan.c |   27 ++++++++++-----------------
+ 1 file changed, 10 insertions(+), 17 deletions(-)
 ---
  mm/vmscan.c | 27 ++++++++++-----------------
  1 file changed, 10 insertions(+), 17 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 9ebfa3e4eeb06..18a3332c71e99 100644
+index ce5c786712961..7acc9acad9851 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -272,13 +272,6 @@ static inline bool reclaimable_anon_is_low(struct mem_cgroup *memcg,
@@ -64,7 +76,7 @@ index 9ebfa3e4eeb06..18a3332c71e99 100644
  	if (memcg) {
  		struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
  
-@@ -4211,6 +4204,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
+@@ -4214,6 +4207,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
  	int type;
  	unsigned long seq;
  	struct lru_gen_folio *lrugen = &lruvec->lrugen;
@@ -73,16 +85,16 @@ index 9ebfa3e4eeb06..18a3332c71e99 100644
  	DEFINE_MAX_SEQ(lruvec);
  	DEFINE_MIN_SEQ(lruvec);
  
-@@ -4218,6 +4213,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
+@@ -4221,6 +4216,8 @@ static void lruvec_evictable_size(struct lruvec *lruvec, struct scan_control *sc
  	nr[LRU_GEN_FILE] = 0;
  
  	for_each_evictable_type(type, swappiness) {
 +		if (type == LRU_GEN_ANON && !can_reclaim_anon_pages(memcg, nid, sc))
 +			continue;
  		for (seq = min_seq[type]; seq <= max_seq; seq++)
- 			nr[type] += lruvec_gen_size(lrugen, type, seq, sc->reclaim_idx + 1);
+ 			nr[type] += lruvec_gen_size(lrugen, type, seq, max_zone);
  	}
-@@ -4904,23 +4901,19 @@ static void lru_gen_balance_scan(struct lruvec *lruvec, struct scan_control *sc,
+@@ -4906,23 +4903,19 @@ static void lru_gen_balance_scan(struct lruvec *lruvec, struct scan_control *sc,
  {
  	struct lru_gen_folio *lrugen = &lruvec->lrugen;
  	u64 refault_rate[ANON_AND_FILE], anon_factor, file_factor;

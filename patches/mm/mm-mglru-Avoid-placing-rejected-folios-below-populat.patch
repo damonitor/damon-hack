@@ -1,31 +1,31 @@
 From: "Barry Song (Xiaomi)" <baohua@kernel.org>
-Date: Sat, 14 Nov 2026 02:55:34 +0800
-Subject: [PATCH] mm/mglru: avoid placing rejected folios below populated gen
+Date: Sun, 15 Nov 2026 04:07:56 +0800
+Subject: [PATCH] mm/mglru: Avoid placing rejected folios below populated gen
 
-We used to scan only the oldest generation in scan_folios().  In
-evict_folios(), we checked whether lru_gen_folio_seq(lruvec, folio, false)
-== min_seq[type].  If so, the folio was marked active and moved to younger
-generations.
+We used to scan only the oldest generation in scan_folios(). In
+evict_folios(), we checked whether
+lru_gen_folio_seq(lruvec, folio, false) == min_seq[type]. If so, the
+folio was marked active and moved to younger generations.
 
-This was itself buggy, as folios in generation min_seq[type] - 1 would not
-be marked active by folio_set_active(), potentially causing a cold/hot
-inversion.
+This was itself buggy, as folios in generation min_seq[type] - 1
+would not be marked active by folio_set_active(), potentially causing
+a cold/hot inversion.
 
 Besides this issue, the old approach also differs from the current
-behavior, where we can scan fewer than two generations.  Now that we can
-scan younger generations, including the youngest generation, this no
-longer prevents rejected folios from being placed in a generation below or
-at the populated generation.  Such rejected folios would then be scanned
-again and again, resulting in extremely low `pg_steal/pg_scan` ratios.
-For example:
+behavior, where we can scan fewer than two generations.
+Now that we can scan younger generations, including the youngest
+generation, this no longer prevents rejected folios from being placed
+in a generation below or at the populated generation. Such rejected
+folios would then be scanned again and again, resulting in extremely
+low `pg_steal/pg_scan` ratios. For example:
   pgsteal_file: 2312605
   pgscan_file:  36465693
   reclamation efficiency: 6.34%
 
 We pass `scanned_seq` to `move_folios_to_lru()` and make sure we either
 promote the folio or place it in the youngest generation when the
-populated generation is already the youngest one.  Also,
-folio_set_active() is no longer needed.
+populated generation is already the youngest one.
+Also, folio_set_active() is no longer needed.
 
 With this change, the results become:
   pgsteal_file: 2683815
@@ -35,7 +35,7 @@ With this change, the results become:
 The sys time for building the kernel also decreased from 4m30.532s to
 3m50.188s while swappiness==1.
 
-Link: https://lore.kernel.org/20261113185541.70203-10-baohua@kernel.org
+Link: https://lore.kernel.org/20261114200803.23129-10-baohua@kernel.org
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Reviewed-by: Kunwu Chan <kunwu.chan@gmail.com>
@@ -63,6 +63,10 @@ Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 Cc: Kunwu Chan <chentao@kylinos.cn>
 Cc: Bo Zhang <zhangbo0325@gmail.com>
+
+ include/linux/mm_inline.h |   22 +++++++++++++++++++++-
+ mm/vmscan.c               |   24 ++++++++++++------------
+ 2 files changed, 33 insertions(+), 13 deletions(-)
 ---
  include/linux/mm_inline.h | 22 +++++++++++++++++++++-
  mm/vmscan.c               | 24 ++++++++++++------------
@@ -123,7 +127,7 @@ index ab69b9930893f..f6f4bc9a704fe 100644
  {
  	return false;
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 8e0972db35da1..8bdc887489591 100644
+index b538abf025789..0fef966b0a14c 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -1865,7 +1865,8 @@ static bool too_many_isolated(struct pglist_data *pgdat, int file,

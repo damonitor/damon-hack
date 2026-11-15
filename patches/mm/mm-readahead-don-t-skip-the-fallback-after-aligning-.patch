@@ -1,0 +1,87 @@
+From: Gopal Malaviya <gopalmalaviya53@gmail.com>
+Date: Fri, 13 Nov 2026 07:27:11 +0000
+Subject: [PATCH] mm/readahead: don't skip the fallback after aligning index
+ down
+
+page_cache_ra_order() rounds the start of the readahead window down to the
+minimum folio size of the mapping, so on a file system with blocks larger
+than the page size, index can end up below start.  If adding the first
+folio then fails, for example with -EEXIST because that folio is already
+cached, the loop stops with index still below start, and the check before
+the fallback
+
+	if (ra->size > index - start)
+
+wraps around, so do_page_cache_ra() is not called and nothing of the
+window is read.
+
+For example, with read_ahead_kb 128 and 16 KiB blocks, the mmap
+read-around window for a fault on page 1042 starts at page 1026, index
+becomes 1024, and if pages 1024-1027 are cached, pages 1028-1057 are not
+read ahead.
+
+Compare with the end of the window instead.  Where index is not below
+start, this is the same check and the same number of pages as before.
+
+Tested in a KVM guest (x86_64, 2 vCPUs, 3 GiB) on mm-hotfixes-unstable,
+with XFS with 16 KiB blocks and with ext4 on virtio-blk, read_ahead_kb
+128.  A test caches page 1026 of a file with pread() on a
+POSIX_FADV_RANDOM descriptor, then faults page 1042 through a mapping, and
+counts the cached pages of the window [1026, 1058) with mincore():
+
+                                       before   after
+  XFS, 16 KiB blocks                      6       32
+  XFS, 16 KiB blocks, nothing cached     32       32
+  ext4                                   32       32
+
+Tracing shows the fallback now running after the -EEXIST, as
+page_cache_ra_unbounded with index=1024 and nr_to_read=34.
+
+Touching 1% of the pages of a cold 20 GiB file on XFS with 16 KiB blocks,
+at random, at a stride of 2053 pages, or as random runs of 2 or 4 adjacent
+pages, reads the same amount before and after, within 5% over two runs
+each, at read_ahead_kb 128 and 8192.
+
+The problem was pointed out by the Sashiko AI review of an unrelated patch
+[1].  An AI assistant (Claude) helped with the analysis and the test, and
+drafted this changelog.  I reviewed, implemented, built and tested the
+change.
+
+Link: https://lore.kernel.org/20261113072711.235264-1-gopalmalaviya53@gmail.com
+Link: https://sashiko.dev/#/bug/linux-da6e8836-f808-4b39-9f04-de52995a0162 [1]
+Fixes: d5ea5e5e50df ("readahead: properly shorten readahead when falling back to do_page_cache_ra()")
+Signed-off-by: Gopal Malaviya <gopalmalaviya53@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Pankaj Raghav <p.raghav@samsung.com>
+
+ mm/readahead.c |    8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+---
+ mm/readahead.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/mm/readahead.c b/mm/readahead.c
+index 6e5563290287e..afcde18316316 100644
+--- a/mm/readahead.c
++++ b/mm/readahead.c
+@@ -552,10 +552,12 @@ void page_cache_ra_order(struct readahead_control *ractl,
+ fallback:
+ 	/*
+ 	 * ->readahead() may have updated readahead window size so we have to
+-	 * check there's still something to read.
++	 * check there's still something to read. Compare with the end of the
++	 * window, as index may have been rounded down below start to the
++	 * minimum folio size.
+ 	 */
+-	if (ra->size > index - start)
+-		do_page_cache_ra(ractl, ra->size - (index - start),
++	if (index < start + ra->size)
++		do_page_cache_ra(ractl, start + ra->size - index,
+ 				 ra->async_size);
+ }
+ 
+-- 
+2.47.3
+

@@ -1,5 +1,5 @@
 From: Hongfu Li <lihongfu@kylinos.cn>
-Date: Wed, 4 Nov 2026 16:49:10 +0800
+Date: Fri, 13 Nov 2026 10:52:37 +0800
 Subject: [PATCH] selftests/mm: mlock2-tests: fix fclose(NULL) in
  is_vmflag_set()
 
@@ -8,24 +8,35 @@ fails.  smaps is NULL on that path, and the code at the 'out' label calls
 fclose(smaps) unconditionally.  fclose(NULL) is undefined behaviour, so
 the test crashes before it can report a test result.
 
-Link: https://lore.kernel.org/20261104-for-mlock2-v1-1-57e6dd74c2bd@kylinos.cn
+Return early on that error path instead, so smaps is always valid at the
+'out' label.
+
+get_value_for_name() follows the same pattern.  Return early on the
+seek_to_smaps_entry() error path there as well, and drop the now redundant
+'if (smaps)' guard on the fclose().
+
+Link: https://lore.kernel.org/20261113-for-mlock2-v2-1-f62195fc8394@kylinos.cn
+Fixes: b3b0d09c7a23 ("selftests: vm: add tests for lock on fault")
 Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
-Cc: David Hildenbrand <david@kernel.org>
-Cc: Lorenzo Stoakes <ljs@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Mike Rapoport <rppt@kernel.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Michal Hocko <mhocko@suse.com>
 Cc: Shuah Khan <shuah@kernel.org>
+Cc: <hongfu.li@linux.dev>
+
+ tools/testing/selftests/mm/mlock2-tests.c |    7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
 ---
- tools/testing/selftests/mm/mlock2-tests.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ tools/testing/selftests/mm/mlock2-tests.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
 
 diff --git a/tools/testing/selftests/mm/mlock2-tests.c b/tools/testing/selftests/mm/mlock2-tests.c
-index 144b550813a6e..85e6cd24515a6 100644
+index 144b550813a6e..455f1c841dec3 100644
 --- a/tools/testing/selftests/mm/mlock2-tests.c
 +++ b/tools/testing/selftests/mm/mlock2-tests.c
 @@ -66,7 +66,7 @@ static bool is_vmflag_set(unsigned long addr, const char *vmflag)
@@ -37,6 +48,26 @@ index 144b550813a6e..85e6cd24515a6 100644
  	}
  
  	while (getline(&line, &size, smaps) > 0) {
+@@ -103,7 +103,7 @@ static unsigned long get_value_for_name(unsigned long addr, const char *name)
+ 	smaps = seek_to_smaps_entry(addr);
+ 	if (!smaps) {
+ 		ksft_print_msg("Unable to parse /proc/self/smaps\n");
+-		goto out;
++		return value;
+ 	}
+ 
+ 	while (getline(&line, &size, smaps) > 0) {
+@@ -123,9 +123,8 @@ static unsigned long get_value_for_name(unsigned long addr, const char *name)
+ 	}
+ 
+ out:
+-	if (smaps)
+-		fclose(smaps);
+ 	free(line);
++	fclose(smaps);
+ 	return value;
+ }
+ 
 -- 
 2.47.3
 

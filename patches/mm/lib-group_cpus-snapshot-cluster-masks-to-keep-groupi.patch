@@ -1,5 +1,5 @@
 From: Vishal Badole <Vishal.Badole@amd.com>
-Date: Tue, 10 Nov 2026 23:15:13 +0530
+Date: Sat, 14 Nov 2026 20:44:03 +0530
 Subject: [PATCH] lib/group_cpus: snapshot cluster masks to keep grouping
  hotplug invariant
 
@@ -46,23 +46,26 @@ propagate later allocation errors instead of switching algorithms.  This
 keeps successful spreads stable across CPU offline/online cycles for an
 unchanged group count, present/possible CPU sets and NUMA topology.
 
-Link: https://lore.kernel.org/20261110174513.461743-1-Vishal.Badole@amd.com
+Link: https://lore.kernel.org/20261114151403.1379591-1-Vishal.Badole@amd.com
 Fixes: 89802ca36c96 ("lib/group_cpus: make group CPU cluster aware")
 Signed-off-by: Vishal Badole <Vishal.Badole@amd.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: Thomas Gleixner <tglx@kernel.org>
-Cc: <bp@alien8.de>
+Cc: Borislav Petkov <bp@alien8.de>
 Cc: Wangyang Guo <wangyang.guo@intel.com>
 Cc: Tianyou Li <tianyou.li@intel.com>
 Cc: Tim Chen <tim.c.chen@linux.intel.com>
 Cc: Dan Liang <dan.liang@intel.com>
 Cc: <stable@vger.kernel.org>
+
+ lib/group_cpus.c |  125 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 106 insertions(+), 19 deletions(-)
 ---
  lib/group_cpus.c | 125 ++++++++++++++++++++++++++++++++++++++++-------
  1 file changed, 106 insertions(+), 19 deletions(-)
 
 diff --git a/lib/group_cpus.c b/lib/group_cpus.c
-index e6e18d7a49bba..7d878c94898d0 100644
+index e6e18d7a49bba..79aa911b05ba9 100644
 --- a/lib/group_cpus.c
 +++ b/lib/group_cpus.c
 @@ -6,11 +6,14 @@
@@ -174,17 +177,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
  static int alloc_cluster_groups(unsigned int ncpus,
  				unsigned int ngroups,
  				struct cpumask *node_cpumask,
-@@ -299,6 +380,9 @@ static int alloc_cluster_groups(unsigned int ncpus,
- 	const struct cpumask **clusters;
- 	struct node_groups *cluster_groups;
- 
-+	if (!cluster_snapshot)
-+		goto no_cluster;
-+
- 	cpumask_copy(msk, node_cpumask);
- 
- 	/* Probe how many clusters in this node. */
-@@ -307,7 +391,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
+@@ -307,7 +388,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
  		if (cpu >= nr_cpu_ids)
  			break;
  
@@ -193,7 +186,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
  		if (!cpumask_weight(cluster_mask))
  			goto no_cluster;
  		/* Clean out CPUs on the same cluster. */
-@@ -322,7 +406,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
+@@ -322,7 +403,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
  	/* Allocate memory based on cluster number. */
  	clusters = kzalloc_objs(*clusters, ncluster);
  	if (!clusters)
@@ -202,7 +195,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
  	cluster_groups = kzalloc_objs(struct node_groups, ncluster);
  	if (!cluster_groups)
  		goto fail_cluster_groups;
-@@ -331,7 +415,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
+@@ -331,7 +412,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
  	cpumask_copy(msk, node_cpumask);
  	for (n = 0; n < ncluster; n++) {
  		cpu = cpumask_first(msk);
@@ -211,7 +204,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
  		nc = cpumask_weight_and(cluster_mask, node_cpumask);
  		clusters[n] = cluster_mask;
  		cluster_groups[n].id = n;
-@@ -347,6 +431,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
+@@ -347,6 +428,7 @@ static int alloc_cluster_groups(unsigned int ncpus,
  
   fail_cluster_groups:
  	kfree(clusters);
@@ -219,7 +212,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
   no_cluster:
  	return 0;
  }
-@@ -354,9 +439,9 @@ static int alloc_cluster_groups(unsigned int ncpus,
+@@ -354,9 +436,9 @@ static int alloc_cluster_groups(unsigned int ncpus,
  /*
   * Try group CPUs evenly for cluster locality within a NUMA node.
   *
@@ -231,7 +224,7 @@ index e6e18d7a49bba..7d878c94898d0 100644
  				     unsigned int ngroups,
  				     struct cpumask *node_cpumask,
  				     struct cpumask *masks,
-@@ -365,18 +450,17 @@ static bool __try_group_cluster_cpus(unsigned int ncpus,
+@@ -365,18 +447,20 @@ static bool __try_group_cluster_cpus(unsigned int ncpus,
  {
  	struct node_groups *cluster_groups;
  	const struct cpumask **clusters;
@@ -241,6 +234,9 @@ index e6e18d7a49bba..7d878c94898d0 100644
  	cpumask_var_t nmsk;
  	unsigned int i, nc;
  
++	if (!cluster_snapshot)
++		return 0;
++
  	if (!zalloc_cpumask_var(&nmsk, GFP_KERNEL))
 -		goto fail_nmsk_alloc;
 +		return -ENOMEM;

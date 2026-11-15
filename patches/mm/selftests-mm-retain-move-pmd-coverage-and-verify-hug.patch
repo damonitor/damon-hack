@@ -1,0 +1,78 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Fri, 13 Nov 2026 20:35:51 -0800
+Subject: [PATCH] selftests/mm: retain move-pmd coverage and verify huge PMDs
+
+The move-pmd tests need room for a PMD-aligned range. John J.
+Coleman's patch [1] provides two PMD spans, but replaces the 32 MiB
+default with 4 MiB on 4K-page, 2MiB-PMD systems. With unaligned mmap
+addresses, that reduces the test from about fifteen PMD-sized moves
+to one. Retain 32 MiB as the minimum.
+
+MADV_HUGEPAGE is advisory. If the source is PTE-mapped, a PMD-sized
+UFFDIO_MOVE can succeed through move_pages_ptes() without exercising
+the huge-PMD path. Collapse the first aligned source PMD and check its
+mapping before either PMD test. Report a skip when a huge PMD cannot
+be obtained, rather than reporting a pass for a PTE-only run.
+
+Link: https://lore.kernel.org/r/20261113040045.1439391-1-jocolema@redhat.com [1]
+Fixes: a2bf6a9ca805 ("selftests/mm: add UFFDIO_MOVE ioctl test")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ tools/testing/selftests/mm/uffd-unit-tests.c | 25 +++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/uffd-unit-tests.c b/tools/testing/selftests/mm/uffd-unit-tests.c
+index 7ceff0d852bfb..dc91f2b6f146f 100644
+--- a/tools/testing/selftests/mm/uffd-unit-tests.c
++++ b/tools/testing/selftests/mm/uffd-unit-tests.c
+@@ -2124,8 +2124,28 @@ static void uffd_move_test(uffd_global_test_opts_t *gopts, uffd_test_args_t *tar
+ 	uffd_move_test_common(gopts, targs, gopts->page_size, uffd_move_handle_fault);
+ }
+ 
++/*
++ * A PMD-sized UFFDIO_MOVE can also move PTEs. Make sure these tests
++ * start with a huge PMD, rather than passing through the PTE path.
++ */
++static bool uffd_move_pmd_ready(uffd_global_test_opts_t *gopts)
++{
++	unsigned long pmd_size = pmd_psize();
++	char *src = ALIGN_UP(gopts->area_src, pmd_size);
++
++	if (madvise(src, pmd_size, MADV_COLLAPSE) ||
++	    !check_huge_anon(src, pmd_size, 1, pmd_size)) {
++		uffd_test_skip("could not obtain a huge PMD for the source");
++		return false;
++	}
++
++	return true;
++}
++
+ static void uffd_move_pmd_test(uffd_global_test_opts_t *gopts, uffd_test_args_t *targs)
+ {
++	if (!uffd_move_pmd_ready(gopts))
++		return;
+ 	if (madvise(gopts->area_dst, gopts->nr_pages * gopts->page_size, MADV_HUGEPAGE))
+ 		err("madvise(MADV_HUGEPAGE) failure");
+ 	uffd_move_test_common(gopts, targs, pmd_psize(),
+@@ -2225,6 +2245,8 @@ static void uffd_move_pmd_huge_zeropage_test(uffd_global_test_opts_t *gopts,
+ 
+ static void uffd_move_pmd_split_test(uffd_global_test_opts_t *gopts, uffd_test_args_t *targs)
+ {
++	if (!uffd_move_pmd_ready(gopts))
++		return;
+ 	if (madvise(gopts->area_dst, gopts->nr_pages * gopts->page_size, MADV_NOHUGEPAGE))
+ 		err("madvise(MADV_NOHUGEPAGE) failure");
+ 	uffd_move_test_common(gopts, targs, pmd_psize(),
+@@ -2493,7 +2515,8 @@ static int set_pmd_pagesize_nr_pages(uffd_global_test_opts_t *gopts, const char
+ 		return -1;
+ 	}
+ 
+-	gopts->nr_pages = (2 * pmd_pagesize) / gopts->page_size;
++	gopts->nr_pages = MAX(UFFD_TEST_MEM_SIZE, 2 * pmd_pagesize) /
++			  gopts->page_size;
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+
