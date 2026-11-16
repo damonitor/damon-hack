@@ -1,0 +1,45 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Sun, 15 Nov 2026 06:55:10 -0800
+Subject: [PATCH] ocfs2: skip network flush when no domain handlers are
+ registered
+
+Cen's domain-handler cleanup drains the o2net workqueue before destroying
+dlm_worker.  The handler list can be empty on registration failure before
+the first handler is installed.  A partial registration failure can also
+call dlm_unregister_domain_handlers() twice: once in the registration
+error path and again in the join error path.  The second call finds an
+empty list.
+
+An empty list has no domain handlers left to drain.  Avoid taking
+o2net_wq_mutex and flushing unrelated receive work in these cases, as
+Joseph Qi requested [1].  Keep the unregister-and-flush operation for a
+nonempty list so in-flight handlers finish before dlm_worker is destroyed.
+
+Link: https://lore.kernel.org/r/88281285-5b3e-4266-88d9-784dfea5ebe7@linux.alibaba.com [1]
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+
+ fs/ocfs2/dlm/dlmdomain.c |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+---
+ fs/ocfs2/dlm/dlmdomain.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/fs/ocfs2/dlm/dlmdomain.c b/fs/ocfs2/dlm/dlmdomain.c
+index 06e659de113ae..d4f2aecc62637 100644
+--- a/fs/ocfs2/dlm/dlmdomain.c
++++ b/fs/ocfs2/dlm/dlmdomain.c
+@@ -1708,7 +1708,8 @@ static void dlm_unregister_domain_handlers(struct dlm_ctxt *dlm)
+ {
+ 	o2hb_unregister_callback(dlm->name, &dlm->dlm_hb_up);
+ 	o2hb_unregister_callback(dlm->name, &dlm->dlm_hb_down);
+-	o2net_unregister_and_flush_handler_list(&dlm->dlm_domain_handlers);
++	if (!list_empty(&dlm->dlm_domain_handlers))
++		o2net_unregister_and_flush_handler_list(&dlm->dlm_domain_handlers);
+ }
+ 
+ static int dlm_register_domain_handlers(struct dlm_ctxt *dlm)
+-- 
+2.47.3
+

@@ -1,0 +1,62 @@
+From: Nguyen Ngoc Thang <ngocthang2710.1999@gmail.com>
+Date: Sun, 15 Nov 2026 17:46:56 +0700
+Subject: [PATCH] ocfs2: don't reuse SINGLE_DEPTH_NESTING for unpublished inode
+ ip_alloc_sem
+
+Commit c204bf5ac3ee ("ocfs2: fix deadlock in inline-data truncate
+transactions") made ocfs2_xattr_set_handle() take ip_alloc_sem of a
+not-yet-published inode inside the create transaction, under subclass
+OCFS2_IP_ALLOC_SEM_UNPUBLISHED = 1, so lockdep records:
+
+  sb_internal -> j_trans_barrier -> ip_alloc_sem/1
+
+But subclass 1 is SINGLE_DEPTH_NESTING, which ocfs2_remap_file_range()
+already uses for the destination inode, and the remap then starts a
+transaction in ocfs2_duplicate_inline_data():
+
+  ip_alloc_sem/1 -> sb_internal
+
+Lockdep merges the two and reports a circular dependency.  It cannot
+deadlock, since the unpublished inode is unreachable by anyone else, but
+the warning hides real reports.
+
+Give the unpublished subclass its own value past SINGLE_DEPTH_NESTING.
+
+Link: https://lore.kernel.org/20261115104656.210945-1-ngocthang2710.1999@gmail.com
+Fixes: c204bf5ac3ee ("ocfs2: fix deadlock in inline-data truncate transactions")
+Signed-off-by: Nguyen Ngoc Thang <ngocthang2710.1999@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+3f66416993279938e957@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=3f66416993279938e957
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+
+ fs/ocfs2/xattr.c |    5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+---
+ fs/ocfs2/xattr.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/fs/ocfs2/xattr.c b/fs/ocfs2/xattr.c
+index ac41653e59f50..1c764eab46711 100644
+--- a/fs/ocfs2/xattr.c
++++ b/fs/ocfs2/xattr.c
+@@ -3867,10 +3867,11 @@ static int __ocfs2_xattr_set_handle(struct inode *inode,
+  * ip_alloc_sem there adds a transaction -> ip_alloc_sem order that would
+  * form a lockdep cycle with the ip_alloc_sem -> transaction order used
+  * elsewhere, if not for this separate subclass.  The inode is unpublished
+- * so the acquisition can never contend.
++ * so the acquisition can never contend.  It must not collide with the
++ * SINGLE_DEPTH_NESTING subclass ocfs2_remap_file_range() uses.
+  */
+ enum {
+-	OCFS2_IP_ALLOC_SEM_UNPUBLISHED = 1,
++	OCFS2_IP_ALLOC_SEM_UNPUBLISHED = SINGLE_DEPTH_NESTING + 1,
+ };
+ 
+ /*
+-- 
+2.47.3
+

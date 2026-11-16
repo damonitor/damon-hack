@@ -1,0 +1,176 @@
+From: Yingjie Wang <x-professor@outlook.com>
+Date: Thu, 29 Oct 2026 05:03:26 +0000
+Subject: [PATCH] ipc/sem: reject negative SEMOPM values
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A negative SEMOPM becomes a large unsigned limit in semop(), allowing
+operation counts that the configured limit should reject.  Separately, a
+kernel.sem write can return ERANGE for an invalid SEMMNI while leaving
+earlier fields changed; if it leaves SEMOPM at zero, subsequent nonempty
+semop() calls in that IPC namespace fail with E2BIG.  Validate the whole
+write before changing the live settings.
+
+The SEMOPM field has been stored as an int while semop() receives an
+unsigned operation count since the beginning of Git history. A negative
+SEMOPM accepted by proc_dointvec() is converted to a large unsigned value
+in the comparison, defeating the intended operation-count limit.
+
+Commit 50ec499b9a43 ("sysctl: allow change system v ipc sysctls inside ipc
+namespace") made kernel.sem writable by IPC namespace owners without
+capabilities in the initial user namespace.
+
+Parse writes against a temporary copy and validate SEMOPM and SEMMNI
+before changing the live settings. Hold a per-namespace mutex from the
+snapshot through publication so concurrent sysctl writers cannot publish
+stale values for fields they did not supply. Access the live fields with
+READ_ONCE() and WRITE_ONCE(), preserving the per-field access semantics of
+proc_dointvec(). Read requests continue to use proc_dointvec() directly.
+
+Failed writes leave the live settings unchanged. Successful partial writes
+change only the supplied fields relative to the latest locked snapshot.
+The writer mutex retains the existing per-field visibility for readers.
+
+Keep zero and positive SEMOPM values valid. Zero continues to reject every
+non-empty semop() request.
+
+Link: https://lore.kernel.org/16988f0510fc9ebe56c4f337facf92071fb52355.1793250194.git.x-professor@outlook.com
+Link: https://lore.kernel.org/r/51c93c19-f1dd-455f-8698-6b1ee30eb630@colorfullife.com
+Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+Signed-off-by: Yingjie Wang <x-professor@outlook.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Andrew Morton <akpm@linux-foundation.org>
+Link: https://lore.kernel.org/r/20261016155905.2a659b7bb7d61f33467a3263@linux-foundation.org
+Reviewed-by: Manfred Spraul <manfred@colorfullife.com>
+Cc: Alexey Gladkov <legion@kernel.org>
+Cc: Eric W. Biederman <ebiederm@xmission.com>
+Cc: Vasily Averin <vasily.averin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Alejandro Colomar <alx@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: <stable@vger.kernel.org>
+
+ include/linux/ipc_namespace.h |    3 ++
+ ipc/ipc_sysctl.c              |   35 +++++++++++++++++++++++---------
+ ipc/sem.c                     |    1
+ ipc/util.h                    |    9 --------
+ 4 files changed, 30 insertions(+), 18 deletions(-)
+---
+ include/linux/ipc_namespace.h |  3 +++
+ ipc/ipc_sysctl.c              | 35 ++++++++++++++++++++++++++---------
+ ipc/sem.c                     |  1 +
+ ipc/util.h                    |  9 ---------
+ 4 files changed, 30 insertions(+), 18 deletions(-)
+
+diff --git a/include/linux/ipc_namespace.h b/include/linux/ipc_namespace.h
+index 12faca29bbb9c..c06568ccfca88 100644
+--- a/include/linux/ipc_namespace.h
++++ b/include/linux/ipc_namespace.h
+@@ -4,6 +4,7 @@
+ 
+ #include <linux/err.h>
+ #include <linux/idr.h>
++#include <linux/mutex.h>
+ #include <linux/rwsem.h>
+ #include <linux/notifier.h>
+ #include <linux/nsproxy.h>
+@@ -31,6 +32,8 @@ struct ipc_ids {
+ struct ipc_namespace {
+ 	struct ipc_ids	ids[3];
+ 
++	/* Serialize kernel.sem writers. */
++	struct mutex	sem_ctls_mutex;
+ 	int		sem_ctls[4];
+ 	int		used_sems;
+ 
+diff --git a/ipc/ipc_sysctl.c b/ipc/ipc_sysctl.c
+index d038d944257f6..0e3608258fe29 100644
+--- a/ipc/ipc_sysctl.c
++++ b/ipc/ipc_sysctl.c
+@@ -51,21 +51,38 @@ static int proc_ipc_auto_msgmni(const struct ctl_table *table, int write,
+ static int proc_ipc_sem_dointvec(const struct ctl_table *table, int write,
+ 	void *buffer, size_t *lenp, loff_t *ppos)
+ {
++	struct ctl_table ipc_table;
+ 	struct ipc_namespace *ns =
+ 		container_of(table->data, struct ipc_namespace, sem_ctls);
+-	int ret, semmni;
++	int sem_ctls[ARRAY_SIZE(ns->sem_ctls)];
++	size_t i;
++	int ret;
++
++	if (!write)
++		return proc_dointvec(table, write, buffer, lenp, ppos);
+ 
+-	semmni = ns->sem_ctls[3];
+-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
++	mutex_lock(&ns->sem_ctls_mutex);
++	for (i = 0; i < ARRAY_SIZE(sem_ctls); i++)
++		sem_ctls[i] = READ_ONCE(ns->sem_ctls[i]);
+ 
+-	if (!ret)
+-		ret = sem_check_semmni(ns);
++	ipc_table = *table;
++	ipc_table.data = sem_ctls;
+ 
+-	/*
+-	 * Reset the semmni value if an error happens.
+-	 */
++	ret = proc_dointvec(&ipc_table, write, buffer, lenp, ppos);
+ 	if (ret)
+-		ns->sem_ctls[3] = semmni;
++		goto out_unlock;
++
++	if (sem_ctls[2] < 0 ||
++	    sem_ctls[3] < 0 || sem_ctls[3] > ipc_mni) {
++		ret = -ERANGE;
++		goto out_unlock;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(sem_ctls); i++)
++		WRITE_ONCE(ns->sem_ctls[i], sem_ctls[i]);
++
++out_unlock:
++	mutex_unlock(&ns->sem_ctls_mutex);
+ 	return ret;
+ }
+ 
+diff --git a/ipc/sem.c b/ipc/sem.c
+index a464c65252cc6..2a1e409f189cf 100644
+--- a/ipc/sem.c
++++ b/ipc/sem.c
+@@ -248,6 +248,7 @@ static int sysvipc_sem_proc_show(struct seq_file *s, void *it);
+ 
+ void sem_init_ns(struct ipc_namespace *ns)
+ {
++	mutex_init(&ns->sem_ctls_mutex);
+ 	ns->sc_semmsl = SEMMSL;
+ 	ns->sc_semmns = SEMMNS;
+ 	ns->sc_semopm = SEMOPM;
+diff --git a/ipc/util.h b/ipc/util.h
+index 55a76f94667cd..abf12db19fa97 100644
+--- a/ipc/util.h
++++ b/ipc/util.h
+@@ -246,15 +246,6 @@ int ipcget(struct ipc_namespace *ns, struct ipc_ids *ids,
+ void free_ipcs(struct ipc_namespace *ns, struct ipc_ids *ids,
+ 		void (*free)(struct ipc_namespace *, struct kern_ipc_perm *));
+ 
+-static inline int sem_check_semmni(struct ipc_namespace *ns) {
+-	/*
+-	 * Check semmni range [0, ipc_mni]
+-	 * semmni is the last element of sem_ctls[4] array
+-	 */
+-	return ((ns->sem_ctls[3] < 0) || (ns->sem_ctls[3] > ipc_mni))
+-		? -ERANGE : 0;
+-}
+-
+ #ifdef CONFIG_COMPAT
+ #include <linux/compat.h>
+ struct compat_ipc_perm {
+-- 
+2.47.3
+

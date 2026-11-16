@@ -1,0 +1,117 @@
+From: Yingjie Wang <x-professor@outlook.com>
+Date: Thu, 29 Oct 2026 05:03:25 +0000
+Subject: [PATCH] ipc/sem: account dynamically allocated sops arrays to memcg
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "ipc/sem: account dynamic sops arrays and validate SEMOPM",
+v5.
+
+Subject: [PATCH v5 0/3] ipc/sem: account dynamic sops arrays and validate SEMOPM
+
+An IPC namespace owner can raise SEMOPM and make semop() allocate a large
+operation array.  A blocked call retains the array.  These allocations are
+currently uncharged to the caller's memory cgroup, so repeated calls can
+consume host memory beyond a container's limit.  In one test, a call
+retained 60,936,448 bytes while a 32 MiB cgroup recorded less than 1 MiB.
+Sixteen concurrent calls retained 100,860,416 bytes while the cgroup
+recorded about 1.3 MiB.
+
+The SEMOPM sysctl also accepts negative values.  Because the operation
+count is unsigned, SEMOPM=-1 becomes an effective limit of UINT_MAX.
+Separately, a rejected kernel.sem write can leave earlier fields changed:
+an invalid SEMMNI can return ERANGE after setting SEMOPM to zero, causing
+subsequent nonempty semop() calls in that IPC namespace to fail with
+E2BIG.
+
+Patch 1 charges dynamically allocated operation arrays in the regular
+semop() path to the caller's memory cgroup.  Patch 2 parses and validates
+kernel.sem writes before publishing them and serializes writers within
+each IPC namespace.  Patch 3 removes the obsolete warning that SEMOPM
+above 1000 risks physical memory fragmentation; the operation array uses
+kvmalloc().
+
+Accounting contains the large-array case when the caller's memory cgroup
+has an effective limit.  The series does not impose a maximum on positive
+SEMOPM values, so a root or unlimited cgroup can still request large
+allocations.
+
+Validation included x86-64 and i386 builds, initial and user-owned IPC
+namespace checks, concurrent sysctl writes, operation-count boundaries,
+and allocation cleanup on success and error paths.  In a limited memory
+cgroup, accounting increased median successful-call time by 2.3% to 3.2%
+for 65, 500 and 1000 operations; the allocation-focused invalid semaphore
+ID case increased by 5.6% to 11.9%.
+
+
+This patch (of 3):
+
+A caller can raise SEMOPM and keep large, uncharged operation arrays alive
+in blocked semop() calls.  Repeating this from a memory-limited cgroup can
+exhaust host memory outside that cgroup, causing reclaim, stalls, or OOM
+kills of unrelated processes.  Charging the arrays lets an effective memcg
+limit contain that memory use.
+
+Commit 6a4746ba0619 ("ipc: remove memcg accounting for sops objects in
+do_semtimedop()") removed accounting based on the assumption that sops
+arrays would remain small, describing a maximum cost of two pages.
+
+SEMOPM is a UAPI default that can be changed at build time and through
+the per-namespace sysctl. Commit 50ec499b9a43 ("sysctl: allow change
+system v ipc sysctls inside ipc namespace") made that limit tunable by
+IPC namespace owners without capabilities in the initial user namespace.
+
+do_semtimedop() keeps up to SEMOPM_FAST operations on the stack. Charge
+every larger, dynamically allocated operation array to the caller's memory
+cgroup. This avoids a second size threshold and prevents a configured
+SEMOPM limit from expanding an unaccounted heap-allocation range.
+
+In a 4-vCPU KVM guest, with the benchmark pinned to one vCPU in a leaf
+memory cgroup, accounting raised the median time per successful semop()
+call by 2.3% to 3.2% for 65, 500 and 1000 operations, compared with
+unaccounted allocation. An invalid semid, which allocates and copies the
+array before returning EINVAL, rose by 5.6% to 11.9%. The 64-operation
+stack path changed by at most 0.9%, and successful calls in the root
+cgroup by at most 2.3%. Each result used 21 samples from three boots.
+
+Link: https://lore.kernel.org/cover.1793250194.git.x-professor@outlook.com
+Link: https://lore.kernel.org/07d9034ec1fb5b6fd5eed2cf60ef3c84d5149e51.1793250194.git.x-professor@outlook.com
+Fixes: 6a4746ba0619 ("ipc: remove memcg accounting for sops objects in do_semtimedop()")
+Signed-off-by: Yingjie Wang <x-professor@outlook.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Shakeel Butt <shakeel.butt@linux.dev>
+Link: https://lore.kernel.org/r/20261016152609.2528805-1-x-professor@outlook.com
+Cc: Manfred Spraul <manfred@colorfullife.com>
+Cc: Alexey Gladkov <legion@kernel.org>
+Cc: Eric W. Biederman <ebiederm@xmission.com>
+Cc: Vasily Averin <vasily.averin@linux.dev>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Alejandro Colomar <alx@kernel.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: <stable@vger.kernel.org>
+
+ ipc/sem.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ ipc/sem.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ipc/sem.c b/ipc/sem.c
+index 716cce8344513..a464c65252cc6 100644
+--- a/ipc/sem.c
++++ b/ipc/sem.c
+@@ -2253,7 +2253,7 @@ static long do_semtimedop(int semid, struct sembuf __user *tsops,
+ 		return -EINVAL;
+ 
+ 	if (nsops > SEMOPM_FAST) {
+-		sops = kvmalloc_objs(*sops, nsops);
++		sops = kvmalloc_objs(*sops, nsops, GFP_KERNEL_ACCOUNT);
+ 		if (sops == NULL)
+ 			return -ENOMEM;
+ 	}
+-- 
+2.47.3
+

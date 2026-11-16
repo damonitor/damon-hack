@@ -1,0 +1,45 @@
+From: Guo Zihao <guozh23@xiaopeng.com>
+Date: Thu, 29 Oct 2026 15:25:42 +0800
+Subject: [PATCH] squashfs: read symlink error before putting cache entry
+
+In the read error path of squashfs_symlink_readpage() the entry is
+put back before its error value is read:
+
+squashfs_cache_put(entry);
+= entry->error;
+
+Once the reference count drops to zero another thread can take the entry
+back from the cache for a different block and overwrite entry->error, so
+the value read here may be stale.  Read the error before dropping the
+reference.
+
+Link: https://lore.kernel.org/20261029072542.4131873-1-guozh23@xiaopeng.com
+Fixes: 675f02e5e656 ("squashfs: convert squashfs_symlink_read_folio to use folio APIs")
+Signed-off-by: Guo Zihao <guozh23@xiaopeng.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Phillip Lougher <phillip@squashfs.org.uk>
+Cc: <stable@vger.kernel.org>
+
+ fs/squashfs/symlink.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ fs/squashfs/symlink.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/squashfs/symlink.c b/fs/squashfs/symlink.c
+index 6ef735bd841a1..9d729af20e9ee 100644
+--- a/fs/squashfs/symlink.c
++++ b/fs/squashfs/symlink.c
+@@ -74,8 +74,8 @@ static int squashfs_symlink_read_folio(struct file *file, struct folio *folio)
+ 			ERROR("Unable to read symlink [%llx:%x]\n",
+ 				squashfs_i(inode)->start,
+ 				squashfs_i(inode)->offset);
+-			squashfs_cache_put(entry);
+ 			error = entry->error;
++			squashfs_cache_put(entry);
+ 			goto out;
+ 		}
+ 
+-- 
+2.47.3
+
