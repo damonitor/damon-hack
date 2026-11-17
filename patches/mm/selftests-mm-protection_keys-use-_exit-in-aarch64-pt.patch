@@ -1,0 +1,67 @@
+From: Hongfu Li <lihongfu@kylinos.cn>
+Date: Mon, 16 Nov 2026 16:56:11 +0800
+Subject: [PATCH] selftests/mm: protection_keys: use _exit() in aarch64 ptrace
+ tracee
+
+Commit 25356081894d ("selftests/mm: protection_keys: use library code
+for HugeTLB setup") replaced the exit() calls in the x86 version of
+test_ptrace_modifies_pkru() with _exit(), but missed the aarch64
+version, which still calls exit() from the tracee.
+
+When the test runs as root, hugepage_save_settings() registers
+hugepage_restore_settings_atexit() with atexit(). The tracee inherits
+the atexit list across fork(), so its exit() runs
+hugepage_restore_settings_atexit() in the child. That handler calls
+hugetlb_restore_settings(), which writes nr_hugepages back to the saved
+original value while the test is still running. If the saved original
+value is 0 (or otherwise leaves fewer than the two free huge pages
+needed by the next allocation), subsequent iterations fail in
+malloc_pkey_hugetlb() when mmap(MAP_HUGETLB) returns MAP_FAILED.
+
+Use _exit() in the aarch64 tracee as well, matching x86.
+
+This was found by code inspection with AI assistance. No POE-capable
+arm64 hardware was available, so test_ptrace_modifies_pkru() was not
+runtime-tested; the change has only been compile-tested with an arm64
+cross-compiler.
+
+Link: https://lore.kernel.org/20261116-for-pkey-exit-v1-1-ca4c76b32ff7@kylinos.cn
+Fixes: 25356081894d ("selftests/mm: protection_keys: use library code for HugeTLB setup")
+Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+
+ tools/testing/selftests/mm/protection_keys.c |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+---
+ tools/testing/selftests/mm/protection_keys.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/protection_keys.c b/tools/testing/selftests/mm/protection_keys.c
+index 5dece144ab951..a0f51be3fcbc1 100644
+--- a/tools/testing/selftests/mm/protection_keys.c
++++ b/tools/testing/selftests/mm/protection_keys.c
+@@ -1530,11 +1530,11 @@ static void test_ptrace_modifies_pkru(int *ptr, u16 pkey)
+ 		 * checking
+ 		 */
+ 		if (__read_pkey_reg() != new_pkey)
+-			exit(1);
++			_exit(1);
+ 
+ 		raise(SIGSTOP);
+ 
+-		exit(0);
++		_exit(0);
+ 	}
+ 
+ 	pkey_assert(child == waitpid(child, &status, 0));
+-- 
+2.47.3
+

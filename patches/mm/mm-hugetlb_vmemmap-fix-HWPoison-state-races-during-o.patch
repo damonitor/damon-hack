@@ -1,0 +1,225 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Sat, 14 Nov 2026 19:25:21 +0800
+Subject: [PATCH] mm/hugetlb_vmemmap: fix HWPoison state races during
+ optimization
+
+Patch series "mm/hugetlb_vmemmap: Fix HVO races and deadlock", v3.
+
+This series fixes three HVO issues reported by Sashiko.
+
+The first patch serializes HWPoison updates and removal against HVO
+remapping so raw_hwp_page state cannot be lost or freed while a
+replacement vmemmap head page is being installed.  The second patch uses
+an HVO-private rwsem to prevent deferred PMD splits from racing with PTE
+remapping before the TLB flush.  The last patch switches the vmemmap walk
+to the lockless walker so a PMD split allocation cannot recurse into
+init_mm.mmap_lock through reclaim.
+
+
+This patch (of 3):
+
+HVO copies the vmemmap head page before remapping it to a newly allocated
+backing page. Memory failure can update the old head page after the copy
+but before the remap's TLB invalidation completes:
+
+CPU 0                            CPU 1
+init_new_hugetlb_folio()
+__hugetlb_vmemmap_optimize_folio()
+  vmemmap_optimize_pte()
+    copy_page(old_head, new_head)
+                                 try_memory_failure_hugetlb()
+                                   get_huge_page_for_hwpoison()
+                                     hugetlb_update_hwpoison(old_head)
+  set_pte_at(..., new_head)
+  flush_tlb_all()
+free_vmemmap_page_list(old_head)
+
+The raw_hwp_page linked to the old head is then leaked and the folio's
+HWPoison state is lost when the obsolete backing page is freed, allowing
+the poisoned huge page to be allocated later.
+
+Unpoisoning has a similar race: unpoison_memory() can free the
+raw_hwp_page and clear PG_hwpoison from the old head after it is copied,
+leaving the new head with stale HWPoison state and a freed pointer.
+
+Serialize HVO remapping against HWPoison updates and removal. This
+ensures that an update is either copied to the new vmemmap head page or
+applied after HVO installs the new mapping and completes the TLB flush,
+and prevents unpoisoning from modifying the old head while HVO installs
+its replacement.
+
+Link: https://lore.kernel.org/20261114112523.75208-1-songmuchun@bytedance.com
+Link: https://lore.kernel.org/20261114112523.75208-2-songmuchun@bytedance.com
+Fixes: 11aad2631bf7 ("mm/hugetlb_vmemmap: remap head page to newly allocated page")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://sashiko.dev/#/bug/linux-18e93f17-529b-4d84-ba44-a41829f4be64
+Reviewed-by: Jiaqi Yan <jiaqiyan@google.com>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: <stable@vger.kernel.org>
+
+ mm/hugetlb_vmemmap.c |   10 ++++++++++
+ mm/hugetlb_vmemmap.h |   24 ++++++++++++++++++++++++
+ mm/memory-failure.c  |    3 +++
+ 3 files changed, 37 insertions(+)
+---
+ mm/hugetlb_vmemmap.c | 10 ++++++++++
+ mm/hugetlb_vmemmap.h | 24 ++++++++++++++++++++++++
+ mm/memory-failure.c  |  3 +++
+ 3 files changed, 37 insertions(+)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index ba8e11e399b24..79ca68dff6355 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -15,6 +15,7 @@
+ #include <linux/mmdebug.h>
+ #include <linux/pagewalk.h>
+ #include <linux/pgalloc.h>
++#include <linux/rwsem.h>
+ #include <linux/vmemmap-optimization.h>
+ 
+ #include <asm/tlbflush.h>
+@@ -41,6 +42,8 @@ struct vmemmap_remap_walk {
+ 	unsigned long		flags;
+ };
+ 
++DECLARE_RWSEM(vmemmap_remap_rwsem);
++
+ static int vmemmap_split_pmd(pmd_t *pmd, struct page *head, unsigned long start,
+ 			     struct vmemmap_remap_walk *walk)
+ {
+@@ -333,6 +336,9 @@ static int vmemmap_pteify_folio(const struct folio *folio, unsigned long flags)
+  * responsible for freeing the pages left on the @vmemmap_pages list, even on
+  * failure.
+  *
++ * Note: The caller must hold vmemmap_remap_rwsem. If TLB flushing is deferred,
++ * the lock must remain held until the final TLB flush.
++ *
+  * Return: %0 on success, negative error code otherwise.
+  */
+ static int vmemmap_optimize_folio(const struct folio *folio,
+@@ -348,6 +354,8 @@ static int vmemmap_optimize_folio(const struct folio *folio,
+ 		.flags		= flags,
+ 	};
+ 
++	rwsem_assert_held(&vmemmap_remap_rwsem);
++
+ 	VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
+ 
+ 	if (!vmemmap_optimizable_order(folio_order(folio)))
+@@ -536,6 +544,7 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
+ {
+ 	LIST_HEAD(vmemmap_pages);
+ 
++	guard(rwsem_read)(&vmemmap_remap_rwsem);
+ 	__hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, 0);
+ 	free_vmemmap_page_list(&vmemmap_pages);
+ }
+@@ -588,6 +597,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 
+ 	flush_tlb_all();
+ 
++	guard(rwsem_read)(&vmemmap_remap_rwsem);
+ 	list_for_each_entry(folio, folio_list, lru) {
+ 		int ret;
+ 
+diff --git a/mm/hugetlb_vmemmap.h b/mm/hugetlb_vmemmap.h
+index d057e8b12bf1a..8b28063d78ccd 100644
+--- a/mm/hugetlb_vmemmap.h
++++ b/mm/hugetlb_vmemmap.h
+@@ -9,9 +9,12 @@
+ #ifndef _LINUX_HUGETLB_VMEMMAP_H
+ #define _LINUX_HUGETLB_VMEMMAP_H
+ #include <linux/hugetlb.h>
++#include <linux/rwsem.h>
+ #include <linux/vmemmap-optimization.h>
+ 
+ #ifdef CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP
++extern struct rw_semaphore vmemmap_remap_rwsem;
++
+ int hugetlb_vmemmap_restore_folio(const struct hstate *h, struct folio *folio);
+ long hugetlb_vmemmap_restore_folios(const struct hstate *h,
+ 					struct list_head *folio_list,
+@@ -20,6 +23,16 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
+ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list);
+ void hugetlb_vmemmap_optimize_bootmem_page(unsigned long pfn, unsigned int order);
+ 
++static inline void hugetlb_vmemmap_write_lock(void)
++{
++	down_write(&vmemmap_remap_rwsem);
++}
++
++static inline void hugetlb_vmemmap_write_unlock(void)
++{
++	up_write(&vmemmap_remap_rwsem);
++}
++
+ static inline unsigned int hugetlb_vmemmap_size(const struct hstate *h)
+ {
+ 	return pages_per_huge_page(h) * sizeof(struct page);
+@@ -59,6 +72,14 @@ static inline void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list
+ {
+ }
+ 
++static inline void hugetlb_vmemmap_write_lock(void)
++{
++}
++
++static inline void hugetlb_vmemmap_write_unlock(void)
++{
++}
++
+ static inline unsigned int hugetlb_vmemmap_optimizable_size(const struct hstate *h)
+ {
+ 	return 0;
+@@ -69,6 +90,9 @@ static inline void hugetlb_vmemmap_optimize_bootmem_page(unsigned long pfn, unsi
+ }
+ #endif /* CONFIG_HUGETLB_PAGE_OPTIMIZE_VMEMMAP */
+ 
++DEFINE_LOCK_GUARD_0(vmemmap_remap,
++		    hugetlb_vmemmap_write_lock(), hugetlb_vmemmap_write_unlock())
++
+ static inline bool hugetlb_vmemmap_optimizable(const struct hstate *h)
+ {
+ 	return hugetlb_vmemmap_optimizable_size(h) != 0;
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 78f0a13349cb3..6a7b7be9928df 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -69,6 +69,7 @@
+ #include "page_alloc.h"
+ #include "internal.h"
+ #include "memory-failure.h"
++#include "hugetlb_vmemmap.h"
+ 
+ static int sysctl_memory_failure_early_kill __read_mostly;
+ 
+@@ -2038,6 +2039,7 @@ static int get_huge_page_for_hwpoison(unsigned long pfn, int flags,
+ 	bool count_increased = false;
+ 	int ret, rc;
+ 
++	guard(vmemmap_remap)();
+ 	spin_lock_irq(&hugetlb_lock);
+ 	folio = page_folio(page);
+ 	if (!folio_test_hugetlb(folio)) {
+@@ -2812,6 +2814,7 @@ int unpoison_memory(unsigned long pfn)
+ 
+ 	ghp = get_hwpoison_page(p, MF_UNPOISON);
+ 	if (!ghp) {
++		guard(vmemmap_remap)();
+ 		if (folio_test_hugetlb(folio)) {
+ 			huge = true;
+ 			count = folio_free_raw_hwp(folio, false);
+-- 
+2.47.3
+

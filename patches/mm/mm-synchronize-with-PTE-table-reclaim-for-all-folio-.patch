@@ -1,5 +1,5 @@
 From: Baolin Wang <baolin.wang@linux.alibaba.com>
-Date: Thu, 5 Nov 2026 10:56:28 +0800
+Date: Tue, 17 Nov 2026 11:40:22 +0800
 Subject: [PATCH] mm: synchronize with PTE table reclaim for all folio sizes
 
 Similar to commit 243cf1f67b36 ("mm: memory: fix truncation removing
@@ -16,8 +16,9 @@ checks, so the race has no observable impact on them.
 
 For migration, the race can cause unnecessary retries.  For reclaim via
 try_to_unmap(), the race can cause failure to reclaim a folio that is in
-fact already unmapped (as shown below), which may lead to unexpected OOM
-or increased refaults.
+fact already unmapped (as shown below), which may cause cold/hot inversion
+(e.g., in MGLRU) and increase refaults.  In extreme cases, failing to
+reclaim unmapped large folios could even cause OOM in theory.
 
 CPU 0 (reclaim)                      CPU 1 (MADV_DONTNEED)
 --------------------------------    --------------------------------
@@ -51,22 +52,37 @@ after tlb_flush_rmaps().  Similarly, page_vma_mapped_walk() also needs to
 use sync_with_folio_pmd_zap() to synchronize and avoid memory ordering
 issues on weakly ordered CPUs.
 
-Link: https://lore.kernel.org/affd6da4e8d0de1424a4e0b3bafcd1324dfb6c97.1793847060.git.baolin.wang@linux.alibaba.com
+Regarding performance, evaluated the impact on try_to_unmap().  Mapped a
+file to generate clean large folios, then used MADV_PAGEOUT to reclaim 1G
+of mapped clean large folios, repeated 5 times, with no measurable
+performance impact.  Before: 16.031 ms over 5 loops After: 16.303 ms over
+5 loops
+
+While the race scenario described in the patch may theoretically affect
+performance, the actual impact in real workloads is likely limited I
+think.  Anyway, will use memory barriers to sync for non PMD-sized folios
+in a follow-up.
+
+Lance also reported the possible racy check for small folios[1].  However,
+whether to set TTU_SYNC for small folios should be done in a separate
+patch (this is a pre-existing issue) with proper measurement (though it
+may be hard to measure the actual impact).
+
+Link: https://lore.kernel.org/71980310d9bf1bf9733ea0e4b772635e1b2bc5c5.1794886401.git.baolin.wang@linux.alibaba.com
+Link: https://lore.kernel.org/all/0ddaf336-7cb7-4e83-af2c-f60d23f7aafd@linux.dev/ [1]
 Fixes: 6375e95f381e ("mm: pgtable: reclaim empty PTE page in madvise(MADV_DONTNEED)")
 Signed-off-by: Baolin Wang <baolin.wang@linux.alibaba.com>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Qi Zheng <qi.zheng@linux.dev>
 Reviewed-by: Lance Yang <lance.yang@linux.dev>
+Reviewed-by: Barry Song <baohua@kernel.org>
 Cc: Lorenzo Stoakes <ljs@kernel.org>
 Cc: Rik van Riel <riel@surriel.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>
 Cc: Harry Yoo <harry@kernel.org>
 Cc: Jann Horn <jannh@google.com>
-Cc: Pedro Falcato <pfalcato@suse.de>
-Cc: <ayushr@modal.com>
-Cc: Barry Song <baohua@kernel.org>
 Cc: <stable@vger.kernel.org>
 
  mm/page_vma_mapped.c |    5 +----

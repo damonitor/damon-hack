@@ -1,0 +1,125 @@
+From: Sang-Heon Jeon <ekffu200098@gmail.com>
+Date: Tue, 17 Nov 2026 01:16:12 +0900
+Subject: [PATCH] fault-inject: fix wrong unit of verbose_ratelimit_interval_ms
+
+The interval of ratelimit_state is in jiffies.  But
+verbose_ratelimit_interval_ms is read and written without converting the
+interval, so the value is in milliseconds only if HZ is 1000.
+
+If HZ is 250, writing 1000 sets the interval to 4 seconds.
+
+So use jiffies_to_msecs() and msecs_to_jiffies() when reading and writing.
+Also clamp values which are too large for the interval.
+
+Link: https://lore.kernel.org/20261116161613.3663822-1-ekffu200098@gmail.com
+Fixes: 6adc4a22f20b ("fault-inject: add ratelimit option")
+Fixes: 4668c7a2940d ("fault-inject: allow configuration via configfs")
+Signed-off-by: Sang-Heon Jeon <ekffu200098@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Akinobu Mita <akinobu.mita@gmail.com>
+Cc: Dmitry Monakhov <dmonakhov@openvz.org>
+Cc: Jens Axboe <axboe@kernel.dk>
+
+ lib/fault-inject.c |   58 ++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 54 insertions(+), 4 deletions(-)
+---
+ lib/fault-inject.c | 58 ++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/lib/fault-inject.c b/lib/fault-inject.c
+index 599bd06fe453c..537a5bc89da1f 100644
+--- a/lib/fault-inject.c
++++ b/lib/fault-inject.c
+@@ -199,6 +199,8 @@ bool should_fail(struct fault_attr *attr, ssize_t size)
+ }
+ EXPORT_SYMBOL_GPL(should_fail);
+ 
++#define FAULT_RATELIMIT_INTERVAL_MAX_MS	(INT_MAX / DIV_ROUND_UP(HZ, MSEC_PER_SEC))
++
+ #ifdef CONFIG_FAULT_INJECTION_DEBUG_FS
+ 
+ static int debugfs_ul_set(void *data, u64 val)
+@@ -221,6 +223,29 @@ static void debugfs_create_ul(const char *name, umode_t mode,
+ 	debugfs_create_file(name, mode, parent, value, &fops_ul);
+ }
+ 
++static int debugfs_ratelimit_interval_set(void *data, u64 val)
++{
++	val = min_t(u64, val, FAULT_RATELIMIT_INTERVAL_MAX_MS);
++	*(int *)data = msecs_to_jiffies(val);
++
++	return 0;
++}
++
++static int debugfs_ratelimit_interval_get(void *data, u64 *val)
++{
++	*val = jiffies_to_msecs(*(int *)data);
++	return 0;
++}
++
++DEFINE_SIMPLE_ATTRIBUTE(fops_ratelimit_interval, debugfs_ratelimit_interval_get,
++			debugfs_ratelimit_interval_set, "%llu\n");
++
++static void debugfs_create_ratelimit_interval(const char *name, umode_t mode,
++					      struct dentry *parent, int *value)
++{
++	debugfs_create_file(name, mode, parent, value, &fops_ratelimit_interval);
++}
++
+ #ifdef CONFIG_FAULT_INJECTION_STACKTRACE_FILTER
+ 
+ static int debugfs_stacktrace_depth_set(void *data, u64 val)
+@@ -260,8 +285,8 @@ struct dentry *fault_create_debugfs_attr(const char *name,
+ 	debugfs_create_atomic_t("times", mode, dir, &attr->times);
+ 	debugfs_create_atomic_t("space", mode, dir, &attr->space);
+ 	debugfs_create_ul("verbose", mode, dir, &attr->verbose);
+-	debugfs_create_u32("verbose_ratelimit_interval_ms", mode, dir,
+-			   &attr->ratelimit_state.interval);
++	debugfs_create_ratelimit_interval("verbose_ratelimit_interval_ms", mode,
++					  dir, &attr->ratelimit_state.interval);
+ 	debugfs_create_u32("verbose_ratelimit_burst", mode, dir,
+ 			   &attr->ratelimit_state.burst);
+ 	debugfs_create_bool("task-filter", mode, dir, &attr->task_filter);
+@@ -394,12 +419,37 @@ FAULT_CONFIGFS_ATTR(interval, ulong);
+ FAULT_CONFIGFS_ATTR(times, atomic_t);
+ FAULT_CONFIGFS_ATTR(space, atomic_t);
+ FAULT_CONFIGFS_ATTR(verbose, ulong);
+-FAULT_CONFIGFS_ATTR_NAMED(ratelimit_interval, "verbose_ratelimit_interval_ms",
+-		ratelimit_state.interval, uint);
+ FAULT_CONFIGFS_ATTR_NAMED(ratelimit_burst, "verbose_ratelimit_burst",
+ 		ratelimit_state.burst, uint);
+ FAULT_CONFIGFS_ATTR_NAMED(task_filter, "task-filter", task_filter, bool);
+ 
++static ssize_t fault_ratelimit_interval_show(struct config_item *item, char *page)
++{
++	struct fault_config *config = to_fault_config(item);
++	unsigned int msecs = jiffies_to_msecs(config->attr.ratelimit_state.interval);
++
++	return fault_uint_attr_show(msecs, page);
++}
++
++static ssize_t fault_ratelimit_interval_store(struct config_item *item, const char *page,
++		size_t count)
++{
++	struct fault_config *config = to_fault_config(item);
++	unsigned int msecs;
++	int result;
++
++	result = kstrtouint(page, 0, &msecs);
++	if (result < 0)
++		return result;
++
++	msecs = min_t(unsigned int, msecs, FAULT_RATELIMIT_INTERVAL_MAX_MS);
++	config->attr.ratelimit_state.interval = msecs_to_jiffies(msecs);
++
++	return count;
++}
++
++CONFIGFS_ATTR_NAMED(fault_, ratelimit_interval, "verbose_ratelimit_interval_ms");
++
+ #ifdef CONFIG_FAULT_INJECTION_STACKTRACE_FILTER
+ 
+ static ssize_t fault_stacktrace_depth_show(struct config_item *item, char *page)
+-- 
+2.47.3
+

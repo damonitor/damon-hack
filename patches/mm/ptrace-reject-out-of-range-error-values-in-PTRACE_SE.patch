@@ -1,0 +1,69 @@
+From: Renzo Davoli <renzo@cs.unibo.it>
+Date: Mon, 16 Nov 2026 14:40:45 +0100
+Subject: [PATCH] ptrace: reject out of range error values in
+ PTRACE_SET_SYSCALL_INFO
+
+Patch series "ptrace: reject out of range error values in
+PTRACE_SET_SYSCALL_INFO", v4.
+
+With is_error set, PTRACE_SET_SYSCALL_INFO passes info.exit.rval to
+syscall_set_return_value() as an "int" error without checking it: a
+positive value, or on 64-bit one outside the "int" range, turns the
+error into a success or is truncated.
+
+Patch 1 rejects with -ERANGE any error value outside [-MAX_ERRNO, -1].
+Patch 2 adds a test case for this to the set_syscall_info selftest.
+
+This series is independent of the PTRACE_SET_SYSCALL_INFO seccomp skip
+and SET_IP series: they apply on top of each other in either order.
+
+Testing (x86_64, QEMU): tools/testing/selftests/ptrace/set_syscall_info
+passes 1/1 with this series applied.
+
+
+This patch (of 2):
+
+With is_error set, PTRACE_SET_SYSCALL_INFO passes info.exit.rval to
+syscall_set_return_value() as an "int" error without checking it: a
+positive value, or on 64-bit one outside the "int" range, turns the error
+into a success or is truncated.
+
+Reject with -ERANGE any error value outside [-MAX_ERRNO, -1].
+
+Link: https://lore.kernel.org/20261116134050.505355-1-renzo@cs.unibo.it
+Link: https://lore.kernel.org/20261116134050.505355-2-renzo@cs.unibo.it
+Fixes: 26bb32768fe6 ("ptrace: introduce PTRACE_SET_SYSCALL_INFO request")
+Signed-off-by: Renzo Davoli <renzo@cs.unibo.it>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Dmitry V. Levin <ldv@strace.io>
+Reviewed-by: Bradley Morgan <bradley.morgan@linux.dev>
+Reviewed-by: Oleg Nesterov <oleg@redhat.com>
+Cc: Alexey Gladkov <legion@kernel.org>
+Cc: Eugene Syromyatnikov <evgsyr@gmail.com>
+Cc: Charlie Jenkins <thecharlesjenkins@gmail.com>
+Cc: Shuah Khan <shuah@kernel.org>
+
+ kernel/ptrace.c |    4 ++++
+ 1 file changed, 4 insertions(+)
+---
+ kernel/ptrace.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/kernel/ptrace.c b/kernel/ptrace.c
+index 3f2fe68ccb140..7d51cb60c0910 100644
+--- a/kernel/ptrace.c
++++ b/kernel/ptrace.c
+@@ -1111,6 +1111,10 @@ ptrace_set_syscall_info_exit(struct task_struct *child, struct pt_regs *regs,
+ 	if (rval != info->exit.rval)
+ 		return -ERANGE;
+ 
++	/* An error must be a negative errno value. */
++	if (info->exit.is_error && !IS_ERR_VALUE(rval))
++		return -ERANGE;
++
+ 	if (info->exit.is_error)
+ 		syscall_set_return_value(child, regs, rval, 0);
+ 	else
+-- 
+2.47.3
+

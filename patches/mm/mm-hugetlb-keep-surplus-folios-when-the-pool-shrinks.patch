@@ -1,0 +1,126 @@
+From: Josef Bacik <josef@toxicpanda.com>
+Date: Mon, 16 Nov 2026 19:29:26 +0100
+Subject: [PATCH] mm/hugetlb: keep surplus folios when the pool shrinks
+
+Surplus folios are accounted per node. When shrinking the pool,
+set_max_huge_pages() removes free folios through
+remove_pool_hugetlb_folio() and accounts them as persistent folios.
+
+It can select a node whose folios are all surplus and leave its surplus
+count larger than its total count. Free surplus folios can back
+reservations created by gather_surplus_pages().
+
+For example, with nr_overcommit_hugepages = 8 on two nodes:
+
+  (node columns show total/free/surplus)
+
+                                      total free surp   node0   node1
+  mmap() of one page, bound to node 0     1    1    1   1 1 1   0 0 0
+  node1/nr_hugepages = 7                  8    8    1   1 1 1   7 7 0
+  nr_hugepages = 6                        7    7    1   0 0 1   7 7 0
+  munmap()                                7    7    1   0 0 1   7 7 0
+  nr_hugepages = 0                        1    1    1   0 0 1   1 1 0
+
+After shrinking to six persistent folios, node 0 has no folios but its
+surplus count is still one. Releasing the reservation cannot clear that
+count, and shrinking the pool to zero leaves one free page on node 1.
+
+A later write to node0/nr_hugepages underflows the unsigned per-node
+persistent count: 0 - 1, resulting in allocation of many folios.
+
+Use persistent_huge_pages_node() to skip nodes with no persistent folios,
+as adjust_pool_surplus() does. This also excludes temporary folios.
+
+[david@kernel.org: cleanup code and description]
+Link: https://lore.kernel.org/20261116-fixes_hugetlb-v2-5-4dd9e94ea9ac@kernel.org
+Fixes: e4e574b767ba ("hugetlb: Try to grow hugetlb pool for MAP_SHARED mappings")
+Signed-off-by: Josef Bacik <josef@toxicpanda.com>
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: luojiajun <luojiajun3@huawei.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: <stable@kernel.org>
+
+ mm/hugetlb.c |   22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+---
+ mm/hugetlb.c | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index d4d48e192221b..edf9e0a78bf1a 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1981,17 +1981,25 @@ static struct folio *remove_pool_hugetlb_folio(struct hstate *h,
+ 
+ 	lockdep_assert_held(&hugetlb_lock);
+ 	for_each_node_mask_to_free(h, nr_nodes, node, nodes_allowed) {
++		if (list_empty(&h->hugepage_freelists[node]))
++			continue;
++
+ 		/*
+ 		 * If we're returning unused surplus pages, only examine
+-		 * nodes with surplus pages.
++		 * nodes with surplus pages. If we're shrinking the pool, only
++		 * examine nodes with persistent folios.
+ 		 */
+-		if ((!acct_surplus || h->surplus_huge_pages_node[node]) &&
+-		    !list_empty(&h->hugepage_freelists[node])) {
+-			folio = list_entry(h->hugepage_freelists[node].next,
+-					  struct folio, lru);
+-			remove_hugetlb_folio(h, folio, acct_surplus);
+-			break;
++		if (acct_surplus) {
++			if (!h->surplus_huge_pages_node[node])
++				continue;
++		} else if (!persistent_huge_pages_node(h, node)) {
++			continue;
+ 		}
++
++		folio = list_first_entry(&h->hugepage_freelists[node],
++					 struct folio, lru);
++		remove_hugetlb_folio(h, folio, acct_surplus);
++		break;
+ 	}
+ 
+ 	return folio;
+-- 
+2.47.3
+

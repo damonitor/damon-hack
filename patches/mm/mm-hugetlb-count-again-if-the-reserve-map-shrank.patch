@@ -1,0 +1,216 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 16 Nov 2026 19:29:31 +0100
+Subject: [PATCH] mm/hugetlb: count again if the reserve map shrank
+
+hugetlb_reserve_pages() asks region_chg() how many pages of the range are
+missing in the reserve map, charges the cgroup, the subpool and the pool
+for that many, and then lets region_add() fill the gaps.
+
+It copes with region_add() adding less, because a concurrent fault added
+an entry in the meantime; however, it does not expect it to add more.
+
+Since restore_reserve_on_error() can delete the entry of an allocation
+that failed later on, entries also disappear without the inode lock that
+mmap() holds. For a previously unreserved page, UFFDIO_COPY can do this
+when the source is not resident: it allocates a folio, which adds the
+entry, fails to copy with page faults disabled, and takes both back.
+memfd_alloc_folio() does it when it has made a reservation and gets no
+folio it may pin.
+
+If region_chg() sees such an entry and region_add() does not, an entry is
+added that nothing was charged for. When we later delete it,
+we decrement resv_huge_pages and uncharge the cgroup once too often:
+
+  WARNING: mm/page_counter.c:60 at page_counter_uncharge+0xe2/0x160
+
+Similarly, HugePages_Rsvd will underflow.
+
+Tell region_add() how much has been accounted for and let it refuse to
+add more. Convert it to a region_add_limited() for that purpose.
+hugetlb_reserve_pages() then undoes what it has done, as for any other
+failure of region_add(), and starts again.
+
+Note that we move hugetlb_vma_lock_free() so we can retain the allocated
+VMA lock object as we retry.
+
+Limit retries to 10 to avoid livelock under repeated concurrent rollbacks.
+Return -ENOMEM if the retries are exhausted.
+
+Link: https://lore.kernel.org/20261116-fixes_hugetlb-v2-10-4dd9e94ea9ac@kernel.org
+Fixes: 846be08578ed ("mm/hugetlb: expand restore_reserve_on_error functionality")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Josef Bacik <josef@toxicpanda.com>
+Cc: <stable@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: luojiajun <luojiajun3@huawei.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: "Gregory Price (Meta)" <gourry@gourry.net>
+
+ mm/hugetlb.c |   60 ++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 45 insertions(+), 15 deletions(-)
+---
+ mm/hugetlb.c | 58 +++++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 44 insertions(+), 14 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 4a3e8f41a381e..2d024d65fc6c7 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -739,26 +739,36 @@ static int allocate_file_region_entries(struct resv_map *resv,
+  * region_del.  The extra needed entries will be allocated.
+  *
+  * regions_needed is the out value provided by a previous call to region_chg.
++ * limit is what the caller has accounted for.  If more huge pages would have
++ * to be added, because somebody has deleted from the range since region_chg,
++ * nothing is added and -EAGAIN is returned.
+  *
+  * Return the number of new huge pages added to the map.  This number is greater
+  * than or equal to zero.  If file_region entries needed to be allocated for
+  * this operation and we were not able to allocate, it returns -ENOMEM.
+- * region_add of regions of length 1 never allocate file_regions and cannot
+- * fail; region_chg will always allocate at least 1 entry and a region_add for
+- * 1 page will only require at most 1 entry.
++ * Ranges of length 1 never require allocating file_regions and cannot fail
++ * if limit is at least 1; region_chg will always allocate at least 1 entry
++ * and adding 1 page will only require at most 1 entry.
+  */
+-static long region_add(struct resv_map *resv, long f, long t,
+-		       long in_regions_needed, struct hstate *h,
+-		       struct hugetlb_cgroup *h_cg)
++static long region_add_limited(struct resv_map *resv, long f, long t,
++		long in_regions_needed, struct hstate *h,
++		struct hugetlb_cgroup *h_cg, long limit)
+ {
+ 	long add = 0, actual_regions_needed = 0;
+ 
+ 	spin_lock(&resv->lock);
+ retry:
+ 
+-	/* Count how many regions are actually needed to execute this add. */
+-	add_reservation_in_range(resv, f, t, NULL, NULL,
+-				 &actual_regions_needed);
++	/*
++	 * Count how many regions are actually needed to execute this add.
++	 * Fail if the number of huge pages to add exceeds limit.
++	 */
++	add = add_reservation_in_range(resv, f, t, NULL, NULL,
++				       &actual_regions_needed);
++	if (add > limit) {
++		spin_unlock(&resv->lock);
++		return -EAGAIN;
++	}
+ 
+ 	/*
+ 	 * Check for sufficient descriptors in the cache to accommodate
+@@ -794,6 +804,13 @@ static long region_add(struct resv_map *resv, long f, long t,
+ 	return add;
+ }
+ 
++static long region_add(struct resv_map *resv, long f, long t,
++		long in_regions_needed, struct hstate *h,
++		struct hugetlb_cgroup *h_cg)
++{
++	return region_add_limited(resv, f, t, in_regions_needed, h, h_cg, t - f);
++}
++
+ /*
+  * Examine the existing reserve map and determine how many
+  * huge pages in the specified range [f, t) are NOT currently
+@@ -6892,7 +6909,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	struct resv_map *resv_map;
+ 	struct hugetlb_cgroup *h_cg = NULL;
+ 	long gbl_reserve, regions_needed = 0;
+-	int err;
++	int err, retries = 0;
+ 
+ 	/* This should never happen */
+ 	if (from > to) {
+@@ -6914,6 +6931,7 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	if (vma_flags_test(&vma_flags, VMA_NORESERVE_BIT))
+ 		return 0;
+ 
++retry:
+ 	/*
+ 	 * Shared mappings base their reservation on the number of pages that
+ 	 * are already allocated on behalf of the file. Private mappings need
+@@ -6992,7 +7010,8 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	 * else has to be done for private mappings here
+ 	 */
+ 	if (!vma || vma_test(vma, VMA_MAYSHARE_BIT)) {
+-		add = region_add(resv_map, from, to, regions_needed, h, h_cg);
++		add = region_add_limited(resv_map, from, to, regions_needed, h,
++					 h_cg, chg);
+ 
+ 		if (unlikely(add < 0)) {
+ 			hugetlb_acct_memory(h, -gbl_reserve);
+@@ -7055,17 +7074,28 @@ long hugetlb_reserve_pages(struct inode *inode,
+ 	hugetlb_cgroup_uncharge_cgroup_rsvd(hstate_index(h),
+ 					    chg * pages_per_huge_page(h), h_cg);
+ out_err:
+-	hugetlb_vma_lock_free(vma);
+-	if (!vma || vma_test(vma, VMA_MAYSHARE_BIT))
++	if (!vma || vma_test(vma, VMA_MAYSHARE_BIT)) {
+ 		/* Only call region_abort if the region_chg succeeded but the
+ 		 * region_add failed or didn't run.
+ 		 */
+ 		if (chg >= 0 && add < 0)
+ 			region_abort(resv_map, from, to, regions_needed);
+-	if (vma && is_vma_resv_set(vma, HPAGE_RESV_OWNER)) {
++		/*
++		 * A concurrent rollback removed entries after region_chg()
++		 * counted the range, so we charged for too few pages and
++		 * have to recount, recharge, and try again. Limit retries
++		 * to avoid livelock under repeated rollbacks.
++		 */
++		if (err == -EAGAIN) {
++			if (retries++ < 10)
++				goto retry;
++			err = -ENOMEM;
++		}
++	} else if (is_vma_resv_set(vma, HPAGE_RESV_OWNER)) {
+ 		kref_put(&resv_map->refs, resv_map_release);
+ 		set_vma_resv_map(vma, NULL);
+ 	}
++	hugetlb_vma_lock_free(vma);
+ 	return err;
+ }
+ 
+-- 
+2.47.3
+

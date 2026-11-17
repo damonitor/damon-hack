@@ -1,0 +1,127 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 16 Nov 2026 19:29:24 +0100
+Subject: [PATCH] mm/hugetlb: preserve reservations when shrinking on HIGHMEM
+
+try_to_free_low() drops the hugetlb_lock while freeing lowmem folios.
+set_max_huge_pages() then resumes freeing folios using the
+min_count computed before that unlock. Reservations created in between
+can consequently lose their backing.
+
+Collect lowmem folios on the caller's existing page_list instead. Keep
+the hugetlb_lock held through both selection passes, and free the combined
+list at the caller's existing unlock point.
+
+Likely not stable-worthy.
+
+Link: https://lore.kernel.org/20261116-fixes_hugetlb-v2-3-4dd9e94ea9ac@kernel.org
+Fixes: 1121828a0c21 ("hugetlb: call update_and_free_page without hugetlb_lock")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: luojiajun <luojiajun3@huawei.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: "Gregory Price (Meta)" <gourry@gourry.net>
+
+ mm/hugetlb.c |   20 ++++++--------------
+ 1 file changed, 6 insertions(+), 14 deletions(-)
+---
+ mm/hugetlb.c | 20 ++++++--------------
+ 1 file changed, 6 insertions(+), 14 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 68945d0ebbd0e..05129ab20c3bc 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3755,39 +3755,31 @@ static void __init report_hugepages(void)
+ 
+ #ifdef CONFIG_HIGHMEM
+ static void try_to_free_low(struct hstate *h, unsigned long count,
+-						nodemask_t *nodes_allowed)
++		nodemask_t *nodes_allowed, struct list_head *page_list)
+ {
+ 	int i;
+-	LIST_HEAD(page_list);
+ 
+ 	lockdep_assert_held(&hugetlb_lock);
+ 	if (hstate_is_gigantic(h))
+ 		return;
+ 
+-	/*
+-	 * Collect pages to be freed on a list, and free after dropping lock
+-	 */
++	/* Collect lowmem pages to free after dropping the lock. */
+ 	for_each_node_mask(i, *nodes_allowed) {
+ 		struct folio *folio, *next;
+ 		struct list_head *freel = &h->hugepage_freelists[i];
+ 		list_for_each_entry_safe(folio, next, freel, lru) {
+ 			if (count >= persistent_huge_pages(h))
+-				goto out;
++				return;
+ 			if (folio_test_highmem(folio))
+ 				continue;
+ 			remove_hugetlb_folio(h, folio, false);
+-			list_add(&folio->lru, &page_list);
++			list_add(&folio->lru, page_list);
+ 		}
+ 	}
+-
+-out:
+-	spin_unlock_irq(&hugetlb_lock);
+-	update_and_free_pages_bulk(h, &page_list);
+-	spin_lock_irq(&hugetlb_lock);
+ }
+ #else
+ static inline void try_to_free_low(struct hstate *h, unsigned long count,
+-						nodemask_t *nodes_allowed)
++		nodemask_t *nodes_allowed, struct list_head *page_list)
+ {
+ }
+ #endif
+@@ -3982,7 +3974,7 @@ static int set_max_huge_pages(struct hstate *h, unsigned long count, int nid,
+ 	}
+ 	min_count = h->resv_huge_pages + persistent_huge_pages(h) - persistent_free_count;
+ 	min_count = max(count, min_count);
+-	try_to_free_low(h, min_count, nodes_allowed);
++	try_to_free_low(h, min_count, nodes_allowed, &page_list);
+ 
+ 	/*
+ 	 * Collect pages to be removed on list without dropping lock
+-- 
+2.47.3
+

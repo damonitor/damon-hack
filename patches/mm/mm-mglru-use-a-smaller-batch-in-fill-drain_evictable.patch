@@ -1,0 +1,68 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Mon, 16 Nov 2026 14:11:58 +0800
+Subject: [PATCH] mm/mglru: use a smaller batch in fill/drain_evictable()
+
+lru_gen_change_state() migrates folios in batches of up to MAX_LRU_BATCH
+(4096) folios under lruvec_lock_irq().  A full batch keeps local
+interrupts off for up to about a millisecond, and CPUs contending for the
+same lru_lock spin with interrupts disabled for that long.
+
+The caller already drops the lock and reschedules between batches, and the
+restart protocol does not depend on the batch size: both functions make
+monotone progress, so a smaller batch only shortens the irq-off section.
+Use MIN_LRU_BATCH (64) instead, bounding it to about 15us.  This is a cold
+path that runs once per kill-switch toggle; the extra
+unlock/resched/relock round trips cost a few percent of wall time on an
+otherwise idle machine.
+
+Same change as commit 6e9be217a3ce ("mm/mglru: use a smaller batch for
+reclaim") made for try_to_shrink_lruvec().
+
+Link: https://lore.kernel.org/20261116061158.333826-1-hui.zhu@linux.dev
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+
+ mm/vmscan.c |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+---
+ mm/vmscan.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index e772eacff3f8a..fe1fe1439c7c4 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -5503,7 +5503,7 @@ static bool __maybe_unused state_is_valid(struct lruvec *lruvec)
+ static bool fill_evictable(struct lruvec *lruvec)
+ {
+ 	enum lru_list lru;
+-	int remaining = MAX_LRU_BATCH;
++	int remaining = MIN_LRU_BATCH;
+ 
+ 	for_each_evictable_lru(lru) {
+ 		int type = is_file_lru(lru);
+@@ -5548,7 +5548,7 @@ static bool fill_evictable(struct lruvec *lruvec)
+ static bool drain_evictable(struct lruvec *lruvec)
+ {
+ 	int gen, type, zone;
+-	int remaining = MAX_LRU_BATCH;
++	int remaining = MIN_LRU_BATCH;
+ 
+ 	for_each_gen_type_zone(gen, type, zone) {
+ 		struct list_head *head = &lruvec->lrugen.folios[gen][type][zone];
+-- 
+2.47.3
+

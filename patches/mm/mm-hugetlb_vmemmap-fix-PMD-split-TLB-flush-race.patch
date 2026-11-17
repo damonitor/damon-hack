@@ -1,0 +1,125 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Sat, 14 Nov 2026 19:25:22 +0800
+Subject: [PATCH] mm/hugetlb_vmemmap: fix PMD split TLB flush race
+
+Bulk HVO optimization converts vmemmap PMDs for a list of folios into
+PTE tables before issuing a single global TLB flush. After publishing
+a PTE table, a concurrent single-folio optimization can observe it and
+remap its PTEs before the deferred flush:
+
+CPU0                             CPU1
+hugetlb_vmemmap_optimize_folios()
+  hugetlb_vmemmap_pteify_folio()
+    vmemmap_split_pmd()
+      pmd_populate_kernel()
+      /* TLB flush deferred */
+                                 hugetlb_vmemmap_optimize_folio()
+                                   vmemmap_pmd_entry()
+                                   /* sees a PTE table */
+                                   vmemmap_optimize_pte()
+                                     set_pte_at()
+  flush_tlb_all()
+
+Modern MMUs permit overlapping TLB entries with different mapping
+granularities only when they translate to the same physical address. In
+this race, the stale PMD translation still points at the original vmemmap
+backing range while the new PTE can point at a shared or replacement
+vmemmap page for the same virtual address.
+
+Serialize deferred PMD splitting against PTE remapping with the HVO
+rwsem. Hold it for write across the split-only pteify batch and its TLB
+flush, then downgrade it before remapping the folios' vmemmap pages.
+This guarantees that no PTE remapper can observe a newly split PMD until
+the stale PMD translations have been invalidated.
+
+Link: https://lore.kernel.org/20261114112523.75208-3-songmuchun@bytedance.com
+Fixes: f4b7e3efaddb ("hugetlb: batch PMD split for bulk vmemmap dedup")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://sashiko.dev/#/bug/linux-fbdc3410-a4cf-457e-88e6-684380fbadfe
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Joao Martins <joao.m.martins@oracle.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Jiaqi Yan <jiaqiyan@google.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/hugetlb_vmemmap.c |   14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+---
+ mm/hugetlb_vmemmap.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index 79ca68dff6355..6fba3184356c9 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -311,6 +311,9 @@ static inline int vmemmap_restore_range(unsigned long start, unsigned long end,
+  * is skipped, the caller must flush TLBs after all pteify operations are complete
+  * before remapping the folio's vmemmap pages.
+  *
++ * Note: The caller must hold vmemmap_remap_rwsem for write from the first
++ * pteify operation through the final TLB flush.
++ *
+  * Return: %0 on success, negative error code otherwise.
+  */
+ static int vmemmap_pteify_folio(const struct folio *folio, unsigned long flags)
+@@ -321,6 +324,8 @@ static int vmemmap_pteify_folio(const struct folio *folio, unsigned long flags)
+ 		.flags		= flags,
+ 	};
+ 
++	rwsem_assert_held_write(&vmemmap_remap_rwsem);
++
+ 	return vmemmap_remap_range(start, end, &walk);
+ }
+ 
+@@ -400,6 +405,7 @@ static int vmemmap_restore_folio(const struct folio *folio, unsigned long flags)
+ 	if (ret)
+ 		return ret;
+ 
++	guard(rwsem_read)(&vmemmap_remap_rwsem);
+ 	return vmemmap_restore_range(start, end, &vmemmap_pages, flags);
+ }
+ 
+@@ -568,6 +574,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 	if (list_empty(folio_list))
+ 		return;
+ 
++	down_write(&vmemmap_remap_rwsem);
+ 	list_for_each_entry(folio, folio_list, lru) {
+ 		int ret;
+ 
+@@ -592,12 +599,14 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 			break;
+ 	}
+ 
+-	if (!nr_to_optimize)
++	if (!nr_to_optimize) {
++		up_write(&vmemmap_remap_rwsem);
+ 		return;
++	}
+ 
+ 	flush_tlb_all();
++	downgrade_write(&vmemmap_remap_rwsem);
+ 
+-	guard(rwsem_read)(&vmemmap_remap_rwsem);
+ 	list_for_each_entry(folio, folio_list, lru) {
+ 		int ret;
+ 
+@@ -620,6 +629,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 	}
+ 
+ 	flush_tlb_all();
++	up_read(&vmemmap_remap_rwsem);
+ 	free_vmemmap_page_list(&vmemmap_pages);
+ }
+ 
+-- 
+2.47.3
+

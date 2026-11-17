@@ -1,0 +1,82 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 16 Nov 2026 15:12:13 +0100
+Subject: [PATCH] mm/util: fix retry detection and handling in snapshot_page()
+
+snapshot_page() detects races with concurrent folio split+construction by
+checking whether the given page still falls into the folio. Unfortunately,
+we have an off-by-one error in there, and we should be checking for
+"ps->idx >= nr_pages", because idx 0 is valid.
+
+For example, we might currently report a tail page at idx 1 as faithful,
+although the snapshotted folio is now a small folio.
+
+However, there is one complication: As we don't hold a folio reference,
+folio_nr_pages() can return 0 on races (or when called from page freeing
+code). Handle that by just setting it to 1 in that case, so we don't
+wrongly report a head page as "page does not match folio".
+
+In addition, we should reset ps->flags when retrying, by just resetting
+it to PAGE_SNAPSHOT_FAITHFUL. Otherwise, PAGE_SNAPSHOT_PG_BUDDY and
+PAGE_SNAPSHOT_PG_IDLE from a failed attempt could stick around.
+
+These races are fairly rare, so this is not really critical, we simply
+report something slightly wrong. No need to CC stable.
+
+Link: https://lore.kernel.org/20261116-snapshot_page_fix-v1-1-8e425984e8d1@kernel.org
+Fixes: d863a12108f2 ("mm/util: introduce snapshot_page()")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Shao Mingyin <shao.mingyin@zte.com.cn>
+Closes: https://lore.kernel.org/r/20261115004657890Pz8ERDf5nCtE-B6M7KFzu@zte.com.cn
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: Luiz Capitulino (Red Hat) <luiz.capitulino@linux.dev>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Luiz Capitulino <luizcap@redhat.com>
+Cc: Shivank Garg <shivankg@amd.com>
+
+ mm/util.c |    7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+---
+ mm/util.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/util.c b/mm/util.c
+index 80f6c714844f2..338f259b00351 100644
+--- a/mm/util.c
++++ b/mm/util.c
+@@ -1406,9 +1406,9 @@ void snapshot_page(struct page_snapshot *ps, const struct page *page)
+ 	int loops = 5;
+ 
+ 	ps->pfn = page_to_pfn(page);
+-	ps->flags = PAGE_SNAPSHOT_FAITHFUL;
+ 
+ again:
++	ps->flags = PAGE_SNAPSHOT_FAITHFUL;
+ 	memset(&ps->folio_snapshot, 0, sizeof(struct folio));
+ 	memcpy(&ps->page_snapshot, page, sizeof(*page));
+ 	info = ps->page_snapshot.compound_info;
+@@ -1437,14 +1437,15 @@ void snapshot_page(struct page_snapshot *ps, const struct page *page)
+ 
+ 	if (ps->idx < MAX_FOLIO_NR_PAGES) {
+ 		memcpy(&ps->folio_snapshot, foliop, 2 * sizeof(struct page));
+-		nr_pages = folio_nr_pages(&ps->folio_snapshot);
++		/* On races, or when freeing pages, we can read 0. */
++		nr_pages = folio_nr_pages(&ps->folio_snapshot) ?: 1;
+ 		if (nr_pages > 2)
+ 			memcpy(&ps->folio_snapshot.__page_2, &foliop->__page_2,
+ 			       sizeof(struct page));
+ 		set_ps_flags(ps, foliop, page);
+ 	}
+ 
+-	if (ps->idx > nr_pages) {
++	if (ps->idx >= nr_pages) {
+ 		if (loops-- > 0)
+ 			goto again;
+ 		clear_compound_head(&ps->page_snapshot);
+-- 
+2.47.3
+

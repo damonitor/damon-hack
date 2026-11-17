@@ -1,0 +1,103 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 16 Nov 2026 19:29:23 +0100
+Subject: [PATCH] mm/hugetlb: compare against persistent count when freeing
+ lowmem folios
+
+try_to_free_low() gets a target number of persistent folios, but
+compares it with "nr_huge_pages", which includes surplus folios. As a
+result, it can free lowmem folios below that target.
+
+For example, with two persistent folios and one surplus folio, a target
+of two can still end up freeing one persistent folio.
+
+Compare against persistent_huge_pages() instead. Convert the macro to a
+helper function and place it before try_to_free_low().
+
+Link: https://lore.kernel.org/20261116-fixes_hugetlb-v2-2-4dd9e94ea9ac@kernel.org
+Fixes: 7893d1d505d5 ("hugetlb: Try to grow hugetlb pool for MAP_PRIVATE mappings")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Rik van Riel <riel@surriel.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Chris Mason <mason@kernel.org>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: luojiajun <luojiajun3@huawei.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: "Gregory Price (Meta)" <gourry@gourry.net>
+Cc: <stable@kernel.org>
+
+ mm/hugetlb.c |    8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+---
+ mm/hugetlb.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 88c9aa7005335..68945d0ebbd0e 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1341,6 +1341,11 @@ static unsigned long available_huge_pages(struct hstate *h)
+ 	return h->free_huge_pages - h->resv_huge_pages;
+ }
+ 
++static unsigned long persistent_huge_pages(const struct hstate *h)
++{
++	return h->nr_huge_pages - h->surplus_huge_pages;
++}
++
+ static struct folio *dequeue_hugetlb_folio(struct hstate *h, gfp_t gfp_mask,
+ 					   struct mempolicy_interpreted *mpoli)
+ {
+@@ -3766,7 +3771,7 @@ static void try_to_free_low(struct hstate *h, unsigned long count,
+ 		struct folio *folio, *next;
+ 		struct list_head *freel = &h->hugepage_freelists[i];
+ 		list_for_each_entry_safe(folio, next, freel, lru) {
+-			if (count >= h->nr_huge_pages)
++			if (count >= persistent_huge_pages(h))
+ 				goto out;
+ 			if (folio_test_highmem(folio))
+ 				continue;
+@@ -3820,7 +3825,6 @@ static int adjust_pool_surplus(struct hstate *h, nodemask_t *nodes_allowed,
+ 	return 1;
+ }
+ 
+-#define persistent_huge_pages(h) (h->nr_huge_pages - h->surplus_huge_pages)
+ static int set_max_huge_pages(struct hstate *h, unsigned long count, int nid,
+ 			      nodemask_t *nodes_allowed)
+ {
+-- 
+2.47.3
+
