@@ -14,18 +14,9 @@
     - maintainer, nobody: 4 -> 4 commits (no change)
     - maintainer, no role : 4 -> 4 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-- mm-new: 0 -> 2 commits
-  - series: 0 (0) -> 1 (2)
-    - no role, maintainer: 0 -> 2 commits
-  - new commits
-    - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2)
-      - 7a983cc1b573 "mm/damon/paddr: add KUnit tests for addr_unit conversion (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261116151057.81692-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261116151057.81692-2-sj@kernel.org
-      - de0ba97b97eb "Docs/mm/damon/design: replace "same to" with "same as" (1/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261116151057.81692-3-sj@kernel.org
+- mm-new: 2 -> 2 commits (no change)
+  - series: 1 (2) -> 1 (2) (no change)
+    - no role, maintainer: 2 -> 2 commits (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
