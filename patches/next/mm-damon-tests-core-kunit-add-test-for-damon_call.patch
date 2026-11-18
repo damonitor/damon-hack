@@ -1,0 +1,76 @@
+From: Sailesh Nandanavanam <saileshnandanavanam@gmail.com>
+Date: Wed, 18 Nov 2026 12:07:55 +0530
+Subject: [PATCH] mm/damon/tests/core-kunit: add test for damon_call()
+
+A newly allocated damon_ctx has call_controls_obsolete set, meaning no
+kdamond is available to handle call requests.  damon_call() should
+return -ECANCELED in that case instead of queueing the request and
+waiting forever.  When call_controls_obsolete is unset and
+damon_call_control->repeat is set, damon_call() should return 0
+without waiting for kdamond.  Add a kunit test for the two cases.
+
+/* TODO: move below to commentary */
+Changes from v2
+- v2: https://lore.kernel.org/20261118063755.37749-1-saileshnandanavanam@gmail.com
+- Collect R-b: from SJ.
+Changes from v1
+(https://lore.kernel.org/20261117172219.26725-1-saileshnandanavanam@gmail.com,
+ https://lore.kernel.org/20261117174834.29182-1-saileshnandanavanam@gmail.com)
+- Merge the two tests into damon_test_call().
+- Drop the list_empty()/call_controls.next expectations.
+- Drop list_del() on the stack-allocated control.
+- Post as a single patch.
+
+Tested-by: Aveline Noir <jm5905938@gmail.com>
+Reviewed-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: Sailesh Nandanavanam <saileshnandanavanam@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/tests/core-kunit.h | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/tests/core-kunit.h b/mm/damon/tests/core-kunit.h
+index a27545602680a..6caca10d61742 100644
+--- a/mm/damon/tests/core-kunit.h
++++ b/mm/damon/tests/core-kunit.h
+@@ -2724,6 +2724,27 @@ static void damos_test_sz_ops_filter_passed_last(struct kunit *test)
+ 	damon_destroy_ctx(c);
+ }
+ 
++static void damon_test_call(struct kunit *test)
++{
++	struct damon_ctx *ctx;
++	struct damon_call_control control = {};
++	int ret;
++
++	ctx = damon_new_ctx();
++	if (!ctx)
++		kunit_skip(test, "ctx alloc fail");
++
++	ret = damon_call(ctx, &control);
++	KUNIT_EXPECT_EQ(test, ret, -ECANCELED);
++
++	ctx->call_controls_obsolete = false;
++	control.repeat = true;
++	ret = damon_call(ctx, &control);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++
++	damon_destroy_ctx(ctx);
++}
++
+ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_target),
+ 	KUNIT_CASE(damon_test_regions),
+@@ -2770,7 +2791,7 @@ static struct kunit_case damon_test_cases[] = {
+ 	KUNIT_CASE(damon_test_rand),
+ 	KUNIT_CASE(damos_test_esz_goal_temporal),
+ 	KUNIT_CASE(damon_test_last_region_quota_reset),
+-	KUNIT_CASE(damos_test_sz_ops_filter_passed_last),
++	KUNIT_CASE(damon_test_call),
+ 	{},
+ };
+ 
+-- 
+2.47.3
+
