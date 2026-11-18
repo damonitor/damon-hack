@@ -1,0 +1,54 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Wed, 18 Nov 2026 03:24:28 +1100
+Subject: [PATCH] mm/damon/paddr: skip non-LRU folios as a whole in pageout
+
+damon_pa_pageout() uses damon_get_folio(), which rejects folios that are
+not on the LRU.  For a large non-LRU folio such as a hugetlb folio, the
+loop then looks up the same folio once per base page even though
+pageout cannot reclaim it.
+
+Use damon_get_monitor_folio() and skip any returned non-LRU folio as a
+whole by advancing to its end.  Do this before the filters, the
+accounting and the last_applied check, so that adjacent regions within
+the same non-LRU folio are not walked by base page either.
+
+In an x86-64 KVM pageout microbenchmark, traversal time dropped by
+about 99.7% for regions covering whole 2 MiB hugetlb folios. For
+4 KiB regions within hugetlb folios, traversal took about 1 ns more
+per region.
+
+/* TODO: move below to commentary */
+Changes from v2
+- v2: https://lore.kernel.org/20261118-fix-damon-hugetlb-pageout-20261117-v2-1-547a65a3206e@gmail.com
+- Collect R-b: from Enze and SJ.
+Changes in v2:
+- v1: https://lore.kernel.org/20261117-fix-damon-hugetlb-pageout-20261117-v1-1-054ef8760a92@gmail.com
+- Drop the redundant hugetlb check and update the subject and
+  description as suggested by SJ.
+
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Reviewed-by: Enze Li <lienze@kylinos.cn>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/paddr.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 43f82f3143445..8cc5b249d69a0 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -342,7 +342,9 @@ static unsigned long damon_pa_pageout(struct damon_region *r,
+ 
+ 	addr = damon_pa_phys_addr(r->ar.start, addr_unit);
+ 	while (addr < damon_pa_phys_addr(r->ar.end, addr_unit)) {
+-		folio = damon_get_folio(PHYS_PFN(addr));
++		folio = damon_get_monitor_folio(PHYS_PFN(addr));
++		if (folio && !folio_test_lru(folio))
++			goto put_folio;
+ 		if (damon_pa_invalid_damos_folio(folio, s)) {
+ 			addr += PAGE_SIZE;
+ 			continue;
+-- 
+2.47.3
+
