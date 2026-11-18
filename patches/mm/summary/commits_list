@@ -19,144 +19,145 @@
   - author/reviewer role stat
     - no role, maintainer: 1 commits
   - full commits list
-    - 7e34fcf4ca7f "mm/damon/stat: avoid overflow in estimated_memory_bandwidth calculation"
+    - 92527ed0fb45 "mm/damon/stat: avoid overflow in estimated_memory_bandwidth calculation"
       - Authored by no role player, reviewed by a maintainer
       - Link: https://lore.kernel.org/20261110004816.100066-1-sj@kernel.org
 - mm-stable: 0 total, 0 (0) series, 0 non-series commits
-- mm-unstable: 32 total, 7 (32) series, 0 non-series commits
+- mm-unstable: 35 total, 8 (34) series, 1 non-series commits
   - author/reviewer role stat
-    - no role, maintainer: 23 commits
+    - no role, nobody: 1 commits
+    - no role, maintainer: 25 commits
     - maintainer, nobody: 4 commits
     - maintainer, no role : 4 commits
     - maintainer, maintainer: 1 commits
   - full commits list
     - series "mm/damon/core: iterate over installed probes instead of DAMON_MAX_PROBES", v5. (2 commits)
-      - c39db7d77ca8 "mm/damon/core: use only installed probe in damon_merge_two_regions()" (0/2)
+      - 31df8385be03 "mm/damon/core: use only installed probe in damon_merge_two_regions()" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102153753.97769-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261102153753.97769-2-sj@kernel.org
-      - 76b0c578de67 "mm/damon/core: copy only installed probe in damon_split_region_at()" (1/2)
+      - 7f61dc7e5599 "mm/damon/core: copy only installed probe in damon_split_region_at()" (1/2)
         - Authored by a maintainer, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102153753.97769-3-sj@kernel.org
     - series "mm/damon: various fixes and cleanup of code, test, and docs". (9 commits)
-      - 4bb77c387fd3 "mm/damon/core: remove unnecessary zero-initialization in damon_new_ctx()" (0/9)
+      - 9121fb279c68 "mm/damon/core: remove unnecessary zero-initialization in damon_new_ctx()" (0/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261102150757.93058-2-sj@kernel.org
-      - 511211f5cfd9 "mm/damon/ops-common: align MMU notifier range when clearing PTE young bit" (1/9)
+      - 80ed57ff0a92 "mm/damon/ops-common: align MMU notifier range when clearing PTE young bit" (1/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-3-sj@kernel.org
-      - cb25cb111583 "mm/damon/ops-common: align MMU notifier range when clearing PMD young bit" (2/9)
+      - a73216b1dd01 "mm/damon/ops-common: align MMU notifier range when clearing PMD young bit" (2/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-4-sj@kernel.org
-      - 11e4db6a5e1b "mm/damon/stat: avoid 32-bit overflow in idle percentiles" (3/9)
+      - bfcea3a87b7f "mm/damon/stat: avoid 32-bit overflow in idle percentiles" (3/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-5-sj@kernel.org
         - Link: https://lore.kernel.org/r/CANOyQmHad1vamnZT12M5yPrJ69==Pt1U0+MGw6u0MuNtr-DRCw@mail.gmail.com [1]
         - Link: https://lore.kernel.org/179207592479.3.11595453180868898703@gmail.com
-      - 6335246dcdfc "mm/damon/{p,v}addr: skip folios already on the migration target node" (4/9)
+      - e346626da7b8 "mm/damon/{p,v}addr: skip folios already on the migration target node" (4/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-6-sj@kernel.org
-      - f083b4fc6171 "selftests/damon/sysfs.py: stop obsolete_target shells hanging the test" (5/9)
+      - d831204ac973 "selftests/damon/sysfs.py: stop obsolete_target shells hanging the test" (5/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-7-sj@kernel.org
-      - b79fe1408463 "mm/damon/reclaim: fix typo and grammar" (6/9)
+      - de268a170ebf "mm/damon/reclaim: fix typo and grammar" (6/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-8-sj@kernel.org
-      - 2956de07d5f3 "Docs/admin-guide/mm/damon/lru_sort: fix grammar and style" (7/9)
+      - 5ba0d3317827 "Docs/admin-guide/mm/damon/lru_sort: fix grammar and style" (7/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261104202959.128646-2-manuelebnerli@mailbox.org
-      - 5837369cdf98 "Docs/admin-guide/mm/damon/reclaim: document how to disable watermarks" (8/9)
+      - ef4f704a1833 "Docs/admin-guide/mm/damon/reclaim: document how to disable watermarks" (8/9)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102150757.93058-10-sj@kernel.org
     - series "Docs/admin-guide/mm/damon: minor fixes", v2. (3 commits)
-      - a3419b482b16 "Docs/admin-guide/mm/damon: fix various typos" (0/3)
+      - 85c6e6ea135d "Docs/admin-guide/mm/damon: fix various typos" (0/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102152849.96057-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261102152849.96057-2-sj@kernel.org
-      - a5df51168daf "Docs/admin-guide/mm/damon/lru_sort: fix copy-paste mistakes" (1/3)
+      - fa68edcb1074 "Docs/admin-guide/mm/damon/lru_sort: fix copy-paste mistakes" (1/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102152849.96057-3-sj@kernel.org
-      - eebfd66dae58 "Docs/admin-guide/mm/damon/usage: fix incorrect option syntax in perf example" (2/3)
+      - 0913a0cd6e9e "Docs/admin-guide/mm/damon/usage: fix incorrect option syntax in perf example" (2/3)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261102152849.96057-4-sj@kernel.org
     - series "Docs: damon: fix grammar and typos", v2. (8 commits)
-      - 17e9f5951f97 "Docs/admin-guide/mm/damon/start: fix grammar" (0/8)
+      - 133a38767e96 "Docs/admin-guide/mm/damon/start: fix grammar" (0/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261103005940.91432-2-sj@kernel.org
-      - 7ab8afa7e546 "Docs/admin-guide/mm/damon/stat: fix pronoun agreement" (1/8)
+      - 10944a6531f3 "Docs/admin-guide/mm/damon/stat: fix pronoun agreement" (1/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-3-sj@kernel.org
-      - 9e8b3f765f7e "Docs/admin-guide/mm/damon/usage: fix grammar" (2/8)
+      - d7fa6a0a6f6e "Docs/admin-guide/mm/damon/usage: fix grammar" (2/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-4-sj@kernel.org
-      - 3e3a6e42caa7 "Docs/admin-guide/mm/damon/lru_sort: fix remaining grammar" (3/8)
+      - dd3c77f20c93 "Docs/admin-guide/mm/damon/lru_sort: fix remaining grammar" (3/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-5-sj@kernel.org
-      - e59e27075d0c "Docs/mm/damon/design: fix grammar and typos" (4/8)
+      - 3193f75a3fb0 "Docs/mm/damon/design: fix grammar and typos" (4/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-6-sj@kernel.org
-      - 1fe64288b702 "Docs/mm/damon/api: fix verb form" (5/8)
+      - c54b11009d68 "Docs/mm/damon/api: fix verb form" (5/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-7-sj@kernel.org
-      - 881450220a12 "Docs/mm/damon/maintainer-profile: fix subject-verb agreement" (6/8)
+      - adef07913320 "Docs/mm/damon/maintainer-profile: fix subject-verb agreement" (6/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-8-sj@kernel.org
-      - e8e9c9ed49d3 "Docs/mm/damon/monitoring_intervals_tuning_example: fix grammar and typos" (7/8)
+      - 87a1d50d87b7 "Docs/mm/damon/monitoring_intervals_tuning_example: fix grammar and typos" (7/8)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261103005940.91432-9-sj@kernel.org
     - series "mm/damon: introduce age_ms damos core filter type". (4 commits)
-      - a39729f01ddb "mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS" (0/4)
+      - b9145441171e "mm/damon/core: add DAMOS_FILTER_TYPE_AGE_MS" (0/4)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20261106020559.98352-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261106020559.98352-2-sj@kernel.org
         - Link: https://github.com/sjp38/masim [1]
         - Link: https://github.com/damonitor/damo [2]
-      - 94948b338d2f "mm/damon/sysfs-schemes: support DAMOS_FILTER_TYPE_AGE_MS" (1/4)
+      - 341f532a591f "mm/damon/sysfs-schemes: support DAMOS_FILTER_TYPE_AGE_MS" (1/4)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20261106020559.98352-3-sj@kernel.org
-      - 4c88fa2c689f "Docs/mm/damon/design: update for age_ms damos core filter type" (2/4)
+      - 06d57739d114 "Docs/mm/damon/design: update for age_ms damos core filter type" (2/4)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20261106020559.98352-4-sj@kernel.org
-      - fd2774a8a2b3 "Docs/admin-guide/mm/damon/usage: update for age_ms damos core filter" (3/4)
+      - 35f1384586a4 "Docs/admin-guide/mm/damon/usage: update for age_ms damos core filter" (3/4)
         - Authored by a maintainer, reviewed by no role player
         - Link: https://lore.kernel.org/20261106020559.98352-5-sj@kernel.org
     - series "mm/damon: cleanup region iterator and damon_reclaim user doc". (2 commits)
-      - 7abb461650c9 "mm/damon/core: use list_{next,prev}_entry() in damon_{next,prev}_region()" (0/2)
+      - 297de9e6a331 "mm/damon/core: use list_{next,prev}_entry() in damon_{next,prev}_region()" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261110010558.104905-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261110010558.104905-2-sj@kernel.org
-      - d8beb7439f93 "Docs/admin-guide/mm/damon/reclaim: improve language" (1/2)
+      - d793cd5cbda3 "Docs/admin-guide/mm/damon/reclaim: improve language" (1/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261110010558.104905-3-sj@kernel.org
     - series "mm/damon: add lru-active probe filter type". (4 commits)
-      - 7be7c55bb179 "mm/damon/api: define DAMON_FILTER_TYPE_ACTIVE" (0/4)
+      - 71470ae11b15 "mm/damon/api: define DAMON_FILTER_TYPE_ACTIVE" (0/4)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20261113051711.89274-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261113051711.89274-2-sj@kernel.org
         - Link: https://github.com/sjp38/masim [1]
         - Link: https://github.com/damonitor/damo [2]
-      - 17ee5048f004 "mm/damon/ops-common: implement DAMON_FILTER_TYPE_ACTIVE operation" (1/4)
+      - 8cb72f4640a8 "mm/damon/ops-common: implement DAMON_FILTER_TYPE_ACTIVE operation" (1/4)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20261113051711.89274-3-sj@kernel.org
-      - 30a34341af2a "mm/damon/sysfs: support LRU-activeness based DAMON filter setup" (2/4)
+      - 07b1922eab5f "mm/damon/sysfs: support LRU-activeness based DAMON filter setup" (2/4)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20261113051711.89274-4-sj@kernel.org
-      - 360088159da5 "Docs/mm/damon/design: update for DAMON_FILTER_TYPE_ACTIVE" (3/4)
+      - af2c80cf797f "Docs/mm/damon/design: update for DAMON_FILTER_TYPE_ACTIVE" (3/4)
         - Authored by a maintainer, reviewed by nobody
         - Link: https://lore.kernel.org/20261113051711.89274-5-sj@kernel.org
-- mm-new: 2 total, 1 (2) series, 0 non-series commits
-  - author/reviewer role stat
-    - no role, maintainer: 2 commits
-  - full commits list
     - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2 commits)
-      - 668b54735273 "mm/damon/paddr: add KUnit tests for addr_unit conversion" (0/2)
+      - b77124adfd9e "mm/damon/paddr: add KUnit tests for addr_unit conversion" (0/2)
         - Authored by no role player, reviewed by a maintainer
         - Link: https://lore.kernel.org/20261116151057.81692-1-sj@kernel.org
         - Link: https://lore.kernel.org/20261116151057.81692-2-sj@kernel.org
-      - c5c149a09347 "Docs/mm/damon/design: replace "same to" with "same as"" (1/2)
-        - Authored by no role player, reviewed by a maintainer
-        - Link: https://lore.kernel.org/20261116151057.81692-3-sj@kernel.org
+      - a5cfb339b12c "mm/damon/paddr: avoid truncation warning in high-address KUnit test" (1/2)
+        - Authored by no role player, reviewed by nobody
+        - Link: https://lore.kernel.org/20261118-fix-damon-paddr-sparse-20261118-v1-1-3a0e943406d5@gmail.com
+    - 07cb588546fb "Docs/mm/damon/design: replace "same to" with "same as""
+      - Authored by no role player, reviewed by a maintainer
+      - Link: https://lore.kernel.org/20261116151057.81692-3-sj@kernel.org
+- mm-new: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-stable: 0 total, 0 (0) series, 0 non-series commits
 - mm-nonmm-unstable: 0 total, 0 (0) series, 0 non-series commits

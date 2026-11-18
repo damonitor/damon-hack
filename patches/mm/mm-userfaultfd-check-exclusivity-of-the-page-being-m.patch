@@ -1,0 +1,102 @@
+From: Eric Li <nakixii@gmail.com>
+Date: Wed, 18 Nov 2026 05:24:00 +0800
+Subject: [PATCH] mm/userfaultfd: check exclusivity of the page being moved
+
+move_pages_ptes() gets the folio of a present source PTE and then checks
+PageAnonExclusive() on the first page of that folio.  PG_anon_exclusive is
+per page, so for a PTE-mapped large folio this can give the wrong answer
+for the page that is actually being moved.
+
+This happens after fork().  fork() clears the flag on every page of the
+folio.  Once the child exits, a write fault in the parent can reuse the
+large folio, and do_wp_page() sets the flag again only on the faulting
+page.  This case only exists since commit 1da190f4d0a6 ("mm: Copy-on-Write
+(COW) reuse support for PTE-mapped THP").  Before that, the same state
+could already come from fork() after MADV_DONTFORK on part of the folio,
+or from reclaim when try_to_unmap() replaces the earlier pages with swap
+entries and then fails on a later one.
+
+Moving that page with UFFDIO_MOVE then fails with -EBUSY, even though the
+folio could be split and the page moved.  Callers that fall back to
+UFFDIO_COPY on -EBUSY end up copying instead.  It also goes wrong the
+other way: if the first page is exclusive and the page being moved is not,
+the folio is split for nothing before the retry sees the shared page and
+returns -EBUSY.
+
+Check the flag on the page mapped by the source PTE and get the folio from
+that page.  Locking, refcounting and the split-and-retry path stay the
+same.  The batched path only handles small folios and the PMD path already
+checks the page the PMD maps, so they don't need this.
+
+Tested in an x86_64 KVM guest on mm-unstable with only 64K anonymous mTHP
+enabled: map a 64K-aligned region backed by one large folio, fork, let the
+child exit, write to the sixth page and move it.  Without this patch all
+20 moves failed with -EBUSY.  With it all 20 worked and the data was
+correct.  Moving the first page right after fork() still fails with
+-EBUSY, as it should.  Writing to the first page instead and moving the
+sixth fails with -EBUSY either way, but without this patch the folio was
+also split all 20 times.  The move tests in uffd-unit-tests pass with and
+without the patch (the two swap tests were skipped, there is no swap in
+the guest).  I didn't reproduce the MADV_DONTFORK or reclaim cases and
+didn't test arm64.
+
+I found this with Claude Code while debugging an out-of-tree swap backend,
+and it wrote the first version of the fix.  This version, the changelog
+and the reproducer were also done with AI help.  I've reviewed all of it.
+
+Link: https://lore.kernel.org/20261117212400.1890820-1-nakixii@gmail.com
+Link: https://lore.kernel.org/all/20261116110122.309748-1-nakixii@gmail.com/
+Fixes: adef440691ba ("userfaultfd: UFFDIO_MOVE uABI")
+Signed-off-by: Eric Li <nakixii@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Lokesh Gidra <lokeshgidra@google.com>
+Cc: Kairui Song <kasong@tencent.com>
+
+ mm/userfaultfd.c |   12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+---
+ mm/userfaultfd.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 1e7a4b6759b6f..c3f2154606246 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1560,6 +1560,7 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
+ 		 */
+ 		if (!src_folio) {
+ 			struct folio *folio;
++			struct page *page;
+ 			bool locked;
+ 
+ 			/*
+@@ -1573,13 +1574,20 @@ static long move_pages_ptes(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd
+ 				goto out;
+ 			}
+ 
+-			folio = vm_normal_folio(src_vma, src_addr, orig_src_pte);
+-			if (!folio || !PageAnonExclusive(&folio->page)) {
++			/*
++			 * PG_anon_exclusive is per page. The first page of a
++			 * large folio can be shared while the page mapped here
++			 * is still exclusive, so check the page being moved.
++			 */
++			page = vm_normal_page(src_vma, src_addr, orig_src_pte);
++			if (!page || !PageAnonExclusive(page)) {
+ 				spin_unlock(src_ptl);
+ 				ret = -EBUSY;
+ 				goto out;
+ 			}
+ 
++			folio = page_folio(page);
++
+ 			locked = folio_trylock(folio);
+ 			/*
+ 			 * We avoid waiting for folio lock with a raised
+-- 
+2.47.3
+

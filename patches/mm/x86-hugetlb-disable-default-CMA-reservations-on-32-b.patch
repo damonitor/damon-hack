@@ -1,0 +1,70 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Tue, 17 Nov 2026 17:33:57 +0800
+Subject: [PATCH] x86: hugetlb: disable default CMA reservations on 32-bit
+ kernel
+
+Patch series "mm: hugetlb: fix CMA-related issues", v5.
+
+This series fixes three CMA-related issues in HugeTLB reservation,
+long-term pinning and allocation:
+
+ - Avoid ineffective CMA reservations on 32-bit x86 kernels running on
+   CPUs that advertise 1 GiB page support.
+ - Allow long-term pins of explicitly CMA-allocated HugeTLB folios,
+   which already own the CMA memory.
+ - Preserve the caller's GFP mask when allocating from CMA.
+
+
+This patch (of 3):
+
+A 32-bit x86 kernel can run on a 64-bit-capable CPU advertising GBPAGES.
+arch_hugetlb_cma_order() checks only this feature and returns a nonzero
+order, although gigantic HugeTLB support on x86 requires CONFIG_X86_64.
+Specifying hugetlb_cma= can therefore reserve a CMA area that cannot
+serve the intended gigantic HugeTLB allocations.
+
+On non-PAE kernels, the folded PUD_SHIFT yields a 4 MiB order, which is
+equal to MAX_PAGE_ORDER. With CONFIG_DEBUG_VM enabled, this triggers the
+VM_WARN_ON(order <= MAX_PAGE_ORDER) check in hugetlb_cma_reserve(),
+warning that hugetlb_cma is attempting to reserve a non-gigantic order.
+
+Require CONFIG_X86_64 as well as GBPAGES when selecting the default CMA
+order to avoid these ineffective reservations.
+
+Link: https://lore.kernel.org/cover.1794907279.git.zhengqi.arch@bytedance.com
+Link: https://lore.kernel.org/6866920502a4eaafd99a9e272df572e3a7d3da4e.1794907279.git.zhengqi.arch@bytedance.com
+Fixes: cf11e85fc08c ("mm: hugetlb: optionally allocate gigantic hugepages using cma")
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Acked-by: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: <stable@vger.kernel.org>
+
+ arch/x86/mm/hugetlbpage.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ arch/x86/mm/hugetlbpage.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/x86/mm/hugetlbpage.c b/arch/x86/mm/hugetlbpage.c
+index 3b26621c91286..70726a99ede7b 100644
+--- a/arch/x86/mm/hugetlbpage.c
++++ b/arch/x86/mm/hugetlbpage.c
+@@ -45,7 +45,7 @@ arch_initcall(gigantic_pages_init);
+ 
+ unsigned int __init arch_hugetlb_cma_order(void)
+ {
+-	if (boot_cpu_has(X86_FEATURE_GBPAGES))
++	if (IS_ENABLED(CONFIG_X86_64) && boot_cpu_has(X86_FEATURE_GBPAGES))
+ 		return PUD_SHIFT - PAGE_SHIFT;
+ 
+ 	return 0;
+-- 
+2.47.3
+

@@ -8,15 +8,32 @@
     - no role, maintainer: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 32 -> 32 commits (no change)
-  - series: 7 (32) -> 7 (32) (no change)
-    - no role, maintainer: 23 -> 23 commits (no change)
+- mm-unstable: 32 -> 35 commits
+  - series: 7 (32) -> 8 (34)
+    - no role, nobody: 0 -> 1 commits
+    - no role, maintainer: 23 -> 25 commits
     - maintainer, nobody: 4 -> 4 commits (no change)
     - maintainer, no role : 4 -> 4 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-- mm-new: 2 -> 2 commits (no change)
-  - series: 1 (2) -> 1 (2) (no change)
-    - no role, maintainer: 2 -> 2 commits (no change)
+  - new commits
+    - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2)
+      - a5cfb339b12c "mm/damon/paddr: avoid truncation warning in high-address KUnit test (1/2)"
+        - Authored by no role player, reviewed by nobody
+        - Link: https://lore.kernel.org/20261118-fix-damon-paddr-sparse-20261118-v1-1-3a0e943406d5@gmail.com
+  - changed commits
+    - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2)
+      - b77124adfd9e "mm/damon/paddr: add KUnit tests for addr_unit conversion (0/2)"
+        - Authored by no role player, reviewed by a maintainer
+        - branch: mm-new -> mm-unstable
+        - Link: https://lore.kernel.org/20261116151057.81692-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261116151057.81692-2-sj@kernel.org
+    - 07cb588546fb "Docs/mm/damon/design: replace "same to" with "same as""
+      - Authored by no role player, reviewed by a maintainer
+      - branch: mm-new -> mm-unstable
+      - Link: https://lore.kernel.org/20261116151057.81692-3-sj@kernel.org
+- mm-new: 2 -> 0 commits
+  - series: 1 (2) -> 0 (0)
+    - no role, maintainer: 2 -> 0 commits
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)

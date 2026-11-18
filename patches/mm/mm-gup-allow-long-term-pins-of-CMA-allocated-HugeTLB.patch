@@ -1,0 +1,127 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Tue, 17 Nov 2026 17:33:58 +0800
+Subject: [PATCH] mm: gup: allow long-term pins of CMA-allocated HugeTLB folios
+
+Long-term pinning rejects HugeTLB folios explicitly allocated from CMA,
+causing unnecessary migration or pinning failures.  These folios already
+own their CMA memory and do not need to be migrated out for future CMA
+allocations.
+
+Add cma_folio_is_longterm_pinnable() to recognize these allocations
+through HPG_cma.  Allow them to be pinned even in ZONE_MOVABLE, since
+memory blocks overlapping boot-time CMA areas cannot be offlined.
+Ordinary movable allocations that borrow CMA memory remain unpinnable.
+
+Link: https://lore.kernel.org/295af6601ce79f2c2b3dc4352a3279f0e6ac513e.1794907279.git.zhengqi.arch@bytedance.com
+Fixes: cf11e85fc08c ("mm: hugetlb: optionally allocate gigantic hugepages using cma")
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Muchun Song <muchun.song@linux.dev>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Oscar Salvador <osalvador@suse.de>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Frank van der Linden <fvdl@google.com>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: "Oscar Salvador (SUSE)" <osalvador@kernel.org>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: <stable@vger.kernel.org>
+
+ include/linux/cma.h |    3 +++
+ include/linux/mm.h  |    9 ++++++---
+ mm/cma.c            |   11 +++++++++++
+ 3 files changed, 20 insertions(+), 3 deletions(-)
+---
+ include/linux/cma.h |  3 +++
+ include/linux/mm.h  |  9 ++++++---
+ mm/cma.c            | 11 +++++++++++
+ 3 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/cma.h b/include/linux/cma.h
+index 8555d38a97b1a..d829fd0355bae 100644
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -21,6 +21,9 @@
+ #define CMA_MIN_ALIGNMENT_BYTES (PAGE_SIZE * CMA_MIN_ALIGNMENT_PAGES)
+ 
+ struct cma;
++struct folio;
++
++bool cma_folio_is_longterm_pinnable(struct folio *folio);
+ 
+ extern unsigned long totalcma_pages;
+ extern phys_addr_t cma_get_base(const struct cma *cma);
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 0ddf1c8dacb82..813425e789a72 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -38,6 +38,7 @@
+ #include <linux/bitops.h>
+ #include <linux/iommu-debug-pagealloc.h>
+ #include <linux/kcsan-checks.h>
++#include <linux/cma.h>
+ 
+ struct mempolicy;
+ struct anon_vma;
+@@ -2984,15 +2985,18 @@ static inline bool is_zero_folio(const struct folio *folio)
+ 	return is_zero_page(&folio->page);
+ }
+ 
+-/* MIGRATE_CMA and ZONE_MOVABLE do not allow pin folios */
+ #ifdef CONFIG_MIGRATION
++/*
++ * MIGRATE_CMA and ZONE_MOVABLE folios cannot normally be long-term pinned.
++ * CMA may allow pinning folios explicitly allocated from its areas.
++ */
+ static inline bool folio_is_longterm_pinnable(struct folio *folio)
+ {
+ #ifdef CONFIG_CMA
+ 	int mt = folio_migratetype(folio);
+ 
+ 	if (mt == MIGRATE_CMA || mt == MIGRATE_ISOLATE)
+-		return false;
++		return cma_folio_is_longterm_pinnable(folio);
+ #endif
+ 	/* The zero page can be "pinned" but gets special handling. */
+ 	if (is_zero_folio(folio))
+@@ -3011,7 +3015,6 @@ static inline bool folio_is_longterm_pinnable(struct folio *folio)
+ 
+ 	/* Otherwise, non-movable zone folios can be pinned. */
+ 	return !folio_is_zone_movable(folio);
+-
+ }
+ #else
+ static inline bool folio_is_longterm_pinnable(struct folio *folio)
+diff --git a/mm/cma.c b/mm/cma.c
+index 7e61b78197b28..b085e32ee2831 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -29,6 +29,7 @@
+ #include <linux/highmem.h>
+ #include <linux/io.h>
+ #include <linux/kmemleak.h>
++#include <linux/hugetlb.h>
+ #include <trace/events/cma.h>
+ 
+ #include "internal.h"
+@@ -38,6 +39,16 @@
+ struct cma cma_areas[MAX_CMA_AREAS];
+ unsigned int cma_area_count;
+ 
++bool cma_folio_is_longterm_pinnable(struct folio *folio)
++{
++	/*
++	 * Explicitly allocated CMA folios own their CMA memory and can be
++	 * pinned even in ZONE_MOVABLE, as CMA memory cannot be offlined.
++	 * For now, only HugeTLB tracks these allocations with a folio flag.
++	 */
++	return folio_test_hugetlb(folio) && folio_test_hugetlb_cma(folio);
++}
++
+ phys_addr_t cma_get_base(const struct cma *cma)
+ {
+ 	WARN_ON_ONCE(cma->nranges != 1);
+-- 
+2.47.3
+

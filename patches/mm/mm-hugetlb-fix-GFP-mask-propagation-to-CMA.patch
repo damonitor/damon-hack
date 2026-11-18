@@ -1,0 +1,94 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Tue, 17 Nov 2026 17:33:59 +0800
+Subject: [PATCH] mm: hugetlb: fix GFP mask propagation to CMA
+
+cma_alloc_frozen_compound() uses GFP_KERNEL, allowing direct reclaim
+during the first MPOL_PREFERRED_MANY allocation attempt even though
+the caller clears __GFP_DIRECT_RECLAIM.
+
+Pass the caller's GFP mask through the helper so CMA respects its
+reclaim constraints when trying the preferred nodes.
+
+Link: https://lore.kernel.org/990efc61c4c3b2a4186cd578a56c6a74348fcdb1.1794907279.git.zhengqi.arch@bytedance.com
+Fixes: 9bda131c6093 ("mm: cma: add cma_alloc_frozen{_compound}()")
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song <muchun.song@linux.dev>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: Kefeng Wang <wangkefeng.wang@huawei.com>
+Cc: <stable@vger.kernel.org>
+
+ include/linux/cma.h |    2 +-
+ mm/cma.c            |   10 ++++++++--
+ mm/hugetlb_cma.c    |    4 ++--
+ 3 files changed, 11 insertions(+), 5 deletions(-)
+---
+ include/linux/cma.h |  2 +-
+ mm/cma.c            | 10 ++++++++--
+ mm/hugetlb_cma.c    |  4 ++--
+ 3 files changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/include/linux/cma.h b/include/linux/cma.h
+index d829fd0355bae..d6e97e831d970 100644
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -56,7 +56,7 @@ extern bool cma_release(struct cma *cma, const struct page *pages, unsigned long
+ 
+ struct page *cma_alloc_frozen(struct cma *cma, unsigned long count,
+ 		unsigned int align, bool no_warn);
+-struct page *cma_alloc_frozen_compound(struct cma *cma, unsigned int order);
++struct page *cma_alloc_frozen_compound(struct cma *cma, unsigned int order, gfp_t gfp);
+ bool cma_release_frozen(struct cma *cma, const struct page *pages,
+ 		unsigned long count);
+ 
+diff --git a/mm/cma.c b/mm/cma.c
+index b085e32ee2831..61fc59fa70f88 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -837,9 +837,15 @@ struct page *cma_alloc_frozen(struct cma *cma, unsigned long count,
+ 	return __cma_alloc_frozen(cma, count, align, gfp);
+ }
+ 
+-struct page *cma_alloc_frozen_compound(struct cma *cma, unsigned int order)
++struct page *cma_alloc_frozen_compound(struct cma *cma, unsigned int order, gfp_t gfp)
+ {
+-	gfp_t gfp = GFP_KERNEL | __GFP_COMP | __GFP_NOWARN;
++	/*
++	 * The only caller of cma_alloc_frozen_compound() is hugetlb, and
++	 * hugetlb constructs its gfp mask via htlb_alloc_mask(), which already
++	 * sets __GFP_COMP. Check here for usecases bypassing htlb_alloc_mask().
++	 */
++	if (WARN_ON_ONCE(!(gfp & __GFP_COMP)))
++		return NULL;
+ 
+ 	return __cma_alloc_frozen(cma, 1 << order, order, gfp);
+ }
+diff --git a/mm/hugetlb_cma.c b/mm/hugetlb_cma.c
+index cd6a64986278a..3e5a30571524a 100644
+--- a/mm/hugetlb_cma.c
++++ b/mm/hugetlb_cma.c
+@@ -69,14 +69,14 @@ struct folio *hugetlb_cma_alloc_frozen_folio(int order, gfp_t gfp_mask,
+ 	}
+ 
+ 	if (hugetlb_cma[nid] && node_isset(nid, *nmask))
+-		page = cma_alloc_frozen_compound(hugetlb_cma[nid], order);
++		page = cma_alloc_frozen_compound(hugetlb_cma[nid], order, gfp_mask);
+ 
+ 	if (!page && !(gfp_mask & __GFP_THISNODE)) {
+ 		for_each_node_mask(node, *nmask) {
+ 			if (node == nid || !hugetlb_cma[node])
+ 				continue;
+ 
+-			page = cma_alloc_frozen_compound(hugetlb_cma[node], order);
++			page = cma_alloc_frozen_compound(hugetlb_cma[node], order, gfp_mask);
+ 			if (page)
+ 				break;
+ 		}
+-- 
+2.47.3
+
