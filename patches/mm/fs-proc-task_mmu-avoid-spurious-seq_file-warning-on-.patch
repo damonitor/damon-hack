@@ -1,0 +1,73 @@
+From: "Adrian Huang (Lenovo)" <adrianhuang0701@gmail.com>
+Date: Wed, 18 Nov 2026 18:34:21 +0800
+Subject: [PATCH] fs/proc/task_mmu: avoid spurious seq_file warning on
+ interrupted VMA lookup
+
+Commit 5631da56c9a8 ("fs/proc/task_mmu: read proc/pid/maps under per-vma
+lock") introduced the possibility of returning -EINTR from proc_get_vma()
+when a fatal signal interrupts mmap_read_lock_killable().
+
+The issue can be reproduced using stress-ng's VMA stressor, which reads
+/proc/self/maps while concurrently modifying VMAs and periodically
+terminates child processes with SIGKILL.  The reproduced command is:
+
+  # stress-ng --vma 0 -t 60
+
+When the VMA lookup is interrupted, proc_get_vma() returns an error
+pointer without advancing the position index.  Consequently,
+seq_read_iter() emits the following rate-limited informational message:
+
+  seq_file: buggy .next function m_next did not update position index
+
+Save the current position in priv->last_pos before checking the VMA lookup
+result, allowing it to be reused by both successful and error paths.
+Advance the position index when returning an error to avoid the spurious
+warning, while preserving the original error handling.
+
+Link: https://patch.msgid.link/20261118103421.776-1-adrianhuang0701@gmail.com
+Signed-off-by: Adrian Huang (Lenovo) <adrianhuang0701@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Adrian Huang <ahuang12@lenovo.com>
+Cc: <stable@vger.kernel.org>
+
+ fs/proc/task_mmu.c |    7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+---
+ fs/proc/task_mmu.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index b41434dc03309..540c936aad471 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -216,16 +216,17 @@ static struct vm_area_struct *proc_get_vma(struct seq_file *m, loff_t *ppos)
+ 
+ retry:
+ 	vma = get_next_vma(priv, *ppos);
+-	/* EINTR of EAGAIN is possible */
++	/* Store previous position to be able to restart if needed */
++	priv->last_pos = *ppos;
+ 	if (IS_ERR(vma)) {
+ 		if (PTR_ERR(vma) == -EAGAIN && fallback_to_mmap_lock(priv, *ppos))
+ 			goto retry;
+ 
++		/* Advance to avoid spurious buggy seq warning in dmesg */
++		(*ppos)++;
+ 		return vma;
+ 	}
+ 
+-	/* Store previous position to be able to restart if needed */
+-	priv->last_pos = *ppos;
+ 	if (vma) {
+ 		/*
+ 		 * Track the end of the reported vma to ensure position changes
+-- 
+2.47.3
+

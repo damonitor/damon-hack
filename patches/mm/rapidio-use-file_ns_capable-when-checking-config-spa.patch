@@ -1,0 +1,58 @@
+From: Suyuan Wang <stevewong@hust.edu.cn>
+Date: Thu, 19 Nov 2026 04:08:00 +0000
+Subject: [PATCH] rapidio: use file_ns_capable() when checking config space
+ read access
+
+rio_read_config() limits reads to the first 256 bytes unless
+capable(CAP_SYS_ADMIN) succeeds.  That checks the credentials of the task
+doing the read, not those of the task that opened the file.
+
+The config attribute is mode 0644, so any user can open it.  If such a
+descriptor is later read by a task that has CAP_SYS_ADMIN, the read covers
+the full maintenance space.  The allowed range follows whoever happens to
+read the descriptor instead of the credentials it was opened with.
+
+Use file_ns_capable() with init_user_ns so the check is made against the
+credentials saved in the file at open() time.  A descriptor opened without
+CAP_SYS_ADMIN then stays limited to 256 bytes whoever reads it, and a
+privileged opener can still hand the descriptor to another task.
+
+This matches pci_read_config() in PCI sysfs, and the PCI procfs change in
+commit f82f53e75eff ("PCI/proc: Use file_ns_capable() when checking config
+space read access").
+
+Found with a static analysis tool and checked by hand.
+
+Link: https://patch.msgid.link/20261119-rio-v1-1-3cf63c5198ff@gmail.com
+Fixes: 394b701ce4fb ("[PATCH] RapidIO support: core base")
+Signed-off-by: Kaixuan Li <kaixuan.li@ntu.edu.sg>
+Signed-off-by: Suyuan Wang <stevewong@hust.edu.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Co-developed-by: Kaixuan Li <kaixuan.li@ntu.edu.sg>
+Cc: Alexandre Bounine <alex.bou9@gmail.com>
+Cc: Matt Porter <mporter@kernel.crashing.org>
+Cc: <shyckless@gmail.com>
+Cc: <stable@vger.kernel.org>
+
+ drivers/rapidio/rio-sysfs.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ drivers/rapidio/rio-sysfs.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/rapidio/rio-sysfs.c b/drivers/rapidio/rio-sysfs.c
+index 0949c869b2f11..a85b73939a9e2 100644
+--- a/drivers/rapidio/rio-sysfs.c
++++ b/drivers/rapidio/rio-sysfs.c
+@@ -123,7 +123,7 @@ rio_read_config(struct file *filp, struct kobject *kobj,
+ 	u8 *data = (u8 *) buf;
+ 
+ 	/* Several chips lock up trying to read undefined config space */
+-	if (capable(CAP_SYS_ADMIN))
++	if (file_ns_capable(filp, &init_user_ns, CAP_SYS_ADMIN))
+ 		size = RIO_MAINT_SPACE_SZ;
+ 
+ 	if (off >= size)
+-- 
+2.47.3
+

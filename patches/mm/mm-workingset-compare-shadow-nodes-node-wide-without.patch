@@ -1,0 +1,94 @@
+From: "T.J. Mercier" <tjmercier@google.com>
+Date: Fri, 6 Nov 2026 15:59:04 -0800
+Subject: [PATCH] mm: workingset: compare shadow nodes node-wide without kmem
+ accounting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+count_shadow_nodes() limits the number of xarray nodes holding shadow
+entries to 1/8th of the pages that could be using them.  For a memcg, it
+counts the LRU and slab pages local to that memcg.
+
+With kmem accounting disabled (cgroup.memory=nokmem), shadow nodes are not
+charged to any memcg and __list_lru_init() makes the shadow_nodes list_lru
+non-memcg-aware, so all shadow nodes of a NUMA node are on a single list.
+shrinker_alloc() falls back to a non-memcg-aware shadow node shrinker,
+which shrink_slab() only invokes for the root memcg.  count_shadow_nodes()
+therefore compares every shadow node on the NUMA node against the pages
+local to the root memcg.
+
+When most tasks run in child memcgs, the root memcg only holds a small
+fraction of all pages, so the shadow node limit derived from the root
+memcg page count is far below the number of shadow nodes on the NUMA node.
+Since the shrinker has seeks == 0, every root shrink_slab() call trims
+about half of the "excess" shadow nodes.  Most refault information is
+thrown away, so refaults of recently evicted file folios are not detected.
+Refaulted folios lose PG_workingset and the workingset_refault and
+workingset_restore stats drop.
+
+In testing on devices with kmem accounting disabled, moving tasks from the
+root memcg into per-application memcgs dropped workingset_nodes from
+~37,000 to ~900 and raised workingset_nodereclaim 4.6x while pgsteal_file
+rose by ~12%.
+
+When kmem accounting is disabled, compare the shadow nodes against the
+whole NUMA node, as is done without memcg.  Behavior with kmem accounting
+enabled is unchanged.
+
+Link: https://patch.msgid.link/20261106235904.1092712-1-tjmercier@google.com
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Jaeseon Sim <jason.sim@samsung.com> # Galaxy A18 LTE
+Tested-by: Youngchan Kim <ycshark.kim@samsung.com> # Galaxy S27
+Tested-by: Dmitry Skiba <dskiba@google.com> # Pixel 10
+Reviewed-by: Barry Song <baohua@kernel.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jaewon Kim <jaewon31.kim@samsung.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+
+ mm/workingset.c |   11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+---
+ mm/workingset.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/mm/workingset.c b/mm/workingset.c
+index 1504f91cdca5f..87d5e55dd6849 100644
+--- a/mm/workingset.c
++++ b/mm/workingset.c
+@@ -682,7 +682,16 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
+ 	 * PAGE_SIZE / xa_nodes / node_entries * 8 / PAGE_SIZE
+ 	 */
+ #ifdef CONFIG_MEMCG
+-	if (sc->memcg) {
++	/*
++	 * Without kmem accounting the shadow_nodes list_lru is not
++	 * memcg-aware. So the count above covers the whole NUMA node, and the
++	 * shrinker only runs for the root memcg, whose local pages can be a
++	 * small fraction of the node's when most tasks run in child memcgs.
++	 * Compare the shadow node count against the memcg page count only when
++	 * the shadow_nodes list_lru is memcg-aware. Otherwise use the NUMA node
++	 * page count as is done without memcg.
++	 */
++	if (sc->memcg && shadow_nodes.memcg_aware) {
+ 		struct lruvec *lruvec;
+ 		int i;
+ 
+-- 
+2.47.3
+

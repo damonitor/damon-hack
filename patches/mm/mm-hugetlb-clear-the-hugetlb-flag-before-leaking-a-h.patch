@@ -1,0 +1,96 @@
+From: Mani Tofigh <mt4022@columbia.edu>
+Date: Tue, 3 Nov 2026 16:00:50 -0500
+Subject: [PATCH] mm/hugetlb: clear the hugetlb flag before leaking a
+ hwpoisoned folio
+
+If hugetlb_update_hwpoison() fails to allocate a raw_hwp_page, the folio
+is marked raw_hwp_unreliable and __update_and_free_hugetlb_folio() leaks
+it intentionally.  With hugetlb_free_vmemmap=on, it's leaked before the
+hugetlb flag is cleared, since commit 32c877191e02 ("hugetlb: do not
+clear hugetlb dtor until allocating vmemmap") doesn't remove the flag
+until the vmemmap is restored.  The leaked folio is then a hugetlb folio
+with refcount 0 and on no list (the same state as a hugetlb folio that
+is being freed), but nothing is freeing it, and
+dissolve_free_hugetlb_folio() keeps retrying on it.  Offlining its
+memory block then never completes, even on SIGKILL, and other tasks
+block on the memory hotplug lock:
+
+  [    3.271255] Memory failure: 0x20007: recovery action for free huge page: Failed
+  [   41.729695] INFO: task hugeoffline:77 blocked for more than 20 seconds.
+  ...
+  [   41.733014]  get_online_mems+0xc1/0xd0
+  [   41.733026]  soft_offline_page+0xfd/0x9b0
+
+alloc_and_dissolve_hugetlb_folio() loops on it the same way.  The
+refcount is 0 since commit bd225530a4c7 ("mm/hugetlb_vmemmap: fix race
+with speculative PFN walkers").  Before that these paths failed with
+-EBUSY.
+
+Check raw_hwp_unreliable after the hugetlb flag is cleared so that the
+folio is leaked as a non-hugetlb folio, as without vmemmap
+optimization.  unpoison_memory() keeps refusing to unpoison it.  With
+the fix, offlining retries as it does for any page it can't isolate,
+and stops on a signal.
+
+Link: https://patch.msgid.link/20261103-hugetlb-hwpoison-leak-v2-2-98085750c145@columbia.edu
+Fixes: 32c877191e02 ("hugetlb: do not clear hugetlb dtor until allocating vmemmap")
+Fixes: bd225530a4c7 ("mm/hugetlb_vmemmap: fix race with speculative PFN walkers")
+Signed-off-by: Mani Tofigh <mt4022@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jane Chu <jane.chu@oracle.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Kaitao Cheng <kaitao.cheng@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Tal Zussman <tz2294@columbia.edu>
+Cc: <stable@vger.kernel.org>
+
+ mm/hugetlb.c |   15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+---
+ mm/hugetlb.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index db532de43a7f7..addc7b5599aff 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -1514,13 +1514,6 @@ static void __update_and_free_hugetlb_folio(struct hstate *h,
+ 		return;
+ 	}
+ 
+-	/*
+-	 * If we don't know which subpages are hwpoisoned, we can't free
+-	 * the hugepage, so it's leaked intentionally.
+-	 */
+-	if (folio_test_hugetlb_raw_hwp_unreliable(folio))
+-		return;
+-
+ 	/*
+ 	 * If folio is not vmemmap optimized (!clear_flag), then the folio
+ 	 * is no longer identified as a hugetlb page.  hugetlb_vmemmap_restore_folio
+@@ -1548,6 +1541,14 @@ static void __update_and_free_hugetlb_folio(struct hstate *h,
+ 		spin_unlock_irq(&hugetlb_lock);
+ 	}
+ 
++	/*
++	 * If we don't know which subpages are hwpoisoned, we can't free
++	 * the hugepage, so it's leaked intentionally, but only once it is
++	 * no longer a hugetlb folio.
++	 */
++	if (folio_test_hugetlb_raw_hwp_unreliable(folio))
++		return;
++
+ 	/*
+ 	 * Move PageHWPoison flag from head page to the raw error pages,
+ 	 * which makes any healthy subpages reusable.
+-- 
+2.47.3
+

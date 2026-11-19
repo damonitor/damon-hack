@@ -1,0 +1,98 @@
+From: Mani Tofigh <mt4022@columbia.edu>
+Date: Tue, 3 Nov 2026 16:00:49 -0500
+Subject: [PATCH] mm/memory-failure: don't unpoison a leaked raw_hwp_unreliable
+ folio
+
+Patch series "mm/hugetlb: clear the hugetlb flag before leaking a
+hwpoisoned folio", v2.
+
+If memory_failure() can't save the raw error page of a hugetlb folio,
+the folio is marked raw_hwp_unreliable and leaked once it's freed.  With
+hugetlb_free_vmemmap=on it's leaked while it's still a hugetlb folio,
+and dissolving it then loops forever, e.g., when offlining its memory
+block.  Patch 2 leaks it only after the hugetlb flag is cleared, as
+without vmemmap optimization.
+
+Miaohe pointed out that unpoison_memory() then doesn't see a hugetlb
+folio anymore and unpoisons it.  That already happens without vmemmap
+optimization, so patch 1 fixes it on its own and goes first.
+
+Patch 2 lets a raw_hwp_unreliable folio reach the add_hugetlb_folio()
+rollback when restoring its vmemmap fails, as
+dissolve_free_hugetlb_folio() already does.  It relies on Kaitao's
+"mm/hugetlb: preserve persistent flags when returning folios to the
+pool" [1] to keep the flag there.
+
+Reproducer:
+https://github.com/manitofigh/files/blob/main/linux-repros/hugeoffline.c
+
+
+This patch (of 2):
+
+If memory_failure() can't save the raw error page of a hugetlb folio,
+it marks the folio raw_hwp_unreliable and unpoison_memory() refuses to
+unpoison it, since we don't know which subpages are poisoned.  Once the
+folio is freed, __update_and_free_hugetlb_folio() leaks it on purpose.
+If its hugetlb flag is cleared by then, e.g., without vmemmap
+optimization, unpoison_memory() doesn't see a hugetlb folio anymore.
+It treats the leaked folio as a normal page and clears PG_hwpoison on
+its head, while the poisoned subpages are still unknown.
+
+The leaked folio is still a large folio and raw_hwp_unreliable stays set
+in folio->private.  We now check it on any large folio before taking the
+page, so unpoison_memory() refuses the folio whether it's still hugetlb
+or not.  With the fix, it returns -EBUSY for the leaked folio as it did
+before the folio was freed.
+
+Link: https://lore.kernel.org/20261103-hugetlb-hwpoison-leak-v2-0-98085750c145@columbia.edu
+Link: https://patch.msgid.link/20261103-hugetlb-hwpoison-leak-v2-1-98085750c145@columbia.edu
+Link: https://lore.kernel.org/all/20261102024910.31486-3-kaitao.cheng@linux.dev/ [1]
+Fixes: ac5fcde0a96a ("mm, hwpoison: make unpoison aware of raw error info in hwpoisoned hugepage")
+Signed-off-by: Mani Tofigh <mt4022@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Miaohe Lin <linmiaohe@huawei.com>
+Closes: https://lore.kernel.org/all/ae6058ae-3703-a1d5-d82f-4102b46f227b@huawei.com/
+Acked-by: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jane Chu <jane.chu@oracle.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Kaitao Cheng <kaitao.cheng@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Mike Kravetz <mike.kravetz@oracle.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Tal Zussman <tz2294@columbia.edu>
+Cc: <stable@vger.kernel.org>
+
+ mm/memory-failure.c |    9 +++++++++
+ 1 file changed, 9 insertions(+)
+---
+ mm/memory-failure.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/mm/memory-failure.c b/mm/memory-failure.c
+index 6a7b7be9928df..67472fd66537f 100644
+--- a/mm/memory-failure.c
++++ b/mm/memory-failure.c
+@@ -2812,6 +2812,15 @@ int unpoison_memory(unsigned long pfn)
+ 		goto unlock_mutex;
+ 	}
+ 
++	/*
++	 * A hugetlb folio without reliable raw error info is leaked once it
++	 * is freed, and its hugetlb flag may be cleared by then.  Check the
++	 * flag in folio->private, which stays set on the leaked folio.
++	 */
++	if (folio_test_large(folio) &&
++	    folio_test_hugetlb_raw_hwp_unreliable(folio))
++		goto unlock_mutex;
++
+ 	ghp = get_hwpoison_page(p, MF_UNPOISON);
+ 	if (!ghp) {
+ 		guard(vmemmap_remap)();
+-- 
+2.47.3
+
