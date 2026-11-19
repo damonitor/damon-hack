@@ -1,0 +1,68 @@
+From: Zhiyuan Zhang <zhiyuanzhang912@gmail.com>
+Date: Tue, 17 Nov 2026 14:58:30 +0000
+Subject: [PATCH] ocfs2: fix local_alloc_bh leak in
+ ocfs2_shutdown_local_alloc()
+
+ocfs2_shutdown_local_alloc() owns the buffer_head reference stored in
+osb->local_alloc_bh, but only its success path drops it: after clearing
+and journalling the local alloc inode it calls brelse() and clears the
+pointer.  Every error exit after the local allocator has been enabled
+returns with the reference still held:
+
+  - failure to look up the local alloc or global bitmap system inode
+  - ocfs2_inode_lock() failure on the global bitmap
+  - ocfs2_start_trans() failure, e.g. on an aborted journal
+  - kmemdup() of the local alloc dinode returning NULL
+  - ocfs2_journal_access_di() failure
+
+Nothing else releases it, so the buffer_head and its page stay pinned
+after the unmount.
+
+Drop the reference at the common out: label and clear the pointer there.
+The success path has already set osb->local_alloc_bh to NULL before it
+reaches out:, so nothing is released twice.  The reservation path is not
+affected: it takes its own reference with get_bh() and drops it in
+ocfs2_free_ac_resource().  Also mark the local allocator unused when the
+buffer is dropped, so that a NULL local_alloc_bh is never left behind with
+the allocator still marked as in use.
+
+Link: https://lore.kernel.org/20261117145830.59864-1-zhiyuanzhang912@gmail.com
+Fixes: ccd979bdbce9 ("[PATCH] OCFS2: The Second Oracle Cluster Filesystem")
+Signed-off-by: Zhiyuan Zhang <zhiyuanzhang912@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+
+ fs/ocfs2/localalloc.c |   11 +++++++++++
+ 1 file changed, 11 insertions(+)
+---
+ fs/ocfs2/localalloc.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/fs/ocfs2/localalloc.c b/fs/ocfs2/localalloc.c
+index 82d290cf44323..d8d81cef92fce 100644
+--- a/fs/ocfs2/localalloc.c
++++ b/fs/ocfs2/localalloc.c
+@@ -462,6 +462,17 @@ void ocfs2_shutdown_local_alloc(struct ocfs2_super *osb)
+ 	iput(main_bm_inode);
+ 
+ out:
++	/*
++	 * The success path has already dropped the reference and cleared
++	 * the pointer, so this is a no-op there.  Every error exit after
++	 * the local allocator was enabled used to leak local_alloc_bh.
++	 */
++	if (osb->local_alloc_bh) {
++		brelse(osb->local_alloc_bh);
++		osb->local_alloc_bh = NULL;
++		osb->local_alloc_state = OCFS2_LA_UNUSED;
++	}
++
+ 	iput(local_alloc_inode);
+ 
+ 	kfree(alloc_copy);
+-- 
+2.47.3
+

@@ -1,0 +1,56 @@
+From: Nickolai Zeldovich <nickolai@csail.mit.edu>
+Date: Fri, 23 Oct 2026 21:43:44 -0400
+Subject: [PATCH] xarray: initialise the offset of a new root node
+
+xas_alloc() sets node->offset only when the new node has a parent.  A root
+node can retain a nonzero offset from its previous use in the slab.  While
+xas_expand() links that root below a new one, an RCU walker can read the
+stale offset and then the new parent pointer.  It can resume at the wrong
+slot and report an entry at the wrong index or skip entries.
+
+Initialize the offset to zero when allocating a root.  The old root
+already has that offset when xas_expand() links it beneath the new root,
+so remove the store to its offset during expansion.
+
+Link: https://lore.kernel.org/r/20261024014344.830116-1-nickolai@csail.mit.edu
+Fixes: 58d6ea3085f2 ("xarray: Add XArray unconditional store operations")
+Signed-off-by: Nickolai Zeldovich <nickolai@csail.mit.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+73641b60a3bc11dfca8c@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=73641b60a3bc11dfca8c
+Tested-by: Baoli Zhang <baoli.zhang@intel.com>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: <stable@vger.kernel.org>
+---
+ lib/xarray.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/xarray.c b/lib/xarray.c
+index 52af5cadb4071..8c09f6c6cd8f7 100644
+--- a/lib/xarray.c
++++ b/lib/xarray.c
+@@ -387,6 +387,8 @@ static void *xas_alloc(struct xa_state *xas, unsigned int shift)
+ 		parent->count++;
+ 		XA_NODE_BUG_ON(node, parent->count > XA_CHUNK_SIZE);
+ 		xas_update(xas, parent);
++	} else {
++		node->offset = 0;
+ 	}
+ 	XA_NODE_BUG_ON(node, shift > BITS_PER_LONG);
+ 	XA_NODE_BUG_ON(node, !list_empty(&node->private_list));
+@@ -617,10 +619,8 @@ static int xas_expand(struct xa_state *xas, void *head)
+ 		 * Now that the new node is fully initialised, we can add
+ 		 * it to the tree
+ 		 */
+-		if (xa_is_node(head)) {
+-			xa_to_node(head)->offset = 0;
++		if (xa_is_node(head))
+ 			rcu_assign_pointer(xa_to_node(head)->parent, node);
+-		}
+ 		head = xa_mk_node(node);
+ 		rcu_assign_pointer(xa->xa_head, head);
+ 		xas_update(xas, node);
+-- 
+2.47.3
+

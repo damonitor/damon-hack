@@ -1,39 +1,34 @@
-- baseline: v7.4-rc1-914-gfa4ad798f6f68 -> v7.4-rc1-914-gfa4ad798f6f68 (no change)
-- mm-hotfixes-stable: 3 -> 3 commits (no change)
-  - series: 1 (3) -> 1 (3) (no change)
-    - no role, maintainer: 2 -> 2 commits (no change)
-    - maintainer, no role : 1 -> 1 commits (no change)
+- baseline: v7.4-rc1-914-gfa4ad798f6f68 -> v7.4-rc3-230-g4405c18c95d2d
+- mm-hotfixes-stable: 3 -> 0 commits
+  - series: 1 (3) -> 0 (0)
+    - no role, maintainer: 2 -> 0 commits
+    - maintainer, no role : 1 -> 0 commits
+  - dropped commits
+    - series "mm/damon: fix watermark state, kunit pid leak and selftest fake pass". (3)
+      - 5fe092741502 "mm/damon/core: reset watermark wait state on each iteration (0/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20261102144627.88843-1-sj@kernel.org
+        - Link: https://lore.kernel.org/20261102144627.88843-2-sj@kernel.org
+      - 9d2cc214935a "mm/damon/tests/sysfs-kunit: fix leaked pid reference in add_targets test (1/3)"
+        - Authored by no role player, reviewed by a maintainer
+        - Link: https://lore.kernel.org/20261102144627.88843-3-sj@kernel.org
+      - c8c47f4072bd "selftests/damon/sysfs_memcg_path_leak: define ksft_skip (2/3)"
+        - Authored by a maintainer, reviewed by no role player
+        - Link: https://lore.kernel.org/20261102144627.88843-4-sj@kernel.org
 - mm-hotfixes-unstable: 1 -> 1 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
     - no role, maintainer: 1 -> 1 commits (no change)
 - mm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
-- mm-unstable: 32 -> 35 commits
-  - series: 7 (32) -> 8 (34)
-    - no role, nobody: 0 -> 1 commits
-    - no role, maintainer: 23 -> 25 commits
+- mm-unstable: 35 -> 35 commits (no change)
+  - series: 8 (34) -> 8 (34) (no change)
+    - no role, nobody: 1 -> 1 commits (no change)
+    - no role, maintainer: 25 -> 25 commits (no change)
     - maintainer, nobody: 4 -> 4 commits (no change)
     - maintainer, no role : 4 -> 4 commits (no change)
     - maintainer, maintainer: 1 -> 1 commits (no change)
-  - new commits
-    - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2)
-      - a5cfb339b12c "mm/damon/paddr: avoid truncation warning in high-address KUnit test (1/2)"
-        - Authored by no role player, reviewed by nobody
-        - Link: https://lore.kernel.org/20261118-fix-damon-paddr-sparse-20261118-v1-1-3a0e943406d5@gmail.com
-  - changed commits
-    - series "mm/damon: add paddr kunit and replace weird "same to" uses in design doc". (2)
-      - b77124adfd9e "mm/damon/paddr: add KUnit tests for addr_unit conversion (0/2)"
-        - Authored by no role player, reviewed by a maintainer
-        - branch: mm-new -> mm-unstable
-        - Link: https://lore.kernel.org/20261116151057.81692-1-sj@kernel.org
-        - Link: https://lore.kernel.org/20261116151057.81692-2-sj@kernel.org
-    - 07cb588546fb "Docs/mm/damon/design: replace "same to" with "same as""
-      - Authored by no role player, reviewed by a maintainer
-      - branch: mm-new -> mm-unstable
-      - Link: https://lore.kernel.org/20261116151057.81692-3-sj@kernel.org
-- mm-new: 2 -> 0 commits
-  - series: 1 (2) -> 0 (0)
-    - no role, maintainer: 2 -> 0 commits
+- mm-new: 0 -> 0 commits (no change)
+  - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-stable: 0 -> 0 commits (no change)
   - series: 0 (0) -> 0 (0) (no change)
 - mm-nonmm-unstable: 0 -> 0 commits (no change)
