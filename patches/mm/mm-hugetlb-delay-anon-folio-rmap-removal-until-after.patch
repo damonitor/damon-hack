@@ -1,0 +1,295 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Mon, 16 Nov 2026 19:29:36 +0100
+Subject: [PATCH] mm/hugetlb: delay anon folio rmap removal until after the TLB
+ flush
+
+After fork(), parent and child map anonymous folios read-only shared
+by CoW. On a write fault, hugetlb_wp() reuses an anonymous page instead of
+copying it if its mapcount is 1. As documented, switching to the safer
+refcount would cause more harm than help with these scarce resources.
+
+munmap() and MADV_DONTNEED unmap such folios and decrement the mapcount
+before the TLB is flushed. Until then, another thread of the process can
+still read the page through a stale TLB entry:
+
+    child: reader        child: munmap()       parent: writer
+    =============        ===============       ==============
+    reads the page
+                         clears the entry
+                         mapcount drops to 1
+                                               store to the page
+                                                 hugetlb_wp() reuses it
+    reads the store
+      /* leak */
+                         flushes the TLB
+
+Similar observations are also known and possible with things like
+vmsplice().
+
+Extend the mmu_gather delayed-rmap machinery to handle hugetlb folios.
+Defer anonymous hugetlb rmap removal until after the batched TLB flush.
+
+Flush the TLB and remove pending rmaps when the batch fills and before
+leaving the VMA, then drain the batch so later rmap flushes cannot process
+the same entries again. This is very similar to how zap_present_ptes()
+operates.
+
+Skip deferral at exit. On UP, flush before removing the rmap. With
+MMU_GATHER_NO_GATHER, clearing the entry already flushes the TLB.
+
+Restore reservations after the actual rmap removal, preserving the existing
+mapcount check.
+
+This is very likely not stable-worthy, as hugetlb is commonly not used
+for applications with different parent vs. child trust boundaries.
+
+Link: https://patch.msgid.link/20261116-fixes_hugetlb-v2-15-4dd9e94ea9ac@kernel.org
+Fixes: 24669e58477e ("hugetlb: use mmu_gather instead of a temporary linked list for accumulating pages")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: Mel Gorman <mgorman@suse.de>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Rik van Riel <riel@surriel.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Cc: Dave Airlie <airlied@redhat.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: Will Deacon <will@kernel.org>
+Cc: Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Peter Zijlstra <peterz@infradead.org>
+Cc: Heiko Carstens <hca@linux.ibm.com>
+Cc: Vasily Gorbik <gor@linux.ibm.com>
+Cc: Alexander Gordeev <agordeev@linux.ibm.com>
+Cc: Christian Borntraeger <borntraeger@linux.ibm.com>
+Cc: Sven Schnelle <svens@linux.ibm.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: Daehyeon Ko <4ncienth@gmail.com>
+Cc: luojiajun <luojiajun3@huawei.com>
+Cc: Ackerley Tng <ackerleytng@google.com>
+Cc: "Gregory Price (Meta)" <gourry@gourry.net>
+
+ arch/s390/include/asm/tlb.h |    5 ++--
+ include/asm-generic/tlb.h   |    5 ++--
+ mm/hugetlb.c                |   39 +++++++++++++++++++++++++++++-----
+ mm/internal.h               |    9 +++++++
+ mm/mmu_gather.c             |   16 ++++++++++---
+ 5 files changed, 61 insertions(+), 13 deletions(-)
+---
+ arch/s390/include/asm/tlb.h |  5 +++--
+ include/asm-generic/tlb.h   |  5 +++--
+ mm/hugetlb.c                | 39 ++++++++++++++++++++++++++++++++-----
+ mm/internal.h               |  9 +++++++++
+ mm/mmu_gather.c             | 16 +++++++++++----
+ 5 files changed, 61 insertions(+), 13 deletions(-)
+
+diff --git a/arch/s390/include/asm/tlb.h b/arch/s390/include/asm/tlb.h
+index 619fd41e710e9..3408ee400d23e 100644
+--- a/arch/s390/include/asm/tlb.h
++++ b/arch/s390/include/asm/tlb.h
+@@ -24,7 +24,7 @@
+ 
+ static inline void tlb_flush(struct mmu_gather *tlb);
+ static inline bool __tlb_remove_page_size(struct mmu_gather *tlb,
+-		struct page *page, int page_size);
++		struct page *page, int page_size, bool delay_rmap);
+ static inline bool __tlb_remove_folio_pages(struct mmu_gather *tlb,
+ 		struct page *page, unsigned int nr_pages, bool delay_rmap);
+ 
+@@ -45,8 +45,9 @@ static inline bool __tlb_remove_folio_pages(struct mmu_gather *tlb,
+  * s390 doesn't delay rmap removal.
+  */
+ static inline bool __tlb_remove_page_size(struct mmu_gather *tlb,
+-		struct page *page, int page_size)
++		struct page *page, int page_size, bool delay_rmap)
+ {
++	VM_WARN_ON_ONCE(delay_rmap);
+ 	free_folio_and_swap_cache(page_folio(page));
+ 	return false;
+ }
+diff --git a/include/asm-generic/tlb.h b/include/asm-generic/tlb.h
+index 68488c3aa4e6a..b8fe1f636bf73 100644
+--- a/include/asm-generic/tlb.h
++++ b/include/asm-generic/tlb.h
+@@ -245,7 +245,8 @@ struct mmu_gather_batch {
+  */
+ #define MAX_GATHER_BATCH_COUNT	(10000UL/MAX_GATHER_BATCH)
+ 
+-extern bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page, int page_size);
++bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
++		int page_size, bool delay_rmap);
+ bool __tlb_remove_folio_pages(struct mmu_gather *tlb, struct page *page,
+ 		unsigned int nr_pages, bool delay_rmap);
+ 
+@@ -464,7 +465,7 @@ static inline void tlb_flush_mmu_tlbonly(struct mmu_gather *tlb)
+ static inline void tlb_remove_page_size(struct mmu_gather *tlb,
+ 					struct page *page, int page_size)
+ {
+-	if (__tlb_remove_page_size(tlb, page, page_size))
++	if (__tlb_remove_page_size(tlb, page, page_size, false))
+ 		tlb_flush_mmu(tlb);
+ }
+ 
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index addc7b5599aff..c01ae4067e646 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5400,7 +5400,7 @@ unsigned long move_hugetlb_page_tables(struct vm_area_struct *vma,
+ }
+ 
+ /* Must be called after rmap removal. */
+-static void hugetlb_folio_restore_rsv_on_unmap(struct vm_area_struct *vma,
++void hugetlb_folio_restore_rsv_on_unmap(struct vm_area_struct *vma,
+ 		struct folio *folio)
+ {
+ 	struct hstate *h = hstate_vma(vma);
+@@ -5461,6 +5461,8 @@ static void hugetlb_unmap_range(struct mmu_gather *tlb,
+ 	last_addr_mask = hugetlb_mask_last_page(h);
+ 	address = start;
+ 	for (; address < end; address += sz) {
++		bool delay_rmap = false;
++
+ 		ptep = hugetlb_walk(vma, address, sz);
+ 		if (!ptep) {
+ 			address |= last_addr_mask;
+@@ -5533,19 +5535,46 @@ static void hugetlb_unmap_range(struct mmu_gather *tlb,
+ 					make_pte_marker(PTE_MARKER_UFFD_WP),
+ 					sz);
+ 		hugetlb_count_sub(pages_per_huge_page(h), mm);
+-		hugetlb_remove_rmap(folio);
++		/*
++		 * hugetlb_wp() uses mapcount to decide whether an anonymous
++		 * folio can be reused. Delay rmap removal until stale TLB
++		 * entries are gone, unless the mm has no users left.
++		 */
++		if (folio_test_anon(folio) && !tlb->fullmm) {
++			delay_rmap = tlb_delay_rmap(tlb);
++			/*
++			 * Without delay-rmap support, just flush before
++			 * dropping the PTL. Except with MMU_GATHER_NO_GATHER
++			 * where clearing already flushed the TLB.
++			 */
++			if (!delay_rmap && !IS_ENABLED(CONFIG_MMU_GATHER_NO_GATHER))
++				flush_hugetlb_tlb_range(vma, address, address + sz);
++		}
++		if (!delay_rmap)
++			hugetlb_remove_rmap(folio);
+ 		spin_unlock(ptl);
+ 
+-		hugetlb_folio_restore_rsv_on_unmap(vma, folio);
++		if (!delay_rmap)
++			hugetlb_folio_restore_rsv_on_unmap(vma, folio);
+ 
+-		tlb_remove_page_size(tlb, folio_page(folio, 0),
+-				     folio_size(folio));
++		if (__tlb_remove_page_size(tlb, folio_page(folio, 0), sz,
++					   delay_rmap)) {
++			tlb_flush_mmu_tlbonly(tlb);
++			tlb_flush_rmaps(tlb, vma);
++			tlb_flush_mmu(tlb);
++		}
+ 		/*
+ 		 * If we were instructed to unmap a specific folio, we're done.
+ 		 */
+ 		if (folio_provided)
+ 			break;
+ 	}
++
++	if (tlb->delayed_rmap) {
++		tlb_flush_mmu_tlbonly(tlb);
++		tlb_flush_rmaps(tlb, vma);
++		tlb_flush_mmu(tlb);
++	}
+ }
+ 
+ void __unmap_hugepage_range(struct mmu_gather *tlb, struct vm_area_struct *vma,
+diff --git a/mm/internal.h b/mm/internal.h
+index a09dbdfd615da..de4593b3e3b60 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -614,6 +614,15 @@ void zap_vma_range_batched(struct mmu_gather *tlb,
+ 		struct vm_area_struct *vma, unsigned long addr,
+ 		unsigned long size, struct zap_details *details);
+ int zap_vma_for_reaping(struct vm_area_struct *vma);
++#ifdef CONFIG_HUGETLB_PAGE
++void hugetlb_folio_restore_rsv_on_unmap(struct vm_area_struct *vma,
++		struct folio *folio);
++#else
++static inline void hugetlb_folio_restore_rsv_on_unmap(struct vm_area_struct *vma,
++		struct folio *folio)
++{
++}
++#endif
+ int folio_unmap_invalidate(struct address_space *mapping, struct folio *folio,
+ 			   gfp_t gfp);
+ 
+diff --git a/mm/mmu_gather.c b/mm/mmu_gather.c
+index e98397ac577c4..be98e2a7cb019 100644
+--- a/mm/mmu_gather.c
++++ b/mm/mmu_gather.c
+@@ -15,6 +15,8 @@
+ 
+ #include <asm/tlb.h>
+ 
++#include "internal.h"
++
+ #ifndef CONFIG_MMU_GATHER_NO_GATHER
+ 
+ static bool tlb_next_batch(struct mmu_gather *tlb)
+@@ -59,14 +61,19 @@ static void tlb_flush_rmap_batch(struct mmu_gather_batch *batch, struct vm_area_
+ 
+ 		if (encoded_page_flags(enc) & ENCODED_PAGE_BIT_DELAY_RMAP) {
+ 			struct page *page = encoded_page_ptr(enc);
++			struct folio *folio = page_folio(page);
+ 			unsigned int nr_pages = 1;
+ 
+ 			if (unlikely(encoded_page_flags(enc) &
+ 				     ENCODED_PAGE_BIT_NR_PAGES_NEXT))
+ 				nr_pages = encoded_nr_pages(pages[++i]);
+ 
+-			folio_remove_rmap_ptes(page_folio(page), page, nr_pages,
+-					       vma);
++			if (folio_test_hugetlb(folio)) {
++				hugetlb_remove_rmap(folio);
++				hugetlb_folio_restore_rsv_on_unmap(vma, folio);
++			} else {
++				folio_remove_rmap_ptes(folio, page, nr_pages, vma);
++			}
+ 		}
+ 	}
+ }
+@@ -213,9 +220,10 @@ bool __tlb_remove_folio_pages(struct mmu_gather *tlb, struct page *page,
+ 					     PAGE_SIZE);
+ }
+ 
+-bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page, int page_size)
++bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
++		int page_size, bool delay_rmap)
+ {
+-	return __tlb_remove_folio_pages_size(tlb, page, 1, false, page_size);
++	return __tlb_remove_folio_pages_size(tlb, page, 1, delay_rmap, page_size);
+ }
+ 
+ #endif /* MMU_GATHER_NO_GATHER */
+-- 
+2.47.3
+

@@ -16,6 +16,8 @@ To avoid the overhead of aging, we only allow imbalance-based aging
 when the reclaim priority is low enough that we might reclaim the
 youngest generation.
 
+[baohua@kernel.org: cleanup, per Kairu]
+  Link: https://patch.msgid.link/20261116042556.42111-1-baohua@kernel.org
 Link: https://patch.msgid.link/20261114200803.23129-11-baohua@kernel.org
 Signed-off-by: Gaofei Lyu <lyugaofei@xiaomi.com>
 Signed-off-by: Barry Song (Xiaomi) <baohua@kernel.org>
@@ -44,14 +46,14 @@ Cc: Bo Zhang <zhangbo56@xiaomi.com>
 Cc: Hui Zhu <zhuhui@kylinos.cn>
 Cc: Siddharth Chintamaneni <sidchintamaneni@gmail.com>
 
- mm/vmscan.c |   44 ++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 42 insertions(+), 2 deletions(-)
+ mm/vmscan.c |   43 +++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 41 insertions(+), 2 deletions(-)
 ---
- mm/vmscan.c | 44 ++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 42 insertions(+), 2 deletions(-)
+ mm/vmscan.c | 43 +++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 41 insertions(+), 2 deletions(-)
 
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 0fef966b0a14c..1450542d709c3 100644
+index 0fef966b0a14c..474245131d91c 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
 @@ -2743,6 +2743,8 @@ static bool should_clear_pmd_young(void)
@@ -72,15 +74,15 @@ index 0fef966b0a14c..1450542d709c3 100644
  		seq = lrugen->max_seq - 1;
  	else
  		seq = lrugen->max_seq;
-@@ -5073,6 +5075,40 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
+@@ -5073,6 +5075,39 @@ static int evict_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
  	return scanned;
  }
  
 +static bool lru_gen_imbalanced(struct lruvec *lruvec, struct scan_control *sc,
 +		int swappiness)
 +{
-+	unsigned long youngest[ANON_AND_FILE] = {0}, old[ANON_AND_FILE] = {0};
 +	struct lru_gen_folio *lrugen = &lruvec->lrugen;
++	unsigned long youngest = 0, old = 0;
 +	DEFINE_MAX_SEQ(lruvec);
 +	DEFINE_MIN_SEQ(lruvec);
 +	int type;
@@ -100,20 +102,19 @@ index 0fef966b0a14c..1450542d709c3 100644
 +	for_each_evictable_type(type, swappiness) {
 +		unsigned long seq;
 +
-+		youngest[type] = lruvec_gen_size(lrugen, type, max_seq);
++		youngest += lruvec_gen_size(lrugen, type, max_seq);
 +		for (seq = min_seq[type]; seq < max_seq; seq++)
-+			old[type] += lruvec_gen_size(lrugen, type, seq);
++			old += lruvec_gen_size(lrugen, type, seq);
 +	}
 +
 +	/* the vast majority of pages sit in the youngest gen */
-+	return youngest[LRU_GEN_ANON] + youngest[LRU_GEN_FILE] >
-+	       (old[LRU_GEN_ANON] + old[LRU_GEN_FILE]) * MAX_NR_GENS;
++	return youngest > old * MAX_NR_GENS;
 +}
 +
  static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
  			     struct scan_control *sc, int swappiness)
  {
-@@ -5087,7 +5123,11 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
+@@ -5087,7 +5122,11 @@ static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
  		return false;
  
  	/* better to run aging even though eviction is still possible */

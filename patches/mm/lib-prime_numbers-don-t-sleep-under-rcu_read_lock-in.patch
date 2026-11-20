@@ -1,0 +1,87 @@
+From: Ilyas N <desobei@outlook.com>
+Date: Thu, 19 Nov 2026 17:42:36 -0500
+Subject: [PATCH] lib/prime_numbers: don't sleep under rcu_read_lock() in
+ with_primes()
+
+The KUnit suite exit hook dumps the primes cache through with_primes(),
+which calls its callback inside an RCU read-side critical section.  The
+callback, dump_primes(), logs with kunit_info().  With
+CONFIG_KUNIT_DEBUGFS=y that also appends to the suite log, which allocates
+with GFP_KERNEL and may sleep.  With CONFIG_PREEMPT_RCU=y and
+CONFIG_DEBUG_ATOMIC_SLEEP=y, every run of the suite reports:
+
+  BUG: sleeping function called from invalid context at ./include/linux/sched/mm.h:322
+  in_atomic(): 0, irqs_disabled(): 0, non_block: 0, pid: 1, name: swapper/0
+  preempt_count: 0, expected: 0
+  RCU nest depth: 1, expected: 0
+  Call Trace:
+  __might_resched
+  __kmalloc_cache_noprof
+  string_stream_vadd
+  kunit_log_append
+  dump_primes
+  with_primes
+  kunit_run_tests
+
+All updates of the primes pointer are serialized by the mutex in
+prime_numbers.c.  Hold that mutex in with_primes() instead of the RCU read
+lock.  The pointer stays valid for the callback, and the callback is
+allowed to sleep.  with_primes() is only built for the KUnit test, and the
+suite exit hook is its only caller.
+
+Allocating with GFP_KERNEL under the mutex adds no new constraint on the
+callers of the library.  The only other place that takes the mutex outside
+of module exit is expand_to_next_prime(), which does a GFP_KERNEL
+allocation right before taking it.
+
+Found by running the KUnit suites on next-20261117 with KASAN, lockdep and
+CONFIG_DEBUG_ATOMIC_SLEEP enabled.  The problem was found and the patch
+was written with the help of an AI coding assistant (Claude Opus 5.5 and
+Claude Fable 5.2).  Tested in x86_64 QEMU/KVM guests with 1 and 8 vCPUs,
+running only this suite.  The splat shows up on every boot before the
+patch and is gone with it, lockdep stays quiet, and the dump is still
+printed and still lands in the debugfs log of the suite.
+
+Link: https://patch.msgid.link/PH7PR19MB66581508E6F6733E0C36EF92AF792@PH7PR19MB6658.namprd19.prod.outlook.com
+Fixes: 313b38a6ecb4 ("lib/prime_numbers: convert self-test to KUnit")
+Signed-off-by: Ilyas N <desobei@outlook.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Tamir Duberstein <tamird@kernel.org>
+Cc: Yury Norov <yury.norov@gmail.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: David Gow <david@davidgow.net>
+
+ lib/math/prime_numbers.c |   11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+---
+ lib/math/prime_numbers.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/lib/math/prime_numbers.c b/lib/math/prime_numbers.c
+index 95a6f7960db9e..2b28bbec83840 100644
+--- a/lib/math/prime_numbers.c
++++ b/lib/math/prime_numbers.c
+@@ -59,14 +59,15 @@ static const struct primes __rcu *primes = RCU_INITIALIZER(&small_primes);
+ 
+ #if IS_ENABLED(CONFIG_PRIME_NUMBERS_KUNIT_TEST)
+ /*
+- * Calls the callback under RCU lock. The callback must not retain
+- * the primes pointer.
++ * Calls the callback with the lock held, so that the primes cannot be
++ * replaced under it and the callback is allowed to sleep. The callback
++ * must not retain the primes pointer.
+  */
+ void with_primes(void *ctx, primes_fn fn)
+ {
+-	rcu_read_lock();
+-	fn(ctx, rcu_dereference(primes));
+-	rcu_read_unlock();
++	mutex_lock(&lock);
++	fn(ctx, rcu_dereference_protected(primes, lockdep_is_held(&lock)));
++	mutex_unlock(&lock);
+ }
+ EXPORT_SYMBOL(with_primes);
+ 
+-- 
+2.47.3
+
