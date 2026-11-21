@@ -1,0 +1,80 @@
+From: Yifan Feng <evanfengff@gmail.com>
+Date: Fri, 20 Nov 2026 18:56:26 -0800
+Subject: [PATCH] mm/damon/core: fix damos_walk() hang with zero watermarks
+ interval
+
+kdamond_wait_activation() cancels damos_walk() requests while all
+schemes are deactivated by their watermarks.  But it returns without
+waiting when the watermarks check interval of a deactivated scheme is
+zero, which is the default of the DAMON sysfs interface.  The kdamond
+main loop then runs with all schemes deactivated.
+
+In that state, kdamond_apply_schemes() finds no scheme to apply and
+returns before it calls damos_walk_complete().  The walk request is
+neither completed nor cancelled, so damos_walk() waits until the
+watermarks activate a scheme again, possibly forever.
+
+For example, with a scheme that has the free_mem_rate metric, zero
+interval_us and a high watermark below the current free memory rate,
+writing update_schemes_tried_regions to the kdamond state file never
+returns and cannot be killed.  The writer holds damon_sysfs_lock, so all
+other DAMON sysfs writes including "off" fail with -EBUSY meanwhile.
+
+Cancel the walk request in kdamond_apply_schemes() when no scheme is
+activated, as kdamond_wait_activation() does for a non-zero interval.
+
+/* TODO: move below to commentary */
+Changes from v2
+- v2: https://lore.kernel.org/20261121025626.75981-1-evanfengff@gmail.com
+- Collect R-b: from SJ.
+Changes from v1
+- v1: https://lore.kernel.org/r/20261118235012.14859-1-evanfengff@gmail.com
+- Cancel the walk when no scheme is activated, and leave
+  has_schemes_to_apply as it is (SJ Park).
+
+Link: https://lore.kernel.org/20261121025626.75981-1-evanfengff@gmail.com
+Fixes: bf0eaba0ff9c ("mm/damon/core: implement damos_walk()")
+Cc: <stable@vger.kernel.org> # 6.14.x
+Suggested-by: SJ Park <sj@kernel.org>
+Signed-off-by: Yifan Feng <evanfengff@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index a3d33f428af30..bb1739cb68cac 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3835,9 +3835,13 @@ static noinline_for_stack void kdamond_apply_schemes(struct damon_ctx *c)
+ 	struct damon_target *t;
+ 	struct damos *s;
+ 	bool has_schemes_to_apply = false;
++	bool has_activated_schemes = false;
+ 	unsigned long max_region_sz;
+ 
+ 	damon_for_each_scheme(s, c) {
++		if (s->wmarks.activated)
++			has_activated_schemes = true;
++
+ 		if (time_before(c->passed_sample_intervals, s->next_apply_sis))
+ 			continue;
+ 
+@@ -3849,8 +3853,12 @@ static noinline_for_stack void kdamond_apply_schemes(struct damon_ctx *c)
+ 		damos_adjust_quota(c, s);
+ 	}
+ 
+-	if (!has_schemes_to_apply)
++	if (!has_schemes_to_apply) {
++		/* The walk cannot be completed while no scheme is activated */
++		if (!has_activated_schemes)
++			damos_walk_cancel(c);
+ 		return;
++	}
+ 
+ 	max_region_sz = damon_region_sz_limit(c);
+ 	mutex_lock(&c->walk_control_lock);
+-- 
+2.47.3
+
