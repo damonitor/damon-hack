@@ -172,9 +172,83 @@ References
 [1] Beyond page table accessed bits DAMON extension roadmap:
     https://lore.kernel.org/20260525225208.1179-1-sj@kernel.org/
 
+Tests
+=====
+
+Confirmed the user report is working like below.
+
+Submit report for [5 GiB, 6 GiB) address range for every 5 milliseconds.
+
+    # cd /sys/kernel/mm/damon/admin/reports/producers/
+    # echo 1 > nr_producers
+    # echo $((5*1024*1024)) > 0/addr_start
+    # echo $((6*1024*1024)) > 0/addr_end
+    # echo on > 0/producer_state
+    # while true; do echo submit > producer_state ; sleep 0.005; done
+
+On another terminal session, start DAMON in the attribute only
+monitoring mode, with user_report report_made probe filter type, using
+DAMON user-space tool, damo [1].
+
+    $ sudo ./damo start --probe \
+            --probe_filter allow report_made user_report \
+            --probe_weight 1
+
+Show the user report for the [5 GiB, 6 GiB) address range is detected:
+
+    $ sudo ./damo report attrs --sort_regions_by address
+    heatmap:
+    00000000000000000000000000000000000000000000000000069999999995111111100000000000
+    # min/max temperatures: -790,000,000, 80,001,900, column size: 99.800
+    MiB
+    probe allow report_made user_report (weight: 1)
+    intervals: sample 5 ms aggr 100 ms (max probe hits 20)
+    #   size         address       age           probe_hits
+    0   4.678 GiB    4.000 KiB     7.900 s       0
+    1   329.582 MiB  4.678 GiB     7.400 s       0
+    2   1024.000 MiB  5.000 GiB     800 ms        19
+    3   792.809 MiB  6.000 GiB     6.900 s       0
+    4   1.023 GiB    6.774 GiB     7.900 s       0
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+the region of index 2 is the region for the [5 GiB, 6 GiB) address
+range.  DAMON received the user report for nearly all sampling
+intervals, and therefore shows its probe_hits as 19.
+
+Stop user report using Ctrl-C on the report submit terminal session.
+Show DAMON monitoring results showing no more report is submitted.
+
+    $ sudo ./damo report attrs --sort_regions_by address
+    heatmap:
+    00000000000000000000000000000000000000000000000366666668999999822222221000000000
+    # min/max temperatures: -1,740,000,000, -740,000,000, column size:
+    99.800 MiB
+    probe allow report_made user_report (weight: 1)
+    intervals: sample 5 ms aggr 100 ms (max probe hits 20)
+    #   size         address       age           probe_hits
+    0   1.551 GiB    4.000 KiB     17.400 s      0
+    1   1.536 GiB    1.551 GiB     17.300 s      0
+    2   788.715 MiB  3.087 GiB     17.200 s      0
+    3   797.793 MiB  3.857 GiB     16.800 s      0
+    4   764.137 MiB  4.636 GiB     10.300 s      0
+    5   768.867 MiB  5.382 GiB     7.400 s       0
+    6   774.043 MiB  6.133 GiB     14.500 s      0
+    7   797.250 MiB  6.889 GiB     17 s          0
+    8   132.488 MiB  7.667 GiB     17.400 s      0
+    memory bw estimate: 0 B per second
+    total size: 7.797 GiB
+    record DAMON intervals: sample 5 ms, aggr 100 ms
+
+No more probe_hits for [5 GiB, 6 GiB) address range is shown, since the
+user report is stopped..
+
+[1] https://github.com/damonitor/damo
+
 Changes from RFC v2
 - RFC v2: https://lore.kernel.org/20261118022225.100659-1-sj@kernel.org
-- None.
+- Add test results to the cover letter.
 Changes from RFC
 - RFC: https://lore.kernel.org/20261115202849.99134-1-sj@kernel.org
 - Add parent project roadmap link in the cover letter.
