@@ -32,6 +32,7 @@ git -C linux remote add linus https://git.kernel.org/pub/scm/linux/kernel/git/to
 git -C linux remote add korg.mm.linux https://git.kernel.org/pub/scm/linux/kernel/git/mm/linux.git
 git -C linux remote add akpm.korg.mm https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git
 git -C linux remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+git -C linux remote add korg.mm.damon https://git.kernel.org/pub/scm/linux/kernel/git/mm/damon.git
 git -C linux remote update
 git -C linux checkout sj.korg/damon/next -b damon/next
 # next branch would be generated with initial clone.  Remove.
