@@ -1,0 +1,63 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 22 Nov 2026 13:30:19 -0800
+Subject: [PATCH] mm/damon/core: cleanup damos->walk_completed in
+ damos_walk_cancel()
+
+DAMOS walk could be unexpectedly partially performed when there are
+multiple schemes and the walk is requested after the previous walk is
+canceled.
+
+The expectation of DAMOS walk for a setup that having multiple schemes
+is that it will walk for one snapshot for all schemes.  To know if the
+walk for the one snapshot of a given scheme is done, each damos struct
+has walk_completed field.  It is set when the walk for the given scheme
+is completed.  The walk skips schemes having the field set.  It is reset
+for all schemes when all the scheme got it set.
+
+damos_walk_cancel() cancels all existing walks.  But it does not reset
+the walk_completed field.  damos_walk_cancel() can be called at any
+kdamond loop iteration.  For example, due to DAMON context pause or
+DAMOS watermarks-caused deactivation.  It means that the function can
+be called while only some of the schemes completed their walks.  And
+users could request another walk after the canceled walk.  In the case,
+because some of the schemes still have walk_completed set, the walk for
+them is skipped.  As a result, DAMOS walk based user operations such as
+update_schemes_tried_bytes kdamond command could show incomplete output.
+
+Fix by unsetting the fields of all schemes in damos_walk_cancel().
+
+The issue is found from Sashiko bug database.
+
+Closes: https://sashiko.dev/#/bug/linux-228a4c52-0545-4c1f-90ce-41114d8272e9
+Fixes: bf0eaba0ff9c ("mm/damon/core: implement damos_walk()")
+Cc: <stable@vger.kernel.org> # 6.14.x
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index bb1739cb68cac..a4dcf273f5564 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -3033,6 +3033,7 @@ static void damos_walk_complete(struct damon_ctx *ctx, struct damos *s)
+ static void damos_walk_cancel(struct damon_ctx *ctx)
+ {
+ 	struct damos_walk_control *control;
++	struct damos *s;
+ 
+ 	mutex_lock(&ctx->walk_control_lock);
+ 	control = ctx->walk_control;
+@@ -3040,6 +3041,9 @@ static void damos_walk_cancel(struct damon_ctx *ctx)
+ 
+ 	if (!control)
+ 		return;
++
++	damon_for_each_scheme(s, ctx)
++		s->walk_completed = false;
+ 	control->canceled = true;
+ 	complete(&control->completion);
+ 	mutex_lock(&ctx->walk_control_lock);
+-- 
+2.47.3
+
