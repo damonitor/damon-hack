@@ -1,0 +1,60 @@
+From: SJ Park <sj@kernel.org>
+Date: Sun, 22 Nov 2026 15:37:09 -0800
+Subject: [PATCH] mm/damon/core: apply damos core filter in
+ __damos_valid_target()
+
+One consequence is that DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP now aware of
+core filters.
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 36740cbdbeca2..dcc819bc9ae0c 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2759,12 +2759,20 @@ static noinline_for_stack void kdamond_tune_intervals(struct damon_ctx *c)
+ 	damon_set_attrs(c, &new_attrs);
+ }
+ 
++static bool damos_core_filter_out(struct damon_ctx *ctx,
++		struct damon_target *t, struct damon_region *r,
++		struct damos *s);
++
+ static bool __damos_valid_target(struct damon_region *r, struct damos *s,
+ 		struct damon_ctx *c, struct damon_target *t)
+ {
+ 	unsigned long sz;
+-	unsigned int nr_accesses = damon_nr_accesses_mvsum(r, c);
++	unsigned int nr_accesses;
++
++	if (!damos_core_filter_out(c, t, r, s))
++		return false;
+ 
++	nr_accesses = damon_nr_accesses_mvsum(r, c);
+ 	sz = damon_sz_region(r);
+ 	return s->pattern.min_sz_region <= sz &&
+ 		sz <= s->pattern.max_sz_region &&
+@@ -3120,8 +3128,6 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
+ 	}
+ 
+ 	if (c->ops.apply_scheme) {
+-		if (damos_core_filter_out(c, t, r, s))
+-			return;
+ 		if (damos_quota_is_set(quota) &&
+ 				quota->charged_sz + sz > quota->esz) {
+ 			sz = ALIGN_DOWN(quota->esz - quota->charged_sz,
+@@ -3799,8 +3805,6 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 		damon_for_each_region(r, t) {
+ 			if (!__damos_valid_target(r, s, c, t))
+ 				continue;
+-			if (damos_core_filter_out(c, t, r, s))
+-				continue;
+ 			score = c->ops.get_scheme_score(c, r, s);
+ 			c->regions_score_histogram[score] +=
+ 				damon_sz_region(r);
+-- 
+2.47.3
+
