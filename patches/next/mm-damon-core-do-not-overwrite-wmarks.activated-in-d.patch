@@ -1,0 +1,56 @@
+From: Yifan Feng <evanfengff@gmail.com>
+Date: Sat, 21 Nov 2026 16:29:30 -0800
+Subject: [PATCH] mm/damon/core: do not overwrite wmarks.activated in
+ damos_commit()
+
+damos_commit() copies the whole wmarks struct from the source scheme,
+including the private 'activated' field.  The source scheme is a new
+one, so the field is always true there.
+
+As a result, a commit turns on a scheme that the watermarks turned off.
+If the metric is between mid and high at that time, the scheme keeps
+running, though it should stay off until the metric goes below mid.
+DAMON_RECLAIM and DAMON_LRU_SORT use the same path for commit_inputs.
+
+Save 'activated' before the copy and restore it after.  Do not restore
+it for DAMOS_WMARK_NONE, because nothing sets it again in that case and
+the scheme would stay off.
+
+/* TODO: move below to commentary */
+Changes from v1
+- v1: https://lore.kernel.org/20261122002930.98401-1-evanfengff@gmail.com
+- Collect R-b: from SJ.
+
+Fixes: 9cb3d0b9dfce ("mm/damon/core: implement DAMON context commit function")
+Cc: <stable@vger.kernel.org> # 6.11.x
+Signed-off-by: Yifan Feng <evanfengff@gmail.com>
+Reviewed-by: SJ Park <sj@kernel.org>
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ mm/damon/core.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index 9b89fd005fd6f..89b4ef4b4ff82 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -1649,6 +1649,7 @@ static struct damos *damon_nth_scheme(int n, struct damon_ctx *ctx)
+ 
+ static int damos_commit(struct damos *dst, struct damos *src)
+ {
++	bool activated = dst->wmarks.activated;
+ 	int err;
+ 
+ 	dst->pattern = src->pattern;
+@@ -1660,6 +1661,8 @@ static int damos_commit(struct damos *dst, struct damos *src)
+ 		return err;
+ 
+ 	dst->wmarks = src->wmarks;
++	if (dst->wmarks.metric != DAMOS_WMARK_NONE)
++		dst->wmarks.activated = activated;
+ 	dst->target_nid = src->target_nid;
+ 
+ 	err = damos_commit_dests(&dst->migrate_dests, &src->migrate_dests);
+-- 
+2.47.3
+
