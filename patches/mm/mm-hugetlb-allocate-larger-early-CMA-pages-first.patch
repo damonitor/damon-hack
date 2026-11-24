@@ -1,0 +1,103 @@
+From: Qi Zheng <zhengqi.arch@bytedance.com>
+Date: Sun, 22 Nov 2026 14:55:26 +0800
+Subject: [PATCH] mm: hugetlb: allocate larger early CMA pages first
+
+With hugetlb_cma_only=1, early HugeTLB CMA allocations follow hstate
+registration order, which can depend on the order of hugepagesz= and
+default_hugepagesz= parameters.  cma_reserve_early() advances early_pfn by
+the requested size without aligning the start of each allocation.
+
+On arm64 with 4 KiB base pages, 32 MiB and 1 GiB pages share a CMA pool
+aligned to 1 GiB.  In a 2 GiB CMA range starting at 4 GiB, allocating a 32
+MiB page followed by a 1 GiB page places the latter at 4 GiB + 32 MiB,
+violating its required 1 GiB physical alignment.
+
+Simply rounding early_pfn up before the 1 GiB allocation would leave a 992
+MiB gap and advance the cursor to 6 GiB.  cma_activate_area() marks the
+entire prefix below early_pfn as allocated and only frees pageblocks after
+it.  The gap would remain reserved with its bitmap bits set, and releasing
+the two HugeTLB folios would not reclaim it, permanently losing 992 MiB of
+usable CMA capacity.  An alignment-only fix would therefore also need to
+track and reclaim such gaps.
+
+The same alignment issue can affect non-LPAR PowerPC64 hash MMU systems
+supporting 16 MiB and 16 GiB pages, with 64 KiB base pages and
+CONFIG_ARCH_FORCE_MAX_ORDER=7.  The 16 MiB size then has order 8 and is
+also gigantic, sharing the 16 GiB-aligned CMA pool.
+
+Allocate early CMA hstates in descending order.  Each range starts aligned
+to the largest supported size, so this preserves alignment for subsequent
+smaller allocations without creating gaps.
+
+Link: https://patch.msgid.link/20261122065527.33123-1-qi.zheng@linux.dev
+Fixes: d2d786714080 ("mm/hugetlb: enable bootmem allocation from CMA areas")
+Signed-off-by: Qi Zheng <zhengqi.arch@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Frank van der Linden <fvdl@google.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/hugetlb.c |   29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+---
+ mm/hugetlb.c | 29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index a226359235497..a94518a873695 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -4651,8 +4651,25 @@ void __init hugetlb_bootmem_set_nodes(void)
+ 		node_set(nid, hugetlb_bootmem_nodes);
+ }
+ 
++/* Return the largest early-CMA hstate below the given order. */
++static struct hstate *__init hugetlb_next_early_cma_hstate(unsigned int order)
++{
++	struct hstate *h, *next = NULL;
++
++	for_each_hstate(h) {
++		if (!hugetlb_early_cma(h) || huge_page_order(h) >= order)
++			continue;
++
++		if (!next || huge_page_order(h) > huge_page_order(next))
++			next = h;
++	}
++
++	return next;
++}
++
+ void __init hugetlb_bootmem_alloc(void)
+ {
++	unsigned int order;
+ 	struct hstate *h;
+ 	int i;
+ 
+@@ -4666,9 +4683,19 @@ void __init hugetlb_bootmem_alloc(void)
+ 	for_each_hstate(h) {
+ 		h->next_nid_to_alloc = first_online_node;
+ 
+-		if (hstate_is_gigantic(h))
++		if (hstate_is_gigantic(h) && !hugetlb_early_cma(h))
+ 			hugetlb_hstate_alloc_pages(h);
+ 	}
++
++	/*
++	 * CMA ranges are aligned to the largest supported size. Allocate larger
++	 * sizes first to keep the early reservation cursor aligned without gaps.
++	 */
++	order = MAX_FOLIO_ORDER + 1;
++	while ((h = hugetlb_next_early_cma_hstate(order))) {
++		hugetlb_hstate_alloc_pages(h);
++		order = huge_page_order(h);
++	}
+ }
+ 
+ /*
+-- 
+2.47.3
+

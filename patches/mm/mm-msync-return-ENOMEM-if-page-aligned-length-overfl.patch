@@ -1,0 +1,62 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Fri, 20 Nov 2026 10:59:56 +0000
+Subject: [PATCH] mm/msync: return -ENOMEM if page-aligned length overflows
+
+Currently the msync() system call will simply return 0 if you provide a
+length parameter which, when page-aligned (rounding up) overflows (i.e.
+SIZE_MAX - n, where n is in the range [0, PAGE_SIZE - 1).)
+
+This requires broken input, and nobody has complained about this, but for
+correctness this should really return -ENOMEM, so do so.
+
+Also, since error is assigned within the following loop, remove the
+unnecessary assignments prior to it.
+
+Link: https://patch.msgid.link/20261120-msync-enomem-fix-v1-1-80282c8c5beb@kernel.org
+Link: https://lore.kernel.org/linux-mm/20230321074035.1526157-5-mawupeng1@huawei.com/
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Ding Feng <dingf3ng@gmail.com>
+Closes: https://lore.kernel.org/linux-mm/20261120051413.46167-1-dingf3ng@gmail.com/
+Reviewed-by: SJ Park <sj@kernel.org>
+Reviewed-by: Wupeng Ma <mawupeng1@huawei.com>
+Reviewed-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Vlastimil Babka (SUSE) <vbabka@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Jann Horn <jannh@google.com>
+
+ mm/msync.c |   10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+---
+ mm/msync.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/mm/msync.c b/mm/msync.c
+index 90b491a27a14b..ced41d3c2903a 100644
+--- a/mm/msync.c
++++ b/mm/msync.c
+@@ -46,14 +46,12 @@ SYSCALL_DEFINE3(msync, unsigned long, start, size_t, len, int, flags)
+ 		goto out;
+ 	if ((flags & MS_ASYNC) && (flags & MS_SYNC))
+ 		goto out;
+-	error = -ENOMEM;
++	if (!len)
++		return 0;
+ 	len = (len + ~PAGE_MASK) & PAGE_MASK;
+ 	end = start + len;
+-	if (end < start)
+-		goto out;
+-	error = 0;
+-	if (end == start)
+-		goto out;
++	if (end <= start)
++		return -ENOMEM;
+ 	/*
+ 	 * If the interval [start,end) covers some unmapped address ranges,
+ 	 * just ignore them, but return -ENOMEM at the end. Besides, if the
+-- 
+2.47.3
+

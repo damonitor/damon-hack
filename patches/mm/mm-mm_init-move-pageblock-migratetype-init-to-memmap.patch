@@ -1,0 +1,128 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 20 Nov 2026 18:08:56 +0800
+Subject: [PATCH] mm/mm_init: move pageblock migratetype init to memmap helpers
+
+ZONE_DEVICE memmap initialization already initializes pageblock
+migratetype after all struct pages have been initialized, while hugetlb
+bootmem folios have their own duplicate bootmem-specific initialization.
+
+Move the MIGRATE_MOVABLE pageblock initialization into the frozen memmap
+initialization helpers instead, so the ZONE_DEVICE and hugetlb bootmem
+paths can share the same initialization.
+
+The old hugetlb_bootmem_init_migratetype() skipped CMA folios via
+folio_test_hugetlb_cma(), but the shared helper always initializes
+pageblocks as MIGRATE_MOVABLE. This is safe because cma_activate_area()
+later overrides the migratetype for CMA pageblocks.
+
+Link: https://patch.msgid.link/20261120100856.16929-12-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+
+ mm/hugetlb.c |   25 -------------------------
+ mm/mm_init.c |   11 ++++++-----
+ 2 files changed, 6 insertions(+), 30 deletions(-)
+---
+ mm/hugetlb.c | 25 -------------------------
+ mm/mm_init.c | 11 ++++++-----
+ 2 files changed, 6 insertions(+), 30 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index 2bb3d7eb73860..d0e66fb306221 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3319,30 +3319,6 @@ static bool __init alloc_bootmem_huge_page(struct hstate *h, int nid)
+ 	return true;
+ }
+ 
+-/*
+- * memblock-allocated pageblocks might not have the migrate type set
+- * if marked with the 'noinit' flag. Set it to the default (MIGRATE_MOVABLE)
+- * here, or MIGRATE_CMA if this was a page allocated through an early CMA
+- * reservation.
+- *
+- * In case of vmemmap optimized folios, the tail vmemmap pages are mapped
+- * read-only, but that's ok - for sparse vmemmap this does not write to
+- * the page structure.
+- */
+-static void __init hugetlb_bootmem_init_migratetype(struct folio *folio,
+-							  struct hstate *h)
+-{
+-	unsigned long nr_pages = pages_per_huge_page(h), i;
+-
+-	WARN_ON_ONCE(!pageblock_aligned(folio_pfn(folio)));
+-
+-	for (i = 0; i < nr_pages; i += pageblock_nr_pages) {
+-		if (!folio_test_hugetlb_cma(folio))
+-			init_pageblock_migratetype(folio_page(folio, i),
+-					  MIGRATE_MOVABLE, false);
+-	}
+-}
+-
+ static void __init prep_and_add_bootmem_folios(struct hstate *h,
+ 					struct list_head *folio_list)
+ {
+@@ -3350,7 +3326,6 @@ static void __init prep_and_add_bootmem_folios(struct hstate *h,
+ 	struct folio *folio, *tmp_f;
+ 
+ 	list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
+-		hugetlb_bootmem_init_migratetype(folio, h);
+ 		/* Subdivide locks to achieve better parallel performance */
+ 		spin_lock_irqsave(&hugetlb_lock, flags);
+ 		account_new_hugetlb_folio(h, folio);
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index e0686b87fdb1f..a340ba7f0a74a 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -757,6 +757,9 @@ void __meminit memmap_init_compound_page(struct page *head, unsigned long pfn,
+ 	for (unsigned long i = 1; i < nr_pages; i++)
+ 		memmap_init_page_from_template(head + i, pfn + i, zone, &template);
+ 	prep_compound_head(head, order);
++
++	pageblock_migratetype_init_range(pfn, 1UL << order, MIGRATE_MOVABLE,
++					 /* isolate */ false, /* atomic */ false);
+ }
+ 
+ struct zone __meminit *pfn_to_zone(unsigned long pfn, int nid)
+@@ -1110,6 +1113,9 @@ static void memmap_init_zone_device_pages(unsigned long start, unsigned long end
+ 		if (IS_ALIGNED(pfn, PAGES_PER_SECTION))
+ 			cond_resched();
+ 	}
++
++	pageblock_migratetype_init_range(start, end - start, MIGRATE_MOVABLE,
++					 /* isolate */ false, /* atomic */ false);
+ }
+ 
+ void __ref memmap_init_zone_device(struct zone *zone,
+@@ -1147,13 +1153,8 @@ void __ref memmap_init_zone_device(struct zone *zone,
+ 
+ 		memmap_init_compound_page(head, pfn, zone, pgmap->vmemmap_shift);
+ 		memmap_init_zone_device_folio(page_folio(head), pgmap);
+-		if (IS_ALIGNED(pfn, PAGES_PER_SECTION))
+-			cond_resched();
+ 	}
+ out:
+-	pageblock_migratetype_init_range(start_pfn, nr_pages, MIGRATE_MOVABLE,
+-					 /* isolate */ false, /* atomic */ false);
+-
+ 	pr_debug("%s initialised %lu pages in %ums\n", __func__,
+ 		nr_pages, jiffies_to_msecs(jiffies - start));
+ }
+-- 
+2.47.3
+

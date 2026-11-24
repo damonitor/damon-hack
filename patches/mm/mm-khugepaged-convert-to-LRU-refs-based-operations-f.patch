@@ -1,0 +1,90 @@
+From: Kairui Song <kasong@tencent.com>
+Date: Tue, 24 Nov 2026 02:53:05 +0800
+Subject: [PATCH] mm/khugepaged: convert to LRU refs based operations for MGLRU
+
+For MGLRU, PG_referenced is only the lowest bit of the folio LRU refs
+count, so folios with nonzero even refs no longer have the bit set.
+folio_pte_referenced() testing the raw bit misses hot folios at
+refs 2, 4 or 6, under-counting the referenced folios of a candidate range
+and aborting otherwise good collapses with SCAN_LACK_REFERENCED_PAGE.
+
+Test the refs count directly when MGLRU is enabled, mirroring the
+smaps conversion.  The classical LRU keeps the plain bit test.
+
+Link: https://patch.msgid.link/20261124-mglru-fg-v6-13-8ffea39934a6@tencent.com
+Signed-off-by: Kairui Song <kasong@tencent.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Zhao Zhenzhuo <zhaozhengzhuo@uniontech.com>
+Reviewed-by: Kunwu Chan <kunwu.chan@gmail.com>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Christopher Li <chrisl@kernel.org>
+Cc: Baoquan He <baoquan.he@linux.dev>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Youngjun Park <youngjun.park@lge.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: SJ Park <sj@kernel.org>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Yu Zhao <yuzhao@google.com>
+Cc: Vernon Yang <vernon2gm@gmail.com>
+Cc: wangzicheng <wangzicheng@honor.com>
+Cc: Tal Zussman <tz2294@columbia.edu>
+Cc: Kairui Song <ryncsn@gmail.com>
+Cc: Xiang Liu <liuxiang.277@bytedance.com>
+Cc: Ehab Ababneh <ehab.ababneh@intel.com>
+Cc: wang lian <lianux.mm@gmail.com>
+Cc: Joanne Koong <joannelkoong@gmail.com>
+Cc: Hui Zhu <hui.zhu@linux.dev>
+Cc: Maxim Muzafarov <maxmuzaf@gmail.com>
+Cc: Tianyi Chen <hi@tychen.cc>
+Cc: Ridong Chen <ridong.chen@linux.dev>
+Cc: Harry Yoo <harry@kernel.org>
+
+ mm/khugepaged.c |    4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+ mm/khugepaged.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/khugepaged.c b/mm/khugepaged.c
+index 2dc4245814dff..5e768481ac223 100644
+--- a/mm/khugepaged.c
++++ b/mm/khugepaged.c
+@@ -579,7 +579,9 @@ static bool folio_pte_referenced(struct folio *folio,
+ 		struct vm_area_struct *vma, unsigned long addr, pte_t pteval)
+ {
+ 	/* The folio was referenced previously ... */
+-	if (folio_test_young(folio) || folio_test_referenced(folio))
++	if (folio_test_young(folio))
++		return true;
++	if (folio_check_lru_refs(folio))
+ 		return true;
+ 	/* ... or the PTE mapping was recently used */
+ 	return pte_young(pteval) || mmu_notifier_test_young(vma->vm_mm, addr);
+-- 
+2.47.3
+

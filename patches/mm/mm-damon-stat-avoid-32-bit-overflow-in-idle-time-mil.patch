@@ -1,0 +1,63 @@
+From: David Carlier <devnexen@gmail.com>
+Date: Mon, 23 Nov 2026 07:00:46 -0800
+Subject: [PATCH] mm/damon/stat: avoid 32-bit overflow in idle time
+ milliseconds
+
+Patch series "mm/damon: three fixes for idle_time overflow and damos_walk()
+hang".
+
+Avoid 32-bit overflow of idle time calculation in DAMON_STAT, via
+patch 1 from David Carlier.  Fix a damos_walk() hang that can happen
+under certain watermarks setup and a watermarks commit internal state
+overwrite issue, via patches 2 and 3 from Yifan Feng.
+
+This is a batched reposting of separately posted and reviewed patches
+for being merged into the mm.git.  Refer to changelog on each patch for
+changes that were made before this reposting.
+
+
+This patch (of 3):
+
+On 32-bit, the region idle time in microseconds is computed in a long
+before the division to milliseconds. It wraps once a region has been
+idle for about 36 minutes regardless of the intervals, so the cold end
+of memory_idle_ms_percentiles reports wrong values with flipped signs.
+
+Do the multiplication in 64 bits and divide with div_s64() so the sign
+of recently accessed regions is kept.
+
+Link: https://lore.kernel.org/20261123150049.81317-1-sj@kernel.org
+Link: https://patch.msgid.link/20261123150049.81317-2-sj@kernel.org
+Fixes: e5d2585d9e85 ("mm/damon/stat: calculate and expose idle time percentiles")
+Signed-off-by: David Carlier <devnexen@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Aveline Noir <jm5905938@gmail.com>
+Cc: Yifan Feng <evanfengff@gmail.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/damon/stat.c |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+---
+ mm/damon/stat.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mm/damon/stat.c b/mm/damon/stat.c
+index e44f5bf3645cc..d90a43becaddf 100644
+--- a/mm/damon/stat.c
++++ b/mm/damon/stat.c
+@@ -129,8 +129,8 @@ static void damon_stat_set_idletime_percentiles(struct damon_ctx *c)
+ 		accounted_bytes += region->ar.end - region->ar.start;
+ 		while (next_percentile <= accounted_bytes * 100 / total_sz)
+ 			memory_idle_ms_percentiles[next_percentile++] =
+-				damon_stat_idletime(region) *
+-				(long)c->attrs.aggr_interval / USEC_PER_MSEC;
++				div_s64((s64)damon_stat_idletime(region) *
++				c->attrs.aggr_interval, USEC_PER_MSEC);
+ 	}
+ 	kfree(sorted_regions);
+ }
+-- 
+2.47.3
+

@@ -1,0 +1,164 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Sun, 22 Nov 2026 08:53:12 -0800
+Subject: [PATCH] lib/test_hmm: invalidate all mirrors on device-private
+ migration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When one open of the fake HMM device migrates a folio to device-private
+memory, a second open can fault the same address into its mirror page
+table. The second mirror then stores the inaccessible device page, which
+can oops the kernel when dmirror_do_read() copies from it. Store the
+corresponding RAM backing subpage instead.
+
+That conversion also makes the backing page's lifetime significant to
+the second mirror. migrate_vma_setup() notifies all mirrors before CPU
+faultback, but dmirror_interval_invalidate() skips the notification for
+every open on the same device. The faulting open clears only its own
+XArray entry. The other open can read or write the backing page after
+migrate_vma_finalize() frees it. Aveline reported a KASAN use-after-free
+and stale data through the second open.
+
+Handle migration invalidation for every mirror under its mutex. This
+clears pointers before faultback can free the backing pages and waits
+for an active mirror read or write. During system-to-device migration,
+the migrating open installs new entries after migration; other opens
+refault on their next access. Remove the now redundant XArray erase
+from the faultback copy loop.
+
+Extend the PMD migration selftest to read its last device-private
+subpage through a second open, then fault it back to RAM, change it,
+and read the new value through that open. The trigger is available to
+a process permitted to open /dev/hmm_dmirror* when CONFIG_TEST_HMM is
+enabled; it does not depend on physical GPU hardware.
+
+Link: https://lore.kernel.org/r/20261122015246.d8b6b98ff5a8157168156339@linux-foundation.org
+Link: https://lore.kernel.org/r/179535872126.34.4789080961796247940.b4-reply@b4
+Fixes: b2ef9f5a5cb3 ("mm/hmm/test: add selftest driver for HMM")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Aveline Noir <jm5905938@gmail.com>
+Cc: Ralph Campbell <rcampbell@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Mika Penttilä <mpenttil@redhat.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: <stable@vger.kernel.org>
+
+ lib/test_hmm.c                         |   20 +++++++-----------
+ tools/testing/selftests/mm/hmm-tests.c |   25 +++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 12 deletions(-)
+---
+ lib/test_hmm.c                         | 20 ++++++++------------
+ tools/testing/selftests/mm/hmm-tests.c | 25 +++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+), 12 deletions(-)
+
+diff --git a/lib/test_hmm.c b/lib/test_hmm.c
+index 8711af3725012..3d3c681fdab4f 100644
+--- a/lib/test_hmm.c
++++ b/lib/test_hmm.c
+@@ -292,6 +292,12 @@ static int dmirror_do_fault(struct dmirror *dmirror, struct hmm_range *range)
+ 		page = hmm_pfn_to_page(*pfns);
+ 		WARN_ON(!page);
+ 
++		if (is_device_private_page(page)) {
++			struct folio *folio = page_folio(page);
++
++			page = BACKING_PAGE(&folio->page) +
++				folio_page_idx(folio, page);
++		}
+ 		entry = page;
+ 		if (*pfns & HMM_PFN_WRITE)
+ 			entry = xa_tag_pointer(entry, DPT_XA_TAG_WRITE);
+@@ -327,14 +333,6 @@ static bool dmirror_interval_invalidate(struct mmu_interval_notifier *mni,
+ {
+ 	struct dmirror *dmirror = container_of(mni, struct dmirror, notifier);
+ 
+-	/*
+-	 * Ignore invalidation callbacks for device private pages since
+-	 * the invalidation is handled as part of the migration process.
+-	 */
+-	if (range->event == MMU_NOTIFY_MIGRATE &&
+-	    range->owner == dmirror->mdevice)
+-		return true;
+-
+ 	if (mmu_notifier_range_blockable(range))
+ 		mutex_lock(&dmirror->mutex);
+ 	else if (!mutex_trylock(&dmirror->mutex))
+@@ -1198,7 +1196,6 @@ static vm_fault_t dmirror_devmem_fault_alloc_and_copy(struct migrate_vma *args,
+ 
+ 			src_page = pfn_to_page(page_to_pfn(spage) + i);
+ 
+-			xa_erase(&dmirror->pt, addr >> PAGE_SHIFT);
+ 			addr += PAGE_SIZE;
+ 			copy_highpage(dst_page, src_page);
+ 		}
+@@ -1822,9 +1819,8 @@ static vm_fault_t dmirror_devmem_fault(struct vm_fault *vmf)
+ 	}
+ 	migrate_vma_pages(&args);
+ 	/*
+-	 * No device finalize step is needed since
+-	 * dmirror_devmem_fault_alloc_and_copy() will have already
+-	 * invalidated the device page table.
++	 * The migration notifier has invalidated all mirror page tables
++	 * before the backing pages can be freed.
+ 	 */
+ 	migrate_vma_finalize(&args);
+ err:
+diff --git a/tools/testing/selftests/mm/hmm-tests.c b/tools/testing/selftests/mm/hmm-tests.c
+index fb46a3be8687f..2398c11afa2af 100644
+--- a/tools/testing/selftests/mm/hmm-tests.c
++++ b/tools/testing/selftests/mm/hmm-tests.c
+@@ -2087,6 +2087,7 @@ TEST_F(hmm, migrate_anon_huge_fault)
+ 	void *old_ptr;
+ 	void *map;
+ 	int pagemap_fd;
++	int fd2 = -1;
+ 	int *ptr;
+ 	int ret;
+ 
+@@ -2143,12 +2144,36 @@ TEST_F(hmm, migrate_anon_huge_fault)
+ 		}
+ 
+ 		close(pagemap_fd);
++
++		/* Read a device-private subpage through another open. */
++		fd2 = hmm_open(variant->device_number);
++		ASSERT_GE(fd2, 0);
++		buffer->ptr = (char *)map + (npages - 1) * self->page_size;
++		ret = hmm_dmirror_cmd(fd2, HMM_DMIRROR_READ, buffer, 1);
++		buffer->ptr = map;
++		ASSERT_EQ(ret, 0);
++		ASSERT_EQ(buffer->cpages, 1);
++		ASSERT_EQ(*(int *)buffer->mirror,
++			  (npages - 1) * self->page_size / sizeof(int));
+ 	}
+ 
+ 	/* Fault pages back to system memory and check them. */
+ 	for (i = 0, ptr = buffer->ptr; i < size / sizeof(*ptr); ++i)
+ 		ASSERT_EQ(ptr[i], i);
+ 
++	if (fd2 >= 0) {
++		/* This open must not retain the freed device backing page. */
++		ptr[(npages - 1) * self->page_size / sizeof(*ptr)] = -1;
++		buffer->ptr = (char *)map + (npages - 1) * self->page_size;
++		ret = hmm_dmirror_cmd(fd2, HMM_DMIRROR_READ, buffer, 1);
++		buffer->ptr = map;
++		ASSERT_EQ(ret, 0);
++		ASSERT_EQ(buffer->cpages, 1);
++		ASSERT_EQ(buffer->faults, 1);
++		ASSERT_EQ(*(int *)buffer->mirror, -1);
++		ASSERT_EQ(close(fd2), 0);
++	}
++
+ 	buffer->ptr = old_ptr;
+ 	hmm_buffer_free(buffer);
+ }
+-- 
+2.47.3
+

@@ -1,0 +1,55 @@
+From: Xuewen Wang <wangxuewen@kylinos.cn>
+Date: Mon, 23 Nov 2026 13:50:20 +0800
+Subject: [PATCH] mm: shrinker: stop counting when the seq buffer overflows
+
+The shrinker debugfs count file uses single_open(), so all memcg rows
+belong to one seq_file record.  When the buffer overflows, seq_file grows
+it and retries the entire record.  Queries for subsequent memcgs in an
+overflowing pass cannot contribute to the final output.
+
+Stop the traversal once seq_has_overflowed() is true, using the existing
+mem_cgroup_iter_break() path to release the current memcg reference.
+Check for pending signals first to preserve the existing -EINTR priority.
+Leave the overflow state intact and return zero on overflow so seq_file
+can grow the buffer and retry.
+
+Tested in a single-node KVM guest with 1024 cgroups each caching 16
+ordinary files on ext4.  Output remained 8865 bytes with three show
+attempts.  Count callbacks fell from 3075 to 2472 (19.6%).  Six fresh
+guests per variant each performed 101 full reads with no probes
+registered.  The median of guest medians fell from 127.8 us to 114.0 us
+(10.7%, about 13.7 us per read).
+
+Link: https://patch.msgid.link/20261123055020.287151-1-wangxuewen_ky@163.com
+Signed-off-by: Xuewen Wang <wangxuewen@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+
+ mm/shrinker_debug.c |    5 +++++
+ 1 file changed, 5 insertions(+)
+---
+ mm/shrinker_debug.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/shrinker_debug.c b/mm/shrinker_debug.c
+index 3cf7bb076c6a7..e00546bc801da 100644
+--- a/mm/shrinker_debug.c
++++ b/mm/shrinker_debug.c
+@@ -84,6 +84,11 @@ static int shrinker_debugfs_count_show(struct seq_file *m, void *v)
+ 			ret = -EINTR;
+ 			break;
+ 		}
++
++		if (seq_has_overflowed(m)) {
++			mem_cgroup_iter_break(NULL, memcg);
++			break;
++		}
+ 	} while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)) != NULL);
+ 
+ 	kfree(count_per_node);
+-- 
+2.47.3
+

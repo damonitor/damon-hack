@@ -1,0 +1,275 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Thu, 19 Nov 2026 14:58:12 +0800
+Subject: [PATCH] kmsan: fix metadata loss during HugeTLB struct page
+ reinitialization
+
+KMSAN stores each page's shadow and origin pointers in struct page.
+Boot-time gigantic HugeTLB pages are reinitialized after
+kmsan_init_shadow() installs these pointers, dropping the mappings and
+leaving the allocated metadata pages unreachable.
+
+Move the pointers to page_ext, whose boot-time storage is available
+before kmsan_init_shadow() and survives struct page reinitialization.
+Use the inline unchecked lookup under notrace preemption so metadata
+lookup cannot recurse through instrumented hooks.
+
+This shrinks struct page from 80 to 64 bytes on x86-64 KMSAN builds,
+making its size a power of two and allowing HugeTLB Vmemmap Optimization
+with KMSAN.
+
+Link: https://patch.msgid.link/20261119065812.89959-8-songmuchun@bytedance.com
+Fixes: fde1c4ecf916 ("mm: hugetlb: skip initialization of gigantic tail struct pages if freed by HVO")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://sashiko.dev/#/bug/linux-ac161ba4-30cc-4bd3-b93c-ab7af8a6f64f
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Tested-by: Chris Down <chris@chrisdown.name>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Joerg Roedel <joerg.roedel@amd.com>
+Cc: Lu Baolu <baolu.lu@linux.intel.com>
+Cc: Pranjal Shrivastava <praan@google.com>
+Cc: Ketan <ketan.kishore@oss.qualcomm.com>
+Cc: Mostafa Saleh <smostafa@google.com>
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+
+ Documentation/dev-tools/kmsan.rst |    8 +---
+ include/linux/kmsan.h             |    2 +
+ include/linux/mm.h                |   12 +------
+ include/linux/mm_types.h          |   12 -------
+ lib/Kconfig.kmsan                 |    1
+ mm/kmsan/shadow.c                 |   45 ++++++++++++++++++++++++----
+ mm/page_ext.c                     |    4 ++
+ 7 files changed, 52 insertions(+), 32 deletions(-)
+---
+ Documentation/dev-tools/kmsan.rst |  8 +++---
+ include/linux/kmsan.h             |  2 ++
+ include/linux/mm.h                | 12 +++------
+ include/linux/mm_types.h          | 12 ---------
+ lib/Kconfig.kmsan                 |  1 +
+ mm/kmsan/shadow.c                 | 45 ++++++++++++++++++++++++++-----
+ mm/page_ext.c                     |  4 +++
+ 7 files changed, 52 insertions(+), 32 deletions(-)
+
+diff --git a/Documentation/dev-tools/kmsan.rst b/Documentation/dev-tools/kmsan.rst
+index 0dc668b183f6c..5330d21d141d9 100644
+--- a/Documentation/dev-tools/kmsan.rst
++++ b/Documentation/dev-tools/kmsan.rst
+@@ -376,13 +376,11 @@ Metadata allocation
+ 
+ There are several places in the kernel for which the metadata is stored.
+ 
+-1. Each ``struct page`` instance contains two pointers to its shadow and
+-origin pages::
++1. Each page frame has a corresponding ``struct page_metadata`` entry containing
++two pointers to its shadow and origin pages::
+ 
+-  struct page {
+-    ...
++  struct page_metadata {
+     struct page *shadow, *origin;
+-    ...
+   };
+ 
+ At boot-time, the kernel allocates shadow and origin pages for every available
+diff --git a/include/linux/kmsan.h b/include/linux/kmsan.h
+index 7da9fd506b390..08fb795662350 100644
+--- a/include/linux/kmsan.h
++++ b/include/linux/kmsan.h
+@@ -15,12 +15,14 @@
+ #include <linux/types.h>
+ 
+ struct page;
++struct page_ext_operations;
+ struct kmem_cache;
+ struct task_struct;
+ struct scatterlist;
+ struct urb;
+ 
+ #ifdef CONFIG_KMSAN
++extern struct page_ext_operations kmsan_ops;
+ 
+ /**
+  * kmsan_task_create() - Initialize KMSAN state for the task.
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index d8bafcd927916..abd427c136409 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -134,7 +134,7 @@ extern int mmap_rnd_compat_bits __read_mostly;
+  * define their own version of this macro in <asm/pgtable.h>
+  */
+ #if BITS_PER_LONG == 64
+-/* This function must be updated when the size of struct page grows above 96
++/* This function must be updated when the size of struct page grows above 80
+  * or reduces below 56. The idea that compiler optimizes out switch()
+  * statement, and only leaves move/store instructions. Also the compiler can
+  * combine write statements if they are both assignments and can be reordered,
+@@ -145,18 +145,12 @@ static inline void __mm_zero_struct_page(struct page *page)
+ {
+ 	unsigned long *_pp = (void *)page;
+ 
+-	 /* Check that struct page is either 56, 64, 72, 80, 88 or 96 bytes */
++	/* Check that struct page is either 56, 64, 72 or 80 bytes */
+ 	BUILD_BUG_ON(sizeof(struct page) & 7);
+ 	BUILD_BUG_ON(sizeof(struct page) < 56);
+-	BUILD_BUG_ON(sizeof(struct page) > 96);
++	BUILD_BUG_ON(sizeof(struct page) > 80);
+ 
+ 	switch (sizeof(struct page)) {
+-	case 96:
+-		_pp[11] = 0;
+-		fallthrough;
+-	case 88:
+-		_pp[10] = 0;
+-		fallthrough;
+ 	case 80:
+ 		_pp[9] = 0;
+ 		fallthrough;
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index 1ed35d258d2e3..dc73f9f5a51bb 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -208,18 +208,6 @@ struct page {
+ #ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
+ 	int _last_cpupid;
+ #endif
+-
+-#ifdef CONFIG_KMSAN
+-	/*
+-	 * KMSAN metadata for this page:
+-	 *  - shadow page: every bit indicates whether the corresponding
+-	 *    bit of the original page is initialized (0) or not (1);
+-	 *  - origin page: every 4 bytes contain an id of the stack trace
+-	 *    where the uninitialized value was created.
+-	 */
+-	struct page *kmsan_shadow;
+-	struct page *kmsan_origin;
+-#endif
+ } _struct_page_alignment;
+ 
+ /*
+diff --git a/lib/Kconfig.kmsan b/lib/Kconfig.kmsan
+index cae1ddcc18e15..015e85c70793a 100644
+--- a/lib/Kconfig.kmsan
++++ b/lib/Kconfig.kmsan
+@@ -10,6 +10,7 @@ config KMSAN
+ 	depends on HAVE_ARCH_KMSAN && HAVE_KMSAN_COMPILER
+ 	depends on DEBUG_KERNEL && !KASAN && !KCSAN
+ 	depends on !PREEMPT_RT
++	select PAGE_EXTENSION
+ 	select STACKDEPOT
+ 	select STACKDEPOT_ALWAYS_INIT
+ 	help
+diff --git a/mm/kmsan/shadow.c b/mm/kmsan/shadow.c
+index 300b48818af1c..fa2a403d87c26 100644
+--- a/mm/kmsan/shadow.c
++++ b/mm/kmsan/shadow.c
+@@ -13,6 +13,7 @@
+ #include <linux/cacheflush.h>
+ #include <linux/memblock.h>
+ #include <linux/mm_types.h>
++#include <linux/page_ext.h>
+ #include <linux/slab.h>
+ #include <linux/smp.h>
+ #include <linux/stddef.h>
+@@ -24,23 +25,55 @@
+ #define KMSAN_META_MASK_SHADOW		BIT(0)
+ #define KMSAN_META_MASK_ORIGIN		BIT(1)
+ 
++/*
++ * KMSAN metadata for this page:
++ *  - shadow page: every bit indicates whether the corresponding
++ *    bit of the original page is initialized (0) or not (1);
++ *  - origin page: every 4 bytes contain an id of the stack trace
++ *    where the uninitialized value was created.
++ */
+ struct page_metadata {
+ 	struct page *shadow;
+ 	struct page *origin;
+ };
+ 
++static __init bool need_page_metadata(void)
++{
++	return true;
++}
++
++struct page_ext_operations kmsan_ops = {
++	.size	= sizeof(struct page_metadata),
++	.need	= need_page_metadata,
++};
++
+ static inline struct page_metadata get_page_metadata(struct page *page)
+ {
+-	return (struct page_metadata) {
+-		.shadow = page->kmsan_shadow,
+-		.origin = page->kmsan_origin,
+-	};
++	struct page_metadata meta = {};
++	struct page_ext *page_ext;
++
++	/*
++	 * Avoid instrumented preemption debug and tracing hooks while resolving
++	 * KMSAN metadata, as they would recurse back into metadata lookup.
++	 */
++	preempt_disable_notrace();
++	page_ext = __page_ext_lookup(page_to_pfn(page));
++	if (page_ext)
++		meta = *(struct page_metadata *)page_ext_data(page_ext, &kmsan_ops);
++	preempt_enable_no_resched_notrace();
++
++	return meta;
+ }
+ 
+ static inline void set_page_metadata(struct page *page, struct page_metadata meta)
+ {
+-	page->kmsan_shadow = meta.shadow;
+-	page->kmsan_origin = meta.origin;
++	struct page_ext *page_ext;
++
++	preempt_disable_notrace();
++	page_ext = __page_ext_lookup(page_to_pfn(page));
++	if (page_ext)
++		*(struct page_metadata *)page_ext_data(page_ext, &kmsan_ops) = meta;
++	preempt_enable_no_resched_notrace();
+ }
+ 
+ static inline void *shadow_ptr_for(struct page_metadata meta)
+diff --git a/mm/page_ext.c b/mm/page_ext.c
+index 63af3d62ed746..985595bdf4200 100644
+--- a/mm/page_ext.c
++++ b/mm/page_ext.c
+@@ -12,6 +12,7 @@
+ #include <linux/rcupdate.h>
+ #include <linux/pgalloc_tag.h>
+ #include <linux/iommu-debug-pagealloc.h>
++#include <linux/kmsan.h>
+ #include <linux/slab.h>
+ 
+ /*
+@@ -87,6 +88,9 @@ static struct page_ext_operations *page_ext_ops[] __initdata = {
+ #ifdef CONFIG_PAGE_TABLE_CHECK
+ 	&page_table_check_ops,
+ #endif
++#ifdef CONFIG_KMSAN
++	&kmsan_ops,
++#endif
+ #ifdef CONFIG_IOMMU_DEBUG_PAGEALLOC
+ 	&page_iommu_debug_ops,
+ #endif
+-- 
+2.47.3
+

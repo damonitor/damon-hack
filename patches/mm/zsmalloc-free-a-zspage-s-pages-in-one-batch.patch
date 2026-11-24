@@ -1,0 +1,143 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Mon, 23 Nov 2026 14:47:36 +0900
+Subject: [PATCH] zsmalloc: free a zspage's pages in one batch
+
+Patch series "zram: zsmalloc: speed up zspage free path", v3.
+
+This is a followup on deferred zs_free() discussion [1].  We cannot do
+deferred zs_free(), at least not on the zsmalloc side, due to the fact
+that object handle is now stored in-place on the client side (zswap/zram
+entry).  There is still a possibility for a speed up tho.  One is batching
+of zspage's pages free.  The other one is moving zram stats into per-CPU
+area (as was suggested by Hongfeng Chen), which reduces cache lines
+bouncing in zram slot-free notification path.
+
+
+This patch (of 2):
+
+__free_frozen_pages() and dec_zone_page_state() take about 22% of the
+profile [2].
+
+Collect the pages of a multi-page zspage in a folio_batch and free
+them with folios_put(), which takes the pcp lock once per run of
+same-zone pages, and update NR_ZSPAGES once per such run as well
+A zspage never has more pages than a folio_batch holds.
+
+Single-page zspages, incompressible or power of 2 size classes, use
+the current inline path.  There is nothing to batch there, and
+folio_batch is not free, hence the batch path lives in its own
+noinline function.
+
+munmap() test:
+                    next-20261119      v7.4-rc3
+  256 MiB           -2.0% .. -4.1%     -4.4%
+  1 GiB             -2.8% .. -4.4%     -3.8%
+
+Link: https://lore.kernel.org/20261123054746.2579253-1-senozhatsky@chromium.org
+Link: https://patch.msgid.link/20261123054746.2579253-2-senozhatsky@chromium.org
+Link: https://lore.kernel.org/all/20261016120927.3191690-1-hongfengchen@xiaomi.com/ [1]
+Link: https://lore.kernel.org/20261109105957.2577351-1-chenhongfeng0212@gmail.com [2]
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Hongfeng Chen <hongfengchen@xiaomi.com>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Yosry Ahmed <yosry@kernel.org>
+Cc: Brian Geffon <bgeffon@google.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Hongfeng Chen <chenhongfeng0212@gmail.com>
+
+ mm/zsmalloc.c |   52 ++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 46 insertions(+), 6 deletions(-)
+---
+ mm/zsmalloc.c | 52 +++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 46 insertions(+), 6 deletions(-)
+
+diff --git a/mm/zsmalloc.c b/mm/zsmalloc.c
+index 166e6901111f5..f263bd2b8d468 100644
+--- a/mm/zsmalloc.c
++++ b/mm/zsmalloc.c
+@@ -43,6 +43,7 @@
+ #include <linux/debugfs.h>
+ #include <linux/zsmalloc.h>
+ #include <linux/fs.h>
++#include <linux/folio_batch.h>
+ #include <linux/workqueue.h>
+ #include "zpdesc.h"
+ 
+@@ -843,6 +844,44 @@ static int trylock_zspage(struct zspage *zspage)
+ 	return 0;
+ }
+ 
++/*
++ * Free the pages of a multi-page zspage in one go, see folios_put().
++ * Not inlined, so that the folio_batch is only set up (and, with
++ * CONFIG_INIT_STACK_ALL_ZERO, zero-filled) when there is something
++ * to batch.
++ */
++static noinline void free_page_chain(struct zpdesc *zpdesc)
++{
++	struct zone *zone = zpdesc_zone(zpdesc);
++	struct folio_batch fbatch;
++	int nr = 0;
++
++	static_assert(ZS_MAX_PAGES_PER_ZSPAGE <= FOLIO_BATCH_SIZE);
++
++	folio_batch_init(&fbatch);
++	do {
++		struct zpdesc *next = get_next_zpdesc(zpdesc);
++
++		VM_BUG_ON_PAGE(!zpdesc_is_locked(zpdesc), zpdesc_page(zpdesc));
++		reset_zpdesc(zpdesc);
++		zpdesc_unlock(zpdesc);
++
++		/* NR_ZSPAGES is per zone: one update per same-zone run */
++		if (unlikely(zpdesc_zone(zpdesc) != zone)) {
++			mod_zone_page_state(zone, NR_ZSPAGES, -nr);
++			zone = zpdesc_zone(zpdesc);
++			nr = 0;
++		}
++		nr++;
++
++		folio_batch_add(&fbatch, zpdesc_folio(zpdesc));
++		zpdesc = next;
++	} while (zpdesc);
++
++	mod_zone_page_state(zone, NR_ZSPAGES, -nr);
++	folios_put(&fbatch);
++}
++
+ /*
+  * Three free helpers, kept apart here:
+  *
+@@ -861,21 +900,22 @@ static int trylock_zspage(struct zspage *zspage)
+  */
+ static inline void __free_zspage_lockless(struct zspage *zspage)
+ {
+-	struct zpdesc *zpdesc, *next;
++	struct zpdesc *zpdesc;
+ 
+ 	VM_BUG_ON(get_zspage_inuse(zspage));
+ 	VM_BUG_ON(zspage->fullness != ZS_INUSE_RATIO_0);
+ 
+-	next = zpdesc = get_first_zpdesc(zspage);
+-	do {
++	zpdesc = get_first_zpdesc(zspage);
++	if (get_next_zpdesc(zpdesc)) {
++		free_page_chain(zpdesc);
++	} else {
++		/* Single-page zspage, e.g. a huge object: nothing to batch */
+ 		VM_BUG_ON_PAGE(!zpdesc_is_locked(zpdesc), zpdesc_page(zpdesc));
+-		next = get_next_zpdesc(zpdesc);
+ 		reset_zpdesc(zpdesc);
+ 		zpdesc_unlock(zpdesc);
+ 		zpdesc_dec_zone_page_state(zpdesc);
+ 		zpdesc_put(zpdesc);
+-		zpdesc = next;
+-	} while (zpdesc != NULL);
++	}
+ 
+ 	cache_free_zspage(zspage);
+ }
+-- 
+2.47.3
+

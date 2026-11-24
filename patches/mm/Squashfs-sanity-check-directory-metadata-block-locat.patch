@@ -1,5 +1,5 @@
 From: Phillip Lougher <phillip@squashfs.org.uk>
-Date: Wed, 11 Nov 2026 23:43:51 +0000
+Date: Mon, 23 Nov 2026 03:42:53 +0000
 Subject: [PATCH] Squashfs: sanity check directory metadata block location
 
 The contents of directories are stored in compressed metadata blocks,
@@ -33,7 +33,7 @@ can read it.  But using this bug an attacker could create a malicious
 replacement directory in the inode lookup table (used by NFS), that
 points to a malicious replacement inode that has the permissions
 changed to 0777 (a=wrx).  On reboot/remount this would make the
-file readable by unpriviliged users.
+file readable by unprivileged users.
 
 The following shell script acts as a reproducer and proof of concept.
 
@@ -85,7 +85,7 @@ fi
 
 # Exploit: The file named "data" has permissions 0700, which can only be
 # read by the superuser.  The desire is to change the permissions on
-# the file to be 0777, which can be read by unpriviliged users.
+# the file to be 0777, which can be read by unprivileged users.
 #
 # Due to compression of the metadata, this cannot be done by directly
 # writing to the metadata tables.  Instead the real metadata is replaced
@@ -165,28 +165,31 @@ popd 2>&1> /dev/null
 rm -rf $DIR
 =====================================================================
 
-Link: https://patch.msgid.link/20261111234402.252354-12-phillip@squashfs.org.uk
+Link: https://patch.msgid.link/20261123034304.261742-13-phillip@squashfs.org.uk
 Fixes: c88da2c97936 ("Squashfs: directory lookup operations")
 Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Christian Loehle <christian.loehle@arm.com>
+Cc: Dan Carpenter <error27@gmail.com>
 Cc: Phillip Lougher <phillip.lougher@gmail.com>
+Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
 
- fs/squashfs/dir.c              |   20 ++++++++++++++------
- fs/squashfs/namei.c            |   20 +++++++++++++-------
+ fs/squashfs/dir.c              |   19 +++++++++++++------
+ fs/squashfs/namei.c            |   16 +++++++++++-----
  fs/squashfs/squashfs_fs_sb.h   |    1 +
- fs/squashfs/squashfs_helpers.h |   17 +++++++++++++++++
+ fs/squashfs/squashfs_helpers.h |   16 ++++++++++++++++
  fs/squashfs/super.c            |    1 +
- 5 files changed, 46 insertions(+), 13 deletions(-)
+ 5 files changed, 42 insertions(+), 11 deletions(-)
 ---
- fs/squashfs/dir.c              | 20 ++++++++++++++------
- fs/squashfs/namei.c            | 20 +++++++++++++-------
+ fs/squashfs/dir.c              | 19 +++++++++++++------
+ fs/squashfs/namei.c            | 16 +++++++++++-----
  fs/squashfs/squashfs_fs_sb.h   |  1 +
- fs/squashfs/squashfs_helpers.h | 17 +++++++++++++++++
+ fs/squashfs/squashfs_helpers.h | 16 ++++++++++++++++
  fs/squashfs/super.c            |  1 +
- 5 files changed, 46 insertions(+), 13 deletions(-)
+ 5 files changed, 42 insertions(+), 11 deletions(-)
 
 diff --git a/fs/squashfs/dir.c b/fs/squashfs/dir.c
-index cd3598bd034f0..f6454f0d5b5cd 100644
+index 7bbdfa438a32a..e961af7490dc6 100644
 --- a/fs/squashfs/dir.c
 +++ b/fs/squashfs/dir.c
 @@ -22,6 +22,7 @@
@@ -220,37 +223,42 @@ index cd3598bd034f0..f6454f0d5b5cd 100644
  	}
  
  	*next_offset = (length + *next_offset) % SQUASHFS_METADATA_SIZE;
-@@ -99,13 +104,16 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+@@ -99,11 +104,11 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
  {
  	struct inode *inode = file_inode(file);
  	struct squashfs_sb_info *msblk = inode->i_sb->s_fs_info;
--	u64 block = squashfs_i(inode)->start + msblk->directory_table;
-+	s64 block = squashfs_dir_start(squashfs_i(inode)->start, msblk);
- 	int offset = squashfs_i(inode)->offset, length, err;
+-	u64 block;
++	s64 block;
+ 	int offset, length, err;
  	unsigned int inode_number, dir_count, size, type;
  	struct squashfs_dir_header dirh;
 -	struct squashfs_dir_entry *dire;
 +	struct squashfs_dir_entry *dire = NULL;
-+
-+	TRACE("Entered squashfs_readdir [%llx:%x]\n", squashfs_i(inode)->start, offset);
  
--	TRACE("Entered squashfs_readdir [%llx:%x]\n", block, offset);
+ 	TRACE("Entered squashfs_readdir [%llx:%x]\n", squashfs_i(inode)->start,
+ 			squashfs_i(inode)->offset);
+@@ -141,15 +146,17 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+ 		/* The directory is empty, nothing more to do */
+ 		goto finish;
+ 
++	block = squashfs_dir_start(squashfs_i(inode)->start, msblk);
 +	if (block < 0)
 +		goto failed_read;
- 
++
  	dire = kmalloc(sizeof(*dire) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
  	if (dire == NULL) {
-@@ -211,7 +219,7 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
- 	return 0;
+ 		ERROR("Failed to allocate squashfs_dir_entry\n");
+ 		goto finish;
+ 	}
  
- failed_read:
--	ERROR("Unable to read directory block [%llx:%x]\n", block, offset);
-+	ERROR("Unable to read directory block [%llx:%x]\n", squashfs_i(inode)->start, offset);
- 	kfree(dire);
- 	return 0;
- }
+-	block = squashfs_i(inode)->start + msblk->directory_table;
+ 	offset = squashfs_i(inode)->offset;
+-
+ 	length = get_dir_index_using_offset(inode->i_sb, &block, &offset,
+ 				squashfs_i(inode)->dir_idx_start,
+ 				squashfs_i(inode)->dir_idx_offset,
 diff --git a/fs/squashfs/namei.c b/fs/squashfs/namei.c
-index 2260a3f05fde6..9f6f6792b5498 100644
+index 30e9383f09928..ac32fef1b3c63 100644
 --- a/fs/squashfs/namei.c
 +++ b/fs/squashfs/namei.c
 @@ -66,6 +66,7 @@ static int get_dir_index_using_name(struct super_block *sb,
@@ -261,7 +269,7 @@ index 2260a3f05fde6..9f6f6792b5498 100644
  	int i, length = 0, err;
  	unsigned int size;
  	struct squashfs_dir_index *index;
-@@ -99,9 +100,12 @@ static int get_dir_index_using_name(struct super_block *sb,
+@@ -102,9 +103,12 @@ static int get_dir_index_using_name(struct super_block *sb,
  		if (strcmp(index->name, name) > 0)
  			break;
  
@@ -276,36 +284,35 @@ index 2260a3f05fde6..9f6f6792b5498 100644
  	}
  
  	*next_offset = (length + *next_offset) % SQUASHFS_METADATA_SIZE;
-@@ -126,13 +130,16 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
- 	struct inode *inode = NULL;
+@@ -130,7 +134,7 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
  	struct squashfs_sb_info *msblk = dir->i_sb->s_fs_info;
  	struct squashfs_dir_header dirh;
--	struct squashfs_dir_entry *dire;
--	u64 block = squashfs_i(dir)->start + msblk->directory_table;
-+	struct squashfs_dir_entry *dire = NULL;
-+	u64 block = squashfs_dir_start(squashfs_i(dir)->start, msblk);
- 	int offset = squashfs_i(dir)->offset;
- 	int err, length;
+ 	struct squashfs_dir_entry *dire = NULL;
+-	u64 block;
++	s64 block;
+ 	int offset, err, length;
  	unsigned int dir_count, size;
  
--	TRACE("Entered squashfs_lookup [%llx:%x]\n", block, offset);
-+	TRACE("Entered squashfs_lookup [%llx:%x]\n", squashfs_i(dir)->start, offset);
-+
+@@ -144,15 +148,17 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 		/* The directory is empty, and so there's nothing to do */
+ 		goto exit_lookup;
+ 
++	block = squashfs_dir_start(squashfs_i(dir)->start, msblk);
 +	if (block < 0)
 +		goto data_error;
- 
++
  	dire = kmalloc(sizeof(*dire) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
  	if (dire == NULL) {
-@@ -219,8 +226,7 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 		ERROR("Failed to allocate squashfs_dir_entry\n");
+ 		return ERR_PTR(-ENOMEM);
+ 	}
  
- read_failure:
- 	ERROR("Unable to read directory block [%llx:%x]\n",
--		squashfs_i(dir)->start + msblk->directory_table,
--		squashfs_i(dir)->offset);
-+		squashfs_i(dir)->start, squashfs_i(dir)->offset);
- failed:
- 	kfree(dire);
- 	return ERR_PTR(err);
+-	block = squashfs_i(dir)->start + msblk->directory_table;
+ 	offset = squashfs_i(dir)->offset;
+-
+ 	length = get_dir_index_using_name(dir->i_sb, &block, &offset,
+ 				squashfs_i(dir)->dir_idx_start,
+ 				squashfs_i(dir)->dir_idx_offset,
 diff --git a/fs/squashfs/squashfs_fs_sb.h b/fs/squashfs/squashfs_fs_sb.h
 index b87221ea9bdd6..949dab87a2413 100644
 --- a/fs/squashfs/squashfs_fs_sb.h
@@ -319,10 +326,10 @@ index b87221ea9bdd6..949dab87a2413 100644
  	unsigned int				block_size;
  	unsigned short				block_log;
 diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
-index 138173860f7c1..4fb13096fcbc8 100644
+index 662ebf464d3ce..124ee18ed8c95 100644
 --- a/fs/squashfs/squashfs_helpers.h
 +++ b/fs/squashfs/squashfs_helpers.h
-@@ -70,6 +70,23 @@ static inline s64 squashfs_mkinode(u32 start, u16 offset)
+@@ -70,6 +70,22 @@ static inline s64 squashfs_mkinode(u32 start, u16 offset)
  	return ((s64)start << 16) | offset;
  }
  
@@ -336,8 +343,7 @@ index 138173860f7c1..4fb13096fcbc8 100644
 +
 +	start = msblk->directory_table + blk;
 +
-+	if (msblk->directory_table < msblk->directory_table_end &&
-+				start >= msblk->directory_table_end)
++	if (start >= msblk->directory_table_end)
 +		return -EINVAL;
 +
 +	return start;

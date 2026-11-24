@@ -1,0 +1,159 @@
+From: Ard Biesheuvel <ardb@kernel.org>
+Date: Thu, 19 Nov 2026 18:03:54 +0100
+Subject: [PATCH] alloc_tag: use __ prefixed ELF section names
+
+The compiler will emit static relocations related to a section .foo into a
+separate section called .rela.foo, i.e., it just appends the section name
+to the string ".rela"
+
+When section names start with .  or __, this results in section names that
+are correctly matched by the various pattern rules in the various linker
+scripts across the tree.
+
+Without any such leading delimiter, it may lead to spurious warnings
+such as
+
+  >> ld: warning: orphan section `.relaalloc_tags' from `init/main.o' being placed in section `.rela.dyn'
+     ld: warning: dot moved backwards before `.rela.dyn'
+     ld: .tmp_vmlinux1: section `.rela.dyn' can't be allocated in segment 1
+
+Fix this by renaming the section to __alloc_tags.  While at it, tweak the
+headers so that the definition appears only a single time.
+
+Link: https://patch.msgid.link/20261119170353.1835737-2-ardb%2Bgit@google.com
+Signed-off-by: Ard Biesheuvel <ardb@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Kent Overstreet <kent.overstreet@linux.dev>
+Cc: Hao Ge <hao.ge@linux.dev>
+
+ include/asm-generic/codetag.lds.h |   14 +++++++++-----
+ include/linux/alloc_tag.h         |   11 ++++++-----
+ mm/alloc_tag.c                    |    6 +++---
+ 3 files changed, 18 insertions(+), 13 deletions(-)
+---
+ include/asm-generic/codetag.lds.h | 14 +++++++++-----
+ include/linux/alloc_tag.h         | 11 ++++++-----
+ mm/alloc_tag.c                    |  6 +++---
+ 3 files changed, 18 insertions(+), 13 deletions(-)
+
+diff --git a/include/asm-generic/codetag.lds.h b/include/asm-generic/codetag.lds.h
+index 4948e5d4e9d99..443e3a8fa60be 100644
+--- a/include/asm-generic/codetag.lds.h
++++ b/include/asm-generic/codetag.lds.h
+@@ -2,6 +2,10 @@
+ #ifndef __ASM_GENERIC_CODETAG_LDS_H
+ #define __ASM_GENERIC_CODETAG_LDS_H
+ 
++#include <linux/compiler_types.h>
++
++#define ALLOC_TAG_SECTION_NAME	__alloc_tags
++
+ #ifdef CONFIG_MEM_ALLOC_PROFILING
+ #define IF_MEM_ALLOC_PROFILING(...) __VA_ARGS__
+ #else
+@@ -10,15 +14,15 @@
+ 
+ #define SECTION_WITH_BOUNDARIES(_name)	\
+ 	. = ALIGN(8);			\
+-	__start_##_name = .;		\
++	__PASTE(__start_, _name) = .;	\
+ 	KEEP(*(_name))			\
+-	__stop_##_name = .;
++	__PASTE(__stop_, _name) = .;
+ 
+ #define CODETAG_SECTIONS()		\
+-	IF_MEM_ALLOC_PROFILING(SECTION_WITH_BOUNDARIES(alloc_tags))
++	IF_MEM_ALLOC_PROFILING(SECTION_WITH_BOUNDARIES(ALLOC_TAG_SECTION_NAME))
+ 
+ #define MOD_SEPARATE_CODETAG_SECTION(_name)	\
+-	.codetag.##_name 0 : {			\
++	.codetag._name 0 : {			\
+ 		SECTION_WITH_BOUNDARIES(_name)	\
+ 	}
+ 
+@@ -28,6 +32,6 @@
+  * unload them individually once unused.
+  */
+ #define MOD_SEPARATE_CODETAG_SECTIONS()		\
+-	IF_MEM_ALLOC_PROFILING(MOD_SEPARATE_CODETAG_SECTION(alloc_tags))
++	IF_MEM_ALLOC_PROFILING(MOD_SEPARATE_CODETAG_SECTION(ALLOC_TAG_SECTION_NAME))
+ 
+ #endif /* __ASM_GENERIC_CODETAG_LDS_H */
+diff --git a/include/linux/alloc_tag.h b/include/linux/alloc_tag.h
+index 9e42f23577b96..a13104ece95ec 100644
+--- a/include/linux/alloc_tag.h
++++ b/include/linux/alloc_tag.h
+@@ -15,6 +15,9 @@
+ #include <linux/static_key.h>
+ #include <linux/irqflags.h>
+ 
++/* for ALLOC_TAG_SECTION_NAME */
++#include <asm-generic/codetag.lds.h>
++
+ struct alloc_tag_counters {
+ 	u64 bytes;
+ 	u64 calls;
+@@ -74,8 +77,6 @@ static inline void set_codetag_empty(union codetag_ref *ref)
+ 
+ #ifdef CONFIG_MEM_ALLOC_PROFILING
+ 
+-#define ALLOC_TAG_SECTION_NAME	"alloc_tags"
+-
+ struct codetag_bytes {
+ 	struct codetag *ct;
+ 	s64 bytes;
+@@ -98,7 +99,7 @@ DECLARE_PER_CPU(struct alloc_tag_counters, _shared_alloc_tag);
+ 
+ #define DEFINE_ALLOC_TAG(_alloc_tag)						\
+ 	static struct alloc_tag _alloc_tag __used __aligned(8)			\
+-	__section(ALLOC_TAG_SECTION_NAME) = {					\
++	__section(__stringify(ALLOC_TAG_SECTION_NAME)) = {			\
+ 		.ct = CODE_TAG_INIT,						\
+ 		.counters = &_shared_alloc_tag };
+ 
+@@ -108,7 +109,7 @@ DECLARE_PER_CPU(struct alloc_tag_counters, _shared_alloc_tag);
+ 
+ #define DEFINE_ALLOC_TAG(_alloc_tag)						\
+ 	static struct alloc_tag _alloc_tag __used __aligned(8)			\
+-	__section(ALLOC_TAG_SECTION_NAME) = {					\
++	__section(__stringify(ALLOC_TAG_SECTION_NAME)) = {			\
+ 		.ct = CODE_TAG_INIT,						\
+ 		.counters = NULL };
+ 
+@@ -117,7 +118,7 @@ DECLARE_PER_CPU(struct alloc_tag_counters, _shared_alloc_tag);
+ #define DEFINE_ALLOC_TAG(_alloc_tag)						\
+ 	static DEFINE_PER_CPU(struct alloc_tag_counters, _alloc_tag_cntr);	\
+ 	static struct alloc_tag _alloc_tag __used __aligned(8)			\
+-	__section(ALLOC_TAG_SECTION_NAME) = {					\
++	__section(__stringify(ALLOC_TAG_SECTION_NAME)) = {			\
+ 		.ct = CODE_TAG_INIT,						\
+ 		.counters = &_alloc_tag_cntr };
+ 
+diff --git a/mm/alloc_tag.c b/mm/alloc_tag.c
+index e9b70268eacb0..18bec85b6220d 100644
+--- a/mm/alloc_tag.c
++++ b/mm/alloc_tag.c
+@@ -26,8 +26,8 @@
+ 
+ #define ALLOCINFO_FILE_NAME		"allocinfo"
+ #define MODULE_ALLOC_TAG_VMAP_SIZE	(100000UL * sizeof(struct alloc_tag))
+-#define SECTION_START(NAME)		(CODETAG_SECTION_START_PREFIX NAME)
+-#define SECTION_STOP(NAME)		(CODETAG_SECTION_STOP_PREFIX NAME)
++#define SECTION_START(NAME)		(CODETAG_SECTION_START_PREFIX __stringify(NAME))
++#define SECTION_STOP(NAME)		(CODETAG_SECTION_STOP_PREFIX __stringify(NAME))
+ 
+ #ifdef CONFIG_MEM_ALLOC_PROFILING_ENABLED_BY_DEFAULT
+ static bool mem_profiling_support = true;
+@@ -1466,7 +1466,7 @@ static inline void sysctl_init(void) {}
+ static int __init alloc_tag_init(void)
+ {
+ 	const struct codetag_type_desc desc = {
+-		.section		= ALLOC_TAG_SECTION_NAME,
++		.section		= __stringify(ALLOC_TAG_SECTION_NAME),
+ 		.tag_size		= sizeof(struct alloc_tag),
+ #ifdef CONFIG_MODULES
+ 		.needs_section_mem	= needs_section_mem,
+-- 
+2.47.3
+

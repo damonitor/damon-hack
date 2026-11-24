@@ -1,0 +1,62 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Sun, 22 Nov 2026 11:11:43 +0800
+Subject: [PATCH] mm/list_lru: fix potential infinite loop on xa node
+ allocation failure
+
+__memcg_list_lru_alloc() populates missing list_lru_memcg entries
+top-down, from the farthest unpopulated ancestor down to @memcg.  When
+storing the entry for an ancestor (pos != memcg) needs a new xa_node,
+xas_store() sets XA_ERROR(-ENOMEM) and leaves @pos unpopulated.
+
+If the following xas_nomem() also fails to allocate, the inner loop exits
+with the error still set, but the outer loop ignores it and reruns on the
+same unpopulated ancestor: xas_set() then resets the state to XAS_RESTART
+and retries the store.
+
+A one-off failure is recovered on that retry, but as long as the
+allocation keeps failing, e.g.  under sustained memory pressure, the loop
+makes no progress and, with no schedule point, becomes an RCU stall / hard
+lockup when the caller holds mapping->i_pages.xa_lock with IRQs disabled.
+
+Stop the outer walk when xas_error() is set so the existing cleanup frees
+@mlru and the error is propagated to the caller.
+
+Link: https://patch.msgid.link/20261122031143.3639941-1-songmuchun@bytedance.com
+Fixes: 28e98022b31e ("mm/list_lru: simplify reparenting and initial allocation")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Sashiko <sashiko-bot@kernel.org>
+Closes: https://sashiko.dev/#/bug/linux-21c1dba9-8d6f-4368-b38b-9a57cacb056f
+Acked-by: Qi Zheng <qi.zheng@linux.dev>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Tested-by: Chris Down <chris@chrisdown.name>
+  Link: https://lore.kernel.org/awPVQ3aJxojMSEhb@chrisdown.name
+Cc: Dave Chinner <david@fromorbit.com>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: <stable@vger.kernel.org>
+
+ mm/list_lru.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ mm/list_lru.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/list_lru.c b/mm/list_lru.c
+index 651983d0bf8bf..1e0ea7975acb8 100644
+--- a/mm/list_lru.c
++++ b/mm/list_lru.c
+@@ -626,7 +626,7 @@ static int __memcg_list_lru_alloc(struct mem_cgroup *memcg,
+ 			}
+ 			xas_unlock_irqrestore(&xas, flags);
+ 		} while (xas_nomem(&xas, gfp));
+-	} while (pos != memcg && !css_is_dying(&pos->css));
++	} while (pos != memcg && !css_is_dying(&pos->css) && !xas_error(&xas));
+ 
+ 	if (unlikely(mlru))
+ 		kfree(mlru);
+-- 
+2.47.3
+

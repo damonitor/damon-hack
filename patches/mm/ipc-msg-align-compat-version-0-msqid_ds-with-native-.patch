@@ -1,0 +1,93 @@
+From: Cheng Yongkang <teel4res@gmail.com>
+Date: Thu, 29 Oct 2026 07:12:20 -0700
+Subject: [PATCH] ipc/msg: align compat version-0 msqid_ds with native IPC_OLD
+
+The compat version-0 IPC_STAT path copies the 64-bit counters into the
+16-bit msg_cbytes/msg_qnum/msg_qbytes fields without clamping, and leaves
+msg_lcbytes/msg_lqbytes zero.  A queue with 65536 bytes, 8 messages and
+q_qbytes=200000 is reported as cbytes=0, qnum=8, qbytes=3392,
+lcbytes=lqbytes=0, while the native IPC_OLD path reports the clamped
+counters and the full values in the l fields.
+
+The compat version-0 IPC_SET path reads only the 16-bit msg_qbytes and
+ignores msg_lqbytes.  A caller following the old ABI with msg_qbytes=0 and
+msg_lqbytes=131072 gets q_qbytes=0 and the queue stops accepting messages,
+while the native IPC_OLD path falls back to msg_lqbytes.
+
+Mirror the native IPC_OLD handling in both compat version-0 branches:
+clamp the counters to USHRT_MAX and fill the l fields on stat, and fall
+back to msg_lqbytes when the 16-bit qbytes is zero on set.  The compat
+IPC_64 branches and the native paths are unchanged.
+
+Link: https://patch.msgid.link/179328314077.648427.7284615104475689945@gmail.com
+Fixes: 1da177e4c3f4 ("Linux-2.6.12-rc2")
+Signed-off-by: Cheng Yongkang <teel4res@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Christopher Lameter (Ampere) <cl@gentwo.org>
+Cc: Davidlohr Bueso <dave@stgolabs.net>
+Cc: Jan Koester <jan.koester@tuxist.de>
+Cc: Lu Shuaibing <shuaibinglu@126.com>
+Cc: Manfred Spraul <manfred@colorfullife.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Shubhang Kaushik <shubhang@os.amperecomputing.com>
+Cc: <stable@vger.kernel.org>
+
+ ipc/msg.c |   29 +++++++++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+---
+ ipc/msg.c | 29 +++++++++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/ipc/msg.c b/ipc/msg.c
+index 830572a8b6383..dbf679cf8cb82 100644
+--- a/ipc/msg.c
++++ b/ipc/msg.c
+@@ -687,10 +687,17 @@ static int copy_compat_msqid_from_user(struct msqid64_ds *out, void __user *buf,
+ 			return -EFAULT;
+ 	} else {
+ 		struct compat_msqid_ds __user *p = buf;
++		compat_ulong_t qbytes;
++
+ 		if (get_compat_ipc_perm(&out->msg_perm, &p->msg_perm))
+ 			return -EFAULT;
+-		if (get_user(out->msg_qbytes, &p->msg_qbytes))
++		if (get_user(qbytes, &p->msg_qbytes))
+ 			return -EFAULT;
++		if (qbytes == 0) {
++			if (get_user(qbytes, &p->msg_lqbytes))
++				return -EFAULT;
++		}
++		out->msg_qbytes = qbytes;
+ 	}
+ 	return 0;
+ }
+@@ -721,9 +728,23 @@ static int copy_compat_msqid_to_user(void __user *buf, struct msqid64_ds *in,
+ 		v.msg_stime = in->msg_stime;
+ 		v.msg_rtime = in->msg_rtime;
+ 		v.msg_ctime = in->msg_ctime;
+-		v.msg_cbytes = in->msg_cbytes;
+-		v.msg_qnum = in->msg_qnum;
+-		v.msg_qbytes = in->msg_qbytes;
++		if (in->msg_cbytes > USHRT_MAX)
++			v.msg_cbytes = USHRT_MAX;
++		else
++			v.msg_cbytes = in->msg_cbytes;
++		v.msg_lcbytes = in->msg_cbytes;
++
++		if (in->msg_qnum > USHRT_MAX)
++			v.msg_qnum = USHRT_MAX;
++		else
++			v.msg_qnum = in->msg_qnum;
++
++		if (in->msg_qbytes > USHRT_MAX)
++			v.msg_qbytes = USHRT_MAX;
++		else
++			v.msg_qbytes = in->msg_qbytes;
++		v.msg_lqbytes = in->msg_qbytes;
++
+ 		v.msg_lspid = in->msg_lspid;
+ 		v.msg_lrpid = in->msg_lrpid;
+ 		return copy_to_user(buf, &v, sizeof(v));
+-- 
+2.47.3
+

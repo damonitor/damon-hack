@@ -1,0 +1,109 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 23:18:44 -0800
+Subject: [PATCH] selftests/mm: check that fsync() reports hard-poisoned dirty
+ page-cache
+
+MADV_HWPOISON on a dirty page-cache page records -EIO in the mapping.  The
+test currently requires close() to succeed but never checks whether the
+error was reported.  Filesystems with ->flush() may return EIO from
+close(), while those without it can leave the error unnoticed.
+
+Require fsync() to return EIO after hard poisoning.  It consumes the
+mapping error before close(), allowing the NFS skip to go.  The clean and
+dirty page-cache cases also skip tmpfs, ramfs and hugetlbfs because they
+have no backing store from which to reread a poisoned clean page.
+
+With the complete selftest patch stack under x86_64 QEMU, ext4, FUSE and
+NFSv4.2 reported 10 passes; NILFS2 reported 9 passes and 1 skip.  The FUSE
+server used for this test was a minimal server, not virtiofs.
+
+Fixes: d51b5076c746 ("selftests/mm: add memory failure dirty pagecache test")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Kurt Lin <lylin1023@gmail.com>
+Closes: https://lore.kernel.org/20261123-memory-failure-fuse-skip-v1-1-19dcbda6e2e8@gmail.com
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+---
+ tools/testing/selftests/mm/memory-failure.c | 38 ++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index 135a2e8069ba5..f73c352eb2bae 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -300,6 +300,29 @@ static int get_fs_type(int fd)
+ 	return ret ? 0 : (int)fs.f_type;
+ }
+ 
++/*
++ * The page-cache tests need a filesystem which keeps its data on backing
++ * store.  When a clean page is poisoned the kernel drops it and the data is
++ * read back in.  When a dirty page is poisoned the data is lost, and the
++ * kernel records -EIO in the mapping for fsync() to report.
++ *
++ * tmpfs and ramfs keep their data only in the page cache.  The poisoned
++ * page cannot be dropped and read back, and their fsync() does nothing, so
++ * neither expectation holds.  hugetlbfs is the same, and it also poisons a
++ * whole huge page.  shmem has its own tests below.
++ */
++static bool fs_has_backing_store(int fs_type)
++{
++	switch ((unsigned int)fs_type) {
++	case 0:
++	case TMPFS_MAGIC:
++	case RAMFS_MAGIC:
++	case HUGETLBFS_MAGIC:
++		return false;
++	}
++	return true;
++}
++
+ TEST_F(memory_failure, clean_pagecache)
+ {
+ 	int fd;
+@@ -311,7 +334,7 @@ TEST_F(memory_failure, clean_pagecache)
+ 	if (fd < 0)
+ 		SKIP(return, "failed to open test file.\n");
+ 	fs_type = get_fs_type(fd);
+-	if (!fs_type || fs_type == TMPFS_MAGIC) {
++	if (!fs_has_backing_store(fs_type)) {
+ 		close(fd);
+ 		SKIP(return, "unsupported filesystem :%x\n", fs_type);
+ 	}
+@@ -353,13 +376,7 @@ TEST_F(memory_failure, dirty_pagecache)
+ 	if (fd < 0)
+ 		SKIP(return, "failed to open test file.\n");
+ 	fs_type = get_fs_type(fd);
+-	/*
+-	 * MADV_HARD poisoning of dirty page-cache data records an expected
+-	 * -EIO in the file mapping. NFS reports this error on close(), so
+-	 * skip this variant.
+-	 */
+-	if (!fs_type || fs_type == TMPFS_MAGIC ||
+-	    (fs_type == NFS_SUPER_MAGIC && variant->type == MADV_HARD)) {
++	if (!fs_has_backing_store(fs_type)) {
+ 		close(fd);
+ 		SKIP(return, "unsupported filesystem :%x\n", fs_type);
+ 	}
+@@ -386,6 +403,11 @@ TEST_F(memory_failure, dirty_pagecache)
+ 
+ 	ASSERT_EQ(munmap(addr, self->page_size), 0);
+ 
++	if (variant->type == MADV_HARD) {
++		ASSERT_EQ(fsync(fd), -1);
++		ASSERT_EQ(errno, EIO);
++	}
++
+ 	ASSERT_EQ(close(fd), 0);
+ }
+ 
+-- 
+2.47.3
+

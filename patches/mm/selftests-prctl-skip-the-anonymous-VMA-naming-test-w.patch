@@ -1,0 +1,73 @@
+From: Sasha Levin <sashal@kernel.org>
+Date: Thu, 5 Nov 2026 07:56:59 -0500
+Subject: [PATCH] selftests/prctl: skip the anonymous VMA naming test when
+ unsupported
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "selftests: target selection fixes for cross and LLVM builds".
+
+A few suites select their tests from the build host instead of the
+target, or depend on the host C library in ways that break cross
+builds:
+
+ - set-anon-vma-name-test fails instead of skipping on kernels built
+   without CONFIG_ANON_VMA_NAME.
+
+ - kexec only recognizes the ppc64le spelling of PowerPC and decides
+   about the x86-64 jump test from the build host.
+
+ - size links a custom _start against the static C library, which
+   fails on ARM with clang and on LoongArch; it now uses nolibc.
+
+The patches are independent of each other and apply on
+mm-nonmm-unstable.
+
+
+This patch (of 3):
+
+PR_SET_VMA_ANON_NAME is only implemented when CONFIG_ANON_VMA_NAME is
+enabled. Without it, set_anon_vma_name() returns -EINVAL for every
+request, so set-anon-vma-name-test reports a failure on kernels that
+simply do not provide the feature:
+
+  # renaming: Expected rename_vma(...) (-22) >= 0
+  not ok 1 vma.renaming
+
+Probe the interface in the fixture setup by clearing the name of the
+anonymous mapping, which succeeds whenever the feature is available,
+and skip the test when the kernel rejects the request with EINVAL.
+
+Link: https://lore.kernel.org/20261105125701.1605281-1-sashal@kernel.org
+Link: https://patch.msgid.link/20261105125701.1605281-2-sashal@kernel.org
+Fixes: 5290586186d2 ("selftests: prctl: Add new prctl test for PR_SET_VMA action")
+Signed-off-by: Sasha Levin <sashal@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Ivan Orlov <ivan.orlov0322@gmail.com>
+Cc: Thomas Weißschuh <linux@weissschuh.net>
+
+ tools/testing/selftests/prctl/set-anon-vma-name-test.c |    3 +++
+ 1 file changed, 3 insertions(+)
+---
+ tools/testing/selftests/prctl/set-anon-vma-name-test.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/tools/testing/selftests/prctl/set-anon-vma-name-test.c b/tools/testing/selftests/prctl/set-anon-vma-name-test.c
+index 5f9589534da8e..d3854ccb2a7a3 100644
+--- a/tools/testing/selftests/prctl/set-anon-vma-name-test.c
++++ b/tools/testing/selftests/prctl/set-anon-vma-name-test.c
+@@ -93,6 +93,9 @@ FIXTURE_SETUP(vma) {
+ 					MAP_PRIVATE, self->fd_not_anon, 0);
+ 	ASSERT_NE(self->ptr_not_anon, MAP_FAILED);
+ 	close(self->fd_not_anon);
++
++	if (rename_vma((unsigned long)self->ptr_anon, AREA_SIZE, NULL) == -EINVAL)
++		SKIP(return, "PR_SET_VMA_ANON_NAME is not supported");
+ }
+ 
+ FIXTURE_TEARDOWN(vma) {
+-- 
+2.47.3
+

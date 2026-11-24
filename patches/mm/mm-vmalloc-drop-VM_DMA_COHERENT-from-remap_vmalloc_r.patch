@@ -1,0 +1,67 @@
+From: Ye Liu <liuye@kylinos.cn>
+Date: Thu, 29 Oct 2026 17:19:07 +0800
+Subject: [PATCH] mm/vmalloc: drop VM_DMA_COHERENT from
+ remap_vmalloc_range_partial
+
+Patch series "mm/vmalloc: harden remap_vmalloc_range_partial against NULL
+pages", v2.
+
+remap_vmalloc_range_partial() passes vmalloc_to_page()'s result to
+vm_insert_page() unchecked, oopsing via page_folio() if the page is
+NULL. The NULL case never happens today because VM_USERMAP areas keep
+every page mapped, but that assumption is nowhere checked.
+
+Patch 1 drops VM_DMA_COHERENT from the allow-list -- a dead entry (no
+caller maps a DMA-coherent area through this path).
+
+Patch 2 fails the mapping with -EINVAL instead of oopsing if
+vmalloc_to_page() ever returns NULL, with a WARN to mark the broken
+invariant.
+
+Patch 1 is a behavior change (no in-tree caller affected)
+Patch 2 only changes a failure path that cannot be reached today.
+The two are independent.
+
+
+This patch (of 2):
+
+No caller maps a VM_DMA_COHERENT area through this path: such areas
+come from dma_alloc_coherent() internals and are freed via vunmap(),
+never through remap_vmalloc_range[_partial](); all 13 callers pass
+vmalloc_user()/vmalloc()-backed addresses.
+
+The flag was added in commit fe9041c245196 ("vmalloc: lift the arm
+flag for coherent mappings to common code") as a mechanical
+translation of ARM's VM_ARM_DMA_CONSISTENT.
+
+Drop it so DMA-coherent areas can never enter the path.
+
+Link: https://lore.kernel.org/20261029-vmalloc_remap-v2-0-c4705cbf26c2@linux.dev
+Link: https://patch.msgid.link/20261029-vmalloc_remap-v2-1-c4705cbf26c2@linux.dev
+Signed-off-by: Ye Liu <liuye@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Uladzislau Rezki (Sony) <urezki@gmail.com>
+
+ mm/vmalloc.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ mm/vmalloc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/vmalloc.c b/mm/vmalloc.c
+index 320e981188c98..bd93ebb97937e 100644
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -5052,7 +5052,7 @@ int remap_vmalloc_range_partial(struct vm_area_struct *vma, unsigned long uaddr,
+ 	if (!area)
+ 		return -EINVAL;
+ 
+-	if (!(area->flags & (VM_USERMAP | VM_DMA_COHERENT)))
++	if (!(area->flags & VM_USERMAP))
+ 		return -EINVAL;
+ 
+ 	if (check_add_overflow(size, off, &end_index) ||
+-- 
+2.47.3
+

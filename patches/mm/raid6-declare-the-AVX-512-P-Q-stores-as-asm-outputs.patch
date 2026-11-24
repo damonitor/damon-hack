@@ -1,0 +1,140 @@
+From: Miroslav Cimerman <mc@raidlab.org>
+Date: Sun, 22 Nov 2026 03:29:31 +0000
+Subject: [PATCH] raid6: declare the AVX-512 P/Q stores as asm outputs
+
+Patch series "raid6: x86: asm constraints, sfence and prefetch in
+xor_syndrome".
+
+This follows up on the review of "raid6: use normal stores in the x86 x4
+xor_syndrome functions" [1]. With that patch, none of the x86
+xor_syndrome() functions uses non-temporal stores, so their sfence
+orders nothing. Christoph suggested removing it [2]. Eric pointed out
+that the AVX-512 functions list P and Q as asm inputs only and rely on
+the "memory" clobber of that sfence, and suggested prefetcht0 for Q [3].
+1/3 fixes the constraints, 2/3 removes the sfence, and 3/3 changes the
+prefetch of Q.
+
+The patches and the tests were prepared with the help of an LLM. I
+reviewed everything.
+
+
+This patch (of 3):
+
+The AVX-512 gen_syndrome() and xor_syndrome() functions store P and Q in
+inline asm that lists these memory operands as inputs only. The compiler
+may then assume that the asm does not change P and Q. Each function ends
+with an sfence whose asm has a "memory" clobber, and the constraints
+technically rely on it.
+
+Declare the stored P and Q as outputs: "=m" where the asm only writes
+them, and "+m" for Q in xor_syndrome(), which the same asm reads and
+writes back. The SSE2 and AVX2 functions already declare their stores as
+outputs.
+
+With clang the generated code does not change: it already loads the data
+pointers from ptrs[] inside the loop over the block. gcc 15.2 now does
+the same, because a byte store may alias the pointer array. Five of the
+six functions get one or two more instructions.
+
+Link: https://lore.kernel.org/20261122032933.2306875-1-mc@raidlab.org
+Link: https://patch.msgid.link/20261122032933.2306875-2-mc@raidlab.org
+Link: https://lore.kernel.org/linux-raid/20261109030805.25709-1-mc@raidlab.org/ [1]
+Link: https://lore.kernel.org/linux-raid/avqegZd_W0kce0UA@infradead.org/ [2]
+Signed-off-by: Miroslav Cimerman <mc@raidlab.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: Eric Biggers <ebiggers@kernel.org>
+Link: https://lore.kernel.org/linux-raid/20261116210440.GE229817@google.com/ [3]
+Reviewed-by: Eric Biggers <ebiggers@kernel.org>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Cc: Song Liu <song@kernel.org>
+Cc: Yu Kuai <yukuai@fygo.io>
+Cc: Li Nan <magiclinan@didiglobal.com>
+Cc: Xiao Ni <xiao@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Markus Stockhausen <markus.stockhausen@collogia.de>
+
+ lib/raid/raid6/x86/avx512.c |   30 ++++++++++++------------------
+ 1 file changed, 12 insertions(+), 18 deletions(-)
+---
+ lib/raid/raid6/x86/avx512.c | 30 ++++++++++++------------------
+ 1 file changed, 12 insertions(+), 18 deletions(-)
+
+diff --git a/lib/raid/raid6/x86/avx512.c b/lib/raid/raid6/x86/avx512.c
+index dac0edb9189e6..7dc0a45cd2fb7 100644
+--- a/lib/raid/raid6/x86/avx512.c
++++ b/lib/raid/raid6/x86/avx512.c
+@@ -73,8 +73,7 @@ static void raid6_avx5121_gen_syndrome(int disks, size_t bytes, void **ptrs)
+ 			     "vpxorq %%zmm2,%%zmm2,%%zmm2\n\t"
+ 			     "vmovntdq %%zmm4,%1\n\t"
+ 			     "vpxorq %%zmm4,%%zmm4,%%zmm4"
+-			     :
+-			     : "m" (p[d]), "m" (q[d]));
++			     : "=m" (p[d]), "=m" (q[d]));
+ 	}
+ 
+ 	asm volatile("sfence" : : : "memory");
+@@ -133,8 +132,7 @@ static void raid6_avx5121_xor_syndrome(int disks, int start, int stop,
+ 		/* Don't use movntdq for r/w memory area < cache line */
+ 			     "vmovdqa64 %%zmm4,%0\n\t"
+ 			     "vmovdqa64 %%zmm2,%1"
+-			     :
+-			     : "m" (q[d]), "m" (p[d]));
++			     : "+m" (q[d]), "=m" (p[d]));
+ 	}
+ 
+ 	asm volatile("sfence" : : : "memory");
+@@ -204,9 +202,8 @@ static void raid6_avx5122_gen_syndrome(int disks, size_t bytes, void **ptrs)
+ 			     "vmovntdq %%zmm3,%1\n\t"
+ 			     "vmovntdq %%zmm4,%2\n\t"
+ 			     "vmovntdq %%zmm6,%3"
+-			     :
+-			     : "m" (p[d]), "m" (p[d+64]), "m" (q[d]),
+-			       "m" (q[d+64]));
++			     : "=m" (p[d]), "=m" (p[d+64]), "=m" (q[d]),
++			       "=m" (q[d+64]));
+ 	}
+ 
+ 	asm volatile("sfence" : : : "memory");
+@@ -289,9 +286,8 @@ static void raid6_avx5122_xor_syndrome(int disks, int start, int stop,
+ 			     "vmovdqa64 %%zmm6,%1\n\t"
+ 			     "vmovdqa64 %%zmm2,%2\n\t"
+ 			     "vmovdqa64 %%zmm3,%3"
+-			     :
+-			     : "m" (q[d]), "m" (q[d+64]), "m" (p[d]),
+-			       "m" (p[d+64]));
++			     : "+m" (q[d]), "+m" (q[d+64]), "=m" (p[d]),
++			       "=m" (p[d+64]));
+ 	}
+ 
+ 	asm volatile("sfence" : : : "memory");
+@@ -393,10 +389,9 @@ static void raid6_avx5124_gen_syndrome(int disks, size_t bytes, void **ptrs)
+ 			     "vpxorq %%zmm12,%%zmm12,%%zmm12\n\t"
+ 			     "vmovntdq %%zmm14,%7\n\t"
+ 			     "vpxorq %%zmm14,%%zmm14,%%zmm14"
+-			     :
+-			     : "m" (p[d]), "m" (p[d+64]), "m" (p[d+128]),
+-			       "m" (p[d+192]), "m" (q[d]), "m" (q[d+64]),
+-			       "m" (q[d+128]), "m" (q[d+192]));
++			     : "=m" (p[d]), "=m" (p[d+64]), "=m" (p[d+128]),
++			       "=m" (p[d+192]), "=m" (q[d]), "=m" (q[d+64]),
++			       "=m" (q[d+128]), "=m" (q[d+192]));
+ 	}
+ 
+ 	asm volatile("sfence" : : : "memory");
+@@ -528,10 +523,9 @@ static void raid6_avx5124_xor_syndrome(int disks, int start, int stop,
+ 			     "vmovdqa64 %%zmm6,%5\n\t"
+ 			     "vmovdqa64 %%zmm12,%6\n\t"
+ 			     "vmovdqa64 %%zmm14,%7"
+-			     :
+-			     : "m" (p[d]),  "m" (p[d+64]), "m" (p[d+128]),
+-			       "m" (p[d+192]), "m" (q[d]),  "m" (q[d+64]),
+-			       "m" (q[d+128]), "m" (q[d+192]));
++			     : "=m" (p[d]), "=m" (p[d+64]), "=m" (p[d+128]),
++			       "=m" (p[d+192]), "+m" (q[d]), "+m" (q[d+64]),
++			       "+m" (q[d+128]), "+m" (q[d+192]));
+ 	}
+ 	asm volatile("sfence" : : : "memory");
+ 	asm volatile("vzeroupper");
+-- 
+2.47.3
+

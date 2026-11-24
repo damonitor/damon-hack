@@ -4,22 +4,23 @@ Subject: [PATCH] fs/proc/task_mmu: fix lost maps entries above 2^63
 
 When a read of /proc/pid/{maps,smaps,numa_maps} resumes, m_start() rewinds
 *ppos to priv->last_pos so that the vma which did not fit into the
-previous buffer is shown again.  It only does so for last_addr > 0,
-meaning to exclude the start of the file and SENTINEL_VMA_GATE, but
-last_addr is a signed loff_t holding a vm_end.  sparc64 maps shared
-libraries, anonymous memory and the stack above 0x8000000000000000, so the
-rewind does not happen there and one entry is lost at every read()
-boundary.
+previous buffer is shown again.
 
-Reading the maps file of a process with read sizes from 64 to 8192 bytes
-in steps of 64 loses lines at 126 of the 128 sizes, smaps at 123 and
-numa_maps at 97, and the proc-maps-race selftest fails 4 of its 6 tests.
-Python's sys.remote_exec() reads maps with fgets() and fails
-intermittently when it misses the libpython data mapping.
+The last_addr > 0 test is intended to exclude the start of the file and
+SENTINEL_VMA_GATE, but last_addr is a signed loff_t holding a vm_end.
+
+On sparc64, shared libraries, anonymous memory and the stack can be mapped
+above 0x8000000000000000.  The rewind then does not happen and a VMA entry
+is lost at a read() boundary.  Tests found missing entries in
+/proc/pid/{maps,smaps,numa_maps} at many read sizes.  The proc-maps-race
+selftest failed four of its six tests.  Python's sys.remote_exec()
+intermittently fails when it misses the libpython data mapping in maps.
 
 Skip the rewind only for 0 and the two sentinels instead, with an
 addr_is_sentinel() helper.
 
+[akpm@linux-foundation.org: changelog edits, per Lorenzo]
+  Link: https://lore.kernel.org/as5M1BSWcPDHjEWt@gremlin
 Link: https://patch.msgid.link/20261013152106.1834364-1-stian@itx.no
 Fixes: 5631da56c9a8 ("fs/proc/task_mmu: read proc/pid/maps under per-vma lock")
 Signed-off-by: Stian Halseth <stian@itx.no>
@@ -27,6 +28,7 @@ Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
 Closes: https://github.com/sparclinux/issues/issues/111
 Acked-by: David Hildenbrand (Arm) <david@kernel.org>
 Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
 Cc: Suren Baghdasaryan <surenb@google.com>
 Cc: Liam R. Howlett <liam@infradead.org>
 Cc: Vlastimil Babka <vbabka@kernel.org>

@@ -1,0 +1,62 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Mon, 23 Nov 2026 18:08:00 -0800
+Subject: [PATCH] memcg: warn when memory cgroup IDs run out
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Every memory cgroup gets a 16-bit private ID, so a host can have at most
+65,535 of them at a time, counting dead ones.  A dead memcg keeps its ID
+as long as any swap slot still records it.  On Meta hosts that create many
+short-lived cgroups, dead cgroups held this way filled the whole ID space.
+After that, every mkdir of a cgroup with the memory controller failed
+with -EBUSY: systemd could not start units, and container setup failed.
+
+This was hard to see:
+
+- Nothing is logged when the ID allocation fails. The only sign is
+  -EBUSY from mkdir.
+- Since commit 8290f45995f5 ("memcg: move memcg private ID refcount to
+  objcg"), a dead memcg is freed even while swap still holds its ID. So
+  nr_dying_subsys_memory in cgroup.stat can be 0 while the IDs run out.
+
+Print a rate limited warning when the ID allocation fails because all IDs
+are in use.
+
+Link: https://patch.msgid.link/20261124020800.2313930-1-shakeel.butt@linux.dev
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+
+ mm/memcontrol.c |    6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+---
+ mm/memcontrol.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 2ef12d7a7e5f0..dadcc42455881 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4307,8 +4307,12 @@ static struct mem_cgroup *mem_cgroup_alloc(struct mem_cgroup *parent)
+ 
+ 	error = xa_alloc(&mem_cgroup_private_ids, &memcg->private_id, NULL,
+ 			 XA_LIMIT(1, MEM_CGROUP_ID_MAX), GFP_KERNEL);
+-	if (error)
++	if (error) {
++		if (error == -EBUSY)
++			pr_warn_ratelimited("memcg: all %lu memory cgroup IDs are in use, cannot create a new memory cgroup\n",
++					    MEM_CGROUP_ID_MAX);
+ 		goto fail;
++	}
+ 	error = -ENOMEM;
+ 
+ 	memcg->vmstats = kzalloc_obj(struct memcg_vmstats, GFP_KERNEL_ACCOUNT);
+-- 
+2.47.3
+

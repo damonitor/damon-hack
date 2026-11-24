@@ -1,0 +1,154 @@
+From: Miroslav Cimerman <mc@raidlab.org>
+Date: Mon, 9 Nov 2026 03:08:05 +0000
+Subject: [PATCH] raid6: use normal stores in the x86 x4 xor_syndrome functions
+
+xor_syndrome() updates P and Q in place for a read-modify-write.  md calls
+it twice on the same P/Q page per write, to remove the old data and to add
+the new data.  The x1 and x2 unrolled versions write P and Q with normal
+stores since commit a582564b24be ("md/raid6 algorithms: xor_syndrome() for
+SSE2"), which argued that non-temporal stores of less than a cache line
+are slow, but kept non-temporal stores in the x4 version, as it writes
+whole cache lines.  The AVX2 and AVX-512 versions followed the same
+pattern.
+
+The non-temporal stores evict P and Q from the cache and the sfence waits
+until they are written to memory, just before the second call reads the
+same P and Q again, now from memory.
+
+Use normal aligned stores in the x4 unrolled versions too, like the x1 and
+x2 versions and the other architectures.
+
+md RAID-6, 4 KiB random writes, md thread on one core, Xeon E5-2699 v3:
+
+  8+2 on null_blk (dm-raid):     85.6k -> 98.1k IOPS (+15%)
+  6+2 on 8 Intel Optane M10:     57.3k -> 62.1k IOPS (+8%)
+
+Change in time per write in md's pattern (both calls and the 4 KiB copy
+between them), kernel code built in userspace, one core, geometric
+mean over 2-24 data disks, data in cache / DRAM:
+
+  avx2x4 (Xeon E5-2699 v3):  -66% / -38%
+  avx512x4 (Xeon Gold 6130): -78% / -48%
+  sse2x4 (Core i5-2520M):    -37% / -19%
+
+Link: https://patch.msgid.link/20261109030805.25709-1-mc@raidlab.org
+Signed-off-by: Miroslav Cimerman <mc@raidlab.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Tested-by: Anton Gavriliuk <antosha20xx@gmail.com>
+  Link: https://lore.kernel.org/CAAiJnjqrRo-75jg_Jrr0x2r85kY2g6_ZSH%2B8ukyJJ5UXyMb6pA@mail.gmail.com
+Reviewed-by: Eric Biggers <ebiggers@kernel.org>
+Cc: Song Liu <song@kernel.org>
+Cc: Yu Kuai <yukuai@fygo.io>
+Cc: Li Nan <magiclinan@didiglobal.com>
+Cc: Xiao Ni <xiao@kernel.org>
+Cc: Ard Biesheuvel <ardb@kernel.org>
+Cc: David Laight <david.laight.linux@gmail.com>
+Cc: Markus Stockhausen <markus.stockhausen@collogia.de>
+
+ lib/raid/raid6/x86/avx2.c   |   16 ++++++++--------
+ lib/raid/raid6/x86/avx512.c |   16 ++++++++--------
+ lib/raid/raid6/x86/sse2.c   |   16 ++++++++--------
+ 3 files changed, 24 insertions(+), 24 deletions(-)
+---
+ lib/raid/raid6/x86/avx2.c   | 16 ++++++++--------
+ lib/raid/raid6/x86/avx512.c | 16 ++++++++--------
+ lib/raid/raid6/x86/sse2.c   | 16 ++++++++--------
+ 3 files changed, 24 insertions(+), 24 deletions(-)
+
+diff --git a/lib/raid/raid6/x86/avx2.c b/lib/raid/raid6/x86/avx2.c
+index e09d0bd418efc..a9e709ce2104a 100644
+--- a/lib/raid/raid6/x86/avx2.c
++++ b/lib/raid/raid6/x86/avx2.c
+@@ -435,18 +435,18 @@ static void raid6_avx24_xor_syndrome(int disks, int start, int stop,
+ 			asm volatile("vpxor %ymm13,%ymm12,%ymm12");
+ 			asm volatile("vpxor %ymm15,%ymm14,%ymm14");
+ 		}
+-		asm volatile("vmovntdq %%ymm2,%0" : "=m" (p[d]));
+-		asm volatile("vmovntdq %%ymm3,%0" : "=m" (p[d+32]));
+-		asm volatile("vmovntdq %%ymm10,%0" : "=m" (p[d+64]));
+-		asm volatile("vmovntdq %%ymm11,%0" : "=m" (p[d+96]));
++		asm volatile("vmovdqa %%ymm2,%0" : "=m" (p[d]));
++		asm volatile("vmovdqa %%ymm3,%0" : "=m" (p[d+32]));
++		asm volatile("vmovdqa %%ymm10,%0" : "=m" (p[d+64]));
++		asm volatile("vmovdqa %%ymm11,%0" : "=m" (p[d+96]));
+ 		asm volatile("vpxor %0,%%ymm4,%%ymm4" : : "m" (q[d]));
+ 		asm volatile("vpxor %0,%%ymm6,%%ymm6" : : "m" (q[d+32]));
+ 		asm volatile("vpxor %0,%%ymm12,%%ymm12" : : "m" (q[d+64]));
+ 		asm volatile("vpxor %0,%%ymm14,%%ymm14" : : "m" (q[d+96]));
+-		asm volatile("vmovntdq %%ymm4,%0" : "=m" (q[d]));
+-		asm volatile("vmovntdq %%ymm6,%0" : "=m" (q[d+32]));
+-		asm volatile("vmovntdq %%ymm12,%0" : "=m" (q[d+64]));
+-		asm volatile("vmovntdq %%ymm14,%0" : "=m" (q[d+96]));
++		asm volatile("vmovdqa %%ymm4,%0" : "=m" (q[d]));
++		asm volatile("vmovdqa %%ymm6,%0" : "=m" (q[d+32]));
++		asm volatile("vmovdqa %%ymm12,%0" : "=m" (q[d+64]));
++		asm volatile("vmovdqa %%ymm14,%0" : "=m" (q[d+96]));
+ 	}
+ 	asm volatile("sfence" : : : "memory");
+ 	asm volatile("vzeroupper");
+diff --git a/lib/raid/raid6/x86/avx512.c b/lib/raid/raid6/x86/avx512.c
+index 6ba5ca7df29d5..dac0edb9189e6 100644
+--- a/lib/raid/raid6/x86/avx512.c
++++ b/lib/raid/raid6/x86/avx512.c
+@@ -516,18 +516,18 @@ static void raid6_avx5124_xor_syndrome(int disks, int start, int stop,
+ 				     :
+ 				     : );
+ 		}
+-		asm volatile("vmovntdq %%zmm2,%0\n\t"
+-			     "vmovntdq %%zmm3,%1\n\t"
+-			     "vmovntdq %%zmm10,%2\n\t"
+-			     "vmovntdq %%zmm11,%3\n\t"
++		asm volatile("vmovdqa64 %%zmm2,%0\n\t"
++			     "vmovdqa64 %%zmm3,%1\n\t"
++			     "vmovdqa64 %%zmm10,%2\n\t"
++			     "vmovdqa64 %%zmm11,%3\n\t"
+ 			     "vpxorq %4,%%zmm4,%%zmm4\n\t"
+ 			     "vpxorq %5,%%zmm6,%%zmm6\n\t"
+ 			     "vpxorq %6,%%zmm12,%%zmm12\n\t"
+ 			     "vpxorq %7,%%zmm14,%%zmm14\n\t"
+-			     "vmovntdq %%zmm4,%4\n\t"
+-			     "vmovntdq %%zmm6,%5\n\t"
+-			     "vmovntdq %%zmm12,%6\n\t"
+-			     "vmovntdq %%zmm14,%7"
++			     "vmovdqa64 %%zmm4,%4\n\t"
++			     "vmovdqa64 %%zmm6,%5\n\t"
++			     "vmovdqa64 %%zmm12,%6\n\t"
++			     "vmovdqa64 %%zmm14,%7"
+ 			     :
+ 			     : "m" (p[d]),  "m" (p[d+64]), "m" (p[d+128]),
+ 			       "m" (p[d+192]), "m" (q[d]),  "m" (q[d+64]),
+diff --git a/lib/raid/raid6/x86/sse2.c b/lib/raid/raid6/x86/sse2.c
+index 2bbb288c244fc..9e8bece516903 100644
+--- a/lib/raid/raid6/x86/sse2.c
++++ b/lib/raid/raid6/x86/sse2.c
+@@ -432,18 +432,18 @@ static void raid6_sse24_xor_syndrome(int disks, int start, int stop,
+ 			asm volatile("pxor %xmm13,%xmm12");
+ 			asm volatile("pxor %xmm15,%xmm14");
+ 		}
+-		asm volatile("movntdq %%xmm2,%0" : "=m" (p[d]));
+-		asm volatile("movntdq %%xmm3,%0" : "=m" (p[d+16]));
+-		asm volatile("movntdq %%xmm10,%0" : "=m" (p[d+32]));
+-		asm volatile("movntdq %%xmm11,%0" : "=m" (p[d+48]));
++		asm volatile("movdqa %%xmm2,%0" : "=m" (p[d]));
++		asm volatile("movdqa %%xmm3,%0" : "=m" (p[d+16]));
++		asm volatile("movdqa %%xmm10,%0" : "=m" (p[d+32]));
++		asm volatile("movdqa %%xmm11,%0" : "=m" (p[d+48]));
+ 		asm volatile("pxor %0,%%xmm4" : : "m" (q[d]));
+ 		asm volatile("pxor %0,%%xmm6" : : "m" (q[d+16]));
+ 		asm volatile("pxor %0,%%xmm12" : : "m" (q[d+32]));
+ 		asm volatile("pxor %0,%%xmm14" : : "m" (q[d+48]));
+-		asm volatile("movntdq %%xmm4,%0" : "=m" (q[d]));
+-		asm volatile("movntdq %%xmm6,%0" : "=m" (q[d+16]));
+-		asm volatile("movntdq %%xmm12,%0" : "=m" (q[d+32]));
+-		asm volatile("movntdq %%xmm14,%0" : "=m" (q[d+48]));
++		asm volatile("movdqa %%xmm4,%0" : "=m" (q[d]));
++		asm volatile("movdqa %%xmm6,%0" : "=m" (q[d+16]));
++		asm volatile("movdqa %%xmm12,%0" : "=m" (q[d+32]));
++		asm volatile("movdqa %%xmm14,%0" : "=m" (q[d+48]));
+ 	}
+ 	asm volatile("sfence" : : : "memory");
+ 	kernel_fpu_end();
+-- 
+2.47.3
+

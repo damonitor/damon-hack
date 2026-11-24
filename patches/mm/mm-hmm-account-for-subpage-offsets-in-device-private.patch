@@ -1,0 +1,82 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Sat, 31 Oct 2026 15:07:58 +1100
+Subject: [PATCH] mm/hmm: account for subpage offsets in device-private PMDs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When a query starts inside a device-private PMD owned by
+range->dev_private_owner, hmm_vma_handle_absent_pmd() still fills the PFN
+array from the folio's first page.  The returned PFNs therefore refer to
+earlier pages rather than the requested subrange.
+
+Nouveau's GPU fault path can query one page of a device-private PMD at a
+time.  Xe's SVM fault, prefetch and userptr mapping paths can also query
+subranges of their own device-private PMDs.  An unprivileged process with
+access to the GPU render node can reach these paths on hardware supporting
+device-private THP migration.  Xe can read the wrong application data or
+silently overwrite earlier pages of the same process's device-private
+folio.
+
+Nouveau aligns a one-page GPU fault to the PMD head by subtracting the
+fault offset from the returned page.  The faulty HMM PFN already refers to
+the head, so this subtraction can select a page before the folio.  If the
+preceding page belongs to another allocation, GPU access can expose or
+overwrite unrelated userspace data; an invalid page can also fault the
+kernel during its address conversion.  This worst case follows from the
+source, but has not been demonstrated on a real GPU.
+
+Add the query's PMD-relative page offset to the initial PFN, as the
+present PMD path already does.
+
+The device-private PMD migration machinery first shipped in 6.19.
+Backport this fix to the maintained 7.3.y stable series; the HMM path
+exists in 6.18.y but cannot be reached through an in-tree PMD-producing
+device-private migration path there.
+
+Link: https://patch.msgid.link/179342234355.4.16705453209886955762@gmail.com
+Fixes: 10b9feee2d0d ("mm/hmm: populate PFNs from PMD swap entry")
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+  Link: https://lore.kernel.org/20261121160037.1a479f3c8b4e860bc23c106d@linux-foundation.org
+Reviewed-by: Mika Penttilä <mpenttil@redhat.com>
+Reviewed-by: Balbir Singh <balbirs@nvidia.com>
+Cc: Jason Gunthorpe <jgg@ziepe.ca>
+Cc: Leon Romanovsky <leon@kernel.org>
+Cc: Francois Dugast <francois.dugast@intel.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Patchwork <patchwork@emeril.freedesktop.org>
+Cc: SJ Park <sj@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: David Airlie <airlied@gmail.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Christian König <christian.koenig@amd.com>
+Cc: Thomas Hellström <thomas.hellstrom@linux.intel.com>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/hmm.c |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+---
+ mm/hmm.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/hmm.c b/mm/hmm.c
+index 29f8a84de684d..ad7d6013922d0 100644
+--- a/mm/hmm.c
++++ b/mm/hmm.c
+@@ -355,7 +355,8 @@ static int hmm_vma_handle_absent_pmd(struct mm_walk *walk, unsigned long start,
+ 	    range->dev_private_owner) {
+ 		unsigned long cpu_flags = HMM_PFN_VALID |
+ 			hmm_pfn_flags_order(PMD_SHIFT - PAGE_SHIFT);
+-		unsigned long pfn = softleaf_to_pfn(entry);
++		unsigned long pfn = softleaf_to_pfn(entry) +
++			((start & ~PMD_MASK) >> PAGE_SHIFT);
+ 		unsigned long i;
+ 
+ 		if (softleaf_is_device_private_write(entry))
+-- 
+2.47.3
+

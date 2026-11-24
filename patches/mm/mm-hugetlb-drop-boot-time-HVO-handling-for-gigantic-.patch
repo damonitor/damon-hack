@@ -1,0 +1,150 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 20 Nov 2026 18:08:50 +0800
+Subject: [PATCH] mm/hugetlb: drop boot-time HVO handling for gigantic folios
+
+HugeTLB HVO is currently supported on x86-64, riscv64, and LoongArch.
+On x86-64 and riscv64, gigantic HugeTLB pages are larger than the
+section size, so the existing section-based vmemmap optimization
+infrastructure is already sufficient to cover the whole folio.  On
+LoongArch, HugeTLB HVO is supported without gigantic HugeTLB pages.
+
+Therefore, boot-time HugeTLB HVO folios can rely on the section-based
+vmemmap optimization infrastructure directly, without the extra bulk
+optimization and fallback handling.
+
+Link: https://patch.msgid.link/20261120100856.16929-6-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Acked-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+
+ mm/hugetlb.c         |   25 +++++++------------------
+ mm/hugetlb_vmemmap.c |   19 +------------------
+ 2 files changed, 8 insertions(+), 36 deletions(-)
+---
+ mm/hugetlb.c         | 25 +++++++------------------
+ mm/hugetlb_vmemmap.c | 19 +------------------
+ 2 files changed, 8 insertions(+), 36 deletions(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index a94518a873695..9969e9e7d6da9 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -3402,21 +3402,7 @@ static void __init prep_and_add_bootmem_folios(struct hstate *h,
+ 	unsigned long flags;
+ 	struct folio *folio, *tmp_f;
+ 
+-	/* Send list for bulk vmemmap optimization processing */
+-	hugetlb_vmemmap_optimize_folios(h, folio_list);
+-
+ 	list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
+-		if (!folio_test_hugetlb_vmemmap_optimized(folio)) {
+-			/*
+-			 * If HVO fails, initialize all tail struct pages
+-			 * We do not worry about potential long lock hold
+-			 * time as this is early in boot and there should
+-			 * be no contention.
+-			 */
+-			hugetlb_folio_init_tail_vmemmap(folio, h,
+-					VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES,
+-					pages_per_huge_page(h));
+-		}
+ 		hugetlb_bootmem_init_migratetype(folio, h);
+ 		/* Subdivide locks to achieve better parallel performance */
+ 		spin_lock_irqsave(&hugetlb_lock, flags);
+@@ -3440,6 +3426,8 @@ static void __init gather_bootmem_prealloc_node(unsigned long nid)
+ 		struct page *page = virt_to_page(m);
+ 		struct folio *folio = (void *)page;
+ 		const unsigned long pfn = folio_pfn(folio);
++		const unsigned long nr_pages = pages_per_huge_page(m->hstate);
++		unsigned long nr_struct_pages = nr_pages;
+ 
+ 		h = m->hstate;
+ 		/*
+@@ -3453,13 +3441,14 @@ static void __init gather_bootmem_prealloc_node(unsigned long nid)
+ 		VM_BUG_ON(!hstate_is_gigantic(h));
+ 		WARN_ON(folio_ref_count(folio) != 1);
+ 
+-		hugetlb_folio_init_vmemmap(folio, h,
+-					   VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES);
++		if (vmemmap_optimizable_order(pfn_to_section_compound_order(pfn)))
++			nr_struct_pages = VMEMMAP_OPTIMIZATION_NR_STRUCT_PAGES;
++		hugetlb_folio_init_vmemmap(folio, h, nr_struct_pages);
+ 		init_new_hugetlb_folio(folio);
+ 
+ 		if (vmemmap_optimizable_order(pfn_to_section_compound_order(pfn)))
+ 			folio_set_hugetlb_vmemmap_optimized(folio);
+-		section_set_compound_order_range(pfn, folio_nr_pages(folio), 0);
++		section_set_compound_order_range(pfn, nr_pages, 0);
+ 
+ 		list_add(&folio->lru, &folio_list);
+ 
+@@ -3474,7 +3463,7 @@ static void __init gather_bootmem_prealloc_node(unsigned long nid)
+ 		if (hugetlb_early_cma(h))
+ 			folio_set_hugetlb_cma(folio);
+ 		else
+-			adjust_managed_page_count(page, pages_per_huge_page(h));
++			adjust_managed_page_count(page, nr_pages);
+ 		cond_resched();
+ 	}
+ 
+diff --git a/mm/hugetlb_vmemmap.c b/mm/hugetlb_vmemmap.c
+index 5852b0a1c4798..09b9fd83c1985 100644
+--- a/mm/hugetlb_vmemmap.c
++++ b/mm/hugetlb_vmemmap.c
+@@ -565,7 +565,6 @@ static int hugetlb_vmemmap_pteify_folio(const struct hstate *h, struct folio *fo
+ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_list)
+ {
+ 	struct folio *folio;
+-	unsigned long nr_to_optimize = 0;
+ 	LIST_HEAD(vmemmap_pages);
+ 	unsigned long flags = VMEMMAP_DEFER_TLB_FLUSH;
+ 
+@@ -574,18 +573,7 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 
+ 	down_write(&vmemmap_remap_rwsem);
+ 	list_for_each_entry(folio, folio_list, lru) {
+-		int ret;
+-
+-		/*
+-		 * Bootmem gigantic folios may already be marked optimized when
+-		 * their vmemmap layout was prepared earlier, so skip them here.
+-		 */
+-		if (folio_test_hugetlb_vmemmap_optimized(folio))
+-			continue;
+-
+-		nr_to_optimize++;
+-
+-		ret = hugetlb_vmemmap_pteify_folio(h, folio, flags);
++		int ret = hugetlb_vmemmap_pteify_folio(h, folio, flags);
+ 
+ 		/*
+ 		 * Splitting the PMD requires allocating a page, thus let's fail
+@@ -597,11 +585,6 @@ void hugetlb_vmemmap_optimize_folios(struct hstate *h, struct list_head *folio_l
+ 			break;
+ 	}
+ 
+-	if (!nr_to_optimize) {
+-		up_write(&vmemmap_remap_rwsem);
+-		return;
+-	}
+-
+ 	flush_tlb_all();
+ 	downgrade_write(&vmemmap_remap_rwsem);
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,87 @@
+From: Shakeel Butt <shakeel.butt@linux.dev>
+Date: Mon, 23 Nov 2026 16:04:39 -0800
+Subject: [PATCH] memcg: free the private ID of a memcg that never comes online
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mem_cgroup_alloc() reserves the private ID of a memcg when its css is
+allocated.  The ID is erased when the last reference to it is put, and
+that reference is first taken in mem_cgroup_css_online().  The failure
+paths of mem_cgroup_alloc() and mem_cgroup_css_online() erase the ID
+themselves.
+
+But css_create() can also fail after css_alloc() and before online_css():
+in percpu_ref_init(), cgroup_idr_alloc() or css_rstat_init().  The memcg
+is then freed through mem_cgroup_css_free() without ever coming online,
+and nothing erases its ID.  The reserved entry stays in
+mem_cgroup_private_ids for good, and each such failure takes one of the
+65,535 IDs away.  With failslab failing radix tree node allocations during
+mkdir, 1,500 mkdirs leaked 6 IDs this way.
+
+Erase the ID in mem_cgroup_css_free() if the memcg never came online,
+which is when (memcg->css.flags & CSS_RELEASED) will be false: it is only
+set when an fully onlined memcg is released.
+
+private_id_objcg was introduced in 7.4, so to backport the fix to
+previous stable kernels, we will still need to use CSS_RELEASED or
+something else there.
+
+Link: https://patch.msgid.link/20261124000439.967403-1-shakeel.butt@linux.dev
+Fixes: 73f576c04b94 ("mm: memcontrol: fix cgroup creation failure after many small jobs")
+Signed-off-by: Shakeel Butt <shakeel.butt@linux.dev>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: <stable@vger.kernel.org>
+
+ include/linux/cgroup.h |    5 +++++
+ mm/memcontrol.c        |    7 +++++++
+ 2 files changed, 12 insertions(+)
+---
+ include/linux/cgroup.h | 5 +++++
+ mm/memcontrol.c        | 7 +++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/include/linux/cgroup.h b/include/linux/cgroup.h
+index 2afb4cb2bb4fa..123c713dcc918 100644
+--- a/include/linux/cgroup.h
++++ b/include/linux/cgroup.h
+@@ -449,6 +449,11 @@ static inline bool css_is_online(struct cgroup_subsys_state *css)
+ 	return css->flags & CSS_ONLINE;
+ }
+ 
++static inline bool css_is_released(struct cgroup_subsys_state *css)
++{
++	return css->flags & CSS_RELEASED;
++}
++
+ static inline bool css_is_self(struct cgroup_subsys_state *css)
+ {
+ 	if (css == &css->cgroup->self) {
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index afbb638e7e1cb..ec5acc3f8303e 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -4525,6 +4525,13 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
+ 	irq_work_sync(&memcg->high_irq_work);
+ 	cancel_work_sync(&memcg->high_work);
+ 	free_shrinker_info(memcg);
++
++	/*
++	 * The css_create() error path bypasses normal CSS release, leaving
++	 * CSS_RELEASED clear. Drop any private ID that is still reserved.
++	 */
++	if (!css_is_released(css))
++		mem_cgroup_private_id_remove(memcg);
+ 	mem_cgroup_free(memcg);
+ }
+ 
+-- 
+2.47.3
+

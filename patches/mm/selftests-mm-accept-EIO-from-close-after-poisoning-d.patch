@@ -1,0 +1,63 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 19:38:37 -0800
+Subject: [PATCH] selftests/mm: accept EIO from close after poisoning dirty
+ data
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On overlayfs with a virtiofs upper, poisoning a dirty page makes fsync()
+return -EIO as expected. close() can return -EIO again after ftruncate()
+removes the poisoned page. The selftest currently fails because it requires
+close() to return zero after fsync() has reported the error.
+
+Accept a second -EIO from close() only in the hard-poison dirty-page test,
+where fsync() has already been checked for -EIO. Continue to reject other
+close() errors. With the virtiofs export owned by the daemon's UID and GID,
+all ten overlayfs tests pass with no skips; before this change the dirty
+hard-poison case failed at close().
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Miklos Szeredi <miklos@szeredi.hu>
+Cc: Amir Goldstein <amir73il@gmail.com>
+Cc: German Maglione <gmaglione@redhat.com>
+Cc: Vivek Goyal <vgoyal@redhat.com>
+Cc: Stefan Hajnoczi <stefanha@redhat.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+
+ tools/testing/selftests/mm/memory-failure.c |    6 ++++++
+ 1 file changed, 6 insertions(+)
+---
+ tools/testing/selftests/mm/memory-failure.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index cc625cdfd9f5d..2eed9c0491eb4 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -468,8 +468,14 @@ TEST_F(memory_failure, dirty_pagecache)
+ 	 * fails. Close while the file is still linked. Remove the name
+ 	 * before checking the result so a failed close cannot leave a file
+ 	 * for the next test.
++	 *
++	 * With a virtiofs upper, overlayfs can also report -EIO from close()
++	 * after fsync() has reported the poisoned dirty page. Accept this
++	 * second error only for the hard-poison test and only if it is -EIO.
+ 	 */
+ 	ret = close(fd);
++	if (ret < 0 && variant->type == MADV_HARD)
++		ret = errno == EIO ? 0 : ret;
+ 	unlink(fname);
+ 	ASSERT_EQ(ret, 0);
+ }
+-- 
+2.47.3
+

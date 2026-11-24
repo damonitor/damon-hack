@@ -1,0 +1,132 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Sun, 22 Nov 2026 20:36:33 -0800
+Subject: [PATCH] selftest/mm/memory-failure: keep page-cache files linked
+ until cleanup
+
+The page-cache tests unlink their files immediately after open.  On CIFS
+and 9p, fstatfs() on the resulting descriptor fails with ENOENT, so all
+four page-cache cases skip without testing the filesystem.  Keeping the
+file linked only through fstatfs() is insufficient: 9p also rejects the
+ftruncate() after hard poisoning if the file has already been unlinked.
+
+Keep each file linked until the test completes.  Unlink it before close()
+so a failed close assertion cannot leave the name for a later case.  Also
+remove it on the unsupported-filesystem, NILFS2 and mmap() skip paths.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Kurt Lin <lylin1023@gmail.com>
+Cc: Miaohe Lin <linmiaohe@huawei.com>
+Cc: Naoya Horiguchi <nao.horiguchi@gmail.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+
+ tools/testing/selftests/mm/memory-failure.c |   25 ++++++++++++------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+---
+ tools/testing/selftests/mm/memory-failure.c | 25 +++++++++++++++------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index f94f2168e46c5..3812d57bdee64 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -266,10 +266,8 @@ static int prepare_file(const char *fname, unsigned long size)
+ 	int fd;
+ 
+ 	fd = open(fname, O_RDWR | O_CREAT, 0664);
+-	if (fd >= 0) {
+-		unlink(fname);
++	if (fd >= 0)
+ 		ftruncate(fd, size);
+-	}
+ 	return fd;
+ }
+ 
+@@ -329,20 +327,25 @@ TEST_F(memory_failure, clean_pagecache)
+ 	char *addr;
+ 	int ret;
+ 	int fs_type;
++	const char *fname = "./clean-page-cache-test-file";
+ 
+-	fd = prepare_file("./clean-page-cache-test-file", self->page_size);
++	fd = prepare_file(fname, self->page_size);
+ 	if (fd < 0)
+ 		SKIP(return, "failed to open test file.\n");
+ 	fs_type = get_fs_type(fd);
+ 	if (!fs_has_backing_store(fs_type)) {
++		unlink(fname);
+ 		close(fd);
+ 		SKIP(return, "unsupported filesystem :%x\n", fs_type);
+ 	}
+ 
+ 	addr = mmap(0, self->page_size, PROT_READ | PROT_WRITE,
+ 		    MAP_SHARED, fd, 0);
+-	if (addr == MAP_FAILED)
++	if (addr == MAP_FAILED) {
++		unlink(fname);
++		close(fd);
+ 		SKIP(return, "mmap failed, not enough memory.\n");
++	}
+ 	memset(addr, 0xce, self->page_size);
+ 	fsync(fd);
+ 
+@@ -362,6 +365,7 @@ TEST_F(memory_failure, clean_pagecache)
+ 
+ 	ASSERT_EQ(munmap(addr, self->page_size), 0);
+ 
++	unlink(fname);
+ 	ASSERT_EQ(close(fd), 0);
+ }
+ 
+@@ -371,12 +375,14 @@ TEST_F(memory_failure, dirty_pagecache)
+ 	char *addr;
+ 	int ret;
+ 	int fs_type;
++	const char *fname = "./dirty-page-cache-test-file";
+ 
+-	fd = prepare_file("./dirty-page-cache-test-file", self->page_size);
++	fd = prepare_file(fname, self->page_size);
+ 	if (fd < 0)
+ 		SKIP(return, "failed to open test file.\n");
+ 	fs_type = get_fs_type(fd);
+ 	if (!fs_has_backing_store(fs_type)) {
++		unlink(fname);
+ 		close(fd);
+ 		SKIP(return, "unsupported filesystem :%x\n", fs_type);
+ 	}
+@@ -385,14 +391,18 @@ TEST_F(memory_failure, dirty_pagecache)
+ 	 * Remove this skip when its fsync() reports poisoned dirty data.
+ 	 */
+ 	if (fs_type == NILFS_SUPER_MAGIC && variant->type == MADV_HARD) {
++		unlink(fname);
+ 		close(fd);
+ 		SKIP(return, "nilfs2 fsync() does not report poisoned dirty data\n");
+ 	}
+ 
+ 	addr = mmap(0, self->page_size, PROT_READ | PROT_WRITE,
+ 		    MAP_SHARED, fd, 0);
+-	if (addr == MAP_FAILED)
++	if (addr == MAP_FAILED) {
++		unlink(fname);
++		close(fd);
+ 		SKIP(return, "mmap failed, not enough memory.\n");
++	}
+ 	memset(addr, 0xce, self->page_size);
+ 
+ 	prepare(_metadata, self, addr);
+@@ -423,6 +433,7 @@ TEST_F(memory_failure, dirty_pagecache)
+ 		ASSERT_EQ(ftruncate(fd, 0), 0);
+ 	}
+ 
++	unlink(fname);
+ 	ASSERT_EQ(close(fd), 0);
+ }
+ 
+-- 
+2.47.3
+

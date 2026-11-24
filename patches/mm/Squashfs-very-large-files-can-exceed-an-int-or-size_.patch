@@ -1,6 +1,6 @@
 From: Phillip Lougher <phillip@squashfs.org.uk>
-Date: Wed, 11 Nov 2026 23:43:53 +0000
-Subject: [PATCH] Squashfs: very large files can exceed an int block count
+Date: Mon, 23 Nov 2026 03:42:55 +0000
+Subject: [PATCH] Squashfs: very large files can exceed an int or size_t
 
 Squashfs in many places uses a signed int to store the block number and
 block count of a file.  If the block size is using the Linux page size
@@ -13,8 +13,11 @@ depends on the block size as to when a signed int will overflow, but a
 file larger than 256 TiB (2^48) using 128 KiB blocks will overflow a
 signed int.
 
-This commit widens all appropriate variables to long long (s64) to
-avoid overflow.
+Additionally on 32-bit architectures, size_t is defined as an unsigned
+int, and where variables are being used as a block count (len) or mask,
+these can overflow on very large files too.
+
+This commit widens all appropriate variables to avoid overflow.
 
 Reproducer
 ==========
@@ -27,6 +30,7 @@ squashfs_copy_cache() with the result that folio_end_read() is
 not called.
 
 ====================================================================
+#!/bin/bash
 
 finish() {
 	popd 2>&1 > /dev/null
@@ -67,20 +71,23 @@ rm -rf $DIR
 exit 0
 ====================================================================
 
-Link: https://patch.msgid.link/20261111234402.252354-14-phillip@squashfs.org.uk
+Link: https://patch.msgid.link/20261123034304.261742-15-phillip@squashfs.org.uk
 Fixes: 1701aecb6849 ("Squashfs: regular file operations")
 Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Christian Loehle <christian.loehle@arm.com>
+Cc: Dan Carpenter <error27@gmail.com>
 Cc: Phillip Lougher <phillip.lougher@gmail.com>
+Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
 
- fs/squashfs/file.c |   33 +++++++++++++++++----------------
- 1 file changed, 17 insertions(+), 16 deletions(-)
+ fs/squashfs/file.c |   37 +++++++++++++++++++------------------
+ 1 file changed, 19 insertions(+), 18 deletions(-)
 ---
- fs/squashfs/file.c | 33 +++++++++++++++++----------------
- 1 file changed, 17 insertions(+), 16 deletions(-)
+ fs/squashfs/file.c | 37 +++++++++++++++++++------------------
+ 1 file changed, 19 insertions(+), 18 deletions(-)
 
 diff --git a/fs/squashfs/file.c b/fs/squashfs/file.c
-index ad6382cd22d3c..2396fad1de616 100644
+index ad6382cd22d3c..5c976b20f316d 100644
 --- a/fs/squashfs/file.c
 +++ b/fs/squashfs/file.c
 @@ -35,6 +35,7 @@
@@ -203,7 +210,17 @@ index ad6382cd22d3c..2396fad1de616 100644
  	int expected = index == file_end ?
  			(i_size_read(inode) & (msblk->block_size - 1)) :
  			 msblk->block_size;
-@@ -584,7 +585,7 @@ static void squashfs_readahead(struct readahead_control *ractl)
+@@ -576,15 +577,15 @@ static void squashfs_readahead(struct readahead_control *ractl)
+ {
+ 	struct inode *inode = ractl->mapping->host;
+ 	struct squashfs_sb_info *msblk = inode->i_sb->s_fs_info;
+-	size_t mask = (1UL << msblk->block_log) - 1;
++	s64 mask = (1UL << msblk->block_log) - 1;
+ 	unsigned short shift = msblk->block_log - PAGE_SHIFT;
+ 	loff_t start = readahead_pos(ractl) & ~mask;
+-	size_t len = readahead_length(ractl) + readahead_pos(ractl) - start;
++	s64 len = readahead_length(ractl) + readahead_pos(ractl) - start;
+ 	struct squashfs_page_actor *actor;
  	unsigned int nr_pages = 0;
  	struct page **pages;
  	int i;

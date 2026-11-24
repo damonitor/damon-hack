@@ -1,0 +1,286 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Thu, 19 Nov 2026 14:58:10 +0800
+Subject: [PATCH] mm/page_ext: allocate page extensions early for SPARSEMEM
+
+KMSAN needs page extensions when kmsan_init_shadow() installs per-page
+metadata, before memblock_free_all() releases memory to the buddy
+allocator.  FLATMEM makes page extensions available by this point,
+whereas SPARSEMEM initializes them later in boot.
+
+Allocate boot-time SPARSEMEM page extensions from memblock to match
+FLATMEM's initialization timing.  This gives early clients the same
+page_ext availability guarantee across both memory models, while runtime
+memory hotplug continues to use vmalloc.
+
+Link: https://patch.msgid.link/20261119065812.89959-6-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Joerg Roedel <joerg.roedel@amd.com>
+Cc: Lu Baolu <baolu.lu@linux.intel.com>
+Cc: Pranjal Shrivastava <praan@google.com>
+Cc: Ketan <ketan.kishore@oss.qualcomm.com>
+Cc: Mostafa Saleh <smostafa@google.com>
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+
+ include/linux/page_ext.h |    9 --
+ mm/mm_init.c             |    4 -
+ mm/page_ext.c            |  117 ++++++++++++++++++-------------------
+ 3 files changed, 59 insertions(+), 71 deletions(-)
+---
+ include/linux/page_ext.h |   9 +--
+ mm/mm_init.c             |   4 --
+ mm/page_ext.c            | 117 +++++++++++++++++++--------------------
+ 3 files changed, 59 insertions(+), 71 deletions(-)
+
+diff --git a/include/linux/page_ext.h b/include/linux/page_ext.h
+index 911a84bbb3dbf..d00320106a582 100644
+--- a/include/linux/page_ext.h
++++ b/include/linux/page_ext.h
+@@ -61,12 +61,10 @@ static inline bool early_page_ext_enabled(void)
+ 	return early_page_ext;
+ }
+ 
+-#ifdef CONFIG_SPARSEMEM
+-static inline void page_ext_alloc(void)
+-{
+-}
++void page_ext_alloc(void);
+ void page_ext_init(void);
+ 
++#ifdef CONFIG_SPARSEMEM
+ static inline bool page_ext_iter_next_fast_possible(unsigned long next_pfn)
+ {
+ 	/*
+@@ -76,9 +74,6 @@ static inline bool page_ext_iter_next_fast_possible(unsigned long next_pfn)
+ 	return next_pfn % PAGES_PER_SECTION;
+ }
+ #else
+-void page_ext_alloc(void);
+-void page_ext_init(void);
+-
+ static inline bool page_ext_iter_next_fast_possible(unsigned long next_pfn)
+ {
+ 	return true;
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 02f6fe8063879..e66d3850e128a 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -2644,10 +2644,6 @@ void __init mm_core_init(void)
+ 	build_all_zonelists(NULL);
+ 	page_alloc_init_cpuhp();
+ 	alloc_tag_sec_init();
+-	/*
+-	 * page_ext requires contiguous pages,
+-	 * bigger than MAX_PAGE_ORDER unless SPARSEMEM.
+-	 */
+ 	page_ext_alloc();
+ 	mem_debugging_and_hardening_init();
+ 	kfence_alloc_pool_and_metadata();
+diff --git a/mm/page_ext.c b/mm/page_ext.c
+index aff00f4e1bdd8..cfd20ed728841 100644
+--- a/mm/page_ext.c
++++ b/mm/page_ext.c
+@@ -12,6 +12,7 @@
+ #include <linux/rcupdate.h>
+ #include <linux/pgalloc_tag.h>
+ #include <linux/iommu-debug-pagealloc.h>
++#include <linux/slab.h>
+ 
+ /*
+  * struct page extension
+@@ -185,11 +186,6 @@ static inline struct page_ext *get_entry(void *base, unsigned long index)
+ }
+ 
+ #ifndef CONFIG_SPARSEMEM
+-void __init page_ext_init(void)
+-{
+-	invoke_init_callbacks();
+-}
+-
+ static struct page_ext *lookup_page_ext(const struct page *page)
+ {
+ 	unsigned long pfn = page_to_pfn(page);
+@@ -243,24 +239,16 @@ static int __init alloc_node_page_ext(int nid)
+ 	return 0;
+ }
+ 
+-void __init page_ext_alloc(void)
++static int __init __page_ext_alloc(void)
+ {
+-	int nid, fail;
+-
+-	if (!invoke_need_callbacks())
+-		return;
++	int nid;
+ 
+-	for_each_online_node(nid)  {
+-		fail = alloc_node_page_ext(nid);
+-		if (fail)
+-			goto fail;
++	for_each_online_node(nid) {
++		if (alloc_node_page_ext(nid))
++			return -ENOMEM;
+ 	}
+-	pr_info("allocated %ld bytes of page_ext\n", total_usage);
+-	return;
+ 
+-fail:
+-	pr_crit("allocation of page_ext failed.\n");
+-	panic("Out of memory");
++	return 0;
+ }
+ 
+ #else /* CONFIG_SPARSEMEM */
+@@ -287,10 +275,18 @@ static struct page_ext *lookup_page_ext(const struct page *page)
+ 	return get_entry(page_ext, pfn);
+ }
+ 
+-static void *__meminit alloc_page_ext(size_t size, int nid)
++static __ref void *alloc_page_ext(size_t size, int nid)
+ {
+ 	void *addr;
+ 
++	if (!slab_is_available()) {
++		addr = memblock_alloc_try_nid(size, PAGE_SIZE, __pa(MAX_DMA_ADDRESS),
++					      MEMBLOCK_ALLOC_ACCESSIBLE, nid);
++		if (addr)
++			memmap_boot_pages_add(DIV_ROUND_UP(size, PAGE_SIZE));
++		return addr;
++	}
++
+ 	addr = vzalloc_node(size, nid);
+ 	if (addr)
+ 		memmap_pages_add(DIV_ROUND_UP(size, PAGE_SIZE));
+@@ -309,7 +305,7 @@ static int __meminit init_section_page_ext(unsigned long pfn, int nid)
+ 	if (section->page_ext)
+ 		return 0;
+ 
+-	table_size = page_ext_size * PAGES_PER_SECTION;
++	table_size = PAGE_ALIGN(page_ext_size * PAGES_PER_SECTION);
+ 	base = alloc_page_ext(table_size, nid);
+ 
+ 	/*
+@@ -336,11 +332,19 @@ static int __meminit init_section_page_ext(unsigned long pfn, int nid)
+ 
+ static void free_page_ext(void *addr)
+ {
+-	size_t table_size;
++	size_t table_size = PAGE_ALIGN(page_ext_size * PAGES_PER_SECTION);
++	long nr_pages = table_size / PAGE_SIZE;
++
++	if (is_vmalloc_addr(addr)) {
++		memmap_pages_add(-nr_pages);
++		vfree(addr);
++		return;
++	}
+ 
+-	table_size = page_ext_size * PAGES_PER_SECTION;
+-	memmap_pages_add(-1L * (DIV_ROUND_UP(table_size, PAGE_SIZE)));
+-	vfree(addr);
++	VM_WARN_ON_ONCE(!PageReserved(virt_to_page(addr)));
++	memmap_boot_pages_add(-nr_pages);
++	kmemleak_free_part_phys(__pa(addr), table_size);
++	free_reserved_area(addr, addr + table_size, -1, NULL);
+ }
+ 
+ static void __free_page_ext(unsigned long pfn)
+@@ -454,52 +458,45 @@ static int __meminit page_ext_callback(struct notifier_block *self,
+ 	return notifier_from_errno(ret);
+ }
+ 
+-void __init page_ext_init(void)
++static int __init __page_ext_alloc(void)
+ {
+-	unsigned long pfn;
+-	int nid;
+-
+-	if (!invoke_need_callbacks())
+-		return;
+-
+-	for_each_node_state(nid, N_MEMORY) {
+-		unsigned long start_pfn, end_pfn;
+-
+-		start_pfn = node_start_pfn(nid);
+-		end_pfn = node_end_pfn(nid);
+-		/*
+-		 * start_pfn and end_pfn may not be aligned to SECTION and the
+-		 * page->flags of out of node pages are not initialized.  So we
+-		 * scan [start_pfn, the biggest section's pfn < end_pfn) here.
+-		 */
+-		for (pfn = start_pfn; pfn < end_pfn;
+-			pfn = ALIGN(pfn + 1, PAGES_PER_SECTION)) {
++	unsigned long start, end, pfn;
++	int i, nid;
+ 
++	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, &nid) {
++		for (pfn = start; pfn < end; pfn = SECTION_ALIGN_UP(pfn + 1)) {
+ 			if (!pfn_valid(pfn))
+ 				continue;
+-			/*
+-			 * Nodes's pfns can be overlapping.
+-			 * We know some arch can have a nodes layout such as
+-			 * -------------pfn-------------->
+-			 * N0 | N1 | N2 | N0 | N1 | N2|....
+-			 */
+-			if (pfn_to_nid(pfn) != nid)
+-				continue;
+ 			if (init_section_page_ext(pfn, nid))
+-				goto oom;
+-			cond_resched();
++				return -ENOMEM;
+ 		}
+ 	}
+-	hotplug_memory_notifier(page_ext_callback, DEFAULT_CALLBACK_PRI);
+-	pr_info("allocated %ld bytes of page_ext\n", total_usage);
+-	invoke_init_callbacks();
+-	return;
+ 
+-oom:
+-	panic("Out of memory");
++	return 0;
++}
++
++#endif
++
++void __init page_ext_alloc(void)
++{
++	if (!invoke_need_callbacks())
++		return;
++	if (__page_ext_alloc())
++		panic("Out of memory");
++
++	pr_info("allocated %ld bytes of page_ext\n", total_usage);
+ }
+ 
++void __init page_ext_init(void)
++{
++	if (!page_ext_size)
++		return;
++
++#ifdef CONFIG_SPARSEMEM
++	hotplug_memory_notifier(page_ext_callback, DEFAULT_CALLBACK_PRI);
+ #endif
++	invoke_init_callbacks();
++}
+ 
+ /**
+  * page_ext_lookup() - Lookup a page extension for a PFN.
+-- 
+2.47.3
+

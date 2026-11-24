@@ -1,0 +1,60 @@
+From: "David Hildenbrand (Arm)" <david@kernel.org>
+Date: Wed, 18 Nov 2026 11:03:00 +0100
+Subject: [PATCH] mm/userfaultfd: reject DAX mappings
+
+UFFD_FEATURE_WP_ASYNC made DAX mappings eligible for userfaultfd
+write-protection, but the DAX fault paths have never fully supported it.
+
+DAX faults use vmf_insert_mixed() and vmf_insert_mixed_mkwrite(), which
+treats any non-empty PTE, including uffd-wp markers, as an existing
+mapping.  A read fault on an uffd-wp marker therefore returns
+VM_FAULT_NOPAGE without replacing the marker, causing the fault to repeat
+indefinitely.
+
+PAGEMAP_SCAN can also write-protect a DAX PMD, but the huge DAX
+write-fault path can make it writable without clearing its uffd-wp bit,
+breaking async write tracking.
+
+Device DAX mappings requiring huge-page alignment and cannot serve PTE
+faults after UFFDIO_WRITEPROTECT has split their huge mappings.
+
+So let's just disallow DAX mappings in vma_can_userfault() entirely,
+making UFFDIO_REGISTER fail with EINVAL.
+
+Link: https://patch.msgid.link/20261118-dax_uffd-v1-1-d776cca1ae17@kernel.org
+Fixes: d61ea1cb0095 ("userfaultfd: UFFD_FEATURE_WP_ASYNC")
+Signed-off-by: David Hildenbrand (Arm) <david@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Reported-by: Jingyi Sun <1045704958@qq.com>
+Closes: https://lore.kernel.org/all/tencent_1874C71D4177A1624528043E008DB1A5EF05@qq.com
+Reviewed-by: Pankaj Gupta <pankaj.gupta@amd.com>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+
+ mm/userfaultfd.c |    3 +++
+ 1 file changed, 3 insertions(+)
+---
+ mm/userfaultfd.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index fe3b1fca3ef1e..4d1250ea3c1c6 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -2156,6 +2156,9 @@ static bool vma_can_userfault(struct vm_area_struct *vma, vm_flags_t vm_flags,
+ 	/* Only mm-backed memory can have its faults handled by userspace. */
+ 	if (!vma_is_mm_backed(vma))
+ 		return false;
++	/* DAX fault handlers do not support uffd-wp. */
++	if (vma_is_dax(vma))
++		return false;
+ 	/* Core mm may discard droppable memory at any time. */
+ 	if (vma_test_single_mask(vma, VMA_DROPPABLE))
+ 		return false;
+-- 
+2.47.3
+

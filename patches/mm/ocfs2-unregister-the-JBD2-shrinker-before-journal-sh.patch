@@ -1,0 +1,115 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Sat, 21 Nov 2026 19:34:56 -0800
+Subject: [PATCH] ocfs2: unregister the JBD2 shrinker before journal shutdown
+
+sysbot reports a lockdep cycle through shrinker_mutex, filesystem reclaim
+and osb->journal_shutdown_sem.  Unmount holds the superblock's s_umount
+exclusively, while the OCFS2 reclaim path must first get its read side
+with super_trylock_shared().  That excludes the two paths for the same
+superblock; the report does not establish a runtime deadlock.  Still, the
+lock ordering is visible to lockdep and produces the warning.
+
+The write side of journal_shutdown_sem must cover all of
+jbd2_journal_destroy(): ocfs2_clear_inode() can otherwise release a JBD2
+inode through a journal that is being destroyed.  Move only the JBD2
+shrinker unregister operation before taking the semaphore.
+shrinker_free() waits for active shrinker users, so the journal and its
+checkpoint counter remain alive while they finish.  A successfully
+initialized JBD2 journal always has a checkpoint counter.  Destroy it
+after unregistering the shrinker, whether unregistering happened here or
+before taking the OCFS2 semaphore.  The semaphore continues to protect
+JBD2 destruction, removal of osb->journal and freeing the OCFS2 journal.
+
+The userspace-visible result is removal of this lockdep warning during
+OCFS2 unmount; the report does not demonstrate a hung unmount.
+
+Link: https://lore.kernel.org/6b0257ca.6ccd1e40.868ea.001a.GAE@google.com
+Fixes: f277230d002d ("ocfs2: serialize inode journal access with shutdown")
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+38fdbb551940270021f1@syzkaller.appspotmail.com>
+Closes: https://syzkaller.appspot.com/bug?extid=38fdbb551940270021f1
+Tested-by: Andrew Morton <akpm@linux-foundation.org>
+  Link: https://lore.kernel.org/20261122093400.b726ecddf154f493dec1c892@linux-foundation.org
+Reviewed-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Cc: Cen Zhang <zzzccc427@gmail.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Theodore Ts'o <tytso@mit.edu>
+Cc: Jan Kara <jack@suse.cz>
+Cc: <stable@vger.kernel.org>
+---
+ fs/jbd2/journal.c    | 17 +++++++++++++----
+ fs/ocfs2/journal.c   |  1 +
+ include/linux/jbd2.h |  1 +
+ 3 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/fs/jbd2/journal.c b/fs/jbd2/journal.c
+index 3a4f3f613ead8..6e5cc74a1d646 100644
+--- a/fs/jbd2/journal.c
++++ b/fs/jbd2/journal.c
+@@ -75,6 +75,7 @@ EXPORT_SYMBOL(jbd2_journal_check_available_features);
+ EXPORT_SYMBOL(jbd2_journal_set_features);
+ EXPORT_SYMBOL(jbd2_journal_load);
+ EXPORT_SYMBOL(jbd2_journal_destroy);
++EXPORT_SYMBOL(jbd2_journal_unregister_shrinker);
+ EXPORT_SYMBOL(jbd2_journal_abort);
+ EXPORT_SYMBOL(jbd2_journal_errno);
+ EXPORT_SYMBOL(jbd2_journal_ack_err);
+@@ -2100,6 +2101,16 @@ int jbd2_journal_load(journal_t *journal)
+ 	return 0;
+ }
+ 
++void jbd2_journal_unregister_shrinker(journal_t *journal)
++{
++	struct shrinker *shrinker = journal->j_shrinker;
++
++	if (!shrinker)
++		return;
++	journal->j_shrinker = NULL;
++	shrinker_free(shrinker);
++}
++
+ /**
+  * jbd2_journal_destroy() - Release a journal_t structure.
+  * @journal: Journal to act on.
+@@ -2173,10 +2184,8 @@ int jbd2_journal_destroy(journal_t *journal)
+ 		brelse(journal->j_sb_buffer);
+ 	}
+ 
+-	if (journal->j_shrinker) {
+-		percpu_counter_destroy(&journal->j_checkpoint_jh_count);
+-		shrinker_free(journal->j_shrinker);
+-	}
++	jbd2_journal_unregister_shrinker(journal);
++	percpu_counter_destroy(&journal->j_checkpoint_jh_count);
+ 	if (journal->j_proc_entry)
+ 		jbd2_stats_proc_exit(journal);
+ 	iput(journal->j_inode);
+diff --git a/fs/ocfs2/journal.c b/fs/ocfs2/journal.c
+index 9c4a48887c9a3..a08ee229eff89 100644
+--- a/fs/ocfs2/journal.c
++++ b/fs/ocfs2/journal.c
+@@ -1115,6 +1115,7 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
+ 			mlog_errno(status);
+ 	}
+ 
++	jbd2_journal_unregister_shrinker(journal->j_journal);
+ 	/*
+ 	 * Exclude the final JBD2 inode cleanup in ocfs2_clear_inode() while
+ 	 * the journal is destroyed and freed.
+diff --git a/include/linux/jbd2.h b/include/linux/jbd2.h
+index e3886963ba004..d066dca421653 100644
+--- a/include/linux/jbd2.h
++++ b/include/linux/jbd2.h
+@@ -1566,6 +1566,7 @@ extern void	   jbd2_journal_clear_features
+ 		   (journal_t *, unsigned long, unsigned long, unsigned long);
+ extern int	   jbd2_journal_load       (journal_t *journal);
+ extern int	   jbd2_journal_destroy    (journal_t *);
++extern void	   jbd2_journal_unregister_shrinker(journal_t *);
+ extern int	   jbd2_journal_recover    (journal_t *journal);
+ extern int	   jbd2_journal_wipe       (journal_t *, int);
+ extern int	   jbd2_journal_skip_recovery	(journal_t *);
+-- 
+2.47.3
+

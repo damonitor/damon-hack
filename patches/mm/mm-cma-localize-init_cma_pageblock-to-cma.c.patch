@@ -1,0 +1,106 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Fri, 20 Nov 2026 18:08:55 +0800
+Subject: [PATCH] mm/cma: localize init_cma_pageblock() to cma.c
+
+Move init_cma_pageblock() from mm_init.c into cma.c so it lives
+alongside the CMA code that uses it.
+
+No functional change intended.
+
+Link: https://patch.msgid.link/20261120100856.16929-11-songmuchun@bytedance.com
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Reviewed-by: Qi Zheng <qi.zheng@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Li Zhe <lizhe.67@bytedance.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Lance Yang <lance.yang@linux.dev>
+
+ mm/cma.c     |    8 ++++++++
+ mm/mm_init.c |    9 ---------
+ mm/mm_init.h |    8 --------
+ 3 files changed, 8 insertions(+), 17 deletions(-)
+---
+ mm/cma.c     | 8 ++++++++
+ mm/mm_init.c | 9 ---------
+ mm/mm_init.h | 8 --------
+ 3 files changed, 8 insertions(+), 17 deletions(-)
+
+diff --git a/mm/cma.c b/mm/cma.c
+index 3e4366213b492..0c97aadcfea40 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -31,6 +31,7 @@
+ #include <linux/kmemleak.h>
+ #include <linux/hugetlb.h>
+ #include <trace/events/cma.h>
++#include <linux/page-isolation.h>
+ 
+ #include "internal.h"
+ #include "cma.h"
+@@ -149,6 +150,13 @@ bool cma_validate_zones(struct cma *cma)
+ 	return true;
+ }
+ 
++static void __init init_cma_pageblock(struct page *page)
++{
++	init_pageblock_migratetype(page, MIGRATE_CMA, false);
++	adjust_managed_page_count(page, pageblock_nr_pages);
++	page_zone(page)->cma_pages += pageblock_nr_pages;
++}
++
+ static void __init cma_activate_area(struct cma *cma)
+ {
+ 	unsigned long pfn, end_pfn, early_pfn[CMA_MAX_RANGES];
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index a427477483d06..e0686b87fdb1f 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -2202,15 +2202,6 @@ void __init init_cma_reserved_pageblock(struct page *page)
+ 	adjust_managed_page_count(page, pageblock_nr_pages);
+ 	page_zone(page)->cma_pages += pageblock_nr_pages;
+ }
+-/*
+- * Similar to above, but only set the migrate type and stats.
+- */
+-void __init init_cma_pageblock(struct page *page)
+-{
+-	init_pageblock_migratetype(page, MIGRATE_CMA, false);
+-	adjust_managed_page_count(page, pageblock_nr_pages);
+-	page_zone(page)->cma_pages += pageblock_nr_pages;
+-}
+ #endif
+ 
+ /*
+diff --git a/mm/mm_init.h b/mm/mm_init.h
+index c03413a090eb2..9ee9bcb8e6722 100644
+--- a/mm/mm_init.h
++++ b/mm/mm_init.h
+@@ -40,14 +40,6 @@ struct zone *pfn_to_zone(unsigned long pfn, int nid);
+ void init_cma_reserved_pageblock(struct page *page);
+ #endif
+ 
+-#ifdef CONFIG_CMA
+-void init_cma_pageblock(struct page *page);
+-#else
+-static inline void init_cma_pageblock(struct page *page)
+-{
+-}
+-#endif
+-
+ /* Memory initialisation debug and verification */
+ #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
+ DECLARE_STATIC_KEY_TRUE(deferred_pages);
+-- 
+2.47.3
+

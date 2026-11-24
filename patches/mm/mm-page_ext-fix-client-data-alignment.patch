@@ -1,0 +1,115 @@
+From: Muchun Song <songmuchun@bytedance.com>
+Date: Thu, 19 Nov 2026 14:58:07 +0800
+Subject: [PATCH] mm/page_ext: fix client data alignment
+
+page_ext lays out client payloads consecutively without aligning their
+offsets or the final entry size. This happened to work while the active
+payload sizes kept the stride naturally aligned, but IOMMU debug page
+allocation added a four-byte payload after data requiring eight-byte
+alignment.
+
+When page owner and IOMMU debug page allocation are both enabled on
+x86-64, struct page_ext, struct page_owner, and the IOMMU payload use
+8, 64, and 4 bytes respectively. This produces a 76-byte entry stride,
+leaving struct page_ext and page_owner data in every other entry only
+four-byte aligned instead of eight-byte aligned.
+
+Align each client offset and round the final entry size to the largest
+active alignment so every page_ext entry preserves the alignment
+required by all active clients.
+
+Link: https://patch.msgid.link/20261119065812.89959-3-songmuchun@bytedance.com
+Fixes: 466ae6978a5b ("iommu: Add page_ext for IOMMU_DEBUG_PAGEALLOC")
+Signed-off-by: Muchun Song <songmuchun@bytedance.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Tested-by: Chris Down <chris@chrisdown.name>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Brendan Jackman <brendan.jackman@linux.dev>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Joerg Roedel <joerg.roedel@amd.com>
+Cc: Lu Baolu <baolu.lu@linux.intel.com>
+Cc: Pranjal Shrivastava <praan@google.com>
+Cc: Ketan <ketan.kishore@oss.qualcomm.com>
+Cc: Mostafa Saleh <smostafa@google.com>
+Cc: Sang-Heon Jeon <ekffu200098@gmail.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+
+ mm/page_ext.c |   26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+---
+ mm/page_ext.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/mm/page_ext.c b/mm/page_ext.c
+index b679a8c1f7d7e..39a4464fc979a 100644
+--- a/mm/page_ext.c
++++ b/mm/page_ext.c
+@@ -116,8 +116,27 @@ static int __init setup_early_page_ext(char *str)
+ }
+ early_param("early_page_ext", setup_early_page_ext);
+ 
++static inline size_t page_ext_data_alignment(size_t size)
++{
++	const size_t align = __alignof__(u64);
++
++	if (!size)
++		return 1;
++
++	/* u64 has the strictest alignment required by page_ext clients. */
++	if (IS_ALIGNED(size, align))
++		return align;
++
++	/*
++	 * A type's size is a multiple of its natural alignment, so its
++	 * lowest set bit is at least that alignment.
++	 */
++	return size & -size;
++}
++
+ static bool __init invoke_need_callbacks(void)
+ {
++	size_t max_align = 1;
+ 	int i;
+ 	int entries = ARRAY_SIZE(page_ext_ops);
+ 	bool need = false;
+@@ -126,6 +145,7 @@ static bool __init invoke_need_callbacks(void)
+ 		if (page_ext_ops[i]->need()) {
+ 			if (page_ext_ops[i]->need_shared_flags) {
+ 				page_ext_size = sizeof(struct page_ext);
++				max_align = __alignof__(struct page_ext);
+ 				break;
+ 			}
+ 		}
+@@ -133,11 +153,17 @@ static bool __init invoke_need_callbacks(void)
+ 
+ 	for (i = 0; i < entries; i++) {
+ 		if (page_ext_ops[i]->need()) {
++			size_t align;
++
++			align = page_ext_data_alignment(page_ext_ops[i]->size);
++			page_ext_size = ALIGN(page_ext_size, align);
+ 			page_ext_ops[i]->offset = page_ext_size;
+ 			page_ext_size += page_ext_ops[i]->size;
++			max_align = max(max_align, align);
+ 			need = true;
+ 		}
+ 	}
++	page_ext_size = ALIGN(page_ext_size, max_align);
+ 
+ 	return need;
+ }
+-- 
+2.47.3
+

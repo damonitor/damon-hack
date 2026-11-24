@@ -1,0 +1,50 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 08:29:47 -0800
+Subject: [PATCH] selftests/mm: skip hard dirty page-cache test on CephFS
+
+CephFS loses the mapping error from a hard-poisoned dirty page:
+file_write_and_wait_range() returns -EIO and advances the file's
+writeback-error cursor, but ceph_fsync() overwrites that return value
+with a successful ceph_wait_on_async_create(). Its later error check
+finds nothing, so fsync() returns zero.
+
+In a CephFS QEMU guest, the hard-dirty selftest then failed its fsync()
+assertion. The page remained poisoned, teardown returned -EBUSY, and
+the following soft-dirty test died on the file left behind by the
+failed hard-dirty test. The soft-dirty test passed on a fresh file.
+
+Skip only the CephFS hard-dirty case before poisoning the page. The
+other CephFS tests still run. Remove the skip when ceph_fsync() reports
+the writeback error.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
+ tools/testing/selftests/mm/memory-failure.c |    9 +++++++++
+ 1 file changed, 9 insertions(+)
+---
+ tools/testing/selftests/mm/memory-failure.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index 3812d57bdee64..b42b41078ce6c 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -395,6 +395,15 @@ TEST_F(memory_failure, dirty_pagecache)
+ 		close(fd);
+ 		SKIP(return, "nilfs2 fsync() does not report poisoned dirty data\n");
+ 	}
++	/*
++	 * ceph_fsync() loses the writeback error recorded for a poisoned
++	 * dirty page. Remove this skip when it preserves that error.
++	 */
++	if (fs_type == CEPH_SUPER_MAGIC && variant->type == MADV_HARD) {
++		unlink(fname);
++		close(fd);
++		SKIP(return, "cephfs fsync() does not report poisoned dirty data\n");
++	}
+ 
+ 	addr = mmap(0, self->page_size, PROT_READ | PROT_WRITE,
+ 		    MAP_SHARED, fd, 0);
+-- 
+2.47.3
+

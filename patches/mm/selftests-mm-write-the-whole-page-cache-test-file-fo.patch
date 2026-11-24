@@ -1,0 +1,77 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 10:46:15 -0800
+Subject: [PATCH] selftests/mm: write the whole page-cache test file for OMFS
+
+Fix-5 grows the page-cache test file by writing one byte at the end.
+That works on HPFS, but leaves a hole on OMFS, whose extent allocation
+does not support holes. After a mapped write and fsync(), the file still
+has the expected contents in cache. On remount, 2048 of its 4096 bytes
+have changed, so the hard-clean-page test fails when poisoning drops
+the cached page and rereads the file.
+
+Write a full page of zeroes from offset zero. This still grows the file
+on HPFS and allocates all its blocks on OMFS before the test maps it.
+Check the write and clean up on failure as before. In a diagnostic OMFS
+guest, the test passed 9 of 10 cases with fix-5 and 10 of 10 with the
+full-page write.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
+ tools/testing/selftests/mm/memory-failure.c |   25 +++++++++++++-----
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+---
+ tools/testing/selftests/mm/memory-failure.c | 25 ++++++++++++++++-----
+ 1 file changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index 66b87a1bd8e73..cc625cdfd9f5d 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -17,6 +17,7 @@
+ #include <sys/vfs.h>
+ #include <linux/magic.h>
+ #include <errno.h>
++#include <stdlib.h>
+ 
+ #include "vm_util.h"
+ 
+@@ -264,18 +265,30 @@ TEST_F(memory_failure, anon)
+ static int prepare_file(const char *fname, unsigned long size)
+ {
+ 	int fd;
++	char *zeros;
++	ssize_t written;
+ 
+ 	fd = open(fname, O_RDWR | O_CREAT | O_TRUNC, 0664);
+ 	if (fd < 0)
+ 		return fd;
+ 
+-	/* HPFS cannot grow files with ftruncate(). */
+-	if (pwrite(fd, "\0", 1, size - 1) != 1) {
+-		close(fd);
+-		unlink(fname);
+-		return -1;
+-	}
++	/*
++	 * HPFS cannot grow files with ftruncate(), and OMFS does not support
++	 * holes. Write the whole page so OMFS allocates its blocks before
++	 * mmap(). A write of only the last byte loses data after eviction.
++	 */
++	zeros = calloc(size, 1);
++	if (!zeros)
++		goto failed;
++	written = pwrite(fd, zeros, size, 0);
++	free(zeros);
++	if (written != (ssize_t)size)
++		goto failed;
+ 	return fd;
++failed:
++	close(fd);
++	unlink(fname);
++	return -1;
+ }
+ 
+ static int prepare_shmem(const char *fname, unsigned long size)
+-- 
+2.47.3
+

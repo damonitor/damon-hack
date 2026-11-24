@@ -1,0 +1,52 @@
+From: Hongfu Li <lihongfu@kylinos.cn>
+Date: Tue, 24 Nov 2026 12:41:02 +0800
+Subject: [PATCH] mm/hugetlb: fix NR_HUGETLB accounting for kept surplus folios
+
+Commit a11a13ebbc5d ("mm/hugetlb: account restored reservations before
+freeing folios") reworked the free path of gather_surplus_pages(): when
+the pool was resized concurrently, folios that are no longer surplus are
+kept and enqueued directly instead of being freed.
+
+However, folios on the surplus list are accounted in NR_HUGETLB when
+allocated in alloc_surplus_hugetlb_folio(), and every other path that
+returns an already accounted folio to the free list decrements NR_HUGETLB
+first, as folios on the free list must not be counted.  The new enqueue
+branch skips that decrement, so the folio remains counted while on the
+free list, leaving NR_HUGETLB permanently overcounted by
+pages_per_huge_page for each kept folio.  Nothing corrects that later,
+whichever path the folio takes next.
+
+Fix this by decrementing NR_HUGETLB before enqueueing the folio, as done
+in the other enqueue paths.
+
+Link: https://patch.msgid.link/20261124-for-gather-surplus-v1-1-231e5660f3d8@kylinos.cn
+Fixes: a11a13ebbc5d ("mm/hugetlb: account restored reservations before freeing folios")
+Signed-off-by: Hongfu Li <lihongfu@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Muchun Song (ByteDance) <muchun.song@linux.dev>
+Acked-by: Oscar Salvador (SUSE) <osalvador@kernel.org>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+
+ mm/hugetlb.c |    2 ++
+ 1 file changed, 2 insertions(+)
+---
+ mm/hugetlb.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index d0e66fb306221..b2c14f4f99b7c 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -2489,6 +2489,8 @@ static int gather_surplus_pages(struct hstate *h, long delta)
+ 		 * count as persistent and we must keep them.
+ 		 */
+ 		if (!h->surplus_huge_pages_node[folio_nid(folio)]) {
++			mod_node_page_state(folio_pgdat(folio), NR_HUGETLB,
++					    -(long)pages_per_huge_page(h));
+ 			enqueue_hugetlb_folio(h, folio);
+ 			continue;
+ 		}
+-- 
+2.47.3
+

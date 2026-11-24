@@ -1,0 +1,212 @@
+From: Phillip Lougher <phillip@squashfs.org.uk>
+Date: Mon, 23 Nov 2026 03:42:49 +0000
+Subject: [PATCH] Squashfs: don't compute start or alloc memory on empty
+ directory or index
+
+If a directory is empty (length equals 3), then there is no data to be
+read from the filesystem.
+
+This means we can optimise directory reading and lookup with empty
+directories by skipping allocating memory to read data into, and
+also skip computing the start location.
+
+If the directory index is also empty, we can also skip allocating
+memory when reading the index.
+
+This commit also fixes the TRACE statements to display the start
+and offset of the directory data within the directory table,
+rather than the computed location on disk, or the incremented values
+after squashfs_read_metadata() has been called.
+
+It also adds sanity checks to ensure that the directory length is not
+less than 3 bytes.
+
+Link: https://patch.msgid.link/20261123034304.261742-9-phillip@squashfs.org.uk
+Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Christian Loehle <christian.loehle@arm.com>
+Cc: Dan Carpenter <error27@gmail.com>
+Cc: Phillip Lougher <phillip.lougher@gmail.com>
+Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
+
+ fs/squashfs/dir.c   |   32 +++++++++++++++++++++-----------
+ fs/squashfs/inode.c |   16 ++++++++++++++--
+ fs/squashfs/namei.c |   32 +++++++++++++++++++-------------
+ 3 files changed, 54 insertions(+), 26 deletions(-)
+---
+ fs/squashfs/dir.c   | 32 +++++++++++++++++++++-----------
+ fs/squashfs/inode.c | 16 ++++++++++++++--
+ fs/squashfs/namei.c | 32 +++++++++++++++++++-------------
+ 3 files changed, 54 insertions(+), 26 deletions(-)
+
+diff --git a/fs/squashfs/dir.c b/fs/squashfs/dir.c
+index cd3598bd034f0..7bbdfa438a32a 100644
+--- a/fs/squashfs/dir.c
++++ b/fs/squashfs/dir.c
+@@ -99,19 +99,14 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+ {
+ 	struct inode *inode = file_inode(file);
+ 	struct squashfs_sb_info *msblk = inode->i_sb->s_fs_info;
+-	u64 block = squashfs_i(inode)->start + msblk->directory_table;
+-	int offset = squashfs_i(inode)->offset, length, err;
++	u64 block;
++	int offset, length, err;
+ 	unsigned int inode_number, dir_count, size, type;
+ 	struct squashfs_dir_header dirh;
+ 	struct squashfs_dir_entry *dire;
+ 
+-	TRACE("Entered squashfs_readdir [%llx:%x]\n", block, offset);
+-
+-	dire = kmalloc(sizeof(*dire) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
+-	if (dire == NULL) {
+-		ERROR("Failed to allocate squashfs_dir_entry\n");
+-		goto finish;
+-	}
++	TRACE("Entered squashfs_readdir [%llx:%x]\n", squashfs_i(inode)->start,
++			squashfs_i(inode)->offset);
+ 
+ 	/*
+ 	 * Return "." and  ".." entries as the first two filenames in the
+@@ -142,6 +137,19 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+ 		ctx->pos += size;
+ 	}
+ 
++	if (i_size_read(inode) == 3)
++		/* The directory is empty, nothing more to do */
++		goto finish;
++
++	dire = kmalloc(sizeof(*dire) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
++	if (dire == NULL) {
++		ERROR("Failed to allocate squashfs_dir_entry\n");
++		goto finish;
++	}
++
++	block = squashfs_i(inode)->start + msblk->directory_table;
++	offset = squashfs_i(inode)->offset;
++
+ 	length = get_dir_index_using_offset(inode->i_sb, &block, &offset,
+ 				squashfs_i(inode)->dir_idx_start,
+ 				squashfs_i(inode)->dir_idx_offset,
+@@ -206,12 +214,14 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+ 		}
+ 	}
+ 
+-finish:
+ 	kfree(dire);
++
++finish:
+ 	return 0;
+ 
+ failed_read:
+-	ERROR("Unable to read directory block [%llx:%x]\n", block, offset);
++	ERROR("Unable to read directory [%llx:%x]\n", squashfs_i(inode)->start,
++			squashfs_i(inode)->offset);
+ 	kfree(dire);
+ 	return 0;
+ }
+diff --git a/fs/squashfs/inode.c b/fs/squashfs/inode.c
+index 66858fabed1a3..96b5b9c336dde 100644
+--- a/fs/squashfs/inode.c
++++ b/fs/squashfs/inode.c
+@@ -257,8 +257,14 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		if (err < 0)
+ 			goto failed_read;
+ 
+-		set_nlink(inode, le32_to_cpu(sqsh_ino->nlink));
++		/* The directory size must be 3 or larger, as it includes "." and ".." entries */
+ 		inode->i_size = le16_to_cpu(sqsh_ino->file_size);
++		if (inode->i_size < 3) {
++			err = -EINVAL;
++			goto failed_read;
++		}
++
++		set_nlink(inode, le32_to_cpu(sqsh_ino->nlink));
+ 		inode->i_op = &squashfs_dir_inode_ops;
+ 		inode->i_fop = &squashfs_dir_ops;
+ 		inode->i_mode |= S_IFDIR;
+@@ -282,9 +288,15 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		if (err < 0)
+ 			goto failed_read;
+ 
++		/* The directory size must be 3 or larger, as it includes "." and ".." entries */
++		inode->i_size = le32_to_cpu(sqsh_ino->file_size);
++		if (inode->i_size < 3) {
++			err = -EINVAL;
++			goto failed_read;
++		}
++
+ 		xattr_id = le32_to_cpu(sqsh_ino->xattr);
+ 		set_nlink(inode, le32_to_cpu(sqsh_ino->nlink));
+-		inode->i_size = le32_to_cpu(sqsh_ino->file_size);
+ 		inode->i_op = &squashfs_dir_inode_ops;
+ 		inode->i_fop = &squashfs_dir_ops;
+ 		inode->i_mode |= S_IFDIR;
+diff --git a/fs/squashfs/namei.c b/fs/squashfs/namei.c
+index 2260a3f05fde6..c8009e0b2edda 100644
+--- a/fs/squashfs/namei.c
++++ b/fs/squashfs/namei.c
+@@ -72,6 +72,9 @@ static int get_dir_index_using_name(struct super_block *sb,
+ 
+ 	TRACE("Entered get_dir_index_using_name, i_count %d\n", i_count);
+ 
++	if (i_count == 0)
++		goto out;
++
+ 	index = kmalloc(sizeof(*index) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
+ 	if (index == NULL) {
+ 		ERROR("Failed to allocate squashfs_dir_index\n");
+@@ -126,13 +129,20 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 	struct inode *inode = NULL;
+ 	struct squashfs_sb_info *msblk = dir->i_sb->s_fs_info;
+ 	struct squashfs_dir_header dirh;
+-	struct squashfs_dir_entry *dire;
+-	u64 block = squashfs_i(dir)->start + msblk->directory_table;
+-	int offset = squashfs_i(dir)->offset;
+-	int err, length;
++	struct squashfs_dir_entry *dire = NULL;
++	u64 block;
++	int offset, err, length;
+ 	unsigned int dir_count, size;
+ 
+-	TRACE("Entered squashfs_lookup [%llx:%x]\n", block, offset);
++	TRACE("Entered squashfs_lookup [%llx:%x]\n", squashfs_i(inode)->start,
++			squashfs_i(inode)->offset);
++
++	if (len > SQUASHFS_NAME_LEN)
++		return ERR_PTR(-ENAMETOOLONG);
++
++	if (i_size_read(dir) == 3)
++		/* The directory is empty, and so there's nothing to do */
++		goto exit_lookup;
+ 
+ 	dire = kmalloc(sizeof(*dire) + SQUASHFS_NAME_LEN + 1, GFP_KERNEL);
+ 	if (dire == NULL) {
+@@ -140,10 +150,8 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 		return ERR_PTR(-ENOMEM);
+ 	}
+ 
+-	if (len > SQUASHFS_NAME_LEN) {
+-		err = -ENAMETOOLONG;
+-		goto failed;
+-	}
++	block = squashfs_i(dir)->start + msblk->directory_table;
++	offset = squashfs_i(dir)->offset;
+ 
+ 	length = get_dir_index_using_name(dir->i_sb, &block, &offset,
+ 				squashfs_i(dir)->dir_idx_start,
+@@ -218,10 +226,8 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+ 	err = -EIO;
+ 
+ read_failure:
+-	ERROR("Unable to read directory block [%llx:%x]\n",
+-		squashfs_i(dir)->start + msblk->directory_table,
+-		squashfs_i(dir)->offset);
+-failed:
++	ERROR("Unable to read directory [%llx:%x]\n", squashfs_i(dir)->start,
++			squashfs_i(dir)->offset);
+ 	kfree(dire);
+ 	return ERR_PTR(err);
+ }
+-- 
+2.47.3
+

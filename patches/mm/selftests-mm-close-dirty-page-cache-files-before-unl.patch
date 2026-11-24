@@ -1,0 +1,48 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 08:50:00 -0800
+Subject: [PATCH] selftests/mm: close dirty page-cache files before unlinking
+ them
+
+OrangeFS writes dirty page-cache data from close(). In the soft-offline
+case, unlinking the file first removes its server-side handle. Writeback
+then returns -ENOENT, which makes close() fail even though soft offlining
+itself succeeded. The hard-poison case avoids this because it truncates
+the file before closing it.
+
+Close the file while it is still linked. Save the close() return value
+and unlink before asserting so a failed close does not leave the file
+behind for the next test.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+
+ tools/testing/selftests/mm/memory-failure.c |   10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+---
+ tools/testing/selftests/mm/memory-failure.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/memory-failure.c b/tools/testing/selftests/mm/memory-failure.c
+index b42b41078ce6c..034429aead9c6 100644
+--- a/tools/testing/selftests/mm/memory-failure.c
++++ b/tools/testing/selftests/mm/memory-failure.c
+@@ -442,8 +442,16 @@ TEST_F(memory_failure, dirty_pagecache)
+ 		ASSERT_EQ(ftruncate(fd, 0), 0);
+ 	}
+ 
++	/*
++	 * OrangeFS writes dirty pages from close(). Unlinking first removes
++	 * the server's file handle, so writeback returns -ENOENT and close()
++	 * fails. Close while the file is still linked. Remove the name
++	 * before checking the result so a failed close cannot leave a file
++	 * for the next test.
++	 */
++	ret = close(fd);
+ 	unlink(fname);
+-	ASSERT_EQ(close(fd), 0);
++	ASSERT_EQ(ret, 0);
+ }
+ 
+ TEST_F(memory_failure, dirty_shmem)
+-- 
+2.47.3
+

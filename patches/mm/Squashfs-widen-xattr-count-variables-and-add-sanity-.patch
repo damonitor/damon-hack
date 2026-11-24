@@ -1,5 +1,5 @@
 From: Phillip Lougher <phillip@squashfs.org.uk>
-Date: Wed, 11 Nov 2026 23:43:52 +0000
+Date: Mon, 23 Nov 2026 03:42:54 +0000
 Subject: [PATCH] Squashfs: widen xattr count variables and add sanity check
 
 The maximum number of Xattrs in an inode is 2^32-1 in Squashfs.  However
@@ -31,6 +31,7 @@ the loop not terminating.  In the case of a zero count, the exploit
 succeeds if gerfattr successfully returns with no xattrs.
 
 ====================================================================
+#!/bin/bash
 
 finish() {
 	popd 2>&1 > /dev/null
@@ -62,20 +63,26 @@ DIR=$(mktemp -d)
 
 pushd $DIR 2>&1 > /dev/null
 
+# Create a Squashfs pseudo file which is fed to Mksquashfs
 echo Create a Squashfs pseudo file which is fed to Mksquashfs
 
 echo "/ d 0777 0 0" > pseudo
 echo "example f 0777 0 0 echo example data" >> pseudo
 echo "example x user.comment=example xattr" >> pseudo
 
+# Generate the Squashfs filesystem
 echo Generate the Squashfs filesystem
 
 mksquashfs - img.sqsh -pf pseudo -quiet -no-progress -noX
 
+# The xattr_id_table_start is at offset 56 in the superblock, 32-bit little-endian.
+# For such a small filesystem, we only need to read the first two bytes.
 low=$(dd if=img.sqsh bs=1 skip=56 count=1 status=none | od -An -v -tu1 | tr -d '\n')
 hi=$(dd if=img.sqsh bs=1 skip=57 count=1 status=none | od -An -v -tu1 | tr -d '\n')
 start=$(( $hi * 256 + $low ))
 
+# The start of the single xattr id is 16 bytes before the xattr_id_table, and the
+# count field is 8 bytes before
 (( start -= 8 ))
 
 if [ $1 = "N" ]; then
@@ -94,6 +101,7 @@ fi
 
 dd if=file of=img.sqsh bs=1 seek=$start count=4 conv=notrunc status=none
 
+# Mount the filesystem to /mnt
 echo Mount the filesystem to /mnt
 
 if ! mount -t squashfs img.sqsh /mnt; then
@@ -125,11 +133,14 @@ rm -rf $DIR
 exit 0
 ====================================================================
 
-Link: https://patch.msgid.link/20261111234402.252354-13-phillip@squashfs.org.uk
+Link: https://patch.msgid.link/20261123034304.261742-14-phillip@squashfs.org.uk
 Fixes: f41d207cbede ("squashfs: add support for xattr reading")
 Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Christian Loehle <christian.loehle@arm.com>
+Cc: Dan Carpenter <error27@gmail.com>
 Cc: Phillip Lougher <phillip.lougher@gmail.com>
+Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
 
  fs/squashfs/inode.c         |    2 +-
  fs/squashfs/squashfs_fs_i.h |    2 +-
@@ -146,10 +157,10 @@ Cc: Phillip Lougher <phillip.lougher@gmail.com>
  5 files changed, 27 insertions(+), 13 deletions(-)
 
 diff --git a/fs/squashfs/inode.c b/fs/squashfs/inode.c
-index 547eb04f66bdf..812e4ad0d0b63 100644
+index 7c262be4a6441..380714ac4d342 100644
 --- a/fs/squashfs/inode.c
 +++ b/fs/squashfs/inode.c
-@@ -448,7 +448,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+@@ -460,7 +460,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
  		inode->i_blocks += ((squashfs_i(inode)->xattr_size - 1) >> 9)
  				+ 1;
  	} else

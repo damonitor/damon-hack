@@ -1,0 +1,83 @@
+From: Sasha Levin <sashal@kernel.org>
+Date: Thu, 5 Nov 2026 07:57:00 -0500
+Subject: [PATCH] selftests/kexec: select tests using the target compiler
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The kexec Makefile recognizes PowerPC only through the ppc64le spelling of
+ARCH, so the canonical ARCH=powerpc used for cross builds omits the tests.
+The x86 jump test is selected with IS_64_BIT from scripts/Makefile.arch,
+which describes the build host rather than the compiler being used.  On
+other architectures the Makefile includes no lib.mk rules at all, so
+installation and runlist generation fail with missing targets.
+
+Select x86 and PowerPC from the target ARCH when it is given and from the
+host's SUBARCH otherwise, without assigning ARCH, so that lib.mk keeps
+choosing the compiler's native clang target.  Ask the selected compiler,
+including USERCFLAGS, whether it targets a 64-bit x86 ABI and whether it
+targets little-endian 64-bit PowerPC.  lib.mk expands the generated
+program list before it appends USERCFLAGS to CFLAGS, so the flags are
+passed explicitly to keep both probes consistent.  If the compiler cannot
+be run, select the jump test so that the build fails instead of silently
+dropping it.  Include lib.mk unconditionally so that unsupported targets
+build, install and emit an empty runlist.
+
+Link: https://patch.msgid.link/20261105125701.1605281-3-sashal@kernel.org
+Fixes: 65e38e32a959 ("selftests/kexec: Enable secureboot tests for PowerPC")
+Fixes: 7615b94b6371 ("selftests/kexec: Add x86_64 selftest for kexec-jump and exception handling")
+Signed-off-by: Sasha Levin <sashal@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+Cc: R Nageswara Sastry <rnsastry@linux.ibm.com>
+Cc: Thomas Weißschuh <linux@weissschuh.net>
+
+ tools/testing/selftests/kexec/Makefile |   30 ++++++++++++-----------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+---
+ tools/testing/selftests/kexec/Makefile | 26 ++++++++++++++------------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/tools/testing/selftests/kexec/Makefile b/tools/testing/selftests/kexec/Makefile
+index 874cfdd3b75b3..97d5dd10208a1 100644
+--- a/tools/testing/selftests/kexec/Makefile
++++ b/tools/testing/selftests/kexec/Makefile
+@@ -1,20 +1,22 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ # Makefile for kexec tests
+ 
+-ARCH ?= $(shell uname -m 2>/dev/null || echo not)
+-ARCH_PROCESSED := $(shell echo $(ARCH) | sed -e s/i.86/x86/ -e s/x86_64/x86/)
++top_srcdir = ../../../..
++include $(top_srcdir)/scripts/subarch.include
++ARCH_PROCESSED := $(shell echo $(or $(ARCH),$(SUBARCH)) | sed -e s/i.86/x86/ -e s/x86_64/x86/)
+ 
+-ifeq ($(ARCH_PROCESSED),$(filter $(ARCH_PROCESSED),x86 ppc64le))
+-TEST_PROGS := test_kexec_load.sh test_kexec_file_load.sh
+-TEST_FILES := kexec_common_lib.sh
++PROBE_CC = $(filter-out -fuse-ld=%,$(CC)) $(CFLAGS) $(USERCFLAGS) -E -P -x c -
++CC_IS_64BIT = $(shell echo __SIZEOF_LONG__ | $(PROBE_CC) || echo 8)
++PPC64LE = $(shell printf '\043if defined(__powerpc64__) && __BYTE_ORDER__ == \
++	__ORDER_LITTLE_ENDIAN__\n1\n\043endif\n' | $(PROBE_CC))
+ 
+-include ../../../scripts/Makefile.arch
+-
+-ifeq ($(IS_64_BIT)$(ARCH_PROCESSED),1x86)
+-TEST_PROGS += test_kexec_jump.sh
+-TEST_GEN_PROGS := test_kexec_jump
++ifeq ($(ARCH_PROCESSED),x86)
++TEST_PROGS = test_kexec_load.sh test_kexec_file_load.sh \
++	$(if $(filter 8,$(CC_IS_64BIT)),test_kexec_jump.sh)
++TEST_GEN_PROGS = $(if $(filter 8,$(CC_IS_64BIT)),test_kexec_jump)
++else ifneq (,$(filter powerpc ppc64le,$(ARCH_PROCESSED)))
++TEST_PROGS = $(if $(filter 1,$(PPC64LE)),test_kexec_load.sh test_kexec_file_load.sh)
+ endif
++TEST_FILES = $(if $(TEST_PROGS),kexec_common_lib.sh)
+ 
+ include ../lib.mk
+-
+-endif
+-- 
+2.47.3
+

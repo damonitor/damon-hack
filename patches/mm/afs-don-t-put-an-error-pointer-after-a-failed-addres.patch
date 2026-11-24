@@ -1,0 +1,42 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Mon, 23 Nov 2026 09:45:43 -0800
+Subject: [PATCH] afs: don't put an error pointer after a failed address lookup
+
+afs_vl_lookup_addrs() can return an error pointer when the VL server
+cannot supply addresses for a fileserver.  afs_lookup_server() saves the
+error and jumps to create_failed, but leaves the error pointer in alist.
+The common exit path passes it to afs_put_addrlist(), which dereferences
+it and oopses.
+
+This happened while mounting a local AFS volume: the VL_GetAddrsU address
+lookup failed and afs_vl_lookup_addrs() returned -ENOMEDIUM.  Clear alist
+after saving the error so the existing failure path can release the server
+record and return the error without trying to put a nonexistent address
+list.  A successful address lookup is still released by the common exit
+path.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Howells <dhowells@redhat.com>
+Cc: Marc Dionne <marc.dionne@auristor.com>
+
+ fs/afs/server.c |    1 +
+ 1 file changed, 1 insertion(+)
+---
+ fs/afs/server.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/fs/afs/server.c b/fs/afs/server.c
+index 189138bd6d712..9d790890c060d 100644
+--- a/fs/afs/server.c
++++ b/fs/afs/server.c
+@@ -229,6 +229,7 @@ struct afs_server *afs_lookup_server(struct afs_cell *cell, struct key *key,
+ 		alist = afs_vl_lookup_addrs(server, key);
+ 		if (IS_ERR(alist)) {
+ 			ret = PTR_ERR(alist);
++			alist = NULL;
+ 			goto create_failed;
+ 		}
+ 
+-- 
+2.47.3
+
