@@ -1,0 +1,204 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Fri, 13 Nov 2026 21:45:29 +0000
+Subject: [PATCH] percpu: fix contig hints that are too low
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pcpu_find_block_fit() skips a chunk or block whose contig_hint is too
+small for the request, so a contig_hint must never be smaller than the
+largest free area.
+
+If it is, atomic and reserved chunk allocations can fail spuriously, and
+others can create a chunk which is not needed.
+
+There are three ways in which this can happen:
+
+Firstly, when an allocation breaks a contig_hint, both
+pcpu_block_refresh_hint() and pcpu_chunk_refresh_hint() promote the
+scan_hint to contig_hint and scan only what follows it. However a free
+can set the scan_hint regardless of what precedes it:
+
+    free areas    A = 10 bits, then C = 50 bits
+    hints         contig_hint = C
+                  scan_hint = 0, cleared by an earlier allocation
+    free B        5 bits between A and C: scan_hint = B
+    allocate C    contig_hint = B, the scan starts after B
+    result        contig_hint = 5, but A has 10 bits
+
+Secondly, when a free stays within one block,
+pcpu_block_update_hint_free() passes the end of the free area to the
+chunk hints as a block offset rather than a chunk offset, so in any block
+but the first the chunk hints are not updated at all.
+
+Thirdly, that free area stops at the block boundary, even if the free
+bits continue into a neighbouring block.
+
+Fix these by always rescanning when a contig_hint is broken, passing the
+correct offset, and refreshing the chunk hints whenever a free area
+reaches a block boundary.
+
+Link: https://patch.msgid.link/20261113-mason-migrate-et-al-fixes-v2-11-50a2ed382b61@kernel.org
+Fixes: da3afdd5bb54 ("percpu: use block scan_hint to only scan forward")
+Fixes: 92c14cab4326 ("percpu: convert chunk hints to be based on pcpu_block_md")
+Fixes: d33d9f3dd96b ("percpu: use chunk scan_hint to skip some scanning")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Jérôme Glisse <jglisse@redhat.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Yu, Yu-cheng <yu-cheng.yu@intel.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Peng Fan <peng.fan@nxp.com>
+Cc: Josef Bacik <jbacik@fb.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Dennis Zhou (Facebook) <dennisszhou@gmail.com>
+Cc: Rick Edgecombe <rick.p.edgecombe@intel.com>
+Cc: Chris Down <chris@chrisdown.name>
+
+ mm/percpu.c |   59 +++++++++++---------------------------------------
+ 1 file changed, 13 insertions(+), 46 deletions(-)
+---
+ mm/percpu.c | 59 ++++++++++++-----------------------------------------
+ 1 file changed, 13 insertions(+), 46 deletions(-)
+
+diff --git a/mm/percpu.c b/mm/percpu.c
+index 9308d9b32a27a..ddcc1e24523ef 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -733,30 +733,16 @@ static void pcpu_block_update_scan(struct pcpu_chunk *chunk, int bit_off,
+ /**
+  * pcpu_chunk_refresh_hint - updates metadata about a chunk
+  * @chunk: chunk of interest
+- * @full_scan: if we should scan from the beginning
+  *
+  * Iterates over the metadata blocks to find the largest contig area.
+- * A full scan can be avoided on the allocation path as this is triggered
+- * if we broke the contig_hint.  In doing so, the scan_hint will be before
+- * the contig_hint or after if the scan_hint == contig_hint.  This cannot
+- * be prevented on freeing as we want to find the largest area possibly
+- * spanning blocks.
+  */
+-static void pcpu_chunk_refresh_hint(struct pcpu_chunk *chunk, bool full_scan)
++static void pcpu_chunk_refresh_hint(struct pcpu_chunk *chunk)
+ {
+ 	struct pcpu_block_md *chunk_md = &chunk->chunk_md;
+-	int bit_off, bits;
++	int bit_off = chunk_md->first_free, bits;
+ 
+-	/* promote scan_hint to contig_hint */
+-	if (!full_scan && chunk_md->scan_hint) {
+-		bit_off = chunk_md->scan_hint_start + chunk_md->scan_hint;
+-		chunk_md->contig_hint_start = chunk_md->scan_hint_start;
+-		chunk_md->contig_hint = chunk_md->scan_hint;
+-		chunk_md->scan_hint = 0;
+-	} else {
+-		bit_off = chunk_md->first_free;
+-		chunk_md->contig_hint = 0;
+-	}
++	chunk_md->contig_hint = 0;
++	chunk_md->scan_hint = 0;
+ 
+ 	pcpu_for_each_md_free_region(chunk, bit_off, bits)
+ 		pcpu_block_update(chunk_md, bit_off, bit_off + bits);
+@@ -774,19 +760,10 @@ static void pcpu_block_refresh_hint(struct pcpu_chunk *chunk, int index)
+ {
+ 	struct pcpu_block_md *block = chunk->md_blocks + index;
+ 	unsigned long *alloc_map = pcpu_index_alloc_map(chunk, index);
+-	unsigned int start, end;	/* region start, region end */
+-
+-	/* promote scan_hint to contig_hint */
+-	if (block->scan_hint) {
+-		start = block->scan_hint_start + block->scan_hint;
+-		block->contig_hint_start = block->scan_hint_start;
+-		block->contig_hint = block->scan_hint;
+-		block->scan_hint = 0;
+-	} else {
+-		start = block->first_free;
+-		block->contig_hint = 0;
+-	}
++	unsigned int start = block->first_free, end;
+ 
++	block->contig_hint = 0;
++	block->scan_hint = 0;
+ 	block->right_free = 0;
+ 
+ 	/* iterate over free areas and update the contig hints */
+@@ -938,7 +915,7 @@ static void pcpu_block_update_hint_alloc(struct pcpu_chunk *chunk, int bit_off,
+ 				chunk_md->contig_hint,
+ 				bit_off,
+ 				bit_off + bits))
+-		pcpu_chunk_refresh_hint(chunk, false);
++		pcpu_chunk_refresh_hint(chunk);
+ }
+ 
+ /**
+@@ -952,12 +929,8 @@ static void pcpu_block_update_hint_alloc(struct pcpu_chunk *chunk, int bit_off,
+  * forward and backward to determine the extent of the free area.  This is
+  * capped at the boundary of blocks.
+  *
+- * A chunk update is triggered if a page becomes free, a block becomes free,
+- * or the free spans across blocks.  This tradeoff is to minimize iterating
+- * over the block metadata to update chunk_md->contig_hint.
+- * chunk_md->contig_hint may be off by up to a page, but it will never be more
+- * than the available space.  If the contig hint is contained in one block, it
+- * will be accurate.
++ * The chunk metadata is refreshed if the free area reaches a block boundary,
++ * as it may then extend into neighbouring blocks.
+  */
+ static void pcpu_block_update_hint_free(struct pcpu_chunk *chunk, int bit_off,
+ 					int bits)
+@@ -1042,18 +1015,12 @@ static void pcpu_block_update_hint_free(struct pcpu_chunk *chunk, int bit_off,
+ 	if (nr_empty_pages)
+ 		pcpu_update_empty_pages(chunk, nr_empty_pages);
+ 
+-	/*
+-	 * Refresh chunk metadata when the free makes a block free or spans
+-	 * across blocks.  The contig_hint may be off by up to a page, but if
+-	 * the contig_hint is contained in a block, it will be accurate with
+-	 * the else condition below.
+-	 */
+-	if (((end - start) >= PCPU_BITMAP_BLOCK_BITS) || s_index != e_index)
+-		pcpu_chunk_refresh_hint(chunk, true);
++	if (!start || end == PCPU_BITMAP_BLOCK_BITS || s_index != e_index)
++		pcpu_chunk_refresh_hint(chunk);
+ 	else
+ 		pcpu_block_update(&chunk->chunk_md,
+ 				  pcpu_block_off_to_off(s_index, start),
+-				  end);
++				  pcpu_block_off_to_off(s_index, end));
+ }
+ 
+ /**
+-- 
+2.47.3
+

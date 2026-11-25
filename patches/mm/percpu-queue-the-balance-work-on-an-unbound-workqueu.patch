@@ -1,0 +1,117 @@
+From: Chris Mason <mason@kernel.org>
+Date: Fri, 13 Nov 2026 21:45:31 +0000
+Subject: [PATCH] percpu: queue the balance work on an unbound workqueue
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A burst of small atomic per-CPU allocations can fail with -ENOMEM while the
+machine has free memory and idle CPUs, as atomic per-CPU allocations are
+only served from pages that are already populated, and those can be used up
+before a worker gets to populate more.
+
+Consider:
+
+    caller on CPU 1                     kworker bound to CPU 1
+    ===============                     ======================
+    allocates 8 bytes, which leaves
+    one empty page and 4088 bytes
+      schedule_work()                   woken, waits for CPU 1
+    allocates 8 bytes, 1023 times
+    next allocation: "no space left"
+    gives up CPU 1                      populates pages
+
+The allocator keeps a few empty populated pages in reserve, and the work
+item pcpu_balance_work refills them.
+
+pcpu_alloc_noprof() queues the work item using schedule_work(), so only a
+worker bound to the CPU of the caller can run the work item.
+
+The issue is that the caller keeps that CPU - a task keeps it for the rest
+of its time slice, and a softirq keeps it until the softirq ends.
+
+In that time the caller can use up the reserve, resulting in an atomic
+per-CPU allocation failing.
+
+Fix the issue by queueing the work item on an unbound workqueue so that
+another CPU can populate pages while the caller keeps allocating.
+
+Gregory Price hammered atomic per-CPU allocations from one CPU with
+preemption disabled for about a second, with and without this series:
+
+                           Before     After
+    Successful allocs       1,188   131,072
+    Failed allocs           4,097         0
+    Balance worker runs         0       169
+    Successful retries          0     4,096
+
+[ljs@kernel.org: tweaked commit message, comment]
+Link: https://patch.msgid.link/20261113-mason-migrate-et-al-fixes-v2-13-50a2ed382b61@kernel.org
+Fixes: 1a4d76076cda ("percpu: implement asynchronous chunk population")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Jérôme Glisse <jglisse@redhat.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Yu, Yu-cheng <yu-cheng.yu@intel.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Peng Fan <peng.fan@nxp.com>
+Cc: Josef Bacik <jbacik@fb.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Dennis Zhou (Facebook) <dennisszhou@gmail.com>
+Cc: Rick Edgecombe <rick.p.edgecombe@intel.com>
+
+ mm/percpu.c |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+---
+ mm/percpu.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mm/percpu.c b/mm/percpu.c
+index beaef57b7188c..2e67d7c26e2f9 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -200,8 +200,9 @@ static bool pcpu_atomic_alloc_failed;
+ 
+ static void pcpu_schedule_balance_work(void)
+ {
++	/* Unbound, so another CPU can populate pgs if caller keeps this one. */
+ 	if (pcpu_async_enabled)
+-		schedule_work(&pcpu_balance_work);
++		queue_work(system_dfl_wq, &pcpu_balance_work);
+ }
+ 
+ /**
+-- 
+2.47.3
+

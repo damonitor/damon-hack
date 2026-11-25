@@ -1,0 +1,120 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:54 +0000
+Subject: [PATCH] misc: bcm-vk: convert mmap hook to mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move from the deprecated mmap hook to the new mmap_prepare hook, using the
+I/O PFN remap mmap action to map the BAR.
+
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-11-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Andrew Jeffery <andrew@codeconstruct.com.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+
+ drivers/misc/bcm-vk/bcm_vk_dev.c |   22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+---
+ drivers/misc/bcm-vk/bcm_vk_dev.c | 20 ++++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/misc/bcm-vk/bcm_vk_dev.c b/drivers/misc/bcm-vk/bcm_vk_dev.c
+index 88ee3a417616d..25a2b46ebad91 100644
+--- a/drivers/misc/bcm-vk/bcm_vk_dev.c
++++ b/drivers/misc/bcm-vk/bcm_vk_dev.c
+@@ -1201,9 +1201,9 @@ static long bcm_vk_reset(struct bcm_vk *vk, struct vk_reset __user *arg)
+ 	return ret;
+ }
+ 
+-static int bcm_vk_mmap(struct file *file, struct vm_area_struct *vma)
++static int bcm_vk_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	struct bcm_vk_ctx *ctx = file->private_data;
++	struct bcm_vk_ctx *ctx = desc->file->private_data;
+ 	struct bcm_vk *vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
+ 	unsigned long pg_size;
+ 
+@@ -1212,16 +1212,16 @@ static int bcm_vk_mmap(struct file *file, struct vm_area_struct *vma)
+ 
+ 	pg_size = ((pci_resource_len(vk->pdev, VK_MMAPABLE_BAR) - 1)
+ 		    >> PAGE_SHIFT) + 1;
+-	if (vma->vm_pgoff + vma_pages(vma) > pg_size)
++	if (desc->pgoff + vma_desc_pages(desc) > pg_size)
+ 		return -EINVAL;
+ 
+-	vma->vm_pgoff += (pci_resource_start(vk->pdev, VK_MMAPABLE_BAR)
+-			  >> PAGE_SHIFT);
+-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++	desc->pgoff += (pci_resource_start(vk->pdev, VK_MMAPABLE_BAR)
++			>> PAGE_SHIFT);
++	desc->page_prot = pgprot_noncached(desc->page_prot);
++
++	mmap_action_ioremap_full(desc, desc->pgoff);
+ 
+-	return io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+-				  vma->vm_end - vma->vm_start,
+-				  vma->vm_page_prot);
++	return 0;
+ }
+ 
+ static long bcm_vk_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+@@ -1262,7 +1262,7 @@ static const struct file_operations bcm_vk_fops = {
+ 	.write = bcm_vk_write,
+ 	.poll = bcm_vk_poll,
+ 	.release = bcm_vk_release,
+-	.mmap = bcm_vk_mmap,
++	.mmap_prepare = bcm_vk_mmap_prepare,
+ 	.unlocked_ioctl = bcm_vk_ioctl,
+ };
+ 
+-- 
+2.47.3
+

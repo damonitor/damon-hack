@@ -1,0 +1,275 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:47 -0500
+Subject: [PATCH] mm/mremap: resolve uffd state when the context is dropped,
+ not during the move
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without UFFD_FEATURE_EVENT_REMAP, the new VMA of an mremap() is not
+registered with userfaultfd, so the uffd state of its entries is cleared
+while they are moved. If the move fails halfway, the entries are moved
+back into the old VMA, which is still registered, without their uffd
+state. Writes and accesses to them are then no longer reported.
+
+To fix it, leave the entries alone during the move and clear the uffd
+state of the new VMA in mremap_userfaultfd_prep(), right before dropping
+the context, like unregistering does. This walks the page tables of the
+new VMA a second time.
+
+This is done with userfaultfd_clear_ptes(), which also makes the PTEs
+writable again where that is safe. That removes a spurious write fault
+per protected page on private anonymous memory, but adds spurious write
+faults on shmem and hugetlb, as change_protection() makes writable pages
+that were never protected read-only. UFFDIO_UNREGISTER and
+UFFDIO_WRITEPROTECT already behave this way. This will be fixed in
+change_protection() separately.
+
+The entries no longer need per-entry handling during the move, so drop
+uffd_supports_page_table_move() and clear_uffd_wp_pmd(). Whole page
+tables of these VMAs can be moved again.
+
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-7-b617009d1a4a@columbia.edu
+Fixes: 0cef0bb836e3 ("mm: clear uffd-wp PTE/PMD state on mremap()")
+Fixes: 763f43865fc4 ("mm: preserve RWP marker across PTE rewrites")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Reviewed-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: Breno Leitao <leitao@debian.org>
+
+ mm/huge_memory.c |   25 ------------------------
+ mm/hugetlb.c     |   27 --------------------------
+ mm/mremap.c      |   46 ---------------------------------------------
+ mm/userfaultfd.c |    1
+ 4 files changed, 3 insertions(+), 96 deletions(-)
+---
+ mm/huge_memory.c | 25 -------------------------
+ mm/hugetlb.c     | 27 +--------------------------
+ mm/mremap.c      | 46 +---------------------------------------------
+ mm/userfaultfd.c |  1 +
+ 4 files changed, 3 insertions(+), 96 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 21552377a34f1..b4a41ce4f4904 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2634,18 +2634,6 @@ static pmd_t move_soft_dirty_pmd(pmd_t pmd)
+ 	return pmd;
+ }
+ 
+-static pmd_t clear_uffd_wp_pmd(pmd_t pmd)
+-{
+-	if (pmd_none(pmd))
+-		return pmd;
+-	if (pmd_present(pmd))
+-		pmd = pmd_clear_uffd(pmd);
+-	else
+-		pmd = pmd_swp_clear_uffd(pmd);
+-
+-	return pmd;
+-}
+-
+ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
+ 		  unsigned long new_addr, pmd_t *old_pmd, pmd_t *new_pmd)
+ {
+@@ -2681,19 +2669,6 @@ bool move_huge_pmd(struct vm_area_struct *vma, unsigned long old_addr,
+ 			pgtable_trans_huge_deposit(mm, new_pmd, pgtable);
+ 		}
+ 		pmd = move_soft_dirty_pmd(pmd);
+-		if (vma_has_uffd_without_event_remap(vma)) {
+-			/*
+-			 * See __copy_present_ptes(): normalise the RWP marker
+-			 * so the destination starts accessible instead of
+-			 * taking a numa-hinting fault on first access. Only the
+-			 * marker (protnone + uffd) needs it; leave other present
+-			 * PMDs in the VMA untouched.
+-			 */
+-			if (pmd_present(pmd) && userfaultfd_rwp(vma) &&
+-			    pmd_uffd(pmd))
+-				pmd = pmd_modify(pmd, vma->vm_page_prot);
+-			pmd = clear_uffd_wp_pmd(pmd);
+-		}
+ 		set_pmd_at(mm, new_addr, new_pmd, pmd);
+ 		if (force_flush)
+ 			flush_pmd_tlb_range(vma, old_addr, old_addr + PMD_SIZE);
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index b2c14f4f99b7c..15f06a98f7dfb 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5189,7 +5189,6 @@ static void move_huge_pte(struct vm_area_struct *vma, unsigned long old_addr,
+ 			  unsigned long new_addr, pte_t *src_pte, pte_t *dst_pte,
+ 			  unsigned long sz)
+ {
+-	bool need_clear_uffd_wp = vma_has_uffd_without_event_remap(vma);
+ 	struct hstate *h = hstate_vma(vma);
+ 	struct mm_struct *mm = vma->vm_mm;
+ 	spinlock_t *src_ptl, *dst_ptl;
+@@ -5200,31 +5199,7 @@ static void move_huge_pte(struct vm_area_struct *vma, unsigned long old_addr,
+ 	double_pt_lock(dst_ptl, src_ptl);
+ 
+ 	pte = huge_ptep_get_and_clear(mm, old_addr, src_pte, sz);
+-
+-	if (need_clear_uffd_wp && pte_is_uffd_wp_marker(pte)) {
+-		huge_pte_clear(mm, new_addr, dst_pte, sz);
+-	} else {
+-		if (need_clear_uffd_wp) {
+-			if (pte_present(pte)) {
+-				/*
+-				 * See __copy_present_ptes(): normalise the RWP
+-				 * marker so the destination starts accessible
+-				 * instead of taking a numa-hinting fault on
+-				 * first access. Only the marker (protnone + uffd)
+-				 * needs it; leave other present PTEs untouched.
+-				 */
+-				if (userfaultfd_rwp(vma) && huge_pte_uffd(pte)) {
+-					pte = huge_pte_modify(pte, vma->vm_page_prot);
+-					pte = arch_make_huge_pte(pte, huge_page_shift(h),
+-								 vma->vm_flags);
+-				}
+-				pte = huge_pte_clear_uffd(pte);
+-			} else {
+-				pte = pte_swp_clear_uffd(pte);
+-			}
+-		}
+-		set_huge_pte_at(mm, new_addr, dst_pte, pte, sz);
+-	}
++	set_huge_pte_at(mm, new_addr, dst_pte, pte, sz);
+ 
+ 	double_pt_unlock(dst_ptl, src_ptl);
+ }
+diff --git a/mm/mremap.c b/mm/mremap.c
+index a5fb94443b00b..84a499e757627 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -199,7 +199,6 @@ static int move_ptes(struct pagetable_move_control *pmc,
+ 		unsigned long extent, pmd_t *old_pmd, pmd_t *new_pmd)
+ {
+ 	struct vm_area_struct *vma = pmc->old;
+-	bool need_clear_uffd_wp = vma_has_uffd_without_event_remap(vma);
+ 	struct mm_struct *mm = vma->vm_mm;
+ 	pte_t *old_ptep, *new_ptep;
+ 	pte_t old_pte, pte;
+@@ -291,27 +290,7 @@ static int move_ptes(struct pagetable_move_control *pmc,
+ 		pte = get_and_clear_ptes(mm, old_addr, old_ptep, nr_ptes);
+ 		pte = move_pte(pte, old_addr, new_addr);
+ 		pte = move_soft_dirty_pte(pte);
+-
+-		if (need_clear_uffd_wp && pte_is_uffd_wp_marker(pte))
+-			pte_clear(mm, new_addr, new_ptep);
+-		else {
+-			if (need_clear_uffd_wp) {
+-				if (pte_present(pte)) {
+-					/*
+-					 * See __copy_present_ptes(): normalise
+-					 * RWP PTEs so the destination starts
+-					 * accessible instead of taking a
+-					 * numa-hinting fault on first access.
+-					 */
+-					if (userfaultfd_rwp(vma) && pte_uffd(pte))
+-						pte = pte_modify(pte, vma->vm_page_prot);
+-					pte = pte_clear_uffd(pte);
+-				} else {
+-					pte = pte_swp_clear_uffd(pte);
+-				}
+-			}
+-			set_ptes(mm, new_addr, new_ptep, pte, nr_ptes);
+-		}
++		set_ptes(mm, new_addr, new_ptep, pte, nr_ptes);
+ 	}
+ 
+ 	lazy_mmu_mode_disable();
+@@ -335,25 +314,6 @@ static inline bool arch_supports_page_table_move(void)
+ }
+ #endif
+ 
+-static inline bool uffd_supports_page_table_move(struct pagetable_move_control *pmc)
+-{
+-	/*
+-	 * If we are moving a VMA that has uffd-wp registered but with
+-	 * remap events disabled (new VMA will not be registered with uffd), we
+-	 * need to ensure that the uffd-wp state is cleared from all pgtables.
+-	 * This means recursing into lower page tables in move_page_tables().
+-	 *
+-	 * We might get called with VMAs reversed when recovering from a
+-	 * failed page table move. In that case, the
+-	 * "old"-but-actually-"originally new" VMA during recovery will not have
+-	 * a uffd context. Recursing into lower page tables during the original
+-	 * move but not during the recovery move will cause trouble, because we
+-	 * run into already-existing page tables. So check both VMAs.
+-	 */
+-	return !vma_has_uffd_without_event_remap(pmc->old) &&
+-	       !vma_has_uffd_without_event_remap(pmc->new);
+-}
+-
+ #ifdef CONFIG_HAVE_MOVE_PMD
+ static bool move_normal_pmd(struct pagetable_move_control *pmc,
+ 			pmd_t *old_pmd, pmd_t *new_pmd)
+@@ -366,8 +326,6 @@ static bool move_normal_pmd(struct pagetable_move_control *pmc,
+ 
+ 	if (!arch_supports_page_table_move())
+ 		return false;
+-	if (!uffd_supports_page_table_move(pmc))
+-		return false;
+ 	/*
+ 	 * The destination pmd shouldn't be established, free_pgtables()
+ 	 * should have released it.
+@@ -435,8 +393,6 @@ static bool move_normal_pud(struct pagetable_move_control *pmc,
+ 
+ 	if (!arch_supports_page_table_move())
+ 		return false;
+-	if (!uffd_supports_page_table_move(pmc))
+-		return false;
+ 	/*
+ 	 * The destination pud shouldn't be established, free_pgtables()
+ 	 * should have released it.
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index a87eac3498fc5..62be1a8d019c1 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -3179,6 +3179,7 @@ void mremap_userfaultfd_prep(struct vm_area_struct *vma,
+ 		up_write(&ctx->map_changing_lock);
+ 	} else {
+ 		/* Drop uffd context if remap feature not enabled */
++		userfaultfd_clear_ptes(vma, vma->vm_start, vma->vm_end);
+ 		userfaultfd_reset_ctx(vma);
+ 	}
+ }
+-- 
+2.47.3
+

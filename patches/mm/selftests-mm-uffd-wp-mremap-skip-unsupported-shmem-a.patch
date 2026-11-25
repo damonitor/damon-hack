@@ -1,0 +1,89 @@
+From: Kalesh Singh <kaleshsingh@google.com>
+Date: Sun, 22 Nov 2026 08:20:17 +0000
+Subject: [PATCH] selftests/mm: uffd-wp-mremap: skip unsupported shmem and
+ hugetlb cases
+
+Patch series "selftests/mm: fix userfaultfd tests with
+CONFIG_PTE_MARKER_UFFD_WP=n".
+
+With CONFIG_PTE_MARKER_UFFD_WP=n, userfaultfd write protection only works
+on anonymous memory.  uffd-wp-mremap then fails its shmem and hugetlb
+cases, and uffd-unit-tests skips anonymous runs that would pass.  Patch 1
+skips the unsupported uffd-wp-mremap cases and patch 2 filters
+uffd-unit-tests' required features per memory type.
+
+Tested on arm64 device: with CONFIG_PTE_MARKER_UFFD_WP=n,
+uffd-wp-mremap goes from 26 failures to none and uffd-unit-tests
+passes 78 tests instead of 70; with =y, the results are unchanged.
+
+
+This patch (of 2):
+
+uffd-wp-mremap checks only for UFFD_FEATURE_PAGEFAULT_FLAG_WP before it
+runs. With CONFIG_PTE_MARKER_UFFD_WP=n the kernel keeps that feature
+but supports write protection on anonymous memory only, so the shmem
+and hugetlb cases fail with EINVAL from UFFDIO_REGISTER instead of
+skipping. Skip them when UFFD_FEATURE_WP_HUGETLBFS_SHMEM is missing.
+
+Link: https://lore.kernel.org/20261122082020.1255434-1-kaleshsingh@google.com
+Link: https://patch.msgid.link/20261122082020.1255434-2-kaleshsingh@google.com
+Fixes: b2466bb3b495 ("selftests/mm: introduce uffd-wp-mremap regression test")
+Signed-off-by: Kalesh Singh <kaleshsingh@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Liam R. Howlett (Google) <liam@infradead.org>
+Cc: Lokesh Gidra <lokeshgidra@google.com>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+
+ tools/testing/selftests/mm/uffd-wp-mremap.c |   13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+---
+ tools/testing/selftests/mm/uffd-wp-mremap.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/tools/testing/selftests/mm/uffd-wp-mremap.c b/tools/testing/selftests/mm/uffd-wp-mremap.c
+index a57044069581f..6591410e6b432 100644
+--- a/tools/testing/selftests/mm/uffd-wp-mremap.c
++++ b/tools/testing/selftests/mm/uffd-wp-mremap.c
+@@ -18,15 +18,14 @@ static int nr_thpsizes;
+ static unsigned long thpsizes[20];
+ static int nr_hugetlbsizes;
+ static unsigned long hugetlbsizes[10];
++static uint64_t uffd_features;
+ 
+ static void check_uffd_wp_feature_supported(void)
+ {
+-	uint64_t features = 0;
+-
+-	if (uffd_get_features(&features))
++	if (uffd_get_features(&uffd_features))
+ 		ksft_exit_skip("failed to get available features (%d)\n", errno);
+ 
+-	if (!(features & UFFD_FEATURE_PAGEFAULT_FLAG_WP))
++	if (!(uffd_features & UFFD_FEATURE_PAGEFAULT_FLAG_WP))
+ 		ksft_exit_skip("uffd-wp feature not supported\n");
+ }
+ 
+@@ -180,6 +179,12 @@ static void test_one_folio(uffd_global_test_opts_t *gopts, size_t size, bool pri
+ 				swapout ? "true" : "false",
+ 				hugetlb ? "true" : "false");
+ 
++	if ((!private || hugetlb) &&
++	    !(uffd_features & UFFD_FEATURE_WP_HUGETLBFS_SHMEM)) {
++		ksft_test_result_skip("uffd-wp on shmem and hugetlbfs is not supported\n");
++		return;
++	}
++
+ 	/* Allocate a folio of required size and type. */
+ 	mem = alloc_one_folio(size, private, hugetlb);
+ 	if (!mem) {
+-- 
+2.47.3
+

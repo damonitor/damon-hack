@@ -1,0 +1,142 @@
+From: Chris Mason <mason@kernel.org>
+Date: Fri, 13 Nov 2026 21:45:20 +0000
+Subject: [PATCH] mm: cachestat: count each page only once
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+It turns out that filemap_cachestat() can unwittingly return incorrect
+page counts, if large folios are present.
+
+This can occur due to underflow - nr_cache is nearly 2^64 on a 64-bit
+kernel if the input range starts more than 64 pages into a folio that is
+split during the call.
+
+It can also occur due to pages after a large folio being skipped if the
+range starts in its second or later XArray slot and the call reschedules at
+that folio.
+
+Finally it can be caused by pages being counted twice due to folios in the
+range being split or collapsed during the call.
+
+filemap_cachestat() walks the page cache under the RCU read lock only,
+and for each entry it counts the pages that lie in the range. It does
+not track how far it has counted, so the counts are only right if the
+walk returns each index once.
+
+But a large folio can be split during the walk, or small folios can be
+collapsed into a large one, and the next entries then cover indices that
+were already counted.
+
+Resolve the issue by tracking the current index as one past the last index
+in the folio, and explicitly using xas_set() to set the current position in
+the XArray.
+
+Additionally, add a check for folio_last_index reaching or exceeding
+last_index and break out of the loop if so.
+
+[ljs@kernel.org: updated to use curr_index, fixed comments, updated commit message]
+Link: https://patch.msgid.link/20261113-mason-migrate-et-al-fixes-v2-2-50a2ed382b61@kernel.org
+Fixes: cf264e1329fb ("cachestat: implement cachestat syscall")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Tested-by: Chris Down <chris@chrisdown.name>
+  Link: https://lore.kernel.org/20261114115635.8346206195d50372@chrisdown.name
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Jérôme Glisse <jglisse@redhat.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Yu, Yu-cheng <yu-cheng.yu@intel.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Peng Fan <peng.fan@nxp.com>
+Cc: Josef Bacik <jbacik@fb.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Dennis Zhou (Facebook) <dennisszhou@gmail.com>
+Cc: Rick Edgecombe <rick.p.edgecombe@intel.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/filemap.c |   16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+---
+ mm/filemap.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index dc0ceaa58a0f7..ca1c6277bf3a7 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -4665,6 +4665,7 @@ static void filemap_cachestat(struct address_space *mapping,
+ {
+ 	XA_STATE(xas, &mapping->i_pages, first_index);
+ 	struct folio *folio;
++	pgoff_t curr_index = first_index;
+ 
+ 	/* Flush stats (and potentially sleep) outside the RCU read section. */
+ 	mem_cgroup_flush_stats_ratelimited(NULL);
+@@ -4694,13 +4695,19 @@ static void filemap_cachestat(struct address_space *mapping,
+ 		folio_first_index = round_down(xas.xa_index, 1 << order);
+ 		folio_last_index = folio_first_index + nr_pages - 1;
+ 
++		/* Skip already counted entries, e.g. after a split/collapse. */
++		if (folio_last_index < curr_index)
++			goto resched;
++
+ 		/* Folios might straddle the range boundaries, only count covered pages */
+-		if (folio_first_index < first_index)
+-			nr_pages -= first_index - folio_first_index;
++		if (folio_first_index < curr_index)
++			nr_pages -= curr_index - folio_first_index;
+ 
+ 		if (folio_last_index > last_index)
+ 			nr_pages -= folio_last_index - last_index;
+ 
++		curr_index = folio_last_index + 1;
++
+ 		if (xa_is_value(folio)) {
+ 			/* page is evicted */
+ 			void *shadow = (void *)folio;
+@@ -4748,8 +4755,11 @@ static void filemap_cachestat(struct address_space *mapping,
+ 			cs->nr_writeback += nr_pages;
+ 
+ resched:
++		if (folio_last_index >= last_index)
++			break;
++
+ 		if (need_resched()) {
+-			xas_pause(&xas);
++			xas_set(&xas, curr_index);
+ 			cond_resched_rcu();
+ 		}
+ 	}
+-- 
+2.47.3
+

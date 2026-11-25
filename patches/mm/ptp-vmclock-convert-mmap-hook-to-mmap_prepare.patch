@@ -1,0 +1,122 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:55 +0000
+Subject: [PATCH] ptp: vmclock: convert mmap hook to mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move from the deprecated mmap hook to the new mmap_prepare hook, using the
+I/O PFN remap mmap action to map the clock page and retaining the -EAGAIN
+error on failure via the action error override.
+
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-12-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: David Woodhouse <dwmw@amazon.co.uk>
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Andrew Jeffery <andrew@codeconstruct.com.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: David Woodhouse <dwmw2@infradead.org>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+
+ drivers/ptp/ptp_vmclock.c |   19 +++++++++----------
+ 1 file changed, 9 insertions(+), 10 deletions(-)
+---
+ drivers/ptp/ptp_vmclock.c | 19 +++++++++----------
+ 1 file changed, 9 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/ptp/ptp_vmclock.c b/drivers/ptp/ptp_vmclock.c
+index 7f25fe6c2ce2a..6a1d5f40a5661 100644
+--- a/drivers/ptp/ptp_vmclock.c
++++ b/drivers/ptp/ptp_vmclock.c
+@@ -364,27 +364,26 @@ struct vmclock_file_state {
+ 	atomic_t seq;
+ };
+ 
+-static int vmclock_miscdev_mmap(struct file *fp, struct vm_area_struct *vma)
++static int vmclock_miscdev_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	struct vmclock_file_state *fst = fp->private_data;
++	struct vmclock_file_state *fst = desc->file->private_data;
+ 	struct vmclock_state *st = fst->st;
+ 
+-	if ((vma->vm_flags & (VM_READ|VM_WRITE)) != VM_READ)
++	if (!vma_desc_test(desc, VMA_READ_BIT) ||
++	    vma_desc_test(desc, VMA_WRITE_BIT))
+ 		return -EROFS;
+ 
+ 	/*
+ 	 * Restrict the read-only mapping so it cannot be upgraded to
+ 	 * writable later with mprotect().
+ 	 */
+-	vm_flags_clear(vma, VM_MAYWRITE);
++	vma_desc_clear_flags(desc, VMA_MAYWRITE_BIT);
+ 
+-	if (vma->vm_end - vma->vm_start != PAGE_SIZE || vma->vm_pgoff)
++	if (vma_desc_size(desc) != PAGE_SIZE || desc->pgoff)
+ 		return -EINVAL;
+ 
+-	if (io_remap_pfn_range(vma, vma->vm_start,
+-			       st->res.start >> PAGE_SHIFT, PAGE_SIZE,
+-			       vma->vm_page_prot))
+-		return -EAGAIN;
++	mmap_action_ioremap_full(desc, st->res.start >> PAGE_SHIFT);
++	desc->action.error_override = -EAGAIN;
+ 
+ 	return 0;
+ }
+@@ -484,7 +483,7 @@ static const struct file_operations vmclock_miscdev_fops = {
+ 	.owner = THIS_MODULE,
+ 	.open = vmclock_miscdev_open,
+ 	.release = vmclock_miscdev_release,
+-	.mmap = vmclock_miscdev_mmap,
++	.mmap_prepare = vmclock_miscdev_mmap_prepare,
+ 	.read = vmclock_miscdev_read,
+ 	.poll = vmclock_miscdev_poll,
+ };
+-- 
+2.47.3
+

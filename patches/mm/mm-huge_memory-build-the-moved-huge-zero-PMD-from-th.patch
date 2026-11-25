@@ -1,0 +1,96 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:46 -0500
+Subject: [PATCH] mm/huge_memory: build the moved huge zero PMD from the
+ destination VMA
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+move_pages_huge_pmd() builds the destination PMD for the huge zero page
+by copying the source PMD and clearing its uffd bit, so the destination
+keeps the protection of the source.
+
+A source VMA registered for RWP can map the huge zero page with a
+PAGE_NONE PMD, and UFFDIO_MOVE does not check how the source is
+registered. The destination then gets a PAGE_NONE PMD without the uffd
+bit, although nothing asked for that in the destination VMA.
+
+The next access fixes it up through the NUMA hinting fault path. Until
+then, the first access to the destination takes a spurious fault and GUP
+has to take the fault path. The impact on userspace is small.
+
+The moved entry must have the protection of the destination VMA. To fix
+it, build the entry from the vm_page_prot of the destination VMA, as
+move_zeropage_pte() does for the small zero page, and keep marking it
+soft-dirty. A destination VMA registered for RWP still gets its PMD
+re-armed afterwards.
+
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-6-b617009d1a4a@columbia.edu
+Fixes: 763f43865fc4 ("mm: preserve RWP marker across PTE rewrites")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Kiryl Shutsemau (Meta) <kas@kernel.org>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: Breno Leitao <leitao@debian.org>
+
+ mm/huge_memory.c |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+---
+ mm/huge_memory.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index fa9f6d21e786a..21552377a34f1 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2999,9 +2999,9 @@ int move_pages_huge_pmd(struct mm_struct *mm, pmd_t *dst_pmd, pmd_t *src_pmd, pm
+ 		/* Follow mremap() behavior and treat the entry dirty after the move */
+ 		_dst_pmd = pmd_mkwrite(pmd_mkdirty(_dst_pmd), dst_vma);
+ 	} else {
+-		src_pmdval = pmdp_huge_clear_flush(src_vma, src_addr, src_pmd);
+-		_dst_pmd = move_soft_dirty_pmd(src_pmdval);
+-		_dst_pmd = clear_uffd_wp_pmd(_dst_pmd);
++		pmdp_huge_clear_flush(src_vma, src_addr, src_pmd);
++		_dst_pmd = folio_mk_pmd(huge_zero_folio, dst_vma->vm_page_prot);
++		_dst_pmd = move_soft_dirty_pmd(pmd_mkspecial(_dst_pmd));
+ 	}
+ 
+ 	/* Re-arm RWP on the moved PMD if dst_vma is RWP-registered. */
+-- 
+2.47.3
+

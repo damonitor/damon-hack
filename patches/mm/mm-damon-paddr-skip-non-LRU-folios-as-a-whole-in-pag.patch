@@ -1,0 +1,68 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Tue, 24 Nov 2026 07:30:17 -0800
+Subject: [PATCH] mm/damon/paddr: skip non-LRU folios as a whole in pageout
+
+Patch series "mm/damon: improve efficiency (paddr, core), fix a selftest,
+add a kunit".
+
+Improve efficiency of DAMOS_PAGEOUT in paddr and apply_probes() in core
+by skipping unnecessary operations, via patches 1 and 2 from Aveline
+Noir.  Fix a selftest for a false positive failure, via patch 3 from
+Aveline Noir.  Add a kunit test for damon_call(), via patch 4 from
+Sailesh Nandanavanam.
+
+This is a batched reposting of separately posted and reviewed patches
+for being merged into the mm.git.  Refer to changelog on each patch for
+changes that were made before this reposting.
+
+
+This patch (of 4):
+
+damon_pa_pageout() uses damon_get_folio(), which rejects folios that are
+not on the LRU.  For a large non-LRU folio such as a hugetlb folio, the
+loop then looks up the same folio once per base page even though
+pageout cannot reclaim it.
+
+Use damon_get_monitor_folio() and skip any returned non-LRU folio as a
+whole by advancing to its end.  Do this before the filters, the
+accounting and the last_applied check, so that adjacent regions within
+the same non-LRU folio are not walked by base page either.
+
+In an x86-64 KVM pageout microbenchmark, traversal time dropped by
+about 99.7% for regions covering whole 2 MiB hugetlb folios. For
+4 KiB regions within hugetlb folios, traversal took about 1 ns more
+per region.
+
+Link: https://lore.kernel.org/20261124153021.90142-1-sj@kernel.org
+Link: https://patch.msgid.link/20261124153021.90142-2-sj@kernel.org
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Enze Li <lienze@kylinos.cn>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Sailesh Nandanavanam <saileshnandanavanam@gmail.com>
+
+ mm/damon/paddr.c |    4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+ mm/damon/paddr.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/damon/paddr.c b/mm/damon/paddr.c
+index 411e1d557ba3f..83bc173c30504 100644
+--- a/mm/damon/paddr.c
++++ b/mm/damon/paddr.c
+@@ -268,7 +268,9 @@ static unsigned long damon_pa_pageout(struct damon_region *r,
+ 
+ 	addr = damon_pa_phys_addr(r->ar.start, addr_unit);
+ 	while (addr < damon_pa_phys_addr(r->ar.end, addr_unit)) {
+-		folio = damon_get_folio(PHYS_PFN(addr));
++		folio = damon_get_monitor_folio(PHYS_PFN(addr));
++		if (folio && !folio_test_lru(folio))
++			goto put_folio;
+ 		if (damon_pa_invalid_damos_folio(folio, s)) {
+ 			addr += PAGE_SIZE;
+ 			continue;
+-- 
+2.47.3
+

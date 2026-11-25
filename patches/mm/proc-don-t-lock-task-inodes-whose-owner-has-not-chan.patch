@@ -1,0 +1,261 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Tue, 24 Nov 2026 15:50:00 -0800
+Subject: [PATCH] proc: don't lock task inodes whose owner has not changed
+
+"proc: serialize task owner lookup and inode updates" takes
+inode->i_lock on every lookup of a /proc/<pid> entry.  In a 64-vCPU
+guest that cost 67% of the stat() rate when 64 threads used
+/proc/thread-self/stat, 62% when 16 processes used one
+/proc/<pid>/status, and about 4% when 64 processes each used their own.
+
+The owner of these inodes is recomputed from the task on every lookup
+but it almost never changes.  So compare first, and take the lock only
+when there is something to store.  A lookup which finds the right owner
+and mode already in place now writes nothing to the inode.  The code
+before either patch stored them on every lookup, so lookups of one
+inode from many CPUs no longer share a dirty cacheline at all.
+
+An unlocked comparison on its own does not work.  If a task's owner
+goes A, B, A then the inode can show A while a lookup which saw B is
+about to store it.  A lookup which compares, finds A and returns is
+then overtaken by the stale store, and the task can again be denied
+access to its own files.
+
+So updates are now made inside a write section of a new per-inode
+seqcount, still under i_lock, and they read the task's credentials
+inside that section.  The comparison is a read section of the same
+seqcount.  It waits for an update which is in flight, and it is only
+trusted if no update started while it ran.  Every later update reads
+the task after the comparison did and cannot store anything older.
+
+security_task_to_inode() is called on every lookup, outside the lock,
+as before.
+
+With a 300us test-only delay between an observer reading the owner and
+storing it, a task which sets its euid to 1000, makes itself dumpable
+and opens its own /proc/<pid>/environ was refused 8 times in 126,196
+opens and 6 times in 121,218 when the update was skipped after a plain
+comparison.  With this patch it was not refused in 102,762 and 102,671
+opens.
+
+The seqcount fits in existing padding: struct proc_inode stays at 632
+bytes on x86_64.
+
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Alexey Dobriyan <adobriyan@gmail.com>
+Cc: Christian Brauner <brauner@kernel.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Jann Horn <jannh@google.com>
+Cc: Seth Forshee <sforshee@kernel.org>
+Cc: Stephen Brennan <stephen.s.brennan@oracle.com>
+Cc: Marco Elver <elver@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+Cc: Kees Cook <kees@kernel.org>
+Cc: John Johansen <john.johansen@canonical.com>
+---
+ fs/proc/base.c     | 65 +++++++++++++++++++++++++++++++++++++++++-----
+ fs/proc/fd.c       | 20 ++++++++------
+ fs/proc/inode.c    |  1 +
+ fs/proc/internal.h | 29 +++++++++++++++++++++
+ 4 files changed, 100 insertions(+), 15 deletions(-)
+
+diff --git a/fs/proc/base.c b/fs/proc/base.c
+index 349e71fd2a426..e80751827e144 100644
+--- a/fs/proc/base.c
++++ b/fs/proc/base.c
+@@ -2024,16 +2024,64 @@ int pid_getattr(const struct mnt_idmap *idmap, const struct path *path,
+ 
+ /* dentry stuff */
+ 
++/**
++ * proc_task_owner_valid - does a task inode already have the right owner?
++ * @task: the task which @inode describes
++ * @inode: a proc inode which takes its owner from @task
++ * @dump_mode: the mode to pass to task_dump_owner()
++ * @mode: the mode which @inode should have
++ *
++ * Lookups recompute the owner of a task's proc inodes from the task every
++ * time, but it rarely changes.  Check for that without writing to the
++ * inode, so that concurrent lookups of one inode do not contend.
++ *
++ * An unlocked comparison alone is not enough.  The inode may hold the
++ * right owner now while another lookup, which looked at the task before
++ * its credentials last changed, is about to store the old one.  Updates
++ * are therefore made inside a write section of proc_inode.owner_seq and
++ * read the task inside that section.  If no write section overlapped this
++ * check then every later update reads the task after this one did and
++ * cannot store anything older than what was found here.
++ *
++ * @dump_mode and @mode may come from an unlocked read of @inode->i_mode.
++ * Its file type never changes and its permission bits are only changed
++ * by the updates which this function checks for.
++ *
++ * Return: true if @inode needs no update.  If false, the caller must
++ * update it between proc_task_owner_lock() and proc_task_owner_unlock().
++ */
++bool proc_task_owner_valid(struct task_struct *task, struct inode *inode,
++			   umode_t dump_mode, umode_t mode)
++{
++	struct proc_inode *ei = PROC_I(inode);
++	unsigned int seq;
++	bool same;
++	kuid_t uid;
++	kgid_t gid;
++
++	seq = read_seqcount_begin(&ei->owner_seq);
++	task_dump_owner(task, dump_mode, &uid, &gid);
++	same = uid_eq(inode->i_uid, uid) && gid_eq(inode->i_gid, gid) &&
++	       inode->i_mode == mode;
++
++	return !read_seqcount_retry(&ei->owner_seq, seq) && same;
++}
++
+ /*
+  * Set <pid>/... inode ownership (can change due to setuid(), etc.)
+  */
+ void pid_update_inode(struct task_struct *task, struct inode *inode)
+ {
+-	spin_lock(&inode->i_lock);
+-	task_dump_owner(task, inode->i_mode, &inode->i_uid, &inode->i_gid);
++	umode_t mode = READ_ONCE(inode->i_mode);
+ 
+-	inode->i_mode &= ~(S_ISUID | S_ISGID);
+-	spin_unlock(&inode->i_lock);
++	if (!proc_task_owner_valid(task, inode, mode,
++				   mode & ~(S_ISUID | S_ISGID))) {
++		proc_task_owner_lock(inode);
++		task_dump_owner(task, inode->i_mode, &inode->i_uid,
++				&inode->i_gid);
++		inode->i_mode &= ~(S_ISUID | S_ISGID);
++		proc_task_owner_unlock(inode);
++	}
+ 	security_task_to_inode(task, inode);
+ }
+ 
+@@ -2212,9 +2260,12 @@ static int map_files_d_revalidate(struct inode *dir, const struct qstr *name,
+ 	mmput(mm);
+ 
+ 	if (exact_vma_exists) {
+-		spin_lock(&inode->i_lock);
+-		task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
+-		spin_unlock(&inode->i_lock);
++		if (!proc_task_owner_valid(task, inode, 0,
++					   READ_ONCE(inode->i_mode))) {
++			proc_task_owner_lock(inode);
++			task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
++			proc_task_owner_unlock(inode);
++		}
+ 
+ 		security_task_to_inode(task, inode);
+ 		status = 1;
+diff --git a/fs/proc/fd.c b/fs/proc/fd.c
+index 0580b6a596b53..d536577d6ab3f 100644
+--- a/fs/proc/fd.c
++++ b/fs/proc/fd.c
+@@ -127,18 +127,22 @@ static bool tid_fd_mode(struct task_struct *task, unsigned fd, fmode_t *mode)
+ static void tid_fd_update_inode(struct task_struct *task, struct inode *inode,
+ 				fmode_t f_mode)
+ {
+-	spin_lock(&inode->i_lock);
+-	task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
++	umode_t mode = READ_ONCE(inode->i_mode);
+ 
+-	if (S_ISLNK(inode->i_mode)) {
+-		unsigned i_mode = S_IFLNK;
++	if (S_ISLNK(mode)) {
++		mode = S_IFLNK;
+ 		if (f_mode & FMODE_READ)
+-			i_mode |= S_IRUSR | S_IXUSR;
++			mode |= S_IRUSR | S_IXUSR;
+ 		if (f_mode & FMODE_WRITE)
+-			i_mode |= S_IWUSR | S_IXUSR;
+-		inode->i_mode = i_mode;
++			mode |= S_IWUSR | S_IXUSR;
++	}
++
++	if (!proc_task_owner_valid(task, inode, 0, mode)) {
++		proc_task_owner_lock(inode);
++		task_dump_owner(task, 0, &inode->i_uid, &inode->i_gid);
++		inode->i_mode = mode;
++		proc_task_owner_unlock(inode);
+ 	}
+-	spin_unlock(&inode->i_lock);
+ 	security_task_to_inode(task, inode);
+ }
+ 
+diff --git a/fs/proc/inode.c b/fs/proc/inode.c
+index b7634f975d98b..ae40df21cddd3 100644
+--- a/fs/proc/inode.c
++++ b/fs/proc/inode.c
+@@ -59,6 +59,7 @@ static struct inode *proc_alloc_inode(struct super_block *sb)
+ 		return NULL;
+ 	ei->pid = NULL;
+ 	ei->fd = 0;
++	seqcount_spinlock_init(&ei->owner_seq, &ei->vfs_inode.i_lock);
+ 	ei->op.proc_get_link = NULL;
+ 	ei->pde = NULL;
+ 	ei->sysctl = NULL;
+diff --git a/fs/proc/internal.h b/fs/proc/internal.h
+index 9af1f63258b71..1520085d65c48 100644
+--- a/fs/proc/internal.h
++++ b/fs/proc/internal.h
+@@ -8,6 +8,7 @@
+ #include <linux/proc_fs.h>
+ #include <linux/proc_ns.h>
+ #include <linux/refcount.h>
++#include <linux/seqlock.h>
+ #include <linux/spinlock.h>
+ #include <linux/atomic.h>
+ #include <linux/binfmts.h>
+@@ -120,6 +121,7 @@ union proc_op {
+ struct proc_inode {
+ 	struct pid *pid;
+ 	unsigned int fd;
++	seqcount_spinlock_t owner_seq;	/* see proc_task_owner_valid() */
+ 	union proc_op op;
+ 	struct proc_dir_entry *pde;
+ 	struct ctl_table_header *sysctl;
+@@ -137,6 +139,31 @@ static inline struct proc_inode *PROC_I(const struct inode *inode)
+ 	return container_of(inode, struct proc_inode, vfs_inode);
+ }
+ 
++/**
++ * proc_task_owner_lock - start updating the owner and mode of a task inode
++ * @inode: a proc inode which takes its owner from a task
++ *
++ * The task's credentials must be read after this, so that updates are
++ * applied in the order in which they looked at the task.
++ */
++static inline void proc_task_owner_lock(struct inode *inode)
++	__acquires(&inode->i_lock)
++{
++	spin_lock(&inode->i_lock);
++	write_seqcount_begin(&PROC_I(inode)->owner_seq);
++}
++
++/**
++ * proc_task_owner_unlock - finish updating the owner and mode of a task inode
++ * @inode: the inode which was passed to proc_task_owner_lock()
++ */
++static inline void proc_task_owner_unlock(struct inode *inode)
++	__releases(&inode->i_lock)
++{
++	write_seqcount_end(&PROC_I(inode)->owner_seq);
++	spin_unlock(&inode->i_lock);
++}
++
+ static inline struct proc_dir_entry *PDE(const struct inode *inode)
+ {
+ 	return PROC_I(inode)->pde;
+@@ -265,6 +292,8 @@ int proc_nochmod_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
+ extern void proc_pid_evict_inode(struct proc_inode *);
+ extern struct inode *proc_pid_make_inode(struct super_block *, struct task_struct *, umode_t);
+ extern void pid_update_inode(struct task_struct *, struct inode *);
++bool proc_task_owner_valid(struct task_struct *task, struct inode *inode,
++			   umode_t dump_mode, umode_t mode);
+ extern int pid_delete_dentry(const struct dentry *);
+ extern int proc_pid_readdir(struct file *, struct dir_context *);
+ struct dentry *proc_pid_lookup(struct dentry *, unsigned int);
+-- 
+2.47.3
+

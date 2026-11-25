@@ -1,0 +1,56 @@
+From: Aveline Noir <jm5905938@gmail.com>
+Date: Tue, 24 Nov 2026 07:30:19 -0800
+Subject: [PATCH] selftests/damon/damos_quota: skip the last sample when
+ counting exceeds
+
+damos_quota.py expects qt_exceeds to be increased for every sample whose
+tried_bytes equals the quota.  The kernel increases it only when the next
+quota window starts, so the last full window may still be pending when
+the workload exits.  The test then fails with an expected count one
+higher than the actual one, e.g., 15 < 16.
+
+Do not count the last sample.  Also drop the sorting of the samples, so
+that the last one is the latest.
+
+Link: https://patch.msgid.link/20261124153021.90142-4-sj@kernel.org
+Signed-off-by: Aveline Noir <jm5905938@gmail.com>
+Signed-off-by: SJ Park <sj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: SJ Park <sj@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Sailesh Nandanavanam <saileshnandanavanam@gmail.com>
+Cc: Enze Li <lienze@kylinos.cn>
+
+ tools/testing/selftests/damon/damos_quota.py |    7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+---
+ tools/testing/selftests/damon/damos_quota.py | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/tools/testing/selftests/damon/damos_quota.py b/tools/testing/selftests/damon/damos_quota.py
+index 879115a499bf8..bdfd22f000795 100755
+--- a/tools/testing/selftests/damon/damos_quota.py
++++ b/tools/testing/selftests/damon/damos_quota.py
+@@ -53,15 +53,16 @@ def main():
+         wss_collected.append(scheme.tried_bytes)
+         nr_quota_exceeds = scheme.stats.qt_exceeds
+ 
+-    wss_collected.sort()
+     nr_expected_quota_exceeds = 0
+-    for wss in wss_collected:
++    for idx, wss in enumerate(wss_collected):
+         if wss > sz_quota:
+             print('quota is not kept: %s > %s' % (wss, sz_quota))
+             print('collected samples are as below')
+             print('\n'.join(['%d' % wss for wss in wss_collected]))
+             exit(1)
+-        if wss == sz_quota:
++        # qt_exceeds is updated when the next quota window starts, so skip
++        # the last sample, whose window may still be pending.
++        if wss == sz_quota and idx < len(wss_collected) - 1:
+             nr_expected_quota_exceeds += 1
+ 
+     if nr_quota_exceeds < nr_expected_quota_exceeds:
+-- 
+2.47.3
+

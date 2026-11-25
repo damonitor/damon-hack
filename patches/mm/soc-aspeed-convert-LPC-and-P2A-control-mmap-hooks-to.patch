@@ -1,0 +1,172 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:51 +0000
+Subject: [PATCH] soc: aspeed: convert LPC and P2A control mmap hooks to
+ mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move from the deprecated mmap hook to the new mmap_prepare hook for both
+the LPC control and P2A control drivers.
+
+Both remap a range of their reserved memory region, so use the PFN remap
+mmap action to do so, retaining the -EAGAIN error on failure via the action
+error override.
+
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-8-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Andrew Jeffery <andrew@codeconstruct.com.au>
+Acked-by: Arnd Bergmann <arnd@arndb.de>
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+
+ drivers/soc/aspeed/aspeed-lpc-ctrl.c |   20 +++++++++-----------
+ drivers/soc/aspeed/aspeed-p2a-ctrl.c |   22 ++++++++--------------
+ 2 files changed, 17 insertions(+), 25 deletions(-)
+---
+ drivers/soc/aspeed/aspeed-lpc-ctrl.c | 20 +++++++++-----------
+ drivers/soc/aspeed/aspeed-p2a-ctrl.c | 22 ++++++++--------------
+ 2 files changed, 17 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/soc/aspeed/aspeed-lpc-ctrl.c b/drivers/soc/aspeed/aspeed-lpc-ctrl.c
+index 5d91ba2038d5c..702fb3e854726 100644
+--- a/drivers/soc/aspeed/aspeed-lpc-ctrl.c
++++ b/drivers/soc/aspeed/aspeed-lpc-ctrl.c
+@@ -47,22 +47,20 @@ static struct aspeed_lpc_ctrl *file_aspeed_lpc_ctrl(struct file *file)
+ 			miscdev);
+ }
+ 
+-static int aspeed_lpc_ctrl_mmap(struct file *file, struct vm_area_struct *vma)
++static int aspeed_lpc_ctrl_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	struct aspeed_lpc_ctrl *lpc_ctrl = file_aspeed_lpc_ctrl(file);
+-	unsigned long vsize = vma->vm_end - vma->vm_start;
+-	pgprot_t prot = vma->vm_page_prot;
++	struct aspeed_lpc_ctrl *lpc_ctrl = file_aspeed_lpc_ctrl(desc->file);
+ 
+-	if (vma->vm_pgoff + vma_pages(vma) > lpc_ctrl->mem_size >> PAGE_SHIFT)
++	if (desc->pgoff + vma_desc_pages(desc) >
++	    lpc_ctrl->mem_size >> PAGE_SHIFT)
+ 		return -EINVAL;
+ 
+ 	/* ast2400/2500 AHB accesses are not cache coherent */
+-	prot = pgprot_noncached(prot);
++	desc->page_prot = pgprot_noncached(desc->page_prot);
+ 
+-	if (remap_pfn_range(vma, vma->vm_start,
+-		(lpc_ctrl->mem_base >> PAGE_SHIFT) + vma->vm_pgoff,
+-		vsize, prot))
+-		return -EAGAIN;
++	mmap_action_remap_full(desc,
++		(lpc_ctrl->mem_base >> PAGE_SHIFT) + desc->pgoff);
++	desc->action.error_override = -EAGAIN;
+ 
+ 	return 0;
+ }
+@@ -216,7 +214,7 @@ static long aspeed_lpc_ctrl_ioctl(struct file *file, unsigned int cmd,
+ 
+ static const struct file_operations aspeed_lpc_ctrl_fops = {
+ 	.owner		= THIS_MODULE,
+-	.mmap		= aspeed_lpc_ctrl_mmap,
++	.mmap_prepare	= aspeed_lpc_ctrl_mmap_prepare,
+ 	.unlocked_ioctl	= aspeed_lpc_ctrl_ioctl,
+ };
+ 
+diff --git a/drivers/soc/aspeed/aspeed-p2a-ctrl.c b/drivers/soc/aspeed/aspeed-p2a-ctrl.c
+index efa106d37bd76..7387b0cd86660 100644
+--- a/drivers/soc/aspeed/aspeed-p2a-ctrl.c
++++ b/drivers/soc/aspeed/aspeed-p2a-ctrl.c
+@@ -97,29 +97,23 @@ static void aspeed_p2a_disable_bridge(struct aspeed_p2a_ctrl *p2a_ctrl)
+ 	regmap_update_bits(p2a_ctrl->regmap, SCU180, SCU180_ENP2A, 0);
+ }
+ 
+-static int aspeed_p2a_mmap(struct file *file, struct vm_area_struct *vma)
++static int aspeed_p2a_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	unsigned long vsize;
+-	pgprot_t prot;
+-	struct aspeed_p2a_user *priv = file->private_data;
++	struct aspeed_p2a_user *priv = desc->file->private_data;
+ 	struct aspeed_p2a_ctrl *ctrl = priv->parent;
+ 
+ 	if (ctrl->mem_base == 0 && ctrl->mem_size == 0)
+ 		return -EINVAL;
+ 
+-	vsize = vma->vm_end - vma->vm_start;
+-	prot = vma->vm_page_prot;
+-
+-	if (vma->vm_pgoff + vma_pages(vma) > ctrl->mem_size >> PAGE_SHIFT)
++	if (desc->pgoff + vma_desc_pages(desc) > ctrl->mem_size >> PAGE_SHIFT)
+ 		return -EINVAL;
+ 
+ 	/* ast2400/2500 AHB accesses are not cache coherent */
+-	prot = pgprot_noncached(prot);
++	desc->page_prot = pgprot_noncached(desc->page_prot);
+ 
+-	if (remap_pfn_range(vma, vma->vm_start,
+-		(ctrl->mem_base >> PAGE_SHIFT) + vma->vm_pgoff,
+-		vsize, prot))
+-		return -EAGAIN;
++	mmap_action_remap_full(desc,
++		(ctrl->mem_base >> PAGE_SHIFT) + desc->pgoff);
++	desc->action.error_override = -EAGAIN;
+ 
+ 	return 0;
+ }
+@@ -308,7 +302,7 @@ static int aspeed_p2a_release(struct inode *inode, struct file *file)
+ 
+ static const struct file_operations aspeed_p2a_ctrl_fops = {
+ 	.owner = THIS_MODULE,
+-	.mmap = aspeed_p2a_mmap,
++	.mmap_prepare = aspeed_p2a_mmap_prepare,
+ 	.unlocked_ioctl = aspeed_p2a_ioctl,
+ 	.open = aspeed_p2a_open,
+ 	.release = aspeed_p2a_release,
+-- 
+2.47.3
+

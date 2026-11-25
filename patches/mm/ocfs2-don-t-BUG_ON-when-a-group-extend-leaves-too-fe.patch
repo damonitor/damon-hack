@@ -1,0 +1,81 @@
+From: Joseph Qi <joseph.qi@linux.alibaba.com>
+Date: Wed, 25 Nov 2026 10:55:03 +0800
+Subject: [PATCH] ocfs2: don't BUG_ON when a group extend leaves too few free
+ bits
+
+ocfs2_reserve_suballoc_bits() extends a metadata chain allocator by
+one block group when it holds fewer free bits than the caller wants,
+then asserts that the extend satisfied the request.
+
+That assertion trusts the on-disk allocator geometry.  With
+id2.i_chain.cl_cpg and cl_bpc both set to 1, ocfs2_bits_per_group()
+returns 1, so the only bit of the new group is consumed by its own
+descriptor and ocfs2_block_group_fill() leaves bg_free_bits_count at
+0.  The extend then adds 1 to both i_total and i_used, free_bits
+stays 0, and BUG_ON(bits_wanted > i_total - i_used) fires on a plain
+open(O_CREAT):
+
+    ocfs2_reserve_suballoc_bits
+    ocfs2_reserve_new_metadata_blocks
+    ocfs2_mknod
+    ocfs2_create
+    path_openat
+
+The reservation runs before ocfs2_start_trans(), so no transaction is
+open and no dquot is charged when it fires.
+
+Report the volume as errored instead, the way the missing
+OCFS2_CHAIN_FL check just above already does.  The status is not
+-ENOSPC, so callers propagate it rather than falling back to stealing
+from another slot.  No new unwind is needed: ac->ac_bh is not set yet
+on this path, so the bail label only releases the local bh, and the
+allocation context is freed by the callers' existing error paths.
+ocfs2_block_group_alloc() has already committed its own transaction,
+so the degenerate group stays on disk - which is what every other
+ocfs2_error() corruption path leaves behind.
+
+Link: https://patch.msgid.link/20261125025505.343454-1-joseph.qi@linux.alibaba.com
+Fixes: ccd979bdbce9 ("[PATCH] OCFS2: The Second Oracle Cluster Filesystem")
+Signed-off-by: Joseph Qi <joseph.qi@linux.alibaba.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: <syzbot+487e39304129321dd253@syzkaller.appspotmail.com>
+Cc: CJ <firefly0158@163.com>
+Cc: Heming Zhao <heming.zhao@suse.com>
+Cc: Mark Fasheh <mark@fasheh.com>
+Cc: Joel Becker <jlbec@evilplan.org>
+Cc: <stable@vger.kernel.org>
+
+ fs/ocfs2/suballoc.c |   14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+---
+ fs/ocfs2/suballoc.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/fs/ocfs2/suballoc.c b/fs/ocfs2/suballoc.c
+index 624152e4f7fed..23c9fbb31cbd1 100644
+--- a/fs/ocfs2/suballoc.c
++++ b/fs/ocfs2/suballoc.c
+@@ -957,10 +957,16 @@ static int ocfs2_reserve_suballoc_bits(struct ocfs2_super *osb,
+ 		}
+ 		atomic_inc(&osb->alloc_stats.bg_extends);
+ 
+-		/* You should never ask for this much metadata */
+-		BUG_ON(bits_wanted >
+-		       (le32_to_cpu(fe->id1.bitmap1.i_total)
+-			- le32_to_cpu(fe->id1.bitmap1.i_used)));
++		/* Corrupt geometry can extend by a group with no usable bits. */
++		free_bits = le32_to_cpu(fe->id1.bitmap1.i_total) -
++			le32_to_cpu(fe->id1.bitmap1.i_used);
++		if (bits_wanted > free_bits) {
++			status = ocfs2_error(alloc_inode->i_sb,
++					     "Invalid chain allocator %llu: %u free bits after group extend, %u wanted\n",
++					     (unsigned long long)le64_to_cpu(fe->i_blkno),
++					     free_bits, bits_wanted);
++			goto bail;
++		}
+ 	}
+ 
+ 	get_bh(bh);
+-- 
+2.47.3
+

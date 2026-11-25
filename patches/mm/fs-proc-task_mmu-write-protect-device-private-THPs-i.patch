@@ -1,0 +1,90 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:45 -0500
+Subject: [PATCH] fs/proc/task_mmu: write-protect device-private THPs in
+ PAGEMAP_SCAN
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PAGEMAP_SCAN with PM_SCAN_WP_MATCHING write-protects a huge PMD through
+make_uffd_wp_pmd(), which handles a present THP and a migration entry
+but does nothing for a device-private THP. The PMD never gets the uffd
+bit.
+
+pagemap_thp_category() reports a non-present PMD without the uffd bit as
+written. A user tracking writes with async uffd-wp therefore sees every
+page of a device-private THP as written on every scan, whether it was
+written to or not. This requires a driver that migrates THPs to device
+memory.
+
+A device-private PMD must be write-protected like any other huge PMD. To
+fix it, pass any valid PMD softleaf entry to set_uffd_wp_softleaf_pmd(),
+not only a migration entry. It downgrades a writable entry and sets the
+uffd bit. When the THP migrates back, set_pmd_migration_entry() carries
+the uffd bit over to the migration entry, so the write protection is
+kept.
+
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-5-b617009d1a4a@columbia.edu
+Fixes: a30b48bf1b24 ("mm/migrate_device: implement THP migration of zone device pages")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: Breno Leitao <leitao@debian.org>
+
+ fs/proc/task_mmu.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ fs/proc/task_mmu.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 3d770208d980d..2d355400ad187 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -2515,7 +2515,7 @@ static void make_uffd_wp_pmd(struct vm_area_struct *vma,
+ 		old = pmdp_invalidate_ad(vma, addr, pmdp);
+ 		pmd = pmd_mkuffd(old);
+ 		set_pmd_at(vma->vm_mm, addr, pmdp, pmd);
+-	} else if (pmd_is_migration_entry(pmd)) {
++	} else if (pmd_is_valid_softleaf(pmd)) {
+ 		pmd = set_uffd_wp_softleaf_pmd(pmd);
+ 		set_pmd_at(vma->vm_mm, addr, pmdp, pmd);
+ 	}
+-- 
+2.47.3
+

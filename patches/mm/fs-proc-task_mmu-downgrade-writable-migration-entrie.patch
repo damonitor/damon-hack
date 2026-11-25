@@ -1,0 +1,230 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:43 -0500
+Subject: [PATCH] fs/proc/task_mmu: downgrade writable migration entries in
+ PAGEMAP_SCAN write-protect
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PAGEMAP_SCAN with PM_SCAN_WP_MATCHING write-protects pages in a VMA
+registered for async uffd-wp, and sets the uffd bit on non-present
+entries as they are. An entry with the uffd bit set must not be
+writable, so that the page is write-protected once it is mapped again.
+change_protection() therefore downgrades writable migration and
+device-private entries to readable ones first, but PAGEMAP_SCAN does
+not.
+
+For a writable migration entry at the PTE level,
+remove_migration_pte() restores a writable PTE without the uffd bit. So
+if a page is under migration while PAGEMAP_SCAN write-protects it, the
+write protection is lost. A user tracking writes with async uffd-wp
+sees the page reported as written on the next scan although nothing
+wrote to it.
+
+With CONFIG_PAGE_TABLE_CHECK, setting the uffd bit on a writable
+non-present PTE or PMD also triggers a warning.
+
+To fix it, downgrade writable migration and device-private entries
+before setting the uffd bit, as change_protection() does, at the PTE,
+PMD, and hugetlb levels.
+
+Add softleaf_is_writable() and softleaf_mkreadable() to leafops.h for
+the downgrade. The open-coded copies in change_protection() can be
+converted to them separately.
+
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-3-b617009d1a4a@columbia.edu
+Fixes: 52526ca7fdb9 ("fs/proc/task_mmu: implement IOCTL to get and optionally clear info about PTEs")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Breno Leitao <leitao@debian.org>
+Closes: https://lore.kernel.org/all/avNEgmvYdoukt6MS@gmail.com/
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: <stable@vger.kernel.org>
+
+ fs/proc/task_mmu.c      |   40 +++++++++++++++++++++++++++--
+ include/linux/leafops.h |   51 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 3 deletions(-)
+---
+ fs/proc/task_mmu.c      | 40 +++++++++++++++++++++++++++++---
+ include/linux/leafops.h | 51 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 3 deletions(-)
+
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index a6ed281747187..3d770208d980d 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -2400,6 +2400,25 @@ static unsigned long pagemap_page_category(struct pagemap_scan_private *p,
+ 	return categories;
+ }
+ 
++/*
++ * An armed entry must not come back writable, so downgrade a writable
++ * migration or device-private entry before giving it the bit, as
++ * change_softleaf_pte() does.
++ */
++static pte_t set_uffd_wp_softleaf_pte(pte_t pte)
++{
++	softleaf_t entry = softleaf_from_pte(pte);
++	pte_t newpte;
++
++	if (!softleaf_is_writable(entry))
++		return pte_swp_mkuffd(pte);
++
++	newpte = softleaf_to_pte(softleaf_mkreadable(entry));
++	if (pte_swp_soft_dirty(pte))
++		newpte = pte_swp_mksoft_dirty(newpte);
++	return pte_swp_mkuffd(newpte);
++}
++
+ static void make_uffd_wp_pte(struct vm_area_struct *vma,
+ 			     unsigned long addr, pte_t *pte, pte_t ptent)
+ {
+@@ -2413,7 +2432,7 @@ static void make_uffd_wp_pte(struct vm_area_struct *vma,
+ 		set_pte_at(vma->vm_mm, addr, pte,
+ 			   make_pte_marker(PTE_MARKER_UFFD_WP));
+ 	} else {
+-		ptent = pte_swp_mkuffd(ptent);
++		ptent = set_uffd_wp_softleaf_pte(ptent);
+ 		set_pte_at(vma->vm_mm, addr, pte, ptent);
+ 	}
+ }
+@@ -2472,6 +2491,21 @@ static unsigned long pagemap_thp_category(struct pagemap_scan_private *p,
+ 	return categories;
+ }
+ 
++/* Same as set_uffd_wp_softleaf_pte(), for a PMD. */
++static pmd_t set_uffd_wp_softleaf_pmd(pmd_t pmd)
++{
++	softleaf_t entry = softleaf_from_pmd(pmd);
++	pmd_t newpmd;
++
++	if (!softleaf_is_writable(entry))
++		return pmd_swp_mkuffd(pmd);
++
++	newpmd = softleaf_to_pmd(softleaf_mkreadable(entry));
++	if (pmd_swp_soft_dirty(pmd))
++		newpmd = pmd_swp_mksoft_dirty(newpmd);
++	return pmd_swp_mkuffd(newpmd);
++}
++
+ static void make_uffd_wp_pmd(struct vm_area_struct *vma,
+ 			     unsigned long addr, pmd_t *pmdp)
+ {
+@@ -2482,7 +2516,7 @@ static void make_uffd_wp_pmd(struct vm_area_struct *vma,
+ 		pmd = pmd_mkuffd(old);
+ 		set_pmd_at(vma->vm_mm, addr, pmdp, pmd);
+ 	} else if (pmd_is_migration_entry(pmd)) {
+-		pmd = pmd_swp_mkuffd(pmd);
++		pmd = set_uffd_wp_softleaf_pmd(pmd);
+ 		set_pmd_at(vma->vm_mm, addr, pmdp, pmd);
+ 	}
+ }
+@@ -2552,7 +2586,7 @@ static void make_uffd_wp_huge_pte(struct vm_area_struct *vma,
+ 
+ 	if (softleaf_is_migration(entry)) {
+ 		set_huge_pte_at(vma->vm_mm, addr, ptep,
+-				pte_swp_mkuffd(ptent), psize);
++				set_uffd_wp_softleaf_pte(ptent), psize);
+ 	} else {
+ 		pte_t old_pte, new_pte;
+ 
+diff --git a/include/linux/leafops.h b/include/linux/leafops.h
+index 4c1476ae32343..4c016fc286908 100644
+--- a/include/linux/leafops.h
++++ b/include/linux/leafops.h
+@@ -434,6 +434,57 @@ static inline struct folio *softleaf_to_folio(softleaf_t entry)
+ 	return folio;
+ }
+ 
++/**
++ * softleaf_is_writable() - Is this leaf entry writable?
++ * @entry: Leaf entry.
++ *
++ * Returns: true for a writable migration or device private entry.
++ */
++static inline bool softleaf_is_writable(softleaf_t entry)
++{
++	return softleaf_is_migration_write(entry) ||
++	       softleaf_is_device_private_write(entry);
++}
++
++/**
++ * softleaf_migration_mkreadable() - Downgrade a writable migration entry to a
++ * readable one.
++ * @entry: Leaf entry, softleaf_is_migration_write(@entry) must return true.
++ *
++ * Returns: A readable migration entry for the same PFN, which is exclusive if
++ * the folio is anonymous.
++ */
++static inline softleaf_t softleaf_migration_mkreadable(softleaf_t entry)
++{
++	const pgoff_t offset = swp_offset(entry);
++
++	VM_WARN_ON_ONCE(!softleaf_is_migration_write(entry));
++
++	/* A writable anon migration entry implies AnonExclusive. */
++	if (folio_test_anon(softleaf_to_folio(entry)))
++		return make_readable_exclusive_migration_entry(offset);
++	return make_readable_migration_entry(offset);
++}
++
++/**
++ * softleaf_mkreadable() - Downgrade a writable leaf entry to a readable one.
++ * @entry: Leaf entry.
++ *
++ * Returns: A readable entry if @entry is a writable migration or device
++ * private entry, otherwise @entry unchanged.
++ */
++static inline softleaf_t softleaf_mkreadable(softleaf_t entry)
++{
++	switch (softleaf_type(entry)) {
++	case SOFTLEAF_DEVICE_PRIVATE_WRITE:
++		return make_readable_device_private_entry(swp_offset(entry));
++	case SOFTLEAF_MIGRATION_WRITE:
++		return softleaf_migration_mkreadable(entry);
++	default:
++		return entry;
++	}
++}
++
+ /**
+  * softleaf_is_poison_marker() - Is this leaf entry a poison marker?
+  * @entry: Leaf entry.
+-- 
+2.47.3
+

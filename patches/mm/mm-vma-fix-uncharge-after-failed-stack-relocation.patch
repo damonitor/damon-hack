@@ -1,0 +1,121 @@
+From: Chris Mason <mason@kernel.org>
+Date: Sat, 21 Nov 2026 16:02:30 +0000
+Subject: [PATCH] mm/vma: fix uncharge after failed stack relocation
+
+An execve() that fails to relocate its stack can underflow
+vm_committed_as, and the commit limit of vm.overcommit_memory=2 then no
+longer holds.
+
+exit_mmap() uncharges vma_pages() of each VMA with VMA_ACCOUNT_BIT, so
+the charge has to match the size of the VMA. relocate_vma_down() expands
+the stack VMA by the relocation distance without a charge, and relies on
+its vma_shrink() to make the two match again. But it returns with the
+VMA still expanded if move_page_tables() can't allocate a page table,
+for example at the memory cgroup limit, or if vma_shrink() fails:
+
+    relocate_vma_down()             charged    vma_pages()
+    ===================             =======    ===========
+                                    L          L
+    vma_expand()                    L          L + shift
+    move_page_tables() fails
+      return -ENOMEM
+
+    exit_mmap()
+      tear_down_vmas()
+      vm_unacct_memory(L + shift)   -shift
+
+On x86-64 with 4-level page tables, the distance is up to 16 GiB for a
+64-bit program, and about 128 TiB for a 32-bit one.
+
+Fix the issue by giving back the charge of the stack VMA where its
+relocation fails, and excluding the VMA from what exit_mmap() uncharges.
+The argument pages of the dying task are then outside the commit charge
+until exit_mmap() frees them.
+
+Link: https://patch.msgid.link/20261121-some-more-ai-fixes-v1-4-236e925d9b64@kernel.org
+Fixes: b6a2fea39318 ("mm: variable length argument support")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+  Link: https://lore.kernel.org/179536262938.412063.9413830491196612418.b4-reply@b4
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Peter Zijlstra <a.p.zijlstra@chello.nl>
+Cc: Ollie Wild <aaw@google.com>
+Cc: Adrian Bunk <bunk@stusta.de>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/vma_exec.c |   22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+---
+ mm/vma_exec.c | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/mm/vma_exec.c b/mm/vma_exec.c
+index 586c521559424..84b98f1a201d7 100644
+--- a/mm/vma_exec.c
++++ b/mm/vma_exec.c
+@@ -45,6 +45,7 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
+ 	struct vm_area_struct *next;
+ 	struct mmu_gather tlb;
+ 	PAGETABLE_MOVE(pmc, vma, vma, old_start, new_start, length);
++	int err;
+ 
+ 	BUG_ON(new_start > new_end);
+ 
+@@ -68,8 +69,10 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
+ 	 * process cleanup to remove whatever mess we made.
+ 	 */
+ 	pmc.for_stack = true;
+-	if (length != move_page_tables(&pmc))
+-		return -ENOMEM;
++	if (length != move_page_tables(&pmc)) {
++		err = -ENOMEM;
++		goto err_unacct;
++	}
+ 
+ 	tlb_gather_mmu(&tlb, mm);
+ 	next = vma_next(&vmi);
+@@ -93,7 +96,20 @@ int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
+ 
+ 	vma_prev(&vmi);
+ 	/* Shrink the vma to just the new range */
+-	return vma_shrink(&vmi, vma, new_end);
++	err = vma_shrink(&vmi, vma, new_end);
++	if (err)
++		goto err_unacct;
++
++	return 0;
++
++err_unacct:
++	/*
++	 * The vma now spans more than was charged, so exit_mmap() must not
++	 * derive the uncharge from its size.
++	 */
++	vm_unacct_memory(length >> PAGE_SHIFT);
++	vma_clear_flags(vma, VMA_ACCOUNT_BIT);
++	return err;
+ }
+ 
+ /*
+-- 
+2.47.3
+

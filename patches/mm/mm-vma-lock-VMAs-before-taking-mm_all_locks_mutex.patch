@@ -1,0 +1,142 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Sat, 21 Nov 2026 16:02:28 +0000
+Subject: [PATCH] mm/vma: lock VMAs before taking mm_all_locks_mutex
+
+If an mmu notifier is registered for an mm while one of its page faults
+sleeps indefinitely under the VMA lock, the registration of mmu
+notifiers for every other mm can hang un-killably.
+
+mm_all_locks_mutex is shared by all mms, so its holder must not wait for
+something that has no bound.
+
+However, mm_take_all_locks() calls vma_start_write() on each VMA with the
+mutex held, and thus waits for the readers of the VMA.
+
+Since commit 4ed4379881aa ("mm: handle shared faults under the VMA lock"),
+such a reader can sleep in ->page_mkwrite().
+
+Consider fuse_page_mkwrite(), which sleeps until the FUSE server replies to
+a write request:
+
+    mm A, thread 1          mm A, thread 2         mm B
+    ==============          ==============         ====
+    lock_vma_under_rcu()
+    fuse_page_mkwrite()
+      folio_wait_writeback()
+                            mm_take_all_locks()
+                              mutex_lock()
+                              vma_start_write()
+                                                   mm_take_all_locks()
+                                                     mutex_lock()
+
+Fix the issue by locking the VMAs before the mutex is taken.
+
+Additionally, make the VMA write lock killable so a fatal signal returns as
+quickly as possible.
+
+Finally, update the comments to reflect the change, dropping the lock
+ordering list which begs for bitrot.
+
+Note that the lock order at the top of mm/rmap.c doesn't appear to be right
+- the hugetlb locks are taken after the VMA write locks. However, this was
+already the case, and can be addressed in a follow-up in any case.
+
+Target commit 4ed4379881aa ("mm: handle shared faults under the VMA lock")
+as this is where it became possible for VMA lock readers to sleep in
+->page_mkwrite().
+
+Link: https://patch.msgid.link/20261121-some-more-ai-fixes-v1-2-236e925d9b64@kernel.org
+Fixes: 4ed4379881aa ("mm: handle shared faults under the VMA lock")
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Chris Mason <mason@kernel.org>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+  Link: https://lore.kernel.org/179536280440.412063.5336368383648661511.b4-reply@b4
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Peter Zijlstra <a.p.zijlstra@chello.nl>
+Cc: Ollie Wild <aaw@google.com>
+Cc: Adrian Bunk <bunk@stusta.de>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+Cc: <stable@vger.kernel.org>
+
+ mm/vma.c |   27 +++++++++++++--------------
+ 1 file changed, 13 insertions(+), 14 deletions(-)
+---
+ mm/vma.c | 29 ++++++++++++++---------------
+ 1 file changed, 14 insertions(+), 15 deletions(-)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index 09bbcdb4971ba..f8cf319ff9cff 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -2375,15 +2375,10 @@ static void vm_lock_mapping(struct mm_struct *mm, struct address_space *mapping)
+  * mapping->flags avoid to take the same lock twice, if more than one
+  * vma in this mm is backed by the same anon rmap or address_space.
+  *
+- * We take locks in following order, accordingly to comment at beginning
+- * of mm/rmap.c:
+- *   - all hugetlbfs_i_mmap_rwsem_key locks (aka mapping->i_mmap_rwsem for
+- *     hugetlb mapping);
+- *   - all vmas marked locked
+- *   - all i_mmap_rwsem locks;
+- *   - all anon_vma->rwseml
+- *
+- * We can take all locks within these types randomly because the VM code
++ * Mark all vmas locked, before taking mm_all_locks_mutex. Then take remaining
++ * locks in the order mandated by the comment at the top of mm/rmap.c.
++ *
++ * We can take locks of the same type in arbitrary order because the VM code
+  * doesn't nest them and we protected from parallel mm_take_all_locks() by
+  * mm_all_locks_mutex.
+  *
+@@ -2400,20 +2395,24 @@ int mm_take_all_locks(struct mm_struct *mm)
+ 
+ 	mmap_assert_write_locked(mm);
+ 
+-	mutex_lock(&mm_all_locks_mutex);
+-
+ 	/*
+-	 * vma_start_write() does not have a complement in mm_drop_all_locks()
+-	 * because vma_start_write() is always asymmetrical; it marks a VMA as
++	 * VMA write locks do not have a complement in mm_drop_all_locks(),
++	 * because VMA write locking is always asymmetrical; it marks a VMA as
+ 	 * being written to until mmap_write_unlock() or mmap_write_downgrade()
+ 	 * is reached.
+ 	 */
+ 	for_each_vma(vmi, vma) {
++		int err;
++
+ 		if (signal_pending(current))
+-			goto out_unlock;
+-		vma_start_write(vma);
++			return -EINTR;
++		err = vma_start_write_killable(vma);
++		if (err)
++			return err;
+ 	}
+ 
++	mutex_lock(&mm_all_locks_mutex);
++
+ 	vma_iter_init(&vmi, mm, 0);
+ 	for_each_vma(vmi, vma) {
+ 		if (signal_pending(current))
+-- 
+2.47.3
+

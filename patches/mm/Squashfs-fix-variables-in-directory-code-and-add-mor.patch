@@ -1,5 +1,5 @@
 From: Phillip Lougher <phillip@squashfs.org.uk>
-Date: Mon, 23 Nov 2026 03:43:02 +0000
+Date: Wed, 25 Nov 2026 01:47:35 +0000
 Subject: [PATCH] Squashfs: fix variables in directory code and add more sanity
  checks
 
@@ -21,6 +21,9 @@ off disk (including directory size to avoid underflow in subtraction).
 Now if a directory index is found to be incorrect, the index is
 discarded and the previous index read from disk is used.  This allows
 the directory to be read correctly without throwing an I/O error.
+
+It also ensures that the name size doesn't overflow an unsigned int by
+sanity checking the value before adding 1.
 
 Reproducer
 ==========
@@ -89,28 +92,24 @@ rm -rf $DIR
 exit 0
 =====================================================================
 
-Link: https://patch.msgid.link/20261123034304.261742-22-phillip@squashfs.org.uk
-Fixes: 07972dde75c3 ("Squashfs: directory readdir operations")
-Fixes: c88da2c97936 ("Squashfs: directory lookup operations")
+Link: https://patch.msgid.link/20261125014737.347231-22-phillip@squashfs.org.uk
 Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Cc: Christian Loehle <christian.loehle@arm.com>
-Cc: Dan Carpenter <error27@gmail.com>
-Cc: Phillip Lougher <phillip.lougher@gmail.com>
-Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
 
- fs/squashfs/dir.c              |   73 ++++++++++++++++++------
- fs/squashfs/namei.c            |   94 +++++++++++++++++++++++--------
+ fs/squashfs/dir.c              |   80 ++++++++++++++++++------
+ fs/squashfs/namei.c            |  103 +++++++++++++++++++++++--------
+ fs/squashfs/squashfs_fs.h      |    3
  fs/squashfs/squashfs_helpers.h |    7 ++
- 3 files changed, 136 insertions(+), 38 deletions(-)
+ 4 files changed, 148 insertions(+), 45 deletions(-)
 ---
- fs/squashfs/dir.c              | 73 ++++++++++++++++++++------
- fs/squashfs/namei.c            | 94 ++++++++++++++++++++++++++--------
- fs/squashfs/squashfs_helpers.h |  7 +++
- 3 files changed, 136 insertions(+), 38 deletions(-)
+ fs/squashfs/dir.c              |  80 +++++++++++++++++++------
+ fs/squashfs/namei.c            | 103 ++++++++++++++++++++++++---------
+ fs/squashfs/squashfs_fs.h      |   3 +
+ fs/squashfs/squashfs_helpers.h |   7 +++
+ 4 files changed, 148 insertions(+), 45 deletions(-)
 
 diff --git a/fs/squashfs/dir.c b/fs/squashfs/dir.c
-index e961af7490dc6..b688e92a4efa0 100644
+index c3fa69b758a53..54d228e06283e 100644
 --- a/fs/squashfs/dir.c
 +++ b/fs/squashfs/dir.c
 @@ -37,17 +37,17 @@ static const unsigned char squashfs_filetype_table[] = {
@@ -155,16 +154,17 @@ index e961af7490dc6..b688e92a4efa0 100644
  
  	for (i = 0; i < i_count; i++) {
  		err = squashfs_read_metadata(sb, &dir_index, &index_start,
-@@ -65,33 +77,51 @@ static int get_dir_index_using_offset(struct super_block *sb,
+@@ -65,33 +77,52 @@ static int get_dir_index_using_offset(struct super_block *sb,
  		if (err < 0)
  			break;
  
 +		/* Sanity check the directory index contents */
 +
-+		/* size should never be larger than SQUASHFS_NAME_LEN */
-+		size = le32_to_cpu(dir_index.size) + 1;
-+		if (size > SQUASHFS_NAME_LEN)
++		/* size should never be larger than SQUASHFS_DISK_NAME_LEN */
++		size = le32_to_cpu(dir_index.size);
++		if (size > SQUASHFS_DISK_NAME_LEN)
 +			break;
++		++ size;
 +
 +		/* The stored index should not be larger than max_index */
  		index = le32_to_cpu(dir_index.index);
@@ -215,7 +215,7 @@ index e961af7490dc6..b688e92a4efa0 100644
  
  	/*
  	 * Translate back from internal f_pos to external f_pos.
-@@ -105,7 +135,8 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+@@ -105,7 +136,8 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
  	struct inode *inode = file_inode(file);
  	struct squashfs_sb_info *msblk = inode->i_sb->s_fs_info;
  	s64 block;
@@ -225,7 +225,7 @@ index e961af7490dc6..b688e92a4efa0 100644
  	unsigned int inode_number, dir_count, size, type;
  	struct squashfs_dir_header dirh;
  	struct squashfs_dir_entry *dire = NULL;
-@@ -161,12 +192,15 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+@@ -161,12 +193,15 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
  				squashfs_i(inode)->dir_idx_start,
  				squashfs_i(inode)->dir_idx_offset,
  				squashfs_i(inode)->dir_idx_cnt,
@@ -242,7 +242,7 @@ index e961af7490dc6..b688e92a4efa0 100644
  		err = squashfs_read_metadata(inode->i_sb, &dirh, &block,
  					&offset, sizeof(dirh));
  		if (err < 0)
-@@ -183,23 +217,30 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
+@@ -183,15 +218,22 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
  			/*
  			 * Read directory entry.
  			 */
@@ -254,18 +254,21 @@ index e961af7490dc6..b688e92a4efa0 100644
  			if (err < 0)
  				goto failed_read;
  
+-			size = le16_to_cpu(dire->size) + 1;
 +			length += sizeof(*dire);
- 			size = le16_to_cpu(dire->size) + 1;
++			size = le16_to_cpu(dire->size);
++
++			/* size should never be larger than SQUASHFS_DISK_NAME_LEN */
++			if (size > SQUASHFS_DISK_NAME_LEN)
++				goto failed_read;
  
- 			/* size should never be larger than SQUASHFS_NAME_LEN */
- 			if (size > SQUASHFS_NAME_LEN)
+-			/* size should never be larger than SQUASHFS_NAME_LEN */
+-			if (size > SQUASHFS_NAME_LEN)
++			if (!squashfs_dir_space(inode, length, ++ size))
  				goto failed_read;
  
-+			if (!squashfs_dir_space(inode, length, size))
-+				goto failed_read;
-+
  			err = squashfs_read_metadata(inode->i_sb, dire->name,
- 					&block, &offset, size);
+@@ -199,7 +241,7 @@ static int squashfs_readdir(struct file *file, struct dir_context *ctx)
  			if (err < 0)
  				goto failed_read;
  
@@ -275,10 +278,10 @@ index e961af7490dc6..b688e92a4efa0 100644
  			if (ctx->pos >= length)
  				continue;
 diff --git a/fs/squashfs/namei.c b/fs/squashfs/namei.c
-index ac32fef1b3c63..8198233a4fc57 100644
+index ac32fef1b3c63..e53cb3c21f075 100644
 --- a/fs/squashfs/namei.c
 +++ b/fs/squashfs/namei.c
-@@ -61,59 +61,97 @@
+@@ -61,59 +61,98 @@
   * (if any) we have managed to read - the index isn't essential, just
   * quicker.
   */
@@ -340,19 +343,21 @@ index ac32fef1b3c63..8198233a4fc57 100644
 +		/* Sanity check the directory index contents */
  
 -		size = le32_to_cpu(index->size) + 1;
-+		/* size should never be larger than SQUASHFS_NAME_LEN */
-+		size = le32_to_cpu(dir_index->size) + 1;
- 		if (size > SQUASHFS_NAME_LEN)
+-		if (size > SQUASHFS_NAME_LEN)
++		/* size should never be larger than SQUASHFS_DISK_NAME_LEN */
++		size = le32_to_cpu(dir_index->size);
++		if (size > SQUASHFS_DISK_NAME_LEN)
  			break;
- 
--		err = squashfs_read_metadata(sb, index->name, &index_start,
++		++ size;
++
 +		/* The stored index should not be larger than max_index */
 +		index = le32_to_cpu(dir_index->index);
 +		if (index > max_index)
 +			break;
 +
 +		block = le32_to_cpu(dir_index->start_block);
-+
+ 
+-		err = squashfs_read_metadata(sb, index->name, &index_start,
 +		if (i > 0) {
 +			/* The stored index should be larger than the previous index */
 +			if (index <= length)
@@ -395,7 +400,7 @@ index ac32fef1b3c63..8198233a4fc57 100644
  out:
  	/*
  	 * Return index (f_pos) of the looked up metadata block.  Translate
-@@ -135,7 +173,8 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+@@ -135,7 +174,8 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
  	struct squashfs_dir_header dirh;
  	struct squashfs_dir_entry *dire = NULL;
  	s64 block;
@@ -405,7 +410,7 @@ index ac32fef1b3c63..8198233a4fc57 100644
  	unsigned int dir_count, size;
  
  	TRACE("Entered squashfs_lookup [%llx:%x]\n", squashfs_i(dir)->start,
-@@ -162,12 +201,16 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+@@ -162,12 +202,16 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
  	length = get_dir_index_using_name(dir->i_sb, &block, &offset,
  				squashfs_i(dir)->dir_idx_start,
  				squashfs_i(dir)->dir_idx_offset,
@@ -423,7 +428,7 @@ index ac32fef1b3c63..8198233a4fc57 100644
  		err = squashfs_read_metadata(dir->i_sb, &dirh, &block,
  				&offset, sizeof(dirh));
  		if (err < 0)
-@@ -184,23 +227,30 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
+@@ -184,15 +228,22 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
  			/*
  			 * Read directory entry.
  			 */
@@ -435,18 +440,21 @@ index ac32fef1b3c63..8198233a4fc57 100644
  			if (err < 0)
  				goto read_failure;
  
+-			size = le16_to_cpu(dire->size) + 1;
 +			length += sizeof(*dire);
- 			size = le16_to_cpu(dire->size) + 1;
++			size = le16_to_cpu(dire->size);
++
++			/* size should never be larger than SQUASHFS_DISK_NAME_LEN */
++			if (size > SQUASHFS_DISK_NAME_LEN)
++				goto data_error;
  
- 			/* size should never be larger than SQUASHFS_NAME_LEN */
- 			if (size > SQUASHFS_NAME_LEN)
+-			/* size should never be larger than SQUASHFS_NAME_LEN */
+-			if (size > SQUASHFS_NAME_LEN)
++			if (!squashfs_dir_space(dir, length, ++ size))
  				goto data_error;
  
-+			if (!squashfs_dir_space(dir, length, size))
-+				goto data_error;
-+
  			err = squashfs_read_metadata(dir->i_sb, dire->name,
- 					&block, &offset, size);
+@@ -200,7 +251,7 @@ static struct dentry *squashfs_lookup(struct inode *dir, struct dentry *dentry,
  			if (err < 0)
  				goto read_failure;
  
@@ -455,6 +463,20 @@ index ac32fef1b3c63..8198233a4fc57 100644
  
  			if (name[0] < dire->name[0])
  				goto exit_lookup;
+diff --git a/fs/squashfs/squashfs_fs.h b/fs/squashfs/squashfs_fs.h
+index 6ca8d7227a0ea..d126db0533dd7 100644
+--- a/fs/squashfs/squashfs_fs.h
++++ b/fs/squashfs/squashfs_fs.h
+@@ -32,6 +32,9 @@
+ /* Max length of filename (not 255) */
+ #define SQUASHFS_NAME_LEN		256
+ 
++/* Max on-disk length of filename */
++#define SQUASHFS_DISK_NAME_LEN		255
++
+ /* Max value for directory header count*/
+ #define SQUASHFS_DIR_COUNT		256
+ 
 diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
 index 9423d5a0a7000..59778eb5a8d56 100644
 --- a/fs/squashfs/squashfs_helpers.h

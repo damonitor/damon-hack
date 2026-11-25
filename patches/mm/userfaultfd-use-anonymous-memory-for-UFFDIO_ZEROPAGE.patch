@@ -1,0 +1,213 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:41 -0500
+Subject: [PATCH] userfaultfd: use anonymous memory for UFFDIO_ZEROPAGE on
+ private file mappings
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "userfaultfd: assorted fixes (part 1)", v3.
+
+This is a first batch of userfaultfd fixes, with more to come.
+
+These were found by a mix of regular old LLM review and by having an LLM
+write a TLA+ model of uffd interactions with PTE bits and other state and
+seeing what issues fell out.
+
+Most of these fix places where mm code loses uffd-wp or RWP protection
+while moving or migrating an entry. Userspace then either misses writes
+and accesses, or gets pages reported that nobody touched.
+There is also a hang in UFFDIO_MOVE, and UFFDIO_ZEROPAGE modifying a
+file through a private mapping.
+
+A few of the fixes change what userspace sees:
+
+ - UFFDIO_ZEROPAGE on a private file mapping no longer fails with
+   -EEXIST where the file already has a page, on an mm that cannot use
+   the zero page (patch 1)
+ - UFFDIO_MOVE returns -EEXIST for any huge destination PMD, not only
+   for a present THP (patch 2)
+ - UFFDIO_UNREGISTER with a misaligned hugetlb end fails before
+   unregistering anything, also if that hugetlb VMA is not registered
+   (patch 9)
+ - UFFDIO_REGISTER and UFFDIO_UNREGISTER accept a misaligned start that
+   lies in a gap before the first hugetlb VMA of the range (patch 9)
+ - UFFDIO_REGISTER returns -EINVAL rather than -EPERM for a misaligned
+   end in a hugetlb VMA without VM_MAYWRITE (patch 9)
+
+
+This patch (of 7):
+
+If the mm cannot map the shared zero page, UFFDIO_ZEROPAGE falls back to
+mfill_atomic_pte_zeroed_folio(), which allocates a zeroed folio and
+installs it through vma_uffd_ops(), no matter what kind of mapping it
+is. An s390 KVM guest with storage keys or protected virtualization is
+such an mm.
+
+For a MAP_PRIVATE shmem mapping, that adds the zeroed folio to the page
+cache of the file. That is wrong: a private mapping must never modify
+the file it maps, and the file might even be mapped from a read-only fd.
+
+The ioctl can also fail where it should succeed. A missing fault is only
+delivered for a hole in the file, but UFFDIO_ZEROPAGE can be called on
+an address that did not fault, or can race with a write to the file. If
+the file has a page at that offset by then, inserting the zeroed folio
+fails and the ioctl returns -EEXIST although nothing is mapped at the
+destination address.
+
+What we want is what UFFDIO_ZEROPAGE does on a private mapping when the
+shared zero page can be used, and what UFFDIO_COPY does: only check that
+nothing is mapped at the destination address, map zeroed memory there,
+and leave the page cache alone. The zeroed folio path did that before it
+was moved to vm_uffd_ops.
+
+To fix it, pick the ops in the common folio path, as
+mfill_atomic_pte_copy() did for UFFDIO_COPY: anon_uffd_ops for a private
+mapping, the ops of the VMA otherwise. That makes
+mfill_atomic_pte_copy() and mfill_atomic_pte_zeroed_folio() redundant,
+so remove them and rename __mfill_atomic_pte() to
+mfill_atomic_pte_folio().
+
+While at it, use vma_is_cow_mapping() to check for a private mapping.
+
+UFFDIO_ZEROPAGE no longer modifies the file, and only fails with -EEXIST
+if something is already mapped at the destination address.
+
+Link: https://lore.kernel.org/20261117-uffd-state-fixes-v3-0-b617009d1a4a@columbia.edu
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-1-b617009d1a4a@columbia.edu
+Fixes: f74991b4e383 ("shmem, userfaultfd: implement shmem uffd operations using vm_uffd_ops")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Acked-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: Breno Leitao <leitao@debian.org>
+Cc: <stable@vger.kernel.org>
+
+ mm/userfaultfd.c |   46 +++++++++++++++------------------------------
+ 1 file changed, 16 insertions(+), 30 deletions(-)
+---
+ mm/userfaultfd.c | 46 ++++++++++++++++------------------------------
+ 1 file changed, 16 insertions(+), 30 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 4d1250ea3c1c6..d54f5b2365895 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -535,15 +535,27 @@ static int mfill_copy_folio_retry(struct mfill_state *mfill_state,
+ 	return 0;
+ }
+ 
+-static int __mfill_atomic_pte(struct mfill_state *state,
+-			      const struct vm_uffd_ops *ops)
++static int mfill_atomic_pte_folio(struct mfill_state *state)
+ {
++	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+ 	unsigned long dst_addr = state->dst_addr;
+ 	unsigned long src_addr = state->src_addr;
+ 	uffd_flags_t flags = state->flags;
+ 	struct folio *folio;
+ 	int ret;
+ 
++	/*
++	 * The normal page fault path for a MAP_PRIVATE mapping in a
++	 * file-backed VMA will invoke the fault, fill the hole in the file and
++	 * COW it right away. The result generates plain anonymous memory.
++	 * So when we are asked to fill a hole in a MAP_PRIVATE mapping, we'll
++	 * generate anonymous memory directly without actually filling the
++	 * hole. For the MAP_PRIVATE case the robustness check only happens in
++	 * the pagetable (to verify it's still none) and not in the page cache.
++	 */
++	if (vma_is_cow_mapping(state->vma))
++		ops = &anon_uffd_ops;
++
+ 	if (!ops) {
+ 		VM_WARN_ONCE(1, "UFFDIO_COPY for unsupported VMA");
+ 		return -EOPNOTSUPP;
+@@ -601,32 +613,6 @@ static int __mfill_atomic_pte(struct mfill_state *state,
+ 	return ret;
+ }
+ 
+-static int mfill_atomic_pte_copy(struct mfill_state *state)
+-{
+-	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+-
+-	/*
+-	 * The normal page fault path for a MAP_PRIVATE mapping in a
+-	 * file-backed VMA will invoke the fault, fill the hole in the file and
+-	 * COW it right away. The result generates plain anonymous memory.
+-	 * So when we are asked to fill a hole in a MAP_PRIVATE mapping, we'll
+-	 * generate anonymous memory directly without actually filling the
+-	 * hole. For the MAP_PRIVATE case the robustness check only happens in
+-	 * the pagetable (to verify it's still none) and not in the page cache.
+-	 */
+-	if (!(state->vma->vm_flags & VM_SHARED))
+-		ops = &anon_uffd_ops;
+-
+-	return __mfill_atomic_pte(state, ops);
+-}
+-
+-static int mfill_atomic_pte_zeroed_folio(struct mfill_state *state)
+-{
+-	const struct vm_uffd_ops *ops = vma_uffd_ops(state->vma);
+-
+-	return __mfill_atomic_pte(state, ops);
+-}
+-
+ static int mfill_atomic_pte_zeropage(struct mfill_state *state)
+ {
+ 	struct vm_area_struct *dst_vma = state->vma;
+@@ -638,7 +624,7 @@ static int mfill_atomic_pte_zeropage(struct mfill_state *state)
+ 
+ 	if (mm_forbids_zeropage(dst_vma->vm_mm) ||
+ 	    (dst_vma->vm_flags & VM_SHARED))
+-		return mfill_atomic_pte_zeroed_folio(state);
++		return mfill_atomic_pte_folio(state);
+ 
+ 	_dst_pte = pte_mkspecial(pfn_pte(zero_pfn(dst_addr),
+ 					 dst_vma->vm_page_prot));
+@@ -931,7 +917,7 @@ static __always_inline ssize_t mfill_atomic_pte(struct mfill_state *state)
+ 	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_POISON))
+ 		return mfill_atomic_pte_poison(state);
+ 	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_COPY))
+-		return mfill_atomic_pte_copy(state);
++		return mfill_atomic_pte_folio(state);
+ 	if (uffd_flags_mode_is(flags, MFILL_ATOMIC_ZEROPAGE))
+ 		return mfill_atomic_pte_zeropage(state);
+ 
+-- 
+2.47.3
+

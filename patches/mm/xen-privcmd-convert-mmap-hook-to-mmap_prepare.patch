@@ -1,0 +1,117 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:44 +0000
+Subject: [PATCH] xen/privcmd: convert mmap hook to mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch series "mm: convert further simple mmap hooks to mmap_prepare", v2.
+
+Continue the conversion of users of the deprecated f_op->mmap callback to
+f_op->mmap_prepare. Keep things gentle this cycle by targeting simple
+cases.
+
+No functional change intended.
+
+
+This patch (of 13):
+
+Move from the deprecated mmap hook to the new mmap_prepare hook.
+
+The hook only sets VMA flags and operations. The VMA private data is
+already NULL at this point, so we no longer explicitly clear it.
+
+Link: https://lore.kernel.org/20261124-late-2026-mmap_prepare-v2-0-0b0d99d655f9@kernel.org
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-1-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Andrew Jeffery <andrew@codeconstruct.com.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+
+ drivers/xen/privcmd.c |   11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+---
+ drivers/xen/privcmd.c | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/xen/privcmd.c b/drivers/xen/privcmd.c
+index 221b31611343e..6d9e1fe03337a 100644
+--- a/drivers/xen/privcmd.c
++++ b/drivers/xen/privcmd.c
+@@ -1645,14 +1645,13 @@ static const struct vm_operations_struct privcmd_vm_ops = {
+ 	.fault = privcmd_fault
+ };
+ 
+-static int privcmd_mmap(struct file *file, struct vm_area_struct *vma)
++static int privcmd_mmap_prepare(struct vm_area_desc *desc)
+ {
+ 	/* DONTCOPY is essential for Xen because copy_page_range doesn't know
+ 	 * how to recreate these mappings */
+-	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTCOPY |
+-			 VM_DONTEXPAND | VM_DONTDUMP);
+-	vma->vm_ops = &privcmd_vm_ops;
+-	vma->vm_private_data = NULL;
++	vma_desc_set_flags(desc, VMA_IO_BIT, VMA_PFNMAP_BIT, VMA_DONTCOPY_BIT,
++			   VMA_DONTEXPAND_BIT, VMA_DONTDUMP_BIT);
++	desc->vm_ops = &privcmd_vm_ops;
+ 
+ 	return 0;
+ }
+@@ -1681,7 +1680,7 @@ const struct file_operations xen_privcmd_fops = {
+ 	.unlocked_ioctl = privcmd_ioctl,
+ 	.open = privcmd_open,
+ 	.release = privcmd_release,
+-	.mmap = privcmd_mmap,
++	.mmap_prepare = privcmd_mmap_prepare,
+ };
+ EXPORT_SYMBOL_GPL(xen_privcmd_fops);
+ 
+-- 
+2.47.3
+

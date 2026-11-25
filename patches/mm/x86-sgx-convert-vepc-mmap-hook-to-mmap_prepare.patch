@@ -1,0 +1,111 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:47 +0000
+Subject: [PATCH] x86/sgx: convert vepc mmap hook to mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move from the deprecated mmap hook to the new mmap_prepare hook. The hook
+only checks that the mapping is shared and sets VMA flags, operations and
+private data.
+
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-4-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jarkko Sakkinen <jarkko@kernel.org>
+Acked-by: Dave Hansen <dave.hansen@linux.intel.com> # x86 bits
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Andrew Jeffery <andrew@codeconstruct.com.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+Cc: Dave Hansen <dave.hansen@intel.com>
+
+ arch/x86/kernel/cpu/sgx/virt.c |   15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+---
+ arch/x86/kernel/cpu/sgx/virt.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/arch/x86/kernel/cpu/sgx/virt.c b/arch/x86/kernel/cpu/sgx/virt.c
+index 6a1933ddc6fcd..850990519ca54 100644
+--- a/arch/x86/kernel/cpu/sgx/virt.c
++++ b/arch/x86/kernel/cpu/sgx/virt.c
+@@ -98,17 +98,18 @@ static const struct vm_operations_struct sgx_vepc_vm_ops = {
+ 	.fault = sgx_vepc_fault,
+ };
+ 
+-static int sgx_vepc_mmap(struct file *file, struct vm_area_struct *vma)
++static int sgx_vepc_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	struct sgx_vepc *vepc = file->private_data;
++	struct sgx_vepc *vepc = desc->file->private_data;
+ 
+-	if (!(vma->vm_flags & VM_SHARED))
++	if (!vma_desc_test(desc, VMA_SHARED_BIT))
+ 		return -EINVAL;
+ 
+-	vma->vm_ops = &sgx_vepc_vm_ops;
++	desc->vm_ops = &sgx_vepc_vm_ops;
+ 	/* Don't copy VMA in fork() */
+-	vm_flags_set(vma, VM_PFNMAP | VM_IO | VM_DONTDUMP | VM_DONTCOPY);
+-	vma->vm_private_data = vepc;
++	vma_desc_set_flags(desc, VMA_PFNMAP_BIT, VMA_IO_BIT, VMA_DONTDUMP_BIT,
++			   VMA_DONTCOPY_BIT);
++	desc->private_data = vepc;
+ 
+ 	return 0;
+ }
+@@ -315,7 +316,7 @@ static const struct file_operations sgx_vepc_fops = {
+ 	.unlocked_ioctl	= sgx_vepc_ioctl,
+ 	.compat_ioctl	= sgx_vepc_ioctl,
+ 	.release	= sgx_vepc_release,
+-	.mmap		= sgx_vepc_mmap,
++	.mmap_prepare	= sgx_vepc_mmap_prepare,
+ };
+ 
+ static struct miscdevice sgx_vepc_dev = {
+-- 
+2.47.3
+

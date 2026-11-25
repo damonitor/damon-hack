@@ -1,0 +1,67 @@
+From: Avi Weiss <thnkslprpt@gmail.com>
+Date: Tue, 24 Nov 2026 10:29:14 +0200
+Subject: [PATCH] reboot: validate reboot CPU against the possible mask
+
+reboot_setup() and cpu_store() compare CPU IDs with num_possible_cpus(),
+which is a count rather than an upper bound.  With a sparse possible mask,
+this rejects valid CPUs and accepts impossible IDs.  reboot_setup() also
+narrows the parsed CPU number to int before checking it, allowing large
+values to be truncated.
+
+Validate against nr_cpu_ids and cpu_possible() in both interfaces.  Use
+simple_strtoull() and unsigned long long for the boot option, so the value
+is not narrowed before validation on 32- or 64-bit kernels.  Preserve the
+comma-separated reboot= syntax.
+
+Link: https://patch.msgid.link/20261124082914.564587-1-thnkslprpt@gmail.com
+Fixes: df5b0ab3e08a ("reboot: fix overflow parsing reboot cpu number")
+Fixes: 2c622ed0eaa3 ("reboot: allow to specify reboot mode via sysfs")
+Signed-off-by: Avi Weiss <thnkslprpt@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Bradley Morgan <bradley.morgan@linux.dev>
+Closes: https://lore.kernel.org/r/20260622154216.10064-1-include@grrlz.net
+Suggested-by: Bradley Morgan <bradley.morgan@linux.dev>
+Link: https://lore.kernel.org/r/D92156F5-5924-45CD-BCFE-AF385BDD15CF@mainlining.org
+Reviewed-by: Bradley Morgan <bradley.morgan@linux.dev>
+Cc: Matteo Croce <mcroce@microsoft.com>
+Cc: Petr Mladek <pmladek@suse.com>
+
+ kernel/reboot.c |   11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+---
+ kernel/reboot.c | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index bc71183d4ad87..fe7973bff6202 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -1147,12 +1147,11 @@ static int __init reboot_setup(char *str)
+ 			str += str[1] == 'm' && str[2] == 'p' ? 3 : 1;
+ 
+ 			if (isdigit(str[0])) {
+-				int cpu = simple_strtoul(str, NULL, 0);
++				unsigned long long cpu = simple_strtoull(str, NULL, 0);
+ 
+-				if (cpu >= num_possible_cpus()) {
+-					pr_err("Ignoring the CPU number in reboot= option. "
+-					"CPU %d exceeds possible cpu number %d\n",
+-					cpu, num_possible_cpus());
++				if (cpu >= nr_cpu_ids || !cpu_possible(cpu)) {
++					pr_err("Ignoring invalid CPU %llu in reboot= option\n",
++					       cpu);
+ 					break;
+ 				}
+ 				reboot_cpu = cpu;
+@@ -1354,7 +1353,7 @@ static ssize_t cpu_store(struct kobject *kobj, struct kobj_attribute *attr,
+ 	if (rc)
+ 		return rc;
+ 
+-	if (cpunum >= num_possible_cpus())
++	if (cpunum >= nr_cpu_ids || !cpu_possible(cpunum))
+ 		return -ERANGE;
+ 
+ 	reboot_default = 0;
+-- 
+2.47.3
+

@@ -1,0 +1,86 @@
+From: Chris Mason <mason@kernel.org>
+Date: Sat, 21 Nov 2026 16:02:33 +0000
+Subject: [PATCH] mm/vma: make brk mappings non-executable under MDWE
+
+With PR_SET_MDWE in effect, brk() and the ELF loader can still create
+anonymous mappings that are both writable and executable.
+
+MDWE only holds if every path that decides the flags of a VMA asks
+map_deny_write_exec(). mmap_region() and do_mprotect_pkey() do, but
+do_brk_flags() does not. It always sets VMA_WRITE_BIT, and it gets
+VMA_EXEC_BIT in any of these cases:
+
+    VMA_DATA_DEFAULT_FLAGS is
+      VMA_DATA_FLAGS_TSK_EXEC    the personality has READ_IMPLIES_EXEC
+                                 (e.g. x86, arm, arm64, mips)
+      VMA_DATA_FLAGS_EXEC        always
+                                 (the default, e.g. m68k, sh, sparc)
+    vm_brk_flags(is_exec)        elf_load() of a PT_LOAD with PF_X and
+                                 p_memsz > p_filesz
+
+Fix the issue by dropping VMA_EXEC_BIT if MDWE is in effect, so that
+brk() and execve() keep working where the bit is only a default.
+
+Under MDWE, a task that runs code from its heap, or from the part of an
+executable PT_LOAD beyond p_filesz, now gets SIGSEGV in the cases above.
+
+mprotect(PROT_READ | PROT_EXEC) on these mappings now fails with
+-EACCES. While the personality has READ_IMPLIES_EXEC, so does
+mprotect(PROT_READ), as on any other anonymous mapping that is not
+executable.
+
+[ljs@kernel.org: switched to MMF_HAS_MDWE test, tweaked commit msg]
+Link: https://patch.msgid.link/20261121-some-more-ai-fixes-v1-7-236e925d9b64@kernel.org
+Fixes: b507808ebce2 ("mm: implement memory-deny-write-execute as a prctl")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+  Link: https://lore.kernel.org/179536252140.412063.16869457803147347876.b4-reply@b4
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Peter Zijlstra <a.p.zijlstra@chello.nl>
+Cc: Ollie Wild <aaw@google.com>
+Cc: Adrian Bunk <bunk@stusta.de>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+
+ mm/vma.c |    4 ++++
+ 1 file changed, 4 insertions(+)
+---
+ mm/vma.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mm/vma.c b/mm/vma.c
+index f8cf319ff9cff..a8b8101ff7813 100644
+--- a/mm/vma.c
++++ b/mm/vma.c
+@@ -3235,6 +3235,10 @@ int do_brk_flags(struct vma_iterator *vmi, struct vm_area_struct *vma,
+ 	vma_flags_set(&vma_flags, VMA_ACCOUNT_BIT);
+ 	vma_flags_set_mask(&vma_flags, mm->def_vma_flags);
+ 
++	/* The flags are implied, so under MDWE drop exec rather than fail. */
++	if (mm_flags_test(MMF_HAS_MDWE, mm))
++		vma_flags_clear(&vma_flags, VMA_EXEC_BIT);
++
+ 	vma_flags = ksm_vma_flags(mm, NULL, vma_flags);
+ 	if (!may_expand_vm(mm, &vma_flags, len >> PAGE_SHIFT))
+ 		return -ENOMEM;
+-- 
+2.47.3
+

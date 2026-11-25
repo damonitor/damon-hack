@@ -1,5 +1,5 @@
 From: Phillip Lougher <phillip@squashfs.org.uk>
-Date: Mon, 23 Nov 2026 03:42:57 +0000
+Date: Wed, 25 Nov 2026 01:47:30 +0000
 Subject: [PATCH] Squashfs: sanity check fragment block location and range
 
 When reading fragment blocks from disk the location and range of the
@@ -31,6 +31,12 @@ been detected earlier.
 This commit adds extra sanity checking to ensure the fragment block
 location and range are within bounds before a free fragment block is
 obtained.
+
+Also because the fragment block value is unchecked, a false value of
+SQUASHFS_INVALID_BLK read off disk, will trick the code into believing
+the file doesn't have a fragment, because that value is later used to
+indicate if a file has a fragment.  To avoid this, this commit adds and
+uses an inode flag.
 
 Reproducer
 ==========
@@ -96,30 +102,27 @@ popd 2>&1> /dev/null
 rm -rf $DIR
 =========================================================================
 
-Link: https://patch.msgid.link/20261123034304.261742-17-phillip@squashfs.org.uk
-Fixes: f400e12656ab ("Squashfs: cache operations")
+Link: https://patch.msgid.link/20261125014737.347231-17-phillip@squashfs.org.uk
 Signed-off-by: Phillip Lougher <phillip@squashfs.org.uk>
 Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
-Cc: Christian Loehle <christian.loehle@arm.com>
-Cc: Dan Carpenter <error27@gmail.com>
-Cc: Phillip Lougher <phillip.lougher@gmail.com>
-Cc: syzbot ci <syzbot+ci04e7314748e3f6be@syzkaller.appspotmail.com>
 
  fs/squashfs/cache.c            |    7 +++++--
- fs/squashfs/file.c             |    8 ++++++--
+ fs/squashfs/file.c             |   16 +++++++++-------
  fs/squashfs/fragment.c         |    5 +++--
- fs/squashfs/inode.c            |   12 ++++--------
+ fs/squashfs/inode.c            |   20 ++++++++++++--------
  fs/squashfs/squashfs.h         |    3 ++-
+ fs/squashfs/squashfs_fs_i.h    |    1 +
  fs/squashfs/squashfs_helpers.h |   24 ++++++++++++++++++++++--
- 6 files changed, 42 insertions(+), 17 deletions(-)
+ 7 files changed, 54 insertions(+), 22 deletions(-)
 ---
  fs/squashfs/cache.c            |  7 +++++--
- fs/squashfs/file.c             |  8 ++++++--
+ fs/squashfs/file.c             | 16 +++++++++-------
  fs/squashfs/fragment.c         |  5 +++--
- fs/squashfs/inode.c            | 12 ++++--------
+ fs/squashfs/inode.c            | 20 ++++++++++++--------
  fs/squashfs/squashfs.h         |  3 ++-
+ fs/squashfs/squashfs_fs_i.h    |  1 +
  fs/squashfs/squashfs_helpers.h | 24 ++++++++++++++++++++++--
- 6 files changed, 42 insertions(+), 17 deletions(-)
+ 7 files changed, 54 insertions(+), 22 deletions(-)
 
 diff --git a/fs/squashfs/cache.c b/fs/squashfs/cache.c
 index 7cb16414cd23f..4b6ef8838bc62 100644
@@ -141,7 +144,7 @@ index 7cb16414cd23f..4b6ef8838bc62 100644
  
  
 diff --git a/fs/squashfs/file.c b/fs/squashfs/file.c
-index 76a61d2cc68c8..5619828ab66fa 100644
+index 76a61d2cc68c8..550a68c27d7dc 100644
 --- a/fs/squashfs/file.c
 +++ b/fs/squashfs/file.c
 @@ -443,7 +443,7 @@ static int squashfs_readpage_fragment(struct folio *folio, int expected)
@@ -163,7 +166,17 @@ index 76a61d2cc68c8..5619828ab66fa 100644
  	return res;
  }
  
-@@ -519,6 +520,9 @@ static int squashfs_readahead_fragment(struct inode *inode, struct page **page,
+@@ -481,8 +482,7 @@ static int squashfs_read_folio(struct file *file, struct folio *folio)
+ 					PAGE_SHIFT))
+ 		goto out;
+ 
+-	if (index < file_end || squashfs_i(inode)->fragment_block ==
+-					SQUASHFS_INVALID_BLK) {
++	if (index < file_end || !squashfs_i(inode)->has_fragment) {
+ 		u64 block = 0;
+ 
+ 		res = read_blocklist(inode, index, &block);
+@@ -519,6 +519,9 @@ static int squashfs_readahead_fragment(struct inode *inode, struct page **page,
  	void *addr;
  	struct page *last_page;
  
@@ -172,6 +185,25 @@ index 76a61d2cc68c8..5619828ab66fa 100644
 +
  	if (buffer->error)
  		goto out;
+ 
+@@ -616,7 +619,7 @@ static void squashfs_readahead(struct readahead_control *ractl)
+ 			goto skip_pages;
+ 
+ 		if (start >> msblk->block_log == file_end &&
+-				squashfs_i(inode)->fragment_block != SQUASHFS_INVALID_BLK) {
++				squashfs_i(inode)->has_fragment) {
+ 			res = squashfs_readahead_fragment(inode, pages,
+ 					nr_pages, expected, start);
+ 			if (res)
+@@ -686,8 +689,7 @@ static loff_t seek_hole_data(struct file *file, loff_t offset, int whence)
+ 		return -ENXIO;
+ 
+ 	/* is offset within tailend and is tailend packed into a fragment? */
+-	if (index + 1 == file_end &&
+-			squashfs_i(inode)->fragment_block != SQUASHFS_INVALID_BLK) {
++	if (index + 1 == file_end && squashfs_i(inode)->has_fragment) {
+ 		if (whence == SEEK_DATA)
+ 			return offset;
  
 diff --git a/fs/squashfs/fragment.c b/fs/squashfs/fragment.c
 index 1f372374c29d2..429dbeba9c21d 100644
@@ -197,10 +229,18 @@ index 1f372374c29d2..429dbeba9c21d 100644
  
  
 diff --git a/fs/squashfs/inode.c b/fs/squashfs/inode.c
-index 380714ac4d342..15db4ac3fa75b 100644
+index 380714ac4d342..418dd58bdc7cd 100644
 --- a/fs/squashfs/inode.c
 +++ b/fs/squashfs/inode.c
-@@ -158,11 +158,9 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+@@ -136,6 +136,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 	type = le16_to_cpu(sqshb_ino->inode_type);
+ 	switch (type) {
+ 	case SQUASHFS_REG_TYPE: {
++		char has_fragment;
+ 		unsigned int frag_offset, frag;
+ 		int frag_size;
+ 		u64 frag_blk;
+@@ -158,12 +159,12 @@ int squashfs_read_inode(struct inode *inode, long long ino)
  				goto failed_read;
  			}
  			frag_offset = le32_to_cpu(sqsh_ino->offset);
@@ -211,10 +251,29 @@ index 380714ac4d342..15db4ac3fa75b 100644
 +			if (err < 0)
  				goto failed_read;
 -			}
++			has_fragment = true;
  		} else {
++			has_fragment = false;
  			frag_blk = SQUASHFS_INVALID_BLK;
  			frag_size = 0;
-@@ -215,11 +213,9 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 			frag_offset = 0;
+@@ -173,6 +174,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		inode->i_fop = &squashfs_file_operations;
+ 		inode->i_mode |= S_IFREG;
+ 		inode->i_blocks = ((inode->i_size - 1) >> 9) + 1;
++		squashfs_i(inode)->has_fragment = has_fragment;
+ 		squashfs_i(inode)->fragment_block = frag_blk;
+ 		squashfs_i(inode)->fragment_size = frag_size;
+ 		squashfs_i(inode)->fragment_offset = frag_offset;
+@@ -189,6 +191,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		break;
+ 	}
+ 	case SQUASHFS_LREG_TYPE: {
++		char has_fragment;
+ 		unsigned int frag_offset, frag;
+ 		int frag_size;
+ 		u64 frag_blk;
+@@ -215,12 +218,12 @@ int squashfs_read_inode(struct inode *inode, long long ino)
  				goto failed_read;
  			}
  			frag_offset = le32_to_cpu(sqsh_ino->offset);
@@ -225,9 +284,20 @@ index 380714ac4d342..15db4ac3fa75b 100644
 +			if (err < 0)
  				goto failed_read;
 -			}
++			has_fragment = true;
  		} else {
++			has_fragment = false;
  			frag_blk = SQUASHFS_INVALID_BLK;
  			frag_size = 0;
+ 			frag_offset = 0;
+@@ -234,6 +237,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
+ 		inode->i_blocks = (inode->i_size -
+ 				le64_to_cpu(sqsh_ino->sparse) + 511) >> 9;
+ 
++		squashfs_i(inode)->has_fragment = has_fragment;
+ 		squashfs_i(inode)->fragment_block = frag_blk;
+ 		squashfs_i(inode)->fragment_size = frag_size;
+ 		squashfs_i(inode)->fragment_offset = frag_offset;
 diff --git a/fs/squashfs/squashfs.h b/fs/squashfs/squashfs.h
 index 4851bd964502a..1947a469a0b4e 100644
 --- a/fs/squashfs/squashfs.h
@@ -242,6 +312,18 @@ index 4851bd964502a..1947a469a0b4e 100644
  extern __le64 *squashfs_read_fragment_index_table(struct super_block *,
  				u64, u64, unsigned int);
  
+diff --git a/fs/squashfs/squashfs_fs_i.h b/fs/squashfs/squashfs_fs_i.h
+index 90c3b085ac0e5..d69bc9d15d9c1 100644
+--- a/fs/squashfs/squashfs_fs_i.h
++++ b/fs/squashfs/squashfs_fs_i.h
+@@ -17,6 +17,7 @@ struct squashfs_inode_info {
+ 	unsigned int	xattr_size;
+ 	unsigned int	xattr_count;
+ 	int		parent;
++	bool		has_fragment;
+ 	union {
+ 		struct {
+ 			u64		fragment_block;
 diff --git a/fs/squashfs/squashfs_helpers.h b/fs/squashfs/squashfs_helpers.h
 index dc7c64bf61abd..6481ac2363576 100644
 --- a/fs/squashfs/squashfs_helpers.h

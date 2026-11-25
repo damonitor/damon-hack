@@ -1,0 +1,119 @@
+From: "Lorenzo Stoakes (ARM)" <ljs@kernel.org>
+Date: Tue, 24 Nov 2026 14:02:52 +0000
+Subject: [PATCH] soc: qcom: rmtfs_mem: convert mmap hook to mmap_prepare
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Move from the deprecated mmap hook to the new mmap_prepare hook, using the
+PFN remap mmap action to map the region.
+
+Link: https://patch.msgid.link/20261124-late-2026-mmap_prepare-v2-9-0b0d99d655f9@kernel.org
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Cc: Juergen Gross <jgross@suse.com>
+Cc: Stefano Stabellini <sstabellini@kernel.org>
+Cc: Oleksandr Tyshchenko <oleksandr_tyshchenko@epam.com>
+Cc: Madhavan Srinivasan <maddy@linux.ibm.com>
+Cc: Nicholas Piggin <npiggin@gmail.com>
+Cc: Michael Ellerman <mpe@ellerman.id.au>
+Cc: Christophe Leroy <chleroy@kernel.org>
+Cc: Ritesh Harjani (IBM) <ritesh.list@gmail.com>
+Cc: Shrikanth Hegde <sshegde@linux.ibm.com>
+Cc: Haiyang Zhang <haiyangz@microsoft.com>
+Cc: Wei Liu <wei.liu@kernel.org>
+Cc: Dexuan Cui <decui@microsoft.com>
+Cc: Michael S. Tsirkin <mst@redhat.com>
+Cc: Jason Wang <jasowangio@gmail.com>
+Cc: Eugenio Pérez <eperezma@redhat.com>
+Cc: Xuan Zhuo <xuanzhuo@linux.alibaba.com>
+Cc: Jarkko Sakkinen <jarkko@kernel.org>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Thomas Gleixner <tglx@kernel.org>
+Cc: Ingo Molnar <mingo@redhat.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: H. Peter Anvin <hpa@zytor.com>
+Cc: Paul Moore <paul@paul-moore.com>
+Cc: Stephen Smalley <stephen.smalley.work@gmail.com>
+Cc: Ondrej Mosnáček <omosnacek@gmail.com>
+Cc: Joel Stanley <joel@jms.id.au>
+Cc: Andrew Jeffery <andrew@codeconstruct.com.au>
+Cc: Ryan Chen <ryan_chen@aspeedtech.com>
+Cc: Billy Tsai <billy_tsai@aspeedtech.com>
+Cc: Bjorn Andersson <andersson@kernel.org>
+Cc: Konrad Dybcio <konradybcio@kernel.org>
+Cc: Abel Vesa <abelvesa@kernel.org>
+Cc: Jens Wiklander <jenswi@kernel.org>
+Cc: Sumit Garg <sumit.garg@kernel.org>
+Cc: Scott Branden <scott.branden@broadcom.com>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: Richard Cochran <richardcochran@gmail.com>
+Cc: Andrew Lunn <andrew+netdev@lunn.ch>
+Cc: David S. Miller <davem@davemloft.net>
+Cc: Eric Dumazet <edumazet@kernel.org>
+Cc: Jakub Kicinski <kuba@kernel.org>
+Cc: Paolo Abeni <pabeni@redhat.com>
+Cc: Jens Wiklander <jens.wiklander@oss.qualcomm.com>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Kameron Carr <kameroncarr@linux.microsoft.com>
+Cc: Michael Kelley <mhklinux@outlook.com>
+Cc: David Woodhouse <dwmw@amazon.co.uk>
+
+ drivers/soc/qcom/rmtfs_mem.c |   22 ++++++++++------------
+ 1 file changed, 10 insertions(+), 12 deletions(-)
+---
+ drivers/soc/qcom/rmtfs_mem.c | 22 ++++++++++------------
+ 1 file changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/soc/qcom/rmtfs_mem.c b/drivers/soc/qcom/rmtfs_mem.c
+index 342c0845134eb..5e2ac75f41d57 100644
+--- a/drivers/soc/qcom/rmtfs_mem.c
++++ b/drivers/soc/qcom/rmtfs_mem.c
+@@ -129,24 +129,22 @@ static const struct class rmtfs_class = {
+ 	.name           = "rmtfs",
+ };
+ 
+-static int qcom_rmtfs_mem_mmap(struct file *filep, struct vm_area_struct *vma)
++static int qcom_rmtfs_mem_mmap_prepare(struct vm_area_desc *desc)
+ {
+-	struct qcom_rmtfs_mem *rmtfs_mem = filep->private_data;
++	struct qcom_rmtfs_mem *rmtfs_mem = desc->file->private_data;
+ 
+-	if (vma->vm_end - vma->vm_start > rmtfs_mem->size) {
++	if (vma_desc_size(desc) > rmtfs_mem->size) {
+ 		dev_dbg(&rmtfs_mem->dev,
+ 			"vm_end[%lu] - vm_start[%lu] [%lu] > mem->size[%pa]\n",
+-			vma->vm_end, vma->vm_start,
+-			(vma->vm_end - vma->vm_start), &rmtfs_mem->size);
++			desc->end, desc->start, vma_desc_size(desc),
++			&rmtfs_mem->size);
+ 		return -EINVAL;
+ 	}
+ 
+-	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+-	return remap_pfn_range(vma,
+-			       vma->vm_start,
+-			       rmtfs_mem->addr >> PAGE_SHIFT,
+-			       vma->vm_end - vma->vm_start,
+-			       vma->vm_page_prot);
++	desc->page_prot = pgprot_writecombine(desc->page_prot);
++	mmap_action_remap_full(desc, rmtfs_mem->addr >> PAGE_SHIFT);
++
++	return 0;
+ }
+ 
+ static const struct file_operations qcom_rmtfs_mem_fops = {
+@@ -156,7 +154,7 @@ static const struct file_operations qcom_rmtfs_mem_fops = {
+ 	.write = qcom_rmtfs_mem_write,
+ 	.release = qcom_rmtfs_mem_release,
+ 	.llseek = default_llseek,
+-	.mmap = qcom_rmtfs_mem_mmap,
++	.mmap_prepare = qcom_rmtfs_mem_mmap_prepare,
+ };
+ 
+ static void qcom_rmtfs_mem_release_device(struct device *dev)
+-- 
+2.47.3
+

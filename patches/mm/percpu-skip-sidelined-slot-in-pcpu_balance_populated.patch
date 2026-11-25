@@ -1,0 +1,64 @@
+From: Chris Wiseman <chriswiseman@google.com>
+Date: Mon, 16 Nov 2026 14:28:07 +0000
+Subject: [PATCH] percpu: skip sidelined slot in pcpu_balance_populated()
+
+Commit f183324133ea ("percpu: implement partial chunk depopulation")
+placed pcpu_sidelined_slot at __pcpu_size_to_slot(pcpu_unit_size) + 1 and
+moved pcpu_free_slot to pcpu_sidelined_slot + 1 so pcpu_alloc() checks
+sidelined chunks before free chunks.  pcpu_balance_populated() also loops
+from pcpu_size_to_slot(PAGE_SIZE) through pcpu_free_slot, but was not
+updated to skip pcpu_sidelined_slot.
+
+When pcpu_nr_empty_pop_pages drops below PCPU_EMPTY_POP_PAGES_HIGH and
+active chunks have no unpopulated pages, pcpu_balance_populated() walks
+into pcpu_sidelined_slot and repopulates chunks that were just sidelined
+to save memory.  Because chunk->isolated is still true on sidelined
+chunks, pcpu_update_empty_pages() does not count those newly populated
+pages toward pcpu_nr_empty_pop_pages.  That leaves the global empty page
+count below the threshold, so subsequent balance passes keep refilling
+every sidelined chunk back to 100% before reaching pcpu_free_slot.
+
+Skip pcpu_sidelined_slot in pcpu_balance_populated() so sidelined chunks
+stay depopulated until pcpu_alloc() actually needs them.
+
+Benchmark results (4-CPU arm64, 4 sidelined chunks with 60 reclaimed pages
+after triggering pcpu_balance_populated()):
+
+   Metric                                    Before     After     Delta
+   --------------------------------------------------------------------
+   Sidelined pages repopulated                   60         0    -100%
+   Sidelined backing pages (kB)                 960         0  -960 kB
+
+Link: https://patch.msgid.link/18e88cd2a725491b.3137322e32332e3235332e313736.c1dd7.0000sendgmr@google.com
+Fixes: f183324133ea ("percpu: implement partial chunk depopulation")
+Signed-off-by: Chris Wiseman <chriswiseman@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: <stable@vger.kernel.org>
+
+ mm/percpu.c |    3 +++
+ 1 file changed, 3 insertions(+)
+---
+ mm/percpu.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mm/percpu.c b/mm/percpu.c
+index 2e67d7c26e2f9..21c717e8cc8be 100644
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -2022,6 +2022,9 @@ static void pcpu_balance_populated(void)
+ 		if (!nr_to_pop)
+ 			break;
+ 
++		if (slot == pcpu_sidelined_slot)
++			continue;
++
+ 		list_for_each_entry(chunk, &pcpu_chunk_lists[slot], list) {
+ 			nr_unpop = chunk->nr_pages - chunk->nr_populated;
+ 			if (nr_unpop)
+-- 
+2.47.3
+

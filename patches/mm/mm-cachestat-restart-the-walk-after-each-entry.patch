@@ -1,0 +1,128 @@
+From: Chris Mason <mason@kernel.org>
+Date: Fri, 13 Nov 2026 21:45:21 +0000
+Subject: [PATCH] mm: cachestat: restart the walk after each entry
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+cachestat() can leave cached pages out of its counts. This happens if
+the entry that the call has just counted is replaced by a larger folio
+that starts in the same XArray slot.
+
+The issue is that filemap_cachestat() walks the page cache under the RCU
+read lock, so racing concurrent collapse/split is possible.
+
+Thus, an entry can be replaced immediately after the walk has returned
+it. When that happens, the next xas_find() skips the sibling entries that
+point to the slot of that entry, since ordinarily they belong to that
+entry.
+
+However a concurrent collapse_file() or __filemap_add_folio() (when
+replacing a shadow entry) can store a larger folio in the slot, in which
+case the sibling entries belong to the new folio and the walk still skips
+them.
+
+Consider:
+
+    cachestat                         collapse
+    =========                         ========
+    count a 64-page folio in slot 8
+                                      store a 512-page folio in slot 8,
+                                      with sibling entries in slots 9-15
+    xas_find() starts at slot 8
+    and skips slots 9-15
+      /* 448 pages are never counted */
+
+Also consider:
+
+    filemap_cachestat()                  __filemap_add_folio()
+    ===================                  =====================
+    counts the shadow entry in slot 0
+                                         slot 0: a folio of 32 pages
+                                         slots 1-31: siblings of slot 0
+    xas_find() skips slots 1-31
+      /* 31 pages are never counted */
+
+Essentially the fact that large folios might be present means we cannot
+safely continue the XArray walk, and must reset the iterator each time.
+
+Fix this by resetting the walk in each loop. This incurs a performance
+penalty, but given that only the RCU lock is held here, it can't be
+avoided.
+
+[ljs@kernel.org: squashed 2 commits, fixed up comment in code, and commit message]
+Link: https://patch.msgid.link/20261113-mason-migrate-et-al-fixes-v2-3-50a2ed382b61@kernel.org
+Fixes: cf264e1329fb ("cachestat: implement cachestat syscall")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Pedro Falcato <pfalcato@suse.de>
+Acked-by: Usama Arif <usama.arif@linux.dev>
+Acked-by: Nhat Pham <nphamcs@gmail.com>
+Reviewed-by: Chris Down <chris@chrisdown.name>
+Tested-by: Chris Down <chris@chrisdown.name>
+  Link: https://lore.kernel.org/20261114115640.c707f5c9496fcea4@chrisdown.name
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: David Rientjes <rientjes@google.com>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Jan Kara <jack@suse.cz>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Jérôme Glisse <jglisse@redhat.com>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Yu, Yu-cheng <yu-cheng.yu@intel.com>
+Cc: Dave Hansen <dave.hansen@linux.intel.com>
+Cc: Dennis Zhou <dennis@kernel.org>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Christoph Lameter <cl@gentwo.org>
+Cc: Peng Fan <peng.fan@nxp.com>
+Cc: Josef Bacik <jbacik@fb.com>
+Cc: Borislav Petkov <bp@alien8.de>
+Cc: Mark Brown <broonie@kernel.org>
+Cc: Dennis Zhou (Facebook) <dennisszhou@gmail.com>
+Cc: Rick Edgecombe <rick.p.edgecombe@intel.com>
+
+ mm/filemap.c |    7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+---
+ mm/filemap.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index ca1c6277bf3a7..194c144ad1c9e 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -4758,10 +4758,11 @@ static void filemap_cachestat(struct address_space *mapping,
+ 		if (folio_last_index >= last_index)
+ 			break;
+ 
+-		if (need_resched()) {
+-			xas_set(&xas, curr_index);
++		/* Collapse or new folio spanning shadow entries needs reset. */
++		xas_set(&xas, curr_index);
++
++		if (need_resched())
+ 			cond_resched_rcu();
+-		}
+ 	}
+ 	rcu_read_unlock();
+ }
+-- 
+2.47.3
+

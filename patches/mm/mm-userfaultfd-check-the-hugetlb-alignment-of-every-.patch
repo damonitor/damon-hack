@@ -1,0 +1,191 @@
+From: Tal Zussman <tz2294@columbia.edu>
+Date: Tue, 17 Nov 2026 23:28:49 -0500
+Subject: [PATCH] mm/userfaultfd: check the hugetlb alignment of every VMA in
+ the pre-scan
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+UFFDIO_REGISTER and UFFDIO_UNREGISTER both scan the VMAs of the range
+before changing anything. For a hugetlb VMA, userfaultfd_register()
+rejects a range whose start or end is not huge page aligned there.
+However, userfaultfd_unregister() only checks the start.
+
+An unaligned end only fails later, when vma_modify_flags_uffd() cannot
+split the VMA there. At that point, userfaultfd_clear_vma() already
+cleared the WP or RWP protection. The ioctl returns -EINVAL and the VMA
+stays registered, but accesses to its pages are no longer reported. This
+requires a caller passing a misaligned range.
+
+To fix it, move the alignment checks into vma_uffd_range_aligned() and
+call it for every VMA in the pre-scan of both ioctls. UFFDIO_UNREGISTER
+still returns -EINVAL for such a range, but no longer unregisters the
+VMAs before the misaligned one first.
+
+Checking every VMA the same way also changes the following:
+
+- UFFDIO_UNREGISTER now returns -EINVAL if the end is not huge page
+  aligned in a hugetlb VMA that is not registered. It used to skip that
+  VMA and succeed.
+
+- Both ioctls now accept a start that is not huge page aligned if it is
+  not inside any VMA and the first VMA of the range is a hugetlb one.
+  They used to return -EINVAL, although such a range covers that VMA
+  from its start, which is always huge page aligned.
+
+- UFFDIO_REGISTER now returns -EINVAL rather than -EPERM if the end is
+  not huge page aligned in a hugetlb VMA without VM_MAYWRITE.
+
+Link: https://patch.msgid.link/20261117-uffd-state-fixes-v3-9-b617009d1a4a@columbia.edu
+Fixes: cab350afcbc9 ("userfaultfd: hugetlbfs: allow registration of ranges containing huge pages")
+Fixes: f369b07c8614 ("mm/uffd: reset write protection when unregister with wp-mode")
+Signed-off-by: Tal Zussman <tz2294@columbia.edu>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: David Hildenbrand (Arm) <david@kernel.org>
+Reviewed-by: Mike Rapoport (Microsoft) <rppt@kernel.org>
+Acked-by: David Hildenbrand (Arm) <david@kernel.org>
+Cc: Peter Xu <peterx@redhat.com>
+Cc: James Houghton <jthoughton@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Balbir Singh <balbirs@nvidia.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Michał Mirosław <mirq-linux@rere.qmqm.pl>
+Cc: Andrei Vagin <avagin@gmail.com>
+Cc: Muhammad Usama Anjum <usama.anjum@arm.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Zi Yan <ziy@nvidia.com>
+Cc: Matthew Brost <matthew.brost@intel.com>
+Cc: Joshua Hahn <joshua.hahnjy@gmail.com>
+Cc: Byungchul Park <byungchul@sk.com>
+Cc: Gregory Price <gourry@gourry.net>
+Cc: Ying Huang <ying.huang@linux.alibaba.com>
+Cc: Alistair Popple <apopple@nvidia.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Nico Pache <nico.pache@linux.dev>
+Cc: Ryan Roberts <ryan.roberts@arm.com>
+Cc: Dev Jain <dev.jain@arm.com>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Lance Yang <lance.yang@linux.dev>
+Cc: Usama Arif <usama.arif@linux.dev>
+Cc: Kiryl Shutsemau <kas@kernel.org>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: Oscar Salvador <osalvador@suse.de>
+Cc: Mikołaj Lenczewski <miko.lenczewski@arm.com>
+Cc: Breno Leitao <leitao@debian.org>
+
+ mm/userfaultfd.c |   54 +++++++++++++++------------------------------
+ 1 file changed, 18 insertions(+), 36 deletions(-)
+---
+ mm/userfaultfd.c | 54 ++++++++++++++++--------------------------------
+ 1 file changed, 18 insertions(+), 36 deletions(-)
+
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 62be1a8d019c1..6bcc4ae26280b 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -3710,6 +3710,20 @@ static __always_inline int validate_range(struct mm_struct *mm,
+ 	return validate_unaligned_range(mm, start, len);
+ }
+ 
++static bool vma_uffd_range_aligned(struct vm_area_struct *vma,
++				   unsigned long start, unsigned long end)
++{
++	unsigned long size;
++
++	if (!vma_is_hugetlb(vma))
++		return true;
++
++	/* A hugetlb VMA can only be split at a huge page boundary. */
++	size = huge_page_size(hstate_vma(vma));
++	return IS_ALIGNED(max(start, vma->vm_start), size) &&
++	       IS_ALIGNED(min(end, vma->vm_end), size);
++}
++
+ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
+ 				unsigned long arg)
+ {
+@@ -3788,17 +3802,6 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
+ 	if (!vma)
+ 		goto out_unlock;
+ 
+-	/*
+-	 * If the first vma contains huge pages, make sure start address
+-	 * is aligned to huge page size.
+-	 */
+-	if (vma_is_hugetlb(vma)) {
+-		unsigned long vma_hpagesize = vma_kernel_pagesize(vma);
+-
+-		if (start & (vma_hpagesize - 1))
+-			goto out_unlock;
+-	}
+-
+ 	/*
+ 	 * Search for not compatible vmas.
+ 	 */
+@@ -3815,6 +3818,8 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
+ 		ret = -EINVAL;
+ 		if (!vma_can_userfault(cur, vm_flags, wp_async))
+ 			goto out_unlock;
++		if (!vma_uffd_range_aligned(cur, start, end))
++			goto out_unlock;
+ 
+ 		/*
+ 		 * RWP uses protnone as an access-tracking marker. PROT_NONE
+@@ -3838,20 +3843,6 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
+ 		ret = -EPERM;
+ 		if (unlikely(!(cur->vm_flags & VM_MAYWRITE)))
+ 			goto out_unlock;
+-
+-		/*
+-		 * If this vma contains ending address, and huge pages
+-		 * check alignment.
+-		 */
+-		if (vma_is_hugetlb(cur) && end <= cur->vm_end &&
+-		    end > cur->vm_start) {
+-			unsigned long vma_hpagesize = vma_kernel_pagesize(cur);
+-
+-			ret = -EINVAL;
+-
+-			if (end & (vma_hpagesize - 1))
+-				goto out_unlock;
+-		}
+ 		if ((vm_flags & VM_UFFD_WP) && !(cur->vm_flags & VM_MAYWRITE))
+ 			goto out_unlock;
+ 
+@@ -3961,17 +3952,6 @@ static int userfaultfd_unregister(struct userfaultfd_ctx *ctx,
+ 	if (!vma)
+ 		goto out_unlock;
+ 
+-	/*
+-	 * If the first vma contains huge pages, make sure start address
+-	 * is aligned to huge page size.
+-	 */
+-	if (vma_is_hugetlb(vma)) {
+-		unsigned long vma_hpagesize = vma_kernel_pagesize(vma);
+-
+-		if (start & (vma_hpagesize - 1))
+-			goto out_unlock;
+-	}
+-
+ 	/*
+ 	 * Search for not compatible vmas.
+ 	 */
+@@ -4000,6 +3980,8 @@ static int userfaultfd_unregister(struct userfaultfd_ctx *ctx,
+ 		 */
+ 		if (!vma_can_userfault(cur, cur->vm_flags, wp_async))
+ 			goto out_unlock;
++		if (!vma_uffd_range_aligned(cur, start, end))
++			goto out_unlock;
+ 
+ 		found = true;
+ 	} for_each_vma_range(vmi, cur, end);
+-- 
+2.47.3
+

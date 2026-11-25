@@ -1,0 +1,76 @@
+From: Chris Mason <mason@kernel.org>
+Date: Sat, 21 Nov 2026 16:02:32 +0000
+Subject: [PATCH] mm/mremap: respect guard gaps on in-place expansion
+
+Growing a mapping in place can let it use up the guard gap below a
+stack, so that the stack can't grow any further, or overflows into the
+mapping instead of faulting.
+
+A mapping has to stay out of the gap of the next VMA unless the caller
+fixed its address. But vma_expandable() only checks that the new range
+doesn't intersect the next VMA, and it passes MAP_FIXED to
+get_unmapped_area(), which skips the gap check there.
+
+Fix the issue by stopping in-place growth at the start of the gap.
+
+Growing a mapping into or within the gap of a stack or shadow stack now
+fails with ENOMEM without MREMAP_MAYMOVE, or if the mapping can't be
+moved.
+
+Link: https://patch.msgid.link/20261121-some-more-ai-fixes-v1-6-236e925d9b64@kernel.org
+Fixes: 1be7107fbe18 ("mm: larger stack guard gap, between vmas")
+Signed-off-by: Chris Mason <mason@kernel.org>
+Signed-off-by: Lorenzo Stoakes (ARM) <ljs@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Suren Baghdasaryan <surenb@google.com>
+Tested-by: Gregory Price (Meta) <gourry@gourry.net>
+  Link: https://lore.kernel.org/179536256259.412063.8859349312024671580.b4-reply@b4
+Reviewed-by: Gregory Price (Meta) <gourry@gourry.net>
+Reviewed-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Kees Cook <kees@kernel.org>
+Cc: Peter Zijlstra <a.p.zijlstra@chello.nl>
+Cc: Ollie Wild <aaw@google.com>
+Cc: Adrian Bunk <bunk@stusta.de>
+Cc: Xu Xin <xu.xin@linux.dev>
+Cc: Chengming Zhou <chengming.zhou@linux.dev>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Joey Gouly <joey.gouly@arm.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Josef Bacik <josef@toxicpanda.com>
+
+ mm/mremap.c |    4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+ mm/mremap.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/mremap.c b/mm/mremap.c
+index 5fc6ed2163ebd..37d93ce57727c 100644
+--- a/mm/mremap.c
++++ b/mm/mremap.c
+@@ -1509,10 +1509,12 @@ static unsigned long mremap_to(struct vma_remap_struct *vrm)
+ static int vma_expandable(struct vm_area_struct *vma, unsigned long delta)
+ {
+ 	unsigned long end = vma->vm_end + delta;
++	struct vm_area_struct *next;
+ 
+ 	if (end < vma->vm_end) /* overflow */
+ 		return 0;
+-	if (find_vma_intersection(vma->vm_mm, vma->vm_end, end))
++	next = find_vma(vma->vm_mm, vma->vm_end);
++	if (next && end > vm_start_gap(next)) /* intersection, or in its gap */
+ 		return 0;
+ 	if (get_unmapped_area(NULL, vma->vm_start, end - vma->vm_start,
+ 			      0, MAP_FIXED) & ~PAGE_MASK)
+-- 
+2.47.3
+
