@@ -43,9 +43,9 @@ else
 	echo "old mm-new found as $old_mm_new"
 fi
 
-new_mm_new=akpm.korg.mm/mm-new
+new_mm_new=mm.akpm/mm-new
 
-git fetch akpm.korg.mm
+git fetch mm.akpm
 
 old_mm_new_commit=$(git rev-parse "$old_mm_new")
 new_mm_new_commit=$(git rev-parse "$new_mm_new")
@@ -62,7 +62,7 @@ merged_commits=$("$unmerged_commits_sh" --merged --human_readable \
 	"$old_mm_new..damon/next" "$new_mainline_base..$new_mm_new")
 
 git branch -M damon/next damon/next.old
-git checkout akpm.korg.mm/mm-new -b damon/next.new
+git checkout mm.akpm/mm-new -b damon/next.new
 
 old_mainline_base=$(git describe "$old_mm_new" --match "v*" --abbrev=0)
 for commit in $("$unmerged_commits_sh" "$old_mm_new..damon/next.old" \

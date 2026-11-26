@@ -1,7 +1,7 @@
 #!/bin/bash
 
-remote="akpm.korg.mm"
-baseline=$(git describe --match "v*" --abbrev=0 akpm.korg.mm/mm-stable)
+remote="mm.akpm"
+baseline=$(git describe --match "v*" --abbrev=0 mm.akpm/mm-stable)
 
 mm_stable_range="$baseline..$remote/mm-stable"
 mm_unstable_range="$remote/mm-stable..$remote/mm-unstable"

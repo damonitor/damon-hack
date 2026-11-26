@@ -32,9 +32,9 @@ versions=(
 	v7.2
 	v7.3
 	v7.4
-	akpm.korg.mm/mm-stable
-	akpm.korg.mm/mm-unstable
-	akpm.korg.mm/mm-new
+	mm.akpm/mm-stable
+	mm.akpm/mm-unstable
+	mm.akpm/mm-new
 )
 
 for (( i=0; i<$(( "${#versions[@]}" - 1 )); i++ ))
@@ -42,22 +42,22 @@ do
 	from="${versions[$i]}"
 	to="${versions[$((i + 1))]}-rc1"
 
-	if [ "$to" = "akpm.korg.mm/mm-new-rc1" ]
+	if [ "$to" = "mm.akpm/mm-new-rc1" ]
 	then
-		from="akpm.korg.mm/mm-unstable"
-		to="akpm.korg.mm/mm-new"
+		from="mm.akpm/mm-unstable"
+		to="mm.akpm/mm-new"
 	fi
 
-	if [ "$to" = "akpm.korg.mm/mm-unstable-rc1" ]
+	if [ "$to" = "mm.akpm/mm-unstable-rc1" ]
 	then
-		from="akpm.korg.mm/mm-stable"
-		to="akpm.korg.mm/mm-unstable"
+		from="mm.akpm/mm-stable"
+		to="mm.akpm/mm-unstable"
 	fi
 
-	if [ "$to" = "akpm.korg.mm/mm-stable-rc1" ]
+	if [ "$to" = "mm.akpm/mm-stable-rc1" ]
 	then
 		from+="-rc1"
-		to="akpm.korg.mm/mm-stable"
+		to="mm.akpm/mm-stable"
 	fi
 
 	echo "$to"

@@ -29,7 +29,7 @@ git clone --origin damon.gh git@github.com:damonitor/linux
 git -C linux remote add sj.gh git@github.com:sjp38/linux
 git -C linux remote add sj git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/linux
 git -C linux remote add linus https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
-git -C linux remote add akpm.korg.mm https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git
+git -C linux remote add mm.akpm https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git
 git -C linux remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 git -C linux remote add damon https://git.kernel.org/pub/scm/linux/kernel/git/mm/damon.git
 git -C linux remote add mm https://git.kernel.org/pub/scm/linux/kernel/git/mm/linux.git
