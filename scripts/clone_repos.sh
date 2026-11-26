@@ -26,7 +26,7 @@ git -C masim remote add gh.downstream git@github.com:damonitor/masim
 git -C masim remote update
 
 git clone --origin damon.gh git@github.com:damonitor/linux
-git -C linux remote add gh.public git@github.com:sjp38/linux
+git -C linux remote add sj.gh git@github.com:sjp38/linux
 git -C linux remote add sj git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/linux
 git -C linux remote add linus https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 git -C linux remote add akpm.korg.mm https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git

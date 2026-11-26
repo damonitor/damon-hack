@@ -15,12 +15,12 @@ git push sj akpm.korg.mm/mm-new:refs/heads/mm-new --force
 git push sj akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
 git push sj akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
 
-echo "gh.public"
-git push gh.public damon/next --force
-git push gh.public linus/master:master
-git push gh.public akpm.korg.mm/mm-new:refs/heds/mm-new --force
-git push gh.public akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
-git push gh.public akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
+echo "sj.gh"
+git push sj.gh damon/next --force
+git push sj.gh linus/master:master
+git push sj.gh akpm.korg.mm/mm-new:refs/heds/mm-new --force
+git push sj.gh akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
+git push sj.gh akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
 
 echo "damon.gh"
 git push damon.gh damon/next:next --force
