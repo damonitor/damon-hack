@@ -6,3 +6,5 @@ git remote add linus   git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/li
 git remote add sj git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/linux
 git remote add stable  git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 git remote add mm.akpm git://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm
+git remote add damon git@gitolite.kernel.org:pub/scm/linux/kernel/git/mm/damon
+git remote add mm git://git.kernel.org/pub/scm/linux/kernel/git/mm/linux.git
