@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# <repo name>.<account name>.<hosting site>
+#
+# <repo name> is omitted if it is linux.
+# <hosting site> is omitted if it is kernel.org
+
 git remote add damon.gh	git@github.com:damonitor/linux.git
 git remote add sj.gh git@github.com:sjp38/linux.git
 git remote add linus   git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
