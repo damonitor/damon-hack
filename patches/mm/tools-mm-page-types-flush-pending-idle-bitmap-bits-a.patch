@@ -1,0 +1,120 @@
+From: Xuewen Wang <wangxuewen@kylinos.cn>
+Date: Wed, 25 Nov 2026 17:14:08 +0800
+Subject: [PATCH] tools/mm: page-types: flush pending idle bitmap bits after
+ walking
+
+mark_page_idle() buffers bits for one 64-page bitmap word and writes that
+word when a page in another word is encountered.
+
+walk_addr_ranges() tries to flush the final word by marking PFN 0.  If the
+last buffered PFN is below 64, this only adds a bit to the same word and
+nothing is written.  Otherwise it writes the pending word but leaves an
+unwanted PFN 0 bit buffered.  walk_page_cache() does not flush at all, so
+its final pending bits are not written.
+
+Extract the write operation into flush_page_idle() and use it both when
+changing words and after either walker returns to main().  Clear the
+buffer after a successful write and skip writes when it is empty.  Place
+the final flush before the no-summary early return and return EXIT_FAILURE
+if it fails.
+
+Use 1ULL for the bit mask so shifts by 32 through 63 are also valid on
+32-bit hosts.
+
+Link: https://patch.msgid.link/20261125091408.1584017-1-wangxuewen_ky@163.com
+Fixes: 59ae96ffc3a6 ("tools/vm/page-types.c: add support for idle page tracking")
+Signed-off-by: Xuewen Wang <wangxuewen@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Christian Hansen <chansen3@cisco.com>
+Cc: SJ Park <sj@kernel.org>
+
+ tools/mm/page-types.c |   38 +++++++++++++++++++++++++-------------
+ 1 file changed, 25 insertions(+), 13 deletions(-)
+---
+ tools/mm/page-types.c | 38 +++++++++++++++++++++++++-------------
+ 1 file changed, 25 insertions(+), 13 deletions(-)
+
+diff --git a/tools/mm/page-types.c b/tools/mm/page-types.c
+index 47e4781c5fc38..1695a7b42169f 100644
+--- a/tools/mm/page-types.c
++++ b/tools/mm/page-types.c
+@@ -575,27 +575,39 @@ static int unpoison_page(unsigned long offset)
+ 	return 0;
+ }
+ 
+-static int mark_page_idle(unsigned long offset)
++static unsigned long page_idle_offset;
++static uint64_t page_idle_buf;
++
++static int flush_page_idle(void)
+ {
+-	static unsigned long off;
+-	static uint64_t buf;
+ 	int len;
+ 
+-	if ((offset / 64 == off / 64) || buf == 0) {
+-		buf |= 1UL << (offset % 64);
+-		off = offset;
++	if (!page_idle_buf)
+ 		return 0;
+-	}
+ 
+-	len = pwrite(page_idle_fd, &buf, 8, 8 * (off / 64));
++	len = pwrite(page_idle_fd, &page_idle_buf, 8,
++		     8 * (page_idle_offset / 64));
+ 	if (len < 0) {
+ 		perror("mark page idle");
+ 		return len;
+ 	}
+ 
+-	buf = 1UL << (offset % 64);
+-	off = offset;
++	page_idle_buf = 0;
++	return 0;
++}
+ 
++static int mark_page_idle(unsigned long offset)
++{
++	int ret;
++
++	if (offset / 64 != page_idle_offset / 64) {
++		ret = flush_page_idle();
++		if (ret < 0)
++			return ret;
++	}
++
++	page_idle_buf |= 1ULL << (offset % 64);
++	page_idle_offset = offset;
+ 	return 0;
+ }
+ 
+@@ -798,9 +810,6 @@ static void walk_addr_ranges(void)
+ 		else
+ 			walk_task(opt_offset[i], opt_size[i]);
+ 
+-	if (opt_mark_idle)
+-		mark_page_idle(0);
+-
+ 	close(kpageflags_fd);
+ }
+ 
+@@ -1364,6 +1373,9 @@ int main(int argc, char *argv[])
+ 	else
+ 		walk_addr_ranges();
+ 
++	if (opt_mark_idle && flush_page_idle() < 0)
++		return EXIT_FAILURE;
++
+ 	if (opt_list == 1)
+ 		flush_page_range();
+ 
+-- 
+2.47.3
+

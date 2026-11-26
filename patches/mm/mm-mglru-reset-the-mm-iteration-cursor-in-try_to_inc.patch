@@ -1,0 +1,70 @@
+From: Hui Zhu <zhuhui@kylinos.cn>
+Date: Wed, 25 Nov 2026 19:35:18 +0800
+Subject: [PATCH] mm: mglru: reset the mm iteration cursor in
+ try_to_inc_max_seq_nowalk()
+
+try_to_inc_max_seq_nowalk() advances mm_state->seq without walking the
+mm_list, but unlike iterate_mm_list_nowalk() it leaves head and tail
+alone.  If it races with an ongoing page table walk, the cursor is left in
+the middle of the fifo.
+
+The next walker reads that as "this generation already started": it skips
+reset_bloom_filter() and resumes after the cursor.  The mm it visits are
+the ones the aborted walk never reached, so they have no bits in the
+filter being read and walk_pmd_range() descends into none of their PMDs.
+Those mm miss a generation of accessed-bit harvesting, so their aging is
+less accurate and hot folios can be under-promoted.  Eviction can still
+detect their references via rmap and lru_gen_look_around(), so this
+weakens aging rather than guaranteeing reclaim and refault.
+
+Reset head and tail with the seq increment, as iterate_mm_list_nowalk()
+does.  It is safe: get_next_mm() holds an mmgrab() reference and a
+concurrent walker bails out at "walk->seq <= mm_state->seq" before
+touching head again.
+
+Only reachable from memcg_reparent_objcgs() -> max_lru_gen_memcg(); not a
+memory safety issue, since lru_gen_del_mm() repoints head and tail under
+mm_list->lock.
+
+Link: https://patch.msgid.link/20261125113518.1207280-1-hui.zhu@linux.dev
+Fixes: f304652609ea ("mm: vmscan: prepare for reparenting MGLRU folios")
+Signed-off-by: Hui Zhu <zhuhui@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Baoquan He <baoquan.he@linux.dev>
+Cc: Kairui Song <kasong@tencent.com>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Shakeel Butt <shakeel.butt@linux.dev>
+Cc: Barry Song <baohua@kernel.org>
+Cc: Axel Rasmussen <axelrasmussen@google.com>
+Cc: Yuanchu Xie <yuanchu@google.com>
+Cc: Wei Xu <weixugc@google.com>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Harry Yoo <harry@kernel.org>
+Cc: <stable@vger.kernel.org>
+
+ mm/vmscan.c |    2 ++
+ 1 file changed, 2 insertions(+)
+---
+ mm/vmscan.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index bc7579d47f9b4..621214442f148 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4550,6 +4550,8 @@ static void try_to_inc_max_seq_nowalk(struct mem_cgroup *memcg,
+ 		spin_lock(&mm_list->lock);
+ 		VM_WARN_ON_ONCE(mm_state->seq + 1 < max_seq);
+ 		if (max_seq > mm_state->seq) {
++			mm_state->head = NULL;
++			mm_state->tail = NULL;
+ 			WRITE_ONCE(mm_state->seq, mm_state->seq + 1);
+ 			success = true;
+ 		}
+-- 
+2.47.3
+

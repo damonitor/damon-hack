@@ -1,0 +1,71 @@
+From: Henry Martin <bsdhenrymartin@gmail.com>
+Date: Wed, 25 Nov 2026 11:04:32 +0800
+Subject: [PATCH] mm: report all-zero cachestat for DAX mappings
+
+filemap_cachestat() treats every xarray value entry as a workingset
+shadow.  On DAX mappings, value entries are DAX exceptional entries: same
+value bit, different bit layout (flags in the low bits, pfn above).
+Decoded as a shadow, a DAX entry yields a bogus node id; NODE_DATA() for
+it can be NULL, and lru_gen_test_recent() then dereferences it:
+
+  Oops: general protection fault
+  RIP: 0010:lru_gen_test_recent+0xde/0x300
+  Call Trace:
+   workingset_test_recent
+   filemap_cachestat
+   __x64_sys_cachestat
+
+Any writable file on a DAX mount triggers this once an mmap write fault
+has populated entries.
+
+DAX mappings have no page cache, so none of the cachestat fields make
+sense for them.  Skip the xarray walk for them and report all zeros, and
+document the behaviour in the syscall's kernel-doc.
+
+This issue was discovered by Tencent CodeBuddy Security.
+
+Link: https://patch.msgid.link/20261125030432.274396-1-bsdhenrymartin@gmail.com
+Fixes: cf264e1329fb ("cachestat: implement cachestat syscall")
+Signed-off-by: Henry Martin <bsdhenrymartin@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Nhat Pham <nphamcs@gmail.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: <stable@vger.kernel.org>
+
+ mm/filemap.c |    8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+---
+ mm/filemap.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 3bf31cc9d2709..5895c9a7bd4ca 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -4789,7 +4789,8 @@ static inline bool can_do_cachestat(struct file *f)
+  * The `flags` argument is unused for now, but is included for future
+  * extensibility. User should pass 0 (i.e no flag specified).
+  *
+- * Currently, hugetlbfs is not supported.
++ * Currently, hugetlbfs is not supported.  DAX mappings have no page
++ * cache, so cachestat() always reports all zeros for them.
+  *
+  * Because the status of a page can change after cachestat() checks it
+  * but before it returns to the application, the returned values may
+@@ -4834,7 +4835,10 @@ SYSCALL_DEFINE4(cachestat, unsigned int, fd,
+ 		csr.len == 0 ? ULONG_MAX : (csr.off + csr.len - 1) >> PAGE_SHIFT;
+ 	memset(&cs, 0, sizeof(struct cachestat));
+ 	mapping = fd_file(f)->f_mapping;
+-	filemap_cachestat(mapping, first_index, last_index, &cs);
++
++	/* DAX mappings have no page cache; report all zeros. */
++	if (!dax_mapping(mapping))
++		filemap_cachestat(mapping, first_index, last_index, &cs);
+ 
+ 	if (copy_to_user(cstat, &cs, sizeof(struct cachestat)))
+ 		return -EFAULT;
+-- 
+2.47.3
+

@@ -1,0 +1,270 @@
+From: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Date: Mon, 2 Nov 2026 08:44:01 +0100
+Subject: [PATCH] selftests/mm: test mlock() and munlock() range normalisation
+
+Add mlock2-tests cases for a zero length at aligned and unaligned
+addresses, for a length that wraps when rounded to pages, and for an
+overflowing start + len, checking the return value and VmLck.  The
+overflow cases expect -EINVAL with and without CAP_IPC_LOCK, so running
+the test unprivileged also covers the errno that used to depend on it.
+
+The wrapping cases assume the test is built for the kernel's word size: a
+32-bit binary on a 64-bit kernel cannot pass a range that wraps.
+
+Link: https://patch.msgid.link/20261102074412.189554-4-azpijr@gmail.com
+Signed-off-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Suggested-by: David Hildenbrand <david@kernel.org>
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Park Tae-sun <ts930@dgu.ac.kr>
+Cc: Alejandro Colomar <alx@kernel.org>
+
+ tools/testing/selftests/mm/mlock2-tests.c |  191 +++++++++++++++++++-
+ 1 file changed, 190 insertions(+), 1 deletion(-)
+---
+ tools/testing/selftests/mm/mlock2-tests.c | 191 +++++++++++++++++++++-
+ 1 file changed, 190 insertions(+), 1 deletion(-)
+
+diff --git a/tools/testing/selftests/mm/mlock2-tests.c b/tools/testing/selftests/mm/mlock2-tests.c
+index 455f1c841dec3..0145b490b3078 100644
+--- a/tools/testing/selftests/mm/mlock2-tests.c
++++ b/tools/testing/selftests/mm/mlock2-tests.c
+@@ -2,6 +2,7 @@
+ #define _GNU_SOURCE
+ #include <sys/mman.h>
+ #include <linux/mman.h>
++#include <limits.h>
+ #include <stdint.h>
+ #include <unistd.h>
+ #include <string.h>
+@@ -91,6 +92,7 @@ static bool is_vmflag_set(unsigned long addr, const char *vmflag)
+ #define SIZE "Size:"
+ #define RSS  "Rss:"
+ #define LOCKED "lo"
++#define VMLCK "VmLck:"
+ 
+ static unsigned long get_value_for_name(unsigned long addr, const char *name)
+ {
+@@ -176,6 +178,27 @@ static int unlock_lock_check(char *map, bool mlock_supported)
+ 	return 1;
+ }
+ 
++static unsigned long get_vmlck(void)
++{
++	unsigned long vmlck;
++	char line[1024];
++	FILE *file;
++
++	file = fopen("/proc/self/status", "r");
++	if (!file)
++		ksft_exit_fail_msg("fopen: %s\n", strerror(errno));
++
++	while (fgets(line, sizeof(line), file)) {
++		if (sscanf(line, VMLCK "\t%lu kB", &vmlck) == 1) {
++			fclose(file);
++			return vmlck << 10;
++		}
++	}
++
++	fclose(file);
++	ksft_exit_fail_msg("cannot parse VmLck in /proc/self/status\n");
++}
++
+ static void test_mlock_lock(void)
+ {
+ 	char *map;
+@@ -203,6 +226,167 @@ static void test_mlock_lock(void)
+ 	munmap(map, 2 * page_size);
+ }
+ 
++static void test_mlock_zero_length(void)
++{
++	unsigned long page_size = getpagesize();
++	unsigned long vmlck_before, vmlck_after;
++	char *map;
++
++	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (map == MAP_FAILED)
++		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++
++	vmlck_before = get_vmlck();
++	ksft_test_result(!mlock(map, 0),
++			 "%s: zero length mlock() at an aligned address\n", __func__);
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: zero length mlock() at an aligned address locked nothing\n",
++			 __func__);
++
++	vmlck_before = get_vmlck();
++	ksft_test_result(!mlock(map + 5, 0),
++			 "%s: zero length mlock() at an unaligned address\n", __func__);
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: zero length mlock() at an unaligned address locked nothing\n",
++			 __func__);
++
++	munmap(map, 2 * page_size);
++}
++
++static void test_munlock_zero_length(void)
++{
++	unsigned long page_size = getpagesize();
++	unsigned long vmlck_before, vmlck_after;
++	char *map;
++
++	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (map == MAP_FAILED)
++		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++
++	if (mlock(map, 2 * page_size)) {
++		munmap(map, 2 * page_size);
++		ksft_exit_fail_msg("mlock(): %s\n", strerror(errno));
++	}
++
++	vmlck_before = get_vmlck();
++	ksft_test_result(vmlck_before > 0,
++			 "%s: the range to release is accounted as locked\n",
++			 __func__);
++	ksft_test_result(!munlock(map + 5, 0),
++			 "%s: zero length munlock() at an unaligned address\n", __func__);
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: zero length munlock() at an unaligned address released nothing\n",
++			 __func__);
++
++	munmap(map, 2 * page_size);
++}
++
++static void test_mlock_length_wrap(void)
++{
++	unsigned long page_size = getpagesize();
++	unsigned long vmlck_before, vmlck_after;
++	char *map;
++	int ret;
++
++	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (map == MAP_FAILED)
++		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++
++	vmlck_before = get_vmlck();
++	errno = 0;
++	ret = mlock(map, ULONG_MAX);
++	ksft_test_result(ret == -1 && errno == EINVAL,
++			 "%s: mlock() with a wrapping length is rejected\n",
++			 __func__);
++
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: mlock() with a wrapping length locked nothing\n",
++			 __func__);
++
++	vmlck_before = get_vmlck();
++	errno = 0;
++	ret = mlock(map + 5, ULONG_MAX);
++	ksft_test_result(ret == -1 && errno == EINVAL,
++			 "%s: unaligned mlock() with a wrapping length is rejected\n",
++			 __func__);
++
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: unaligned mlock() with a wrapping length locked nothing\n",
++			 __func__);
++
++	munmap(map, 2 * page_size);
++}
++
++static void test_mlock_addr_overflow(void)
++{
++	unsigned long page_size = getpagesize();
++	unsigned long vmlck_before, vmlck_after;
++	size_t len;
++	char *map;
++	int ret;
++
++	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (map == MAP_FAILED)
++		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++
++	/* addr + len wraps to 0 */
++	len = (size_t)(0UL - (unsigned long)map);
++
++	/* -EINVAL with or without CAP_IPC_LOCK */
++	vmlck_before = get_vmlck();
++	errno = 0;
++	ret = mlock(map, len);
++	ksft_test_result(ret == -1 && errno == EINVAL,
++			 "%s: mlock() with an overflowing addr + len is rejected\n",
++			 __func__);
++
++	vmlck_after = get_vmlck();
++	ksft_test_result(vmlck_before == vmlck_after,
++			 "%s: mlock() with an overflowing addr + len locked nothing\n",
++			 __func__);
++
++	munmap(map, 2 * page_size);
++}
++
++static void test_munlock_range_overflow(void)
++{
++	unsigned long page_size = getpagesize();
++	size_t len;
++	char *map;
++
++	map = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
++		   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
++	if (map == MAP_FAILED)
++		ksft_exit_fail_msg("mmap error: %s\n", strerror(errno));
++
++	errno = 0;
++	ksft_test_result(munlock(map, ULONG_MAX) == -1 && errno == EINVAL,
++			 "%s: munlock() with a wrapping length is rejected\n",
++			 __func__);
++
++	errno = 0;
++	ksft_test_result(munlock(map + 5, ULONG_MAX) == -1 && errno == EINVAL,
++			 "%s: unaligned munlock() with a wrapping length is rejected\n",
++			 __func__);
++
++	len = (size_t)(0UL - (unsigned long)map);
++	errno = 0;
++	ksft_test_result(munlock(map, len) == -1 && errno == EINVAL,
++			 "%s: munlock() with an overflowing addr + len is rejected\n",
++			 __func__);
++
++	munmap(map, 2 * page_size);
++}
++
+ static int onfault_check(char *map)
+ {
+ 	*map = 'a';
+@@ -505,9 +689,14 @@ int main(int argc, char **argv)
+ 
+ 	munmap(map, size);
+ 
+-	ksft_set_plan(15);
++	ksft_set_plan(31);
+ 
+ 	test_mlock_lock();
++	test_mlock_zero_length();
++	test_munlock_zero_length();
++	test_mlock_length_wrap();
++	test_mlock_addr_overflow();
++	test_munlock_range_overflow();
+ 	test_mlock_onfault();
+ 	test_munlockall0();
+ 	test_munlockall1();
+-- 
+2.47.3
+

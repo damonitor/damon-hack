@@ -1,0 +1,106 @@
+From: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Date: Mon, 2 Nov 2026 08:43:59 +0100
+Subject: [PATCH] mm/mlock: make a zero length request a no-op whatever the
+ alignment
+
+Patch series "mm/mlock: make zero length requests a no-op and reject
+wrapping ranges".
+
+Follow-up to Park Tae-sun's patch [1], which was dropped.  David asked
+which of the cases it raised can actually be triggered, and for selftests
+that show them.  Two can.
+
+Patch 1 makes a zero length mlock()/munlock() a no-op before the address
+is rounded. Today mlock(addr + 5, 0) locks a page and munlock(addr + 5, 0)
+unlocks one.
+
+Patch 2 rejects ranges where start + len overflows, or where the end
+overflows when rounded to a page. Today these get a silent success, act
+on a single page, or get -ENOMEM/-EINVAL depending on CAP_IPC_LOCK.
+
+Patch 3 adds both cases to mlock2-tests.
+
+I could not find the commit that introduced either behaviour in the git
+history.  Both are already present in the earliest history I could find,
+so they may predate the imported git history.  There is therefore no
+commit to use for a Fixes tag.  I have not added Cc: stable since these
+changes intentionally alter UAPI-visible behaviour.
+
+The mlock-random-test failure CI reported on [1] came from that patch, not
+the test: it assigned 0 to do_mlock()'s error, which has to stay -ENOMEM
+for the over-limit case, so mlock() over RLIMIT_MEMLOCK without
+CAP_IPC_LOCK returned 0 without locking anything.  With [1] applied the
+test fails 40 runs out of 40; with error set back to -ENOMEM after the
+check_mlock_range() call it passes all 40, as it does with this series.
+
+Tested on x86_64 (KASAN, lockdep) in QEMU: mlock2-tests 31/31 as root and
+as nobody, 24/31 and 23/31 on mm-unstable; mlock-random-test and
+on-fault-limit pass.
+
+
+This patch (of 3):
+
+A zero length mlock() or munlock() at an unaligned address is rounded up
+to a page, so mlock(addr + 5, 0) locks a page that was never asked for,
+and munlock(addr + 5, 0) unlocks one the caller may still rely on.  An
+aligned zero length is already a no-op.
+
+Return early for a zero length, before the rounding and before
+can_do_mlock().  This is a uapi change: with RLIMIT_MEMLOCK=0 and no
+CAP_IPC_LOCK, mlock(addr, 0) returns 0 instead of -EPERM, which is what
+munlock(addr, 0) already returns.  man 2 mlock does not say what a zero
+length should do, and -EINVAL would break callers that pass one today and
+get 0.
+
+Link: https://lore.kernel.org/20261102074412.189554-1-azpijr@gmail.com
+Link: https://patch.msgid.link/20261102074412.189554-2-azpijr@gmail.com
+Link: https://lore.kernel.org/all/179066531783.50175.13377521828379196177@dgu.ac.kr/ [1]
+Signed-off-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Park Tae-sun <ts930@dgu.ac.kr>
+Closes: https://lore.kernel.org/all/179066531783.50175.13377521828379196177@dgu.ac.kr/
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Alejandro Colomar <alx@kernel.org>
+
+ mm/mlock.c |    6 ++++++
+ 1 file changed, 6 insertions(+)
+---
+ mm/mlock.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mm/mlock.c b/mm/mlock.c
+index 1c70a78293944..673a8433a0a9f 100644
+--- a/mm/mlock.c
++++ b/mm/mlock.c
+@@ -612,6 +612,9 @@ static __must_check int do_mlock(unsigned long start, size_t len,
+ 
+ 	start = untagged_addr(start);
+ 
++	if (!len)
++		return 0;
++
+ 	if (!can_do_mlock())
+ 		return -EPERM;
+ 
+@@ -678,6 +681,9 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
+ 
+ 	start = untagged_addr(start);
+ 
++	if (!len)
++		return 0;
++
+ 	len = PAGE_ALIGN(len + (offset_in_page(start)));
+ 	start &= PAGE_MASK;
+ 
+-- 
+2.47.3
+

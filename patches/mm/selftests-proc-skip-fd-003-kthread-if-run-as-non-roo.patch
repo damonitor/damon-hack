@@ -1,0 +1,67 @@
+From: Qingshuang Fu <fuqingshuang@kylinos.cn>
+Date: Fri, 20 Nov 2026 14:29:33 +0800
+Subject: [PATCH] selftests/proc: skip fd-003-kthread if run as non-root
+
+/proc/$KERNEL_THREAD/fd can only be opened with ptrace access, so
+openat() on the "fd" directory of a kernel thread returns EACCES
+when the test is run as non-root.  kernel_thread_fd() conflates this
+with "process is userspace process", the scan over /proc runs to
+completion without finding a usable descriptor and the test exits
+with 1 (KSFT_FAIL) instead of 4 (KSFT_SKIP):
+
+  $ ./fd-003-kthread; echo $?
+  1
+
+Distinguish the two cases and skip the test like the rest of
+selftests/proc does when privileges are missing, so that unprivileged
+runs report "skip" instead of a false failure.
+
+Link: https://patch.msgid.link/20261120062933.3169112-1-fuqingshuang@kylinos.cn
+Fixes: b2f5de0334f0 ("tools/testing/selftests/proc: test /proc/*/fd a bit (+ PF_KTHREAD is ABI!)")
+Signed-off-by: Qingshuang Fu <fuqingshuang@kylinos.cn>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Andy Whitcroft <apw@canonical.com>
+Cc: Joe Perches <joe@perches.com>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Alexey Dobriyan <adobriyan@gmail.com>
+
+ tools/testing/selftests/proc/fd-003-kthread.c |    5 +++++
+ 1 file changed, 5 insertions(+)
+---
+ tools/testing/selftests/proc/fd-003-kthread.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tools/testing/selftests/proc/fd-003-kthread.c b/tools/testing/selftests/proc/fd-003-kthread.c
+index dc591f97b63d4..e939a7c5f5469 100644
+--- a/tools/testing/selftests/proc/fd-003-kthread.c
++++ b/tools/testing/selftests/proc/fd-003-kthread.c
+@@ -36,6 +36,7 @@
+  *
+  * Return /proc/$PID/fd descriptor if process is kernel thread.
+  * Return -1 if a process is userspace process.
++ * Return -EACCES if run as non-root.
+  */
+ static int kernel_thread_fd(unsigned int pid)
+ {
+@@ -88,6 +89,8 @@ static int kernel_thread_fd(unsigned int pid)
+ 	fd = -1;
+ 	if (flags & PF_KHTREAD) {
+ 		fd = openat(dir_fd, "fd", O_RDONLY|O_DIRECTORY);
++		if (fd == -1 && errno == EACCES)
++			fd = -EACCES;
+ 	}
+ 	close(dir_fd);
+ 	return fd;
+@@ -168,6 +171,8 @@ int main(void)
+ 		pid++;
+ 	}
+ 	/* EACCES if run as non-root. */
++	if (fd == -EACCES)
++		return 4;
+ 	if (pid >= 1024)
+ 		return 1;
+ 
+-- 
+2.47.3
+

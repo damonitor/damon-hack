@@ -1,0 +1,102 @@
+From: "Jose A. Perez de Azpillaga" <azpijr@gmail.com>
+Date: Mon, 2 Nov 2026 08:44:00 +0100
+Subject: [PATCH] mm/mlock: reject ranges that cannot be represented
+
+A length within a page of ULONG_MAX wraps when mlock() and munlock() round
+the range to pages.  At an aligned address the length becomes 0 and the
+call is a silent success; at an unaligned one it becomes a single page,
+which is then locked or unlocked.  An overflowing start + len is only
+caught in apply_vma_lock_flags(), after the RLIMIT_MEMLOCK check, so
+mlock() returns -ENOMEM without CAP_IPC_LOCK and -EINVAL with it.
+
+Return -EINVAL, as man 2 mlock documents, when start + len overflows or
+the end overflows when rounded up to a page.  Doing this before
+can_do_mlock() also avoids making the result depend on
+RLIMIT_MEMLOCK/CAP_IPC_LOCK.  Requests that get a silent success today now
+fail.
+
+Link: https://patch.msgid.link/20261102074412.189554-3-azpijr@gmail.com
+Signed-off-by: Jose A. Perez de Azpillaga <azpijr@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Park Tae-sun <ts930@dgu.ac.kr>
+Closes: https://lore.kernel.org/all/179066531783.50175.13377521828379196177@dgu.ac.kr/
+Cc: Liam R. Howlett <liam@infradead.org>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Shuah Khan <shuah@kernel.org>
+Cc: Vlastimil Babka <vbabka@kernel.org>
+Cc: Jann Horn <jannh@google.com>
+Cc: Pedro Falcato <pfalcato@suse.de>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Cc: Michal Hocko <mhocko@suse.com>
+Cc: Alejandro Colomar <alx@kernel.org>
+
+ mm/mlock.c |   23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+---
+ mm/mlock.c | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/mm/mlock.c b/mm/mlock.c
+index 673a8433a0a9f..0e9d8c1101525 100644
+--- a/mm/mlock.c
++++ b/mm/mlock.c
+@@ -608,6 +608,7 @@ static __must_check int do_mlock(unsigned long start, size_t len,
+ {
+ 	unsigned long locked;
+ 	unsigned long lock_limit;
++	unsigned long end;
+ 	int error = -ENOMEM;
+ 
+ 	start = untagged_addr(start);
+@@ -615,12 +616,19 @@ static __must_check int do_mlock(unsigned long start, size_t len,
+ 	if (!len)
+ 		return 0;
+ 
++	/* Reject a wrapping range before can_do_mlock() and the rlimit check. */
++	end = start + len;
++	if (end < start)
++		return -EINVAL;
++	end = PAGE_ALIGN(end);
++	if (!end)
++		return -EINVAL;
++	start &= PAGE_MASK;
++	len = end - start;
++
+ 	if (!can_do_mlock())
+ 		return -EPERM;
+ 
+-	len = PAGE_ALIGN(len + (offset_in_page(start)));
+-	start &= PAGE_MASK;
+-
+ 	lock_limit = rlimit(RLIMIT_MEMLOCK);
+ 	lock_limit >>= PAGE_SHIFT;
+ 	locked = len >> PAGE_SHIFT;
+@@ -676,6 +684,7 @@ SYSCALL_DEFINE3(mlock2, unsigned long, start, size_t, len, int, flags)
+ 
+ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
+ {
++	unsigned long end;
+ 	vma_flags_t flags = EMPTY_VMA_FLAGS;
+ 	int ret;
+ 
+@@ -684,8 +693,14 @@ SYSCALL_DEFINE2(munlock, unsigned long, start, size_t, len)
+ 	if (!len)
+ 		return 0;
+ 
+-	len = PAGE_ALIGN(len + (offset_in_page(start)));
++	end = start + len;
++	if (end < start)
++		return -EINVAL;
++	end = PAGE_ALIGN(end);
++	if (!end)
++		return -EINVAL;
+ 	start &= PAGE_MASK;
++	len = end - start;
+ 
+ 	if (mmap_write_lock_killable(current->mm))
+ 		return -EINTR;
+-- 
+2.47.3
+
