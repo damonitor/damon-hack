@@ -14,6 +14,10 @@ git push sj linus/master:master
 git push sj mm.akpm/mm-new:refs/heads/mm-new --force
 git push sj mm.akpm/mm-unstable:refs/heads/mm-unstable --force
 git push sj mm.akpm/mm-stable:refs/heads/mm-stable --force
+git push sj damon/for-next --force
+git push sj damon/for-next-fixes --force
+git push sj mm/for-next:refs/heads/mm-for-next --force
+git push sj mm/for-next-fixes:refs/heads/mm-for-next-fixes --force
 
 echo "sj.gh"
 git push sj.gh damon/next --force
@@ -21,6 +25,10 @@ git push sj.gh linus/master:master
 git push sj.gh mm.akpm/mm-new:refs/heds/mm-new --force
 git push sj.gh mm.akpm/mm-unstable:refs/heads/mm-unstable --force
 git push sj.gh mm.akpm/mm-stable:refs/heads/mm-stable --force
+git push sj.gh damon/for-next --force
+git push sj.gh damon/for-next-fixes --force
+git push sj.gh mm/for-next:refs/heads/mm-for-next --force
+git push sj.gh mm/for-next-fixes:refs/heads/mm-for-next-fixes --force
 
 echo "damon.gh"
 git push damon.gh damon/next:next --force
@@ -28,8 +36,16 @@ git push damon.gh linus/master:master
 git push damon.gh mm.akpm/mm-new:refs/heads/mm-new --force
 git push damon.gh mm.akpm/mm-unstable:refs/heads/mm-unstable --force
 git push damon.gh mm.akpm/mm-stable:refs/heads/mm-stable --force
+git push damon.gh damon/for-next:refs/heads/for-next --force
+git push damon.gh damon/for-next-fixes:refs/heds/for-next-fixes --force
+git push damon.gh mm/for-next:refs/heads/mm-for-next --force
+git push damon.gh mm/for-next-fixes:refs/heads/mm-for-next-fixes --force
 
 echo "damon"
+
+git push damon linus/master:refs/heads/master
+git push damon mm/for-next:refs/heads/mm-for-next --force
+git push damon mm/for-next-fixes:refs/heads/mm-for-next-fixes --force
 
 extra_version=$(git show refs/heads/damon/for-next:Makefile | \
 	grep "EXTRAVERSION = " | awk '{print $3}' | awk -F"-rc" '{print $2}')
