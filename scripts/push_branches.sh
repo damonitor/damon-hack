@@ -22,12 +22,12 @@ git push gh.public akpm.korg.mm/mm-new:refs/heds/mm-new --force
 git push gh.public akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
 git push gh.public akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
 
-echo "gh.damon"
-git push gh.damon damon/next:next --force
-git push gh.damon linus/master:master
-git push gh.damon akpm.korg.mm/mm-new:refs/heads/mm-new --force
-git push gh.damon akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
-git push gh.damon akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
+echo "damon.gh"
+git push damon.gh damon/next:next --force
+git push damon.gh linus/master:master
+git push damon.gh akpm.korg.mm/mm-new:refs/heads/mm-new --force
+git push damon.gh akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
+git push damon.gh akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
 
 echo
 "$bindir/push_damon_hack.sh"
