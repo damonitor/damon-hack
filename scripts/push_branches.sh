@@ -32,7 +32,7 @@ git push damon.gh mm.akpm/mm-stable:refs/heads/mm-stable --force
 echo "damon"
 
 extra_version=$(git show refs/heads/damon/for-next:Makefile | \
-	grep "EXTRAVERSION = " | awk '{print $3}' | awk -F"-rc" '{print $2}'
+	grep "EXTRAVERSION = " | awk '{print $3}' | awk -F"-rc" '{print $2}')
 # Starting from rc6, avoid force-push
 if [ "$extra_version" -gt 5 ]
 then
