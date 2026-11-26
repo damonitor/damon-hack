@@ -27,14 +27,14 @@ git -C masim remote update
 
 git clone --origin gh.damon git@github.com:damonitor/linux
 git -C linux remote add gh.public git@github.com:sjp38/linux
-git -C linux remote add sj.korg git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/linux
+git -C linux remote add sj git@gitolite.kernel.org:pub/scm/linux/kernel/git/sj/linux
 git -C linux remote add linus https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
 git -C linux remote add akpm.korg.mm https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git
 git -C linux remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 git -C linux remote add damon https://git.kernel.org/pub/scm/linux/kernel/git/mm/damon.git
 git -C linux remote add mm https://git.kernel.org/pub/scm/linux/kernel/git/mm/linux.git
 git -C linux remote update
-git -C linux checkout sj.korg/damon/next -b damon/next
+git -C linux checkout sj/damon/next -b damon/next
 # next branch would be generated with initial clone.  Remove.
 git -C linux branch -D next
 

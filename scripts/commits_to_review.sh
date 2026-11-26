@@ -10,6 +10,6 @@ fi
 
 sj="SeongJae Park <sj@kernel.org>"
 
-"$review_stat_py" --commits sj.korg/mm-stable..sj.korg/mm-new \
+"$review_stat_py" --commits sj/mm-stable..sj/mm-new \
 	--subsystem DAMON --not_signed_off_by "$sj" --not_reviewed_by "$sj" \
 	--not_acked_by "$sj"

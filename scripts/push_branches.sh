@@ -8,12 +8,12 @@ echo "push linux branches"
 
 git fetch linus
 
-echo "sj.korg"
-git push sj.korg damon/next --force
-git push sj.korg linus/master:master
-git push sj.korg akpm.korg.mm/mm-new:refs/heads/mm-new --force
-git push sj.korg akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
-git push sj.korg akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
+echo "sj"
+git push sj damon/next --force
+git push sj linus/master:master
+git push sj akpm.korg.mm/mm-new:refs/heads/mm-new --force
+git push sj akpm.korg.mm/mm-unstable:refs/heads/mm-unstable --force
+git push sj akpm.korg.mm/mm-stable:refs/heads/mm-stable --force
 
 echo "gh.public"
 git push gh.public damon/next --force
