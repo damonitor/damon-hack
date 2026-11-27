@@ -51,6 +51,7 @@ mkdir -p "$summary_dir"
 	--filter reject author "SJ Park <sj@kernel.org>" \
 	--filter reject reviewer "SeongJae Park <sj@kernel.org>" \
 	--filter reject reviewer "SJ Park <sj@kernel.org>" \
+	--filter reject reviewer "SJ Park <sj@kernel.org> # DAMON" \
 	--filter allow subsystem DAMON \
 	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--full_commits_list > "${summary_dir}/sj_to_review"
