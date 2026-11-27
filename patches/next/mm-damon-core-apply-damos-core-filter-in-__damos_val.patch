@@ -1,5 +1,5 @@
 From: SJ Park <sj@kernel.org>
-Date: Sun, 22 Nov 2026 15:37:09 -0800
+Date: Sun, 22 Nov 2026 15:35:17 -0800
 Subject: [PATCH] mm/damon/core: apply damos core filter in
  __damos_valid_target()
 
@@ -16,7 +16,8 @@ selection method for the reason.
 
 Treat DAMOS core filter as the primary method.  Handle it in a single
 place, __damos_valid_target(), which is handling the DAMOS access
-pattern.
+pattern.  Update __damos_valid_target() to receive damon_ctx, to allow
+it access to core filters.
 
 One consequence of this change is that DAMOS_QUOTA_NODE_ELIGIBLE_MEM_BP
 will aware of the core filters.  It is a sort of behavioral change.  But
@@ -25,11 +26,11 @@ The new behavior is rather more intuitive in my opinion.
 
 Signed-off-by: SJ Park <sj@kernel.org>
 ---
- mm/damon/core.c | 14 +++++++++-----
- 1 file changed, 9 insertions(+), 5 deletions(-)
+ mm/damon/core.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
 
 diff --git a/mm/damon/core.c b/mm/damon/core.c
-index 0b85cbbb7a9b..bd05b3489b17 100644
+index de439f7f27e6..bd05b3489b17 100644
 --- a/mm/damon/core.c
 +++ b/mm/damon/core.c
 @@ -2534,12 +2534,20 @@ static noinline_for_stack void kdamond_tune_intervals(struct damon_ctx *c)
@@ -41,7 +42,8 @@ index 0b85cbbb7a9b..bd05b3489b17 100644
 +		struct damos *s);
 +
  static bool __damos_valid_target(struct damon_region *r, struct damos *s,
- 		struct damon_ctx *c, struct damon_target *t)
+-		struct damon_ctx *c)
++		struct damon_ctx *c, struct damon_target *t)
  {
  	unsigned long sz;
 -	unsigned int nr_accesses = damon_nr_accesses_mvsum(r, c);
@@ -54,6 +56,18 @@ index 0b85cbbb7a9b..bd05b3489b17 100644
  	sz = damon_sz_region(r);
  	return s->pattern.min_sz_region <= sz &&
  		sz <= s->pattern.max_sz_region &&
+@@ -2562,9 +2570,9 @@ static bool damos_quota_is_set(struct damos_quota *quota)
+ }
+ 
+ static bool damos_valid_target(struct damon_ctx *c, struct damon_region *r,
+-		struct damos *s)
++		struct damos *s, struct damon_target *t)
+ {
+-	bool ret = __damos_valid_target(r, s, c);
++	bool ret = __damos_valid_target(r, s, c, t);
+ 
+ 	if (!ret || !damos_quota_is_set(&s->quota) || !c->ops.get_scheme_score)
+ 		return ret;
 @@ -2895,8 +2903,6 @@ static void damos_apply_scheme(struct damon_ctx *c, struct damon_target *t,
  	}
  
@@ -63,15 +77,35 @@ index 0b85cbbb7a9b..bd05b3489b17 100644
  		if (damos_quota_is_set(quota) &&
  				quota->charged_sz + sz > quota->esz) {
  			sz = ALIGN_DOWN(quota->esz - quota->charged_sz,
-@@ -3565,8 +3571,6 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+@@ -2955,7 +2961,7 @@ static void damon_do_apply_schemes(struct damon_ctx *c,
+ 				s->max_nr_snapshots <= s->stat.nr_snapshots)
+ 			continue;
+ 
+-		if (damos_valid_target(c, r, s))
++		if (damos_valid_target(c, r, s, t))
+ 			damos_apply_scheme(c, t, r, s);
+ 
+ 		if (damon_is_last_region(r, t))
+@@ -3216,7 +3222,7 @@ static phys_addr_t damos_calc_eligible_bytes(struct damon_ctx *c,
  		damon_for_each_region(r, t) {
- 			if (!__damos_valid_target(r, s, c, t))
+ 			phys_addr_t addr, end_addr;
+ 
+-			if (!__damos_valid_target(r, s, c))
++			if (!__damos_valid_target(r, s, c, t))
  				continue;
--			if (damos_core_filter_out(c, t, r, s))
+ 
+ 			/* Convert from core address units to physical bytes */
+@@ -3563,9 +3569,7 @@ static void damos_adjust_quota(struct damon_ctx *c, struct damos *s)
+ 			(DAMOS_MAX_SCORE + 1));
+ 	damon_for_each_target(t, c) {
+ 		damon_for_each_region(r, t) {
+-			if (!__damos_valid_target(r, s, c))
 -				continue;
+-			if (damos_core_filter_out(c, t, r, s))
++			if (!__damos_valid_target(r, s, c, t))
+ 				continue;
  			score = c->ops.get_scheme_score(c, r, s);
  			c->regions_score_histogram[score] +=
- 				damon_sz_region(r);
 -- 
 2.47.3
 
