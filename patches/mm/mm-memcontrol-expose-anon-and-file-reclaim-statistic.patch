@@ -1,0 +1,117 @@
+From: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Date: Tue, 24 Nov 2026 15:51:27 +0800
+Subject: [PATCH] mm/memcontrol: expose anon and file reclaim statistics in
+ memory.stat
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The aggregate reclaim counters in memory.stat do not show how reclaim is
+split between the anonymous and file LRUs of a cgroup.
+
+Expose the existing per-memcg scan and steal counters by LRU type so
+userspace can measure reclaim balance and efficiency when evaluating
+reclaim policy.  Report the same counters per node in memory.numa_stat.
+Both files report the counters in base pages.
+
+Link: https://patch.msgid.link/20261124-memcg-reclain-stat-v1-1-c6cb14b0d917@gmail.com
+Signed-off-by: Xueyuan Chen <xueyuan.chen21@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Acked-by: Michal Hocko <mhocko@suse.com>
+Cc: Tejun Heo <tj@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michal Koutný <mkoutny@suse.com>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Shuah Khan <skhan@linuxfoundation.org>
+Cc: Randy Dunlap <rdunlap@infradead.org>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+
+ Documentation/admin-guide/cgroup-v2.rst |   20 ++++++++++++++++++--
+ mm/memcontrol.c                         |    8 ++++++++
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+---
+ Documentation/admin-guide/cgroup-v2.rst | 20 ++++++++++++++++++--
+ mm/memcontrol.c                         |  8 ++++++++
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/admin-guide/cgroup-v2.rst b/Documentation/admin-guide/cgroup-v2.rst
+index 9e3c67b02ae2e..eeeaf635754c6 100644
+--- a/Documentation/admin-guide/cgroup-v2.rst
++++ b/Documentation/admin-guide/cgroup-v2.rst
+@@ -1726,6 +1726,22 @@ The following nested keys are defined.
+ 	  pgsteal_proactive (npn)
+ 		Amount of reclaimed pages proactively
+ 
++	  pgscan_anon
++		Number of base pages scanned for reclaim from the anonymous
++		LRU. With the multi-gen LRU, counts pages isolated for reclaim.
++
++	  pgscan_file
++		Number of base pages scanned for reclaim from the file LRU.
++		With the multi-gen LRU, counts pages isolated for reclaim.
++
++	  pgsteal_anon
++		Number of base pages reclaimed from the anonymous LRU,
++		including pages demoted to another node.
++
++	  pgsteal_file
++		Number of base pages reclaimed from the file LRU,
++		including pages demoted to another node.
++
+ 	  pgfault (npn)
+ 		Total number of page faults incurred
+ 
+@@ -1829,11 +1845,11 @@ The following nested keys are defined.
+ 	application performance by combining this information with the
+ 	application's CPU allocation.
+ 
+-	All memory amounts are in bytes.
++	All memory amounts are in bytes. Reclaim counters are in base pages.
+ 
+ 	The output format of memory.numa_stat is::
+ 
+-	  type N0=<bytes in node 0> N1=<bytes in node 1> ...
++	  type N0=<value for node 0> N1=<value for node 1> ...
+ 
+ 	The entries are ordered to be human readable, and new entries
+ 	can show up in the middle. Don't rely on items remaining in a
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index 7e0bc63f0a11b..7205195cc1410 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -1653,10 +1653,14 @@ static const struct memory_stat memory_stats[] = {
+ 	{ "pgsteal_direct",		PGSTEAL_DIRECT		},
+ 	{ "pgsteal_khugepaged",		PGSTEAL_KHUGEPAGED	},
+ 	{ "pgsteal_proactive",		PGSTEAL_PROACTIVE	},
++	{ "pgsteal_anon",		PGSTEAL_ANON		},
++	{ "pgsteal_file",		PGSTEAL_FILE		},
+ 	{ "pgscan_kswapd",		PGSCAN_KSWAPD		},
+ 	{ "pgscan_direct",		PGSCAN_DIRECT		},
+ 	{ "pgscan_khugepaged",		PGSCAN_KHUGEPAGED	},
+ 	{ "pgscan_proactive",		PGSCAN_PROACTIVE	},
++	{ "pgscan_anon",		PGSCAN_ANON		},
++	{ "pgscan_file",		PGSCAN_FILE		},
+ 	{ "pgrefill",			PGREFILL		},
+ #ifdef CONFIG_NUMA_BALANCING
+ 	{ "pgpromote_success",		PGPROMOTE_SUCCESS	},
+@@ -1705,10 +1709,14 @@ static int memcg_page_state_output_unit(int item)
+ 	case PGSTEAL_DIRECT:
+ 	case PGSTEAL_KHUGEPAGED:
+ 	case PGSTEAL_PROACTIVE:
++	case PGSTEAL_ANON:
++	case PGSTEAL_FILE:
+ 	case PGSCAN_KSWAPD:
+ 	case PGSCAN_DIRECT:
+ 	case PGSCAN_KHUGEPAGED:
+ 	case PGSCAN_PROACTIVE:
++	case PGSCAN_ANON:
++	case PGSCAN_FILE:
+ 	case PGREFILL:
+ #ifdef CONFIG_NUMA_BALANCING
+ 	case PGPROMOTE_SUCCESS:
+-- 
+2.47.3
+

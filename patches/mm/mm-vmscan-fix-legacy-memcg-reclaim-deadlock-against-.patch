@@ -1,0 +1,294 @@
+From: Tejun Heo <tj@kernel.org>
+Date: Thu, 26 Nov 2026 02:08:56 -1000
+Subject: [PATCH] mm/vmscan: fix legacy memcg reclaim deadlock against
+ filesystem freeze
+
+Legacy memcg reclaim has no dirty throttling, and shrink_folio_list()
+waits for a folio that is under writeback and already marked for reclaim
+(case 3 in its comment).  That wait can deadlock against a filesystem
+freeze:
+
+1. A task in write() to filesystem B holds freeze protection on B, enters
+   memcg reclaim and waits for writeback of a folio of a filesystem on a
+   loop device backed by a file on B.
+
+2. A freeze of B waits for the task to drop its freeze protection.
+
+3. The loop worker has to take freeze protection on B to write the folio out
+   and blocks behind the freeze.
+
+The same applies to any driver that writes to a file on a local filesystem
+to serve block I/O and takes freeze protection for it.
+
+Reclaim can't tell which filesystem a writeback depends on.  Count the
+superblocks that are being frozen and make the wait time out after 15
+seconds.  If one is being frozen at that point, warn and give up.  Until
+none is, treat such folios like case 2 and skip the legacy writeback
+throttle, so that the task a freeze may be waiting for isn't held up.
+
+This trades the deadlock for premature memcg OOM kills during such a
+freeze.  The wait also no longer hits the folio_wait_writeback tracepoint,
+and the hung task detector no longer reports a task stuck in it for
+another reason as the task wakes up every 15 seconds.
+
+Link: https://patch.msgid.link/17d0d1395c0237d201a1abb2473d51f5@kernel.org
+Fixes: e62e384e9da8 ("memcg: prevent OOM with too many dirty pages")
+Signed-off-by: Tejun Heo <tj@kernel.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Christian Brauner <brauner@kernel.org>
+Reviewed-by: Johannes Weiner <hannes@cmpxchg.org>
+Reviewed-by: Christian Brauner (Amutable) <brauner@kernel.org>
+Acked-by: Shakeel Butt <shakeel.butt@linux.dev>
+Reviewed-by: Jan Kara <jack@suse.cz>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Muchun Song <muchun.song@linux.dev>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Qi Zheng <qi.zheng@linux.dev>
+Cc: Lorenzo Stoakes <ljs@kernel.org>
+Cc: Matthew Wilcox (Oracle) <willy@infradead.org>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: Jens Axboe <axboe@kernel.dk>
+Cc: Christoph Hellwig <hch@lst.de>
+Cc: Greg Thelen <gthelen@google.com>
+Cc: Greg Kroah-Hartman <greg@kroah.com>
+Cc: Ming Lei <tom.leiming@gmail.com>
+
+ fs/super.c               |    7 ++++
+ include/linux/fs/super.h |    1
+ mm/filemap.c             |   22 ++++++++++++--
+ mm/internal.h            |    1
+ mm/vmscan.c              |   58 +++++++++++++++++++++++++++++++++++--
+ 5 files changed, 83 insertions(+), 6 deletions(-)
+---
+ fs/super.c               |  7 +++++
+ include/linux/fs/super.h |  1 +
+ mm/filemap.c             | 22 ++++++++++++---
+ mm/internal.h            |  1 +
+ mm/vmscan.c              | 58 +++++++++++++++++++++++++++++++++++++---
+ 5 files changed, 83 insertions(+), 6 deletions(-)
+
+diff --git a/fs/super.c b/fs/super.c
+index c5a0658f7aaf3..74d3be78ee961 100644
+--- a/fs/super.c
++++ b/fs/super.c
+@@ -48,6 +48,9 @@ static int thaw_super_locked(struct super_block *sb, enum freeze_holder who,
+ static LIST_HEAD(super_blocks);
+ static DEFINE_SPINLOCK(sb_lock);
+ 
++/* nr of superblocks that freeze_super() is in the middle of freezing */
++atomic_t sb_nr_freezing;
++
+ static char *sb_writers_name[SB_FREEZE_LEVELS] = {
+ 	"sb_writers",
+ 	"sb_pagefaults",
+@@ -2235,6 +2238,7 @@ int freeze_super(struct super_block *sb, enum freeze_holder who, const void *fre
+ 		return 0;
+ 	}
+ 
++	atomic_inc(&sb_nr_freezing);
+ 	sb->s_writers.frozen = SB_FREEZE_WRITE;
+ 	/* Release s_umount to preserve sb_start_write -> s_umount ordering */
+ 	super_unlock_excl(sb);
+@@ -2249,6 +2253,7 @@ int freeze_super(struct super_block *sb, enum freeze_holder who, const void *fre
+ 	ret = sync_filesystem(sb);
+ 	if (ret) {
+ 		sb->s_writers.frozen = SB_UNFROZEN;
++		atomic_dec(&sb_nr_freezing);
+ 		sb_freeze_unlock(sb, SB_FREEZE_PAGEFAULT);
+ 		wake_up_var(&sb->s_writers.frozen);
+ 		deactivate_locked_super(sb);
+@@ -2265,6 +2270,7 @@ int freeze_super(struct super_block *sb, enum freeze_holder who, const void *fre
+ 			printk(KERN_ERR
+ 				"VFS:Filesystem freeze failed\n");
+ 			sb->s_writers.frozen = SB_UNFROZEN;
++			atomic_dec(&sb_nr_freezing);
+ 			sb_freeze_unlock(sb, SB_FREEZE_FS);
+ 			wake_up_var(&sb->s_writers.frozen);
+ 			deactivate_locked_super(sb);
+@@ -2278,6 +2284,7 @@ int freeze_super(struct super_block *sb, enum freeze_holder who, const void *fre
+ 	WARN_ON_ONCE(freeze_inc(sb, who) > 1);
+ 	sb->s_writers.freeze_owner = freeze_owner;
+ 	sb->s_writers.frozen = SB_FREEZE_COMPLETE;
++	atomic_dec(&sb_nr_freezing);
+ 	wake_up_var(&sb->s_writers.frozen);
+ 	lockdep_sb_freeze_release(sb);
+ 	super_unlock_excl(sb);
+diff --git a/include/linux/fs/super.h b/include/linux/fs/super.h
+index 733d439f01edb..2176fb7042f05 100644
+--- a/include/linux/fs/super.h
++++ b/include/linux/fs/super.h
+@@ -234,6 +234,7 @@ int freeze_super(struct super_block *super, enum freeze_holder who,
+ 		 const void *freeze_owner);
+ int thaw_super(struct super_block *super, enum freeze_holder who,
+ 	       const void *freeze_owner);
++extern atomic_t sb_nr_freezing;
+ 
+ int sb_init_dio_done_wq(struct super_block *sb);
+ 
+diff --git a/mm/filemap.c b/mm/filemap.c
+index 5f8c180d6124d..27350fba41a4e 100644
+--- a/mm/filemap.c
++++ b/mm/filemap.c
+@@ -1247,8 +1247,8 @@ static inline bool folio_trylock_flag(struct folio *folio, int bit_nr,
+ 	return true;
+ }
+ 
+-static inline int folio_wait_bit_common(struct folio *folio, int bit_nr,
+-		int state, enum behavior behavior)
++static inline int folio_wait_bit_common_timeout(struct folio *folio, int bit_nr, int state,
++		enum behavior behavior, long timeout)
+ {
+ 	wait_queue_head_t *q = folio_waitqueue(folio);
+ 	int unfairness = sysctl_page_lock_unfairness;
+@@ -1326,7 +1326,9 @@ static inline int folio_wait_bit_common(struct folio *folio, int bit_nr,
+ 			if (signal_pending_state(state, current))
+ 				break;
+ 
+-			io_schedule();
++			timeout = io_schedule_timeout(timeout);
++			if (!timeout)
++				break;
+ 			continue;
+ 		}
+ 
+@@ -1395,6 +1397,13 @@ static inline int folio_wait_bit_common(struct folio *folio, int bit_nr,
+ 	return wait->flags & WQ_FLAG_WOKEN ? 0 : -EINTR;
+ }
+ 
++static inline int folio_wait_bit_common(struct folio *folio, int bit_nr, int state,
++		enum behavior behavior)
++{
++	return folio_wait_bit_common_timeout(folio, bit_nr, state, behavior,
++					     MAX_SCHEDULE_TIMEOUT);
++}
++
+ #ifdef CONFIG_MIGRATION
+ /**
+  * softleaf_entry_wait_on_locked - Wait for a migration entry or
+@@ -1492,6 +1501,13 @@ int folio_wait_bit_killable(struct folio *folio, int bit_nr)
+ }
+ EXPORT_SYMBOL(folio_wait_bit_killable);
+ 
++/* wait up to @timeout jiffies for @bit_nr to clear, true if it cleared */
++bool folio_wait_bit_timeout(struct folio *folio, int bit_nr, long timeout)
++{
++	return !folio_wait_bit_common_timeout(folio, bit_nr, TASK_UNINTERRUPTIBLE, SHARED,
++					      timeout);
++}
++
+ /**
+  * folio_put_wait_locked - Drop a reference and wait for it to be unlocked
+  * @folio: The folio to wait for.
+diff --git a/mm/internal.h b/mm/internal.h
+index 603c084de995e..3d24500bab8bc 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -1258,6 +1258,7 @@ struct migration_target_control {
+  */
+ ssize_t splice_folio_into_pipe(struct pipe_inode_info *pipe,
+ 			       struct folio *folio, loff_t fpos, size_t size);
++bool folio_wait_bit_timeout(struct folio *folio, int bit_nr, long timeout);
+ 
+ static inline bool vma_is_single_threaded_private(struct vm_area_struct *vma)
+ {
+diff --git a/mm/vmscan.c b/mm/vmscan.c
+index 621214442f148..f17dacb646b27 100644
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -1042,6 +1042,55 @@ static bool may_enter_fs(struct folio *folio, gfp_t gfp_mask)
+ 	return false;
+ }
+ 
++/*
++ * Legacy memcg reclaim has no dirty throttling and waits for writeback in
++ * shrink_folio_list() instead. That wait can deadlock against a filesystem
++ * freeze:
++ *
++ * 1. A task holds freeze protection on filesystem B, e.g. in write(), enters
++ *    reclaim and waits for writeback of a folio whose I/O ends up as a write to
++ *    B, e.g. through a loop device backed by a file on B.
++ *
++ * 2. A freeze of B waits for the task to drop its freeze protection.
++ *
++ * 3. The write to B waits for the freeze.
++ *
++ * Reclaim can't tell which filesystem a writeback depends on. As a crude
++ * workaround, memcg_wait_writeback() times out and, if any filesystem is being
++ * frozen at that point, sets memcg_wb_wait_skip. While it is set, legacy memcg
++ * reclaim neither waits for nor throttles on writeback, so that the task a
++ * freeze may be waiting for isn't held up in reclaim and can drop its freeze
++ * protection. This can cause premature memcg OOM kills.
++ */
++static bool memcg_wb_wait_skip;
++
++/*
++ * Test memcg_wb_wait_skip. It takes effect only while a filesystem is being
++ * frozen and is cleared here once none is. A freeze that starts before it is
++ * cleared inherits the skip.
++ */
++static bool memcg_skip_wb_wait(void)
++{
++	if (!READ_ONCE(memcg_wb_wait_skip))
++		return false;
++	if (atomic_read(&sb_nr_freezing))
++		return true;
++	WRITE_ONCE(memcg_wb_wait_skip, false);
++	return false;
++}
++
++/* wait for writeback of @folio, see memcg_wb_wait_skip for the timeout */
++static void memcg_wait_writeback(struct folio *folio)
++{
++	while (!folio_wait_bit_timeout(folio, PG_writeback, 15 * HZ)) {
++		if (atomic_read(&sb_nr_freezing)) {
++			WRITE_ONCE(memcg_wb_wait_skip, true);
++			pr_warn("memcg1 writeback wait timed out during fs freeze, skipping waits, may OOM early\n");
++			return;
++		}
++	}
++}
++
+ /*
+  * shrink_folio_list() returns the number of reclaimed pages
+  */
+@@ -1163,7 +1212,9 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 		 *    reclaim flag set. memcg does not have any dirty folio
+ 		 *    throttling so we could easily OOM just because too many
+ 		 *    folios are in writeback and there is nothing else to
+-		 *    reclaim. Wait for the writeback to complete.
++		 *    reclaim. Wait for the writeback to complete. If
++		 *    memcg_wait_writeback() gives up, such folios are treated
++		 *    as in case 2 until no filesystem is being frozen.
+ 		 *
+ 		 * In cases 1) and 2) we activate the folios to get them out of
+ 		 * the way while we continue scanning for clean folios on the
+@@ -1186,6 +1237,7 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 
+ 			/* Case 2 above */
+ 			} else if (writeback_throttling_sane(sc) ||
++			    memcg_skip_wb_wait() ||
+ 			    !folio_test_reclaim(folio) ||
+ 			    !may_enter_fs(folio, sc->gfp_mask) ||
+ 			    (mapping &&
+@@ -1211,7 +1263,7 @@ static unsigned int shrink_folio_list(struct list_head *folio_list,
+ 			/* Case 3 above */
+ 			} else {
+ 				folio_unlock(folio);
+-				folio_wait_writeback(folio);
++				memcg_wait_writeback(folio);
+ 				/* then go back and try same folio again */
+ 				list_add_tail(&folio->lru, folio_list);
+ 				continue;
+@@ -1973,7 +2025,7 @@ static void handle_reclaim_writeback(unsigned long nr_taken,
+ 		 * enough for cgroupv1 writeback throttling to work
+ 		 * on a large system.
+ 		 */
+-		if (!writeback_throttling_sane(sc))
++		if (!writeback_throttling_sane(sc) && !memcg_skip_wb_wait())
+ 			reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
+ 	}
+ 
+-- 
+2.47.3
+

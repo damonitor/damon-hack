@@ -1,0 +1,66 @@
+From: Xionggui Chen <chenxionggui@lanxincomputing.com>
+Date: Wed, 25 Nov 2026 03:36:35 +0000
+Subject: [PATCH] kcov: defer PC canonicalization until tracing is enabled
+
+When CONFIG_KCOV_INSTRUMENT_ALL and CONFIG_RANDOMIZE_BASE are enabled,
+__sanitizer_cov_trace_pc() may be called during early boot before the
+kernel's virtual memory mappings are fully initialized.
+
+Currently, canonicalize_ip() is called before checking whether KCOV
+tracing is enabled.  On RISC-V, canonicalize_ip() calls kaslr_offset(),
+which accesses kernel mapping information that may not yet be accessible.
+
+This causes an early boot load access fault even when KCOV tracing is
+disabled.
+
+Move canonicalize_ip() after check_kcov_mode() to avoid accessing the
+KASLR offset when KCOV tracing is disabled.
+
+The comparison tracing path already performs this check before
+canonicalizing the instruction pointer.
+
+The issue was reproduced on RISC-V with Linux 7.4-rc1 using
+CONFIG_KCOV_INSTRUMENT_ALL=y and CONFIG_RANDOMIZE_BASE=y.
+
+The fix was verified on QEMU and RISC-V hardware.  KCOV PC tracing
+collected 124 entries, and comparison tracing collected 63 entries on the
+RISC-V hardware.
+
+Link: https://patch.msgid.link/20261125033635.3990-1-evers_chen@163.com
+Fixes: ded97d2c2b2c ("kcov: support comparison operands collection")
+Signed-off-by: Xionggui Chen <chenxionggui@lanxincomputing.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reviewed-by: Bradley Morgan <bradley.morgan@linux.dev>
+Cc: Andrey Konovalov <andreyknvl@gmail.com>
+Cc: Alexander Potapenko <glider@google.com>
+Cc: Dmitry Vyukov <dvyukov@google.com>
+
+ kernel/kcov.c |    3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+---
+ kernel/kcov.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/kernel/kcov.c b/kernel/kcov.c
+index 9402227bd7ba8..9dc8ce9f75631 100644
+--- a/kernel/kcov.c
++++ b/kernel/kcov.c
+@@ -216,13 +216,14 @@ void notrace __sanitizer_cov_trace_pc(void)
+ {
+ 	struct task_struct *t;
+ 	unsigned long *area;
+-	unsigned long ip = canonicalize_ip(_RET_IP_);
++	unsigned long ip;
+ 	unsigned long pos;
+ 
+ 	t = current;
+ 	if (!check_kcov_mode(KCOV_MODE_TRACE_PC, t))
+ 		return;
+ 
++	ip = canonicalize_ip(_RET_IP_);
+ 	area = t->kcov_area;
+ 	/* The first 64-bit word is the number of subsequent PCs. */
+ 	pos = READ_ONCE(area[0]) + 1;
+-- 
+2.47.3
+

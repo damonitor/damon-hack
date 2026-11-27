@@ -1,0 +1,118 @@
+From: Sergey Senozhatsky <senozhatsky@chromium.org>
+Date: Thu, 26 Nov 2026 10:45:07 +0900
+Subject: [PATCH] zram: do not modify cont sysfs store buffers
+
+zram sysfs handlers that accept key=value arguments (e.g.
+algorithm_params_store(), etc.) pass their const char *buf parameter
+through skip_spaces(), discarding const, and then mutate it in-place via
+next_arg().  This is not dangerous per se because kernfs_fop_write_iter()
+passes a temp copy of user string to zram, however it is still probably
+worth fixing, just for the sake of correctness.
+
+Allocate a temp non-const buffer for args tokenisation.
+
+Link: https://patch.msgid.link/20261126014518.1318583-1-senozhatsky@chromium.org
+Link: https://lore.kernel.org/all/awcpkJD6K1xtx_Pe@devuan/
+Signed-off-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Reported-by: Alejandro Colomar <alx@kernel.org>
+Reviewed-by: Alejandro Colomar <alx@kernel.org>
+Cc: Minchan Kim <minchan@kernel.org>
+
+ drivers/block/zram/zram_drv.c |   28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+---
+ drivers/block/zram/zram_drv.c | 28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index d969f17b55afe..ff9e53f001bc2 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -1285,10 +1285,15 @@ static ssize_t writeback_store(struct device *dev,
+ 	unsigned long lo = 0, hi;
+ 	struct zram_pp_ctl *pp_ctl = NULL;
+ 	struct zram_wb_ctl *wb_ctl = NULL;
++	char *kbuf __free(kfree) = NULL;
+ 	char *args, *param, *val;
+ 	ssize_t ret = len;
+ 	int err, mode = 0;
+ 
++	kbuf = kstrndup(buf, len, GFP_KERNEL);
++	if (!kbuf)
++		return -ENOMEM;
++
+ 	guard(rwsem_write)(&zram->dev_lock);
+ 	if (!init_done(zram))
+ 		return -EINVAL;
+@@ -1309,7 +1314,7 @@ static ssize_t writeback_store(struct device *dev,
+ 		goto out;
+ 	}
+ 
+-	args = skip_spaces(buf);
++	args = skip_spaces(kbuf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+ 
+@@ -1785,12 +1790,17 @@ static ssize_t algorithm_params_store(struct device *dev,
+ 	char *args, *param, *val, *algo = NULL, *dict_path = NULL;
+ 	struct deflate_params deflate_params;
+ 	struct zram *zram = dev_to_zram(dev);
++	char *kbuf __free(kfree) = NULL;
+ 	bool prio_param = false;
+ 	int ret;
+ 
+ 	deflate_params.winbits = ZCOMP_PARAM_NOT_SET;
+ 
+-	args = skip_spaces(buf);
++	kbuf = kstrndup(buf, len, GFP_KERNEL);
++	if (!kbuf)
++		return -ENOMEM;
++
++	args = skip_spaces(kbuf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+ 
+@@ -1905,12 +1915,17 @@ static ssize_t recomp_algorithm_store(struct device *dev,
+ 				      size_t len)
+ {
+ 	struct zram *zram = dev_to_zram(dev);
++	char *kbuf __free(kfree) = NULL;
+ 	int prio = ZRAM_SECONDARY_COMP;
+ 	char *args, *param, *val;
+ 	char *alg = NULL;
+ 	int ret;
+ 
+-	args = skip_spaces(buf);
++	kbuf = kstrndup(buf, len, GFP_KERNEL);
++	if (!kbuf)
++		return -ENOMEM;
++
++	args = skip_spaces(kbuf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+ 
+@@ -2584,6 +2599,7 @@ static ssize_t recompress_store(struct device *dev,
+ 	struct zram *zram = dev_to_zram(dev);
+ 	char *args, *param, *val, *algo = NULL;
+ 	u64 num_recomp_pages = ULLONG_MAX;
++	char *kbuf __free(kfree) = NULL;
+ 	struct zram_pp_ctl *ctl = NULL;
+ 	s32 prio = ZRAM_SECONDARY_COMP;
+ 	u32 mode = 0, threshold = 0;
+@@ -2592,7 +2608,11 @@ static ssize_t recompress_store(struct device *dev,
+ 	bool prio_param = false;
+ 	ssize_t ret;
+ 
+-	args = skip_spaces(buf);
++	kbuf = kstrndup(buf, len, GFP_KERNEL);
++	if (!kbuf)
++		return -ENOMEM;
++
++	args = skip_spaces(kbuf);
+ 	while (*args) {
+ 		args = next_arg(args, &param, &val);
+ 
+-- 
+2.47.3
+
