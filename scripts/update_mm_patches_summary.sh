@@ -47,12 +47,12 @@ mkdir -p "$summary_dir"
 # save the summary for patches not authored by SJ but not reviewed by SJ.
 "$mm_tree_summary" --linux_dir "$linux_dir" \
 	--import_info "${summary_dir}/commits_info.json" \
-	--filter reject not subsystem DAMON \
-	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--filter reject author "SeongJae Park <sj@kernel.org>" \
 	--filter reject author "SJ Park <sj@kernel.org>" \
 	--filter reject reviewer "SeongJae Park <sj@kernel.org>" \
 	--filter reject reviewer "SJ Park <sj@kernel.org>" \
+	--filter allow subsystem DAMON \
+	--filter allow subsystem "MEMORY MANAGEMENT - DAMON" \
 	--full_commits_list > "${summary_dir}/sj_to_review"
 
 # save diff of the patches.
