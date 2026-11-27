@@ -1,0 +1,60 @@
+From: SJ Park <sj@kernel.org>
+Date: Thu, 26 Nov 2026 15:59:59 -0800
+Subject: [PATCH] mm/damon/core: introduce damon_estimated_memory_bandwidth()
+
+Signed-off-by: SJ Park <sj@kernel.org>
+---
+ include/linux/damon.h |  1 +
+ mm/damon/core.c       | 24 ++++++++++++++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/include/linux/damon.h b/include/linux/damon.h
+index a5c3ed97669f8..8196c024652a0 100644
+--- a/include/linux/damon.h
++++ b/include/linux/damon.h
+@@ -1347,6 +1347,7 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs, bool exclusive);
+ void damon_stop(struct damon_ctx **ctxs, int nr_ctxs);
+ bool damon_is_running(struct damon_ctx *ctx);
+ int damon_kdamond_pid(struct damon_ctx *ctx);
++u64 damon_estimated_bw(struct damon_ctx *ctx);
+ 
+ int damon_call(struct damon_ctx *ctx, struct damon_call_control *control);
+ int damos_walk(struct damon_ctx *ctx, struct damos_walk_control *control);
+diff --git a/mm/damon/core.c b/mm/damon/core.c
+index f82ef22315751..bf3b668460af8 100644
+--- a/mm/damon/core.c
++++ b/mm/damon/core.c
+@@ -2426,6 +2426,30 @@ int damon_kdamond_pid(struct damon_ctx *ctx)
+ 	return pid;
+ }
+ 
++/**
++ * damon_estimated_bw() - Estimate memory bandwidth.
++ * @ctx:	DAMON context to calculate the badiwdth for.
++ *
++ * Return: estimated bandwidth persecond (addr_unit units).
++ */
++u64 damon_estimated_bw(struct damon_ctx *ctx)
++{
++	struct damon_target *t;
++	struct damon_region *r;
++	u64 access_bytes = 0;
++	u64 remainder, bytes_per_us;
++
++	damon_for_each_target(t, ctx) {
++		damon_for_each_region(r, t)
++			access_bytes += (u64)(r->ar.end - r->ar.start) *
++				r->nr_accesses;
++	}
++	bytes_per_us = div64_u64_rem(access_bytes,
++			ctx->attrs.aggr_interval, &remainder);
++	return bytes_per_us * USEC_PER_SEC + div64_u64(remainder *
++			USEC_PER_SEC, ctx->attrs.aggr_interval);
++}
++
+ /**
+  * damon_call() - Invoke a given function on DAMON worker thread (kdamond).
+  * @ctx:	DAMON context to call the function for.
+-- 
+2.47.3
+
