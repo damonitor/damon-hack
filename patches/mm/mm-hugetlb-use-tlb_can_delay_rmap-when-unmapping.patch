@@ -1,0 +1,44 @@
+From: Andrew Morton <akpm@linux-foundation.org>
+Date: Fri, 27 Nov 2026 13:46:55 -0800
+Subject: [PATCH] mm/hugetlb: use tlb_can_delay_rmap() when unmapping
+
+The combination of "mm/hugetlb: delay anon folio rmap removal until after
+the TLB flush" and "mm/huge_memory: flush dirty file PMDs before removing
+rmap" fails to build: the latter removed tlb_delay_rmap().
+
+The old helper checked whether rmap removal could be delayed and set
+tlb->delayed_rmap.  Its replacement, tlb_can_delay_rmap(), only checks
+whether delaying is supported.  The state change now occurs when
+__tlb_remove_folio_pages_size() queues a page with delay_rmap set.
+
+Use the new predicate here.  This hugetlb path already passes delay_rmap
+to __tlb_remove_page_size(), which calls that queueing helper.  It
+therefore still sets tlb->delayed_rmap before the TLB flush and delayed
+rmap removal; no separate assignment is needed.
+
+Link: https://lore.kernel.org/r/20261116-fixes_hugetlb-v2-15-4dd9e94ea9ac@kernel.org
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: David Hildenbrand (Arm) <david@kernel.org>
+
+ mm/hugetlb.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+ mm/hugetlb.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mm/hugetlb.c b/mm/hugetlb.c
+index a22635923549..aa6ad8d93266 100644
+--- a/mm/hugetlb.c
++++ b/mm/hugetlb.c
+@@ -5541,7 +5541,7 @@ static void hugetlb_unmap_range(struct mmu_gather *tlb,
+ 		 * entries are gone, unless the mm has no users left.
+ 		 */
+ 		if (folio_test_anon(folio) && !tlb->fullmm) {
+-			delay_rmap = tlb_delay_rmap(tlb);
++			delay_rmap = tlb_can_delay_rmap();
+ 			/*
+ 			 * Without delay-rmap support, just flush before
+ 			 * dropping the PTL. Except with MMU_GATHER_NO_GATHER
+-- 
+2.47.3
+

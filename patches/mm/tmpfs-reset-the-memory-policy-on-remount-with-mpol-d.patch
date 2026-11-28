@@ -1,0 +1,63 @@
+From: Yifan Feng <evanfengff@gmail.com>
+Date: Fri, 27 Nov 2026 15:00:15 -0800
+Subject: [PATCH] tmpfs: reset the memory policy on remount with mpol=default
+
+mpol_parse_str() returns a NULL policy for "default", and
+shmem_reconfigure() takes a NULL ctx->mpol to mean that no mpol option was
+given.  So a remount with mpol=default succeeds but keeps the old policy:
+
+  # mount -t tmpfs -o mpol=bind:1 none /mnt
+  # mount -o remount,mpol=default /mnt
+  # grep /mnt /proc/mounts
+  none /mnt tmpfs rw,relatime,mpol=bind:1 0 0
+
+Record that an mpol option was parsed, and replace the policy whenever
+one was.
+
+Link: https://patch.msgid.link/20261127230015.30733-1-evanfengff@gmail.com
+Fixes: 5f00110f7273 ("tmpfs: fix use-after-free of mempolicy object")
+Signed-off-by: Yifan Feng <evanfengff@gmail.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: David Hildenbrand <david@kernel.org>
+Cc: Baolin Wang <baolin.wang@linux.alibaba.com>
+Cc: Greg Thelen <gthelen@google.com>
+
+ mm/shmem.c |    4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+ mm/shmem.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/mm/shmem.c b/mm/shmem.c
+index 344f7edf5e15..91422f98fb49 100644
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -134,6 +134,7 @@ struct shmem_options {
+ #define SHMEM_SEEN_HUGE 4
+ #define SHMEM_SEEN_INUMS 8
+ #define SHMEM_SEEN_QUOTA 16
++#define SHMEM_SEEN_MPOL 32
+ };
+ 
+ #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+@@ -4905,6 +4906,7 @@ static int shmem_parse_one(struct fs_context *fc, struct fs_parameter *param)
+ 			ctx->mpol = NULL;
+ 			if (mpol_parse_str(param->string, &ctx->mpol))
+ 				goto bad_value;
++			ctx->seen |= SHMEM_SEEN_MPOL;
+ 			break;
+ 		}
+ 		goto unsupported_parameter;
+@@ -5117,7 +5119,7 @@ static int shmem_reconfigure(struct fs_context *fc)
+ 	/*
+ 	 * Preserve previous mempolicy unless mpol remount option was specified.
+ 	 */
+-	if (ctx->mpol) {
++	if (ctx->seen & SHMEM_SEEN_MPOL) {
+ 		mpol = sbinfo->mpol;
+ 		sbinfo->mpol = ctx->mpol;	/* transfers initial ref */
+ 		ctx->mpol = NULL;
+-- 
+2.47.3
+
